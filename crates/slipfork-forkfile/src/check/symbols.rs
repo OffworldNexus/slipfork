@@ -52,7 +52,8 @@ impl SymbolKind {
             }
             Self::Redis => Some(&["url", "host", "port"]),
             Self::S3 => Some(&["url", "endpoint", "bucket", "access_key", "secret_key"]),
-            Self::Cdn | Self::Domain => Some(&["domain", "url"]),
+            Self::Cdn => Some(&["domain", "url"]),
+            Self::Domain => Some(&["name"]),
             Self::Image | Self::Service => None,
         }
     }
@@ -65,7 +66,8 @@ impl SymbolKind {
             (Self::Postgres | Self::Database, "url" | "host" | "name" | "user" | "password")
             | (Self::Redis, "url" | "host")
             | (Self::S3, "url" | "endpoint" | "bucket" | "access_key" | "secret_key")
-            | (Self::Cdn | Self::Domain, "domain" | "url") => Some("string"),
+            | (Self::Cdn, "domain" | "url")
+            | (Self::Domain, "name") => Some("string"),
             _ => None,
         }
     }
@@ -91,6 +93,13 @@ pub struct SymbolTable {
 impl SymbolTable {
     /// Declares `name`, returning the duplicate diagnostic when it is taken.
     pub fn declare(&mut self, name: &str, kind: SymbolKind, span: Span) -> Result<(), Diagnostic> {
+        if name == "self" {
+            return Err(Diagnostic::new(
+                span,
+                "`self` is reserved for the app's own `url`, `domain`, and `scheme`",
+                "rename the declaration; write `self.url`, `self.domain`, or `self.scheme` instead",
+            ));
+        }
         if let Some(existing) = self.entries.get(name) {
             let first = existing.span;
             return Err(Diagnostic::new(
@@ -171,14 +180,14 @@ impl SymbolTable {
                     self.collect_image_item(item, diagnostics, &image.id);
                 }
             }
-            TopItem::On(on) => match &on.body {
+            TopItem::On(on) => on.for_each_branch(&mut |body| match body {
                 OnBody::Inline(inner) => self.collect_top(inner, diagnostics),
                 OnBody::Block(block) => {
                     for item in &block.items {
                         self.collect_top(item, diagnostics);
                     }
                 }
-            },
+            }),
             TopItem::Domain(domain) => {
                 self.record(diagnostics, &domain.id, SymbolKind::Domain, domain.id_span);
             }
@@ -218,14 +227,14 @@ impl SymbolTable {
                     );
                 }
             }
-            ImageItem::On(on) => match &on.body {
+            ImageItem::On(on) => on.for_each_branch(&mut |body| match body {
                 OnBody::Inline(inner) => self.collect_image_item(inner, diagnostics, owner),
                 OnBody::Block(block) => {
                     for item in &block.items {
                         self.collect_image_item(item, diagnostics, owner);
                     }
                 }
-            },
+            }),
             _ => {}
         }
     }
@@ -241,7 +250,7 @@ impl SymbolTable {
                         database.id_span,
                     );
                 }
-                PostgresItem::On(on) => match &on.body {
+                PostgresItem::On(on) => on.for_each_branch(&mut |body| match body {
                     OnBody::Inline(inner) => {
                         self.collect_postgres_items(
                             std::slice::from_ref(inner.as_ref()),
@@ -251,7 +260,7 @@ impl SymbolTable {
                     OnBody::Block(block) => {
                         self.collect_postgres_items(&block.items, diagnostics);
                     }
-                },
+                }),
                 PostgresItem::Version(_) => {}
             }
         }
@@ -263,12 +272,12 @@ impl SymbolTable {
                 S3Item::Cdn(cdn) => {
                     self.record(diagnostics, &cdn.id, SymbolKind::Cdn, cdn.id_span);
                 }
-                S3Item::On(on) => match &on.body {
+                S3Item::On(on) => on.for_each_branch(&mut |body| match body {
                     OnBody::Inline(inner) => {
                         self.collect_s3_items(std::slice::from_ref(inner.as_ref()), diagnostics);
                     }
                     OnBody::Block(block) => self.collect_s3_items(&block.items, diagnostics),
-                },
+                }),
                 S3Item::Policy(_) => {}
             }
         }

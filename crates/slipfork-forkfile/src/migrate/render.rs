@@ -93,6 +93,7 @@ fn document(model: &Model) -> Forkfile {
                 items: vec![TopItem::Env(env(&mode.group, &mode.entries, at))],
                 comments: Vec::new(),
             }),
+            else_body: None,
             span: at,
         }));
     }
@@ -146,6 +147,7 @@ fn image_ast(image: &ImageOut, at: Span) -> Image {
             body.push(ImageItem::On(On {
                 cond: feature(&mode.mode, at),
                 body: OnBody::Inline(Box::new(ImageItem::UseEnv(group.clone()))),
+                else_body: None,
                 span: at,
             }));
         }

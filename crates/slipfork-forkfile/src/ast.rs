@@ -75,13 +75,15 @@ pub struct On<I> {
     pub cond: Expr,
     /// The guarded body.
     pub body: OnBody<I>,
+    /// The optional `else` branch.
+    pub else_body: Option<OnElse<I>>,
     /// The `on` keyword span.
     pub span: Span,
 }
 
 impl<I: PartialEq> PartialEq for On<I> {
     fn eq(&self, other: &Self) -> bool {
-        self.cond == other.cond && self.body == other.body
+        self.cond == other.cond && self.body == other.body && self.else_body == other.else_body
     }
 }
 
@@ -92,6 +94,76 @@ pub enum OnBody<I> {
     Inline(Box<I>),
     /// `on <expr> { ... }`
     Block(Block<I>),
+}
+
+impl<I> OnBody<I> {
+    /// The one item this body carries, when it is inline.
+    #[must_use]
+    pub fn inline(&self) -> Option<&I> {
+        match self {
+            Self::Inline(item) => Some(item),
+            Self::Block(_) => None,
+        }
+    }
+
+    /// The block this body carries, when it is a block.
+    #[must_use]
+    pub fn block(&self) -> Option<&Block<I>> {
+        match self {
+            Self::Inline(_) => None,
+            Self::Block(block) => Some(block),
+        }
+    }
+}
+
+/// The optional `else` of an `on` node: a body, or a chained `else on <expr>`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OnElse<I> {
+    /// `else { ... }` or `else: <item>`
+    Body(OnBody<I>),
+    /// `else on <expr> ...`
+    Chain(Box<On<I>>),
+}
+
+/// An `on` body selected by a condition, with every `else on` chain resolved.
+#[derive(Debug, Clone, Copy)]
+pub enum ActiveBody<'a, I> {
+    /// An inline declaration.
+    Inline(&'a I),
+    /// A block of declarations.
+    Block(&'a Block<I>),
+}
+
+impl<I> On<I> {
+    /// Visits both the guarded body and every `else` branch, regardless of feature selection.
+    pub fn for_each_branch<'a>(&'a self, visit: &mut impl FnMut(&'a OnBody<I>)) {
+        visit(&self.body);
+        match &self.else_body {
+            Some(OnElse::Body(body)) => visit(body),
+            Some(OnElse::Chain(on)) => on.for_each_branch(visit),
+            None => {}
+        }
+    }
+
+    /// The one body active under `matches`: the guarded body, else the first `else on` whose
+    /// condition holds, else the plain `else` body.
+    pub fn active_body<'a>(
+        &'a self,
+        matches: &mut impl FnMut(&Expr) -> bool,
+    ) -> Option<ActiveBody<'a, I>> {
+        if matches(&self.cond) {
+            return Some(match &self.body {
+                OnBody::Inline(item) => ActiveBody::Inline(item.as_ref()),
+                OnBody::Block(block) => ActiveBody::Block(block),
+            });
+        }
+        match &self.else_body {
+            None => None,
+            Some(OnElse::Body(OnBody::Inline(item))) => Some(ActiveBody::Inline(item.as_ref())),
+            Some(OnElse::Body(OnBody::Block(block))) => Some(ActiveBody::Block(block)),
+            Some(OnElse::Chain(on)) => on.active_body(matches),
+        }
+    }
 }
 
 /// `features { ... }`

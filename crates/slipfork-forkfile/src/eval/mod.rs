@@ -1,17 +1,31 @@
 //! Feature-aware runtime evaluation for `arg`, `env`, `stage`, and app domains.
 //!
-//! Pure AST evaluation: the caller injects the world name and an optional secret lookup closure;
+//! Pure AST evaluation: the caller injects the world name, the scheme, and secret/var resolvers;
 //! this module never reads `std::env` or touches the filesystem.
 
+mod env;
 mod values;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use self::values::expand_feature;
-use crate::ast::{EnvItem, Forkfile, Image, ImageItem, OnBody, PostgresItem, S3Item, TopItem};
-use crate::expr::{Expr, ExprKind};
-use crate::gate::each_enabled;
+use crate::ast::{ActiveBody, Forkfile, Image, ImageItem, On, PostgresItem, S3Item, TopItem};
+use crate::expr::{Expr, ExprKind, GeneratorSpec};
 use values::{BoundSymbol, eval_expr, is_tainted};
+
+/// A component-scoped `secret(key, generator)` resolver.
+pub type SecretResolver<'a> = dyn Fn(&str, &str, Option<&GeneratorSpec>) -> Option<String> + 'a;
+
+/// A `var(key, generator)` resolver.
+pub type VarResolver<'a> = dyn Fn(&str, Option<&GeneratorSpec>) -> Option<String> + 'a;
+
+/// Injected secret and variable resolvers for one world evaluation.
+pub struct Resolvers<'a> {
+    /// Resolves `secret(key, generator)` for the component that declared it.
+    pub secret: &'a SecretResolver<'a>,
+    /// Resolves `var(key, generator)`.
+    pub var: &'a VarResolver<'a>,
+}
 
 /// Active feature set (`declared == false` when the `Forkfile` has no `features` block).
 #[derive(Debug, Clone)]
@@ -39,6 +53,12 @@ impl FeatureSet {
             _ => false,
         }
     }
+}
+
+/// The body an `on` node selects under `features`.
+pub(super) fn active<'a, I>(on: &'a On<I>, features: &FeatureSet) -> Option<ActiveBody<'a, I>> {
+    let mut matches = |expr: &Expr| features.matches(expr);
+    on.active_body(&mut matches)
 }
 
 impl Forkfile {
@@ -78,12 +98,24 @@ impl Forkfile {
 
     /// Evaluates build-time `arg` bindings for `image_id` in `world`.
     #[must_use]
-    pub fn eval_image_args(&self, world: &str, image_id: &str) -> BTreeMap<String, String> {
+    pub fn eval_image_args(
+        &self,
+        world: &str,
+        scheme: &str,
+        image_id: &str,
+    ) -> BTreeMap<String, String> {
         let features = self.active_features();
         let symbols = self.bound_symbols(&features);
         let mut args = BTreeMap::new();
         if let Some(image) = find_image(&self.items.items, image_id, &features) {
-            collect_image_args(&image.body.items, &features, &symbols, world, &mut args);
+            collect_image_args(
+                &image.body.items,
+                &features,
+                &symbols,
+                world,
+                scheme,
+                &mut args,
+            );
         }
         args
     }
@@ -100,44 +132,43 @@ impl Forkfile {
 
     /// Evaluates every runtime `env` variable for every component (`group`, `image`, `service`).
     #[must_use]
-    pub fn eval_all_env(
+    pub fn eval_all_env_with(
         &self,
         world: &str,
-        secret_lookup: &dyn Fn(&str, &str) -> Option<String>,
-        var_lookup: &dyn Fn(&str) -> Option<String>,
+        scheme: &str,
+        resolvers: &Resolvers<'_>,
     ) -> BTreeMap<String, BTreeMap<String, (String, bool)>> {
         let features = self.active_features();
         let symbols = self.bound_symbols(&features);
         let mut raw_groups: BTreeMap<String, Vec<(String, Expr)>> = BTreeMap::new();
         for item in &self.items.items {
-            collect_env_groups(item, &features, &mut raw_groups);
+            env::collect_env_groups(item, &features, &mut raw_groups);
         }
         let mut out: BTreeMap<String, BTreeMap<String, (String, bool)>> = BTreeMap::new();
         for (group, entries) in &raw_groups {
             let mut map = BTreeMap::new();
+            let secret = |key: &str, generator: Option<&GeneratorSpec>| {
+                (resolvers.secret)(group, key, generator)
+            };
+            let var =
+                |key: &str, generator: Option<&GeneratorSpec>| (resolvers.var)(key, generator);
             for (key, expr) in entries {
-                if let Some(val) = eval_expr(
-                    expr,
-                    world,
-                    key,
-                    &symbols,
-                    &|k| secret_lookup(group, k),
-                    var_lookup,
-                ) {
+                if let Some(val) = eval_expr(expr, world, scheme, &symbols, &secret, &var) {
                     map.insert(key.clone(), (val, is_tainted(expr, &symbols)));
                 }
             }
             out.insert(group.clone(), map);
         }
-        let context = EnvEval {
-            features: &features,
-            symbols: &symbols,
-            groups: &raw_groups,
+        env::collect_components(
+            &self.items.items,
+            &features,
+            &symbols,
+            &raw_groups,
             world,
-            secret_lookup,
-            var_lookup,
-        };
-        context.collect_components(&self.items.items, &mut out);
+            scheme,
+            resolvers,
+            &mut out,
+        );
         out
     }
 
@@ -154,14 +185,18 @@ impl Forkfile {
 fn collect_app_domains<'a>(item: &'a TopItem, features: &FeatureSet, out: &mut Vec<&'a str>) {
     match item {
         TopItem::Domain(domain) => out.push(&domain.id),
-        TopItem::On(on) if features.matches(&on.cond) => match &on.body {
-            OnBody::Inline(inner) => collect_app_domains(inner, features, out),
-            OnBody::Block(block) => {
-                for inner in &block.items {
-                    collect_app_domains(inner, features, out);
+        TopItem::On(on) => {
+            if let Some(body) = active(on, features) {
+                match body {
+                    ActiveBody::Inline(inner) => collect_app_domains(inner, features, out),
+                    ActiveBody::Block(block) => {
+                        for inner in &block.items {
+                            collect_app_domains(inner, features, out);
+                        }
+                    }
                 }
             }
-        },
+        }
         _ => {}
     }
 }
@@ -170,20 +205,24 @@ fn find_image<'a>(items: &'a [TopItem], id: &str, features: &FeatureSet) -> Opti
     for item in items {
         match item {
             TopItem::Image(image) if image.id == id => return Some(image),
-            TopItem::On(on) if features.matches(&on.cond) => match &on.body {
-                OnBody::Inline(inner) => {
-                    if let Some(found) =
-                        find_image(std::slice::from_ref(inner.as_ref()), id, features)
-                    {
-                        return Some(found);
+            TopItem::On(on) => {
+                if let Some(body) = active(on, features) {
+                    match body {
+                        ActiveBody::Inline(inner) => {
+                            if let Some(found) =
+                                find_image(std::slice::from_ref(inner), id, features)
+                            {
+                                return Some(found);
+                            }
+                        }
+                        ActiveBody::Block(block) => {
+                            if let Some(found) = find_image(&block.items, id, features) {
+                                return Some(found);
+                            }
+                        }
                     }
                 }
-                OnBody::Block(block) => {
-                    if let Some(found) = find_image(&block.items, id, features) {
-                        return Some(found);
-                    }
-                }
-            },
+            }
             _ => {}
         }
     }
@@ -195,38 +234,50 @@ fn collect_image_args(
     features: &FeatureSet,
     symbols: &BTreeMap<String, BoundSymbol>,
     world: &str,
+    scheme: &str,
     args: &mut BTreeMap<String, String>,
 ) {
+    let secret = |_: &str, _: Option<&GeneratorSpec>| None;
+    let var = |_: &str, _: Option<&GeneratorSpec>| None;
     for item in items {
         match item {
             ImageItem::Arg(decl) => {
-                if let Some(val) =
-                    eval_expr(&decl.value, world, &decl.key, symbols, &|_| None, &|_| None)
-                {
+                if let Some(val) = eval_expr(&decl.value, world, scheme, symbols, &secret, &var) {
                     args.insert(decl.key.clone(), val);
                 }
             }
             ImageItem::ArgBlock(block) => {
                 for decl in &block.args.items {
-                    if let Some(val) =
-                        eval_expr(&decl.value, world, &decl.key, symbols, &|_| None, &|_| None)
+                    if let Some(val) = eval_expr(&decl.value, world, scheme, symbols, &secret, &var)
                     {
                         args.insert(decl.key.clone(), val);
                     }
                 }
             }
-            ImageItem::On(on) if features.matches(&on.cond) => match &on.body {
-                OnBody::Inline(inner) => collect_image_args(
-                    std::slice::from_ref(inner.as_ref()),
-                    features,
-                    symbols,
-                    world,
-                    args,
-                ),
-                OnBody::Block(block) => {
-                    collect_image_args(&block.items, features, symbols, world, args);
+            ImageItem::On(on) => {
+                if let Some(body) = active(on, features) {
+                    match body {
+                        ActiveBody::Inline(inner) => collect_image_args(
+                            std::slice::from_ref(inner),
+                            features,
+                            symbols,
+                            world,
+                            scheme,
+                            args,
+                        ),
+                        ActiveBody::Block(block) => {
+                            collect_image_args(
+                                &block.items,
+                                features,
+                                symbols,
+                                world,
+                                scheme,
+                                args,
+                            );
+                        }
+                    }
                 }
-            },
+            }
             _ => {}
         }
     }
@@ -236,158 +287,18 @@ fn collect_image_stage(items: &[ImageItem], features: &FeatureSet, stage: &mut O
     for item in items {
         match item {
             ImageItem::Stage(name) => *stage = Some(name.clone()),
-            ImageItem::On(on) if features.matches(&on.cond) => match &on.body {
-                OnBody::Inline(inner) => {
-                    collect_image_stage(std::slice::from_ref(inner.as_ref()), features, stage);
-                }
-                OnBody::Block(block) => collect_image_stage(&block.items, features, stage),
-            },
-            _ => {}
-        }
-    }
-}
-
-fn collect_env_groups(
-    item: &TopItem,
-    features: &FeatureSet,
-    groups: &mut BTreeMap<String, Vec<(String, Expr)>>,
-) {
-    match item {
-        TopItem::Env(env) => {
-            let list = groups.entry(env.group.clone()).or_default();
-            collect_env_entries(&env.entries.items, features, list);
-        }
-        TopItem::On(on) if features.matches(&on.cond) => match &on.body {
-            OnBody::Inline(inner) => collect_env_groups(inner, features, groups),
-            OnBody::Block(block) => {
-                for inner in &block.items {
-                    collect_env_groups(inner, features, groups);
-                }
-            }
-        },
-        _ => {}
-    }
-}
-
-fn collect_env_entries(items: &[EnvItem], features: &FeatureSet, out: &mut Vec<(String, Expr)>) {
-    for item in items {
-        match item {
-            EnvItem::Entry(entry) => out.push((entry.key.clone(), entry.value.clone())),
-            EnvItem::On(on) if features.matches(&on.cond) => match &on.body {
-                OnBody::Inline(inner) => {
-                    collect_env_entries(std::slice::from_ref(inner.as_ref()), features, out);
-                }
-                OnBody::Block(block) => collect_env_entries(&block.items, features, out),
-            },
-            EnvItem::On(_) => {}
-        }
-    }
-}
-
-/// The shared evaluation context for component `env` collection.
-struct EnvEval<'a> {
-    features: &'a FeatureSet,
-    symbols: &'a BTreeMap<String, BoundSymbol>,
-    groups: &'a BTreeMap<String, Vec<(String, Expr)>>,
-    world: &'a str,
-    secret_lookup: &'a dyn Fn(&str, &str) -> Option<String>,
-    var_lookup: &'a dyn Fn(&str) -> Option<String>,
-}
-
-impl EnvEval<'_> {
-    fn collect_components(
-        &self,
-        items: &[TopItem],
-        out: &mut BTreeMap<String, BTreeMap<String, (String, bool)>>,
-    ) {
-        each_enabled(items, self.features, &mut |item| {
-            if let TopItem::Image(image) = item {
-                let mut entries: Vec<(Option<String>, String, Expr)> = Vec::new();
-                let mut services = Vec::new();
-                collect_image_env_items(
-                    &image.body.items,
-                    self.features,
-                    self.groups,
-                    &mut entries,
-                    &mut services,
-                );
-                out.insert(image.id.clone(), self.eval(&image.id, &entries));
-                for service_id in services {
-                    out.insert(service_id.clone(), self.eval(&service_id, &entries));
-                }
-            }
-        });
-    }
-
-    fn eval(
-        &self,
-        component: &str,
-        entries: &[(Option<String>, String, Expr)],
-    ) -> BTreeMap<String, (String, bool)> {
-        let mut map = BTreeMap::new();
-        for (origin, key, expr) in entries {
-            let resolved = eval_expr(
-                expr,
-                self.world,
-                key,
-                self.symbols,
-                &|secret_name| {
-                    self.secret_lookup(component, secret_name).or_else(|| {
-                        origin
-                            .as_deref()
-                            .and_then(|group| self.secret_lookup(group, secret_name))
-                    })
-                },
-                self.var_lookup,
-            );
-            if let Some(val) = resolved {
-                map.insert(key.clone(), (val, is_tainted(expr, self.symbols)));
-            }
-        }
-        map
-    }
-
-    fn secret_lookup(&self, component: &str, key: &str) -> Option<String> {
-        (self.secret_lookup)(component, key)
-    }
-}
-
-fn collect_image_env_items(
-    items: &[ImageItem],
-    features: &FeatureSet,
-    groups: &BTreeMap<String, Vec<(String, Expr)>>,
-    entries: &mut Vec<(Option<String>, String, Expr)>,
-    services: &mut Vec<String>,
-) {
-    for item in items {
-        match item {
-            ImageItem::UseEnv(group) => {
-                if let Some(inherited) = groups.get(group) {
-                    for (k, v) in inherited {
-                        entries.push((Some(group.clone()), k.clone(), v.clone()));
+            ImageItem::On(on) => {
+                if let Some(body) = active(on, features) {
+                    match body {
+                        ActiveBody::Inline(inner) => {
+                            collect_image_stage(std::slice::from_ref(inner), features, stage);
+                        }
+                        ActiveBody::Block(block) => {
+                            collect_image_stage(&block.items, features, stage);
+                        }
                     }
                 }
             }
-            ImageItem::Env(block) => {
-                let mut inline = Vec::new();
-                collect_env_entries(&block.entries.items, features, &mut inline);
-                for (k, v) in inline {
-                    entries.push((None, k, v));
-                }
-            }
-            ImageItem::Service(service) => services.push(service.id.clone()),
-            ImageItem::On(on) if features.matches(&on.cond) => match &on.body {
-                OnBody::Inline(inner) => collect_image_env_items(
-                    std::slice::from_ref(inner.as_ref()),
-                    features,
-                    groups,
-                    entries,
-                    services,
-                ),
-                OnBody::Block(block) => {
-                    collect_image_env_items(&block.items, features, groups, entries, services);
-                }
-            },
             _ => {}
         }
     }
@@ -433,14 +344,20 @@ fn collect_symbols(
             );
             collect_s3_cdns(&s3.body.items, features, &s3.bucket, map);
         }
-        TopItem::On(on) if features.matches(&on.cond) => match &on.body {
-            OnBody::Inline(inner) => collect_symbols(inner, features, saw_domain, map),
-            OnBody::Block(block) => {
-                for inner in &block.items {
-                    collect_symbols(inner, features, saw_domain, map);
+        TopItem::On(on) => {
+            if let Some(body) = active(on, features) {
+                match body {
+                    ActiveBody::Inline(inner) => {
+                        collect_symbols(inner, features, saw_domain, map);
+                    }
+                    ActiveBody::Block(block) => {
+                        for inner in &block.items {
+                            collect_symbols(inner, features, saw_domain, map);
+                        }
+                    }
                 }
             }
-        },
+        }
         _ => {}
     }
 }
@@ -449,12 +366,18 @@ fn collect_pg_dbs(items: &[PostgresItem], features: &FeatureSet, out: &mut Vec<S
     for item in items {
         match item {
             PostgresItem::Database(db) => out.push(db.id.clone()),
-            PostgresItem::On(on) if features.matches(&on.cond) => match &on.body {
-                OnBody::Inline(inner) => {
-                    collect_pg_dbs(std::slice::from_ref(inner.as_ref()), features, out);
+            PostgresItem::On(on) => {
+                if let Some(body) = active(on, features) {
+                    match body {
+                        ActiveBody::Inline(inner) => {
+                            collect_pg_dbs(std::slice::from_ref(inner), features, out);
+                        }
+                        ActiveBody::Block(block) => {
+                            collect_pg_dbs(&block.items, features, out);
+                        }
+                    }
                 }
-                OnBody::Block(block) => collect_pg_dbs(&block.items, features, out),
-            },
+            }
             _ => {}
         }
     }
@@ -476,13 +399,19 @@ fn collect_s3_cdns(
                     },
                 );
             }
-            S3Item::On(on) if features.matches(&on.cond) => match &on.body {
-                OnBody::Inline(inner) => {
-                    collect_s3_cdns(std::slice::from_ref(inner.as_ref()), features, bucket, map);
+            S3Item::On(on) => {
+                if let Some(body) = active(on, features) {
+                    match body {
+                        ActiveBody::Inline(inner) => {
+                            collect_s3_cdns(std::slice::from_ref(inner), features, bucket, map);
+                        }
+                        ActiveBody::Block(block) => {
+                            collect_s3_cdns(&block.items, features, bucket, map);
+                        }
+                    }
                 }
-                OnBody::Block(block) => collect_s3_cdns(&block.items, features, bucket, map),
-            },
-            S3Item::On(_) | S3Item::Policy(_) => {}
+            }
+            S3Item::Policy(_) => {}
         }
     }
 }

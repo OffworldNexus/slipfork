@@ -5,7 +5,7 @@
 //! node and no downstream caller re-inspects `on` structure.
 
 use crate::ast::{
-    CommandItem, EnvItem, Hook, HookBody, ImageItem, On, OnBody, ServiceItem, TopItem,
+    ActiveBody, CommandItem, EnvItem, Hook, HookBody, ImageItem, On, ServiceItem, TopItem,
 };
 use crate::eval::FeatureSet;
 use crate::expr::Command;
@@ -53,13 +53,19 @@ pub fn each_enabled<'a, I: GatedItem>(
 ) {
     for item in items {
         match item.gated() {
-            Some(on) if features.matches(&on.cond) => match &on.body {
-                OnBody::Inline(inner) => {
-                    each_enabled(std::slice::from_ref(inner.as_ref()), features, visit);
+            Some(on) => {
+                let mut matches = |expr: &crate::expr::Expr| features.matches(expr);
+                if let Some(body) = on.active_body(&mut matches) {
+                    match body {
+                        ActiveBody::Inline(inner) => {
+                            each_enabled(std::slice::from_ref(inner), features, visit);
+                        }
+                        ActiveBody::Block(block) => {
+                            each_enabled(&block.items, features, visit);
+                        }
+                    }
                 }
-                OnBody::Block(block) => each_enabled(&block.items, features, visit),
-            },
-            Some(_) => {}
+            }
             None => visit(item),
         }
     }

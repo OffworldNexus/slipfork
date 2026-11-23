@@ -1,10 +1,11 @@
-//! `${{ ... }}` template rendering into `Forkfile` expression AST nodes.
+//! Legacy `snow.yml` template rendering into `Forkfile` expression AST nodes.
 
 use std::collections::BTreeSet;
 
 use crate::check::SymbolKind;
+use crate::check::expr::default_is_function_call;
 use crate::diag::Diagnostic;
-use crate::expr::{Expr, ExprKind, RandomKind};
+use crate::expr::{Expr, ExprKind, GeneratorSpec, RandomKind};
 use crate::span::Span;
 
 pub(crate) struct Template<'a> {
@@ -14,6 +15,9 @@ pub(crate) struct Template<'a> {
     pub domains: &'a BTreeSet<String>,
     pub components: &'a BTreeSet<String>,
 }
+
+/// The `self` properties the app exposes.
+const SELF_PROPERTIES: &[&str] = &["url", "domain", "scheme"];
 
 pub(crate) fn render(
     raw: &str,
@@ -71,16 +75,27 @@ fn expression(
         None => (body, None),
     };
     let value = chain(value, context, path, span)?;
-    match default {
-        Some(default) => {
-            let default = default_expr(default, path, span)?;
-            Ok(expr(
-                ExprKind::Fallback(Box::new(value), Box::new(default)),
+    let Some(default) = default else {
+        return Ok(value);
+    };
+    if let Some(generator) = generator_spec(default) {
+        return match value.kind {
+            ExprKind::Secret(key) => Ok(expr(ExprKind::GeneratedSecret { key, generator }, span)),
+            ExprKind::Var(key) => Ok(expr(ExprKind::GeneratedVar { key, generator }, span)),
+            _ => Err(Diagnostic::new(
                 span,
-            ))
-        }
-        None => Ok(value),
+                format!(
+                    "{path}: a generator is only valid as the second argument of `secret` or `var`"
+                ),
+                "write `secret(KEY, random_string(50))` or `var(KEY, random_string(50))`",
+            )),
+        };
     }
+    let default = default_expr(default, path, span)?;
+    Ok(expr(
+        ExprKind::Fallback(Box::new(value), Box::new(default)),
+        span,
+    ))
 }
 
 fn chain(value: &str, context: &Template<'_>, path: &str, span: Span) -> Result<Expr, Diagnostic> {
@@ -105,9 +120,9 @@ fn chain(value: &str, context: &Template<'_>, path: &str, span: Span) -> Result<
             if !context.domains.contains(id) {
                 return Err(unknown(path, "domain", id, span));
             }
-            Ok(property(id, "domain", span))
+            Ok(property(id, "name", span))
         }
-        "deployment" => Ok(property("deployment", non_empty(rest, path, span)?, span)),
+        "deployment" => self_property(non_empty(rest, path, span)?, path, span),
         "components" => {
             let (id, prop) = rest.split_once('.').ok_or_else(|| {
                 Diagnostic::new(
@@ -137,7 +152,7 @@ fn resources(
     span: Span,
 ) -> Result<Expr, Diagnostic> {
     if let Some(prop) = rest.strip_prefix("app.") {
-        return Ok(property("app", non_empty(prop, path, span)?, span));
+        return self_property(non_empty(prop, path, span)?, path, span);
     }
     let mut parts = rest.splitn(3, '.');
     let family = parts.next().unwrap_or_default();
@@ -177,6 +192,38 @@ fn resources(
     Ok(property(id, prop, span))
 }
 
+fn self_property(prop: &str, path: &str, span: Span) -> Result<Expr, Diagnostic> {
+    if SELF_PROPERTIES.contains(&prop) {
+        return Ok(property("self", prop, span));
+    }
+    Err(Diagnostic::new(
+        span,
+        format!("{path}: `{prop}` is not a property of the app"),
+        "use `self.url`, `self.domain`, or `self.scheme`",
+    ))
+}
+
+/// Recognizes a legacy `random_*` generator call; `random_alnum` maps to `random_string`.
+fn generator_spec(text: &str) -> Option<GeneratorSpec> {
+    let name = text.strip_suffix(')')?.split_once('(')?.0;
+    let (kind, argument) = match name {
+        "random_string" | "random_alnum" => (RandomKind::String, true),
+        "random_hex" => (RandomKind::Hex, true),
+        "random_base64" => (RandomKind::Base64, true),
+        "random_uuid" => (RandomKind::Uuid, false),
+        _ => return None,
+    };
+    let inner = text.strip_suffix(')')?.split_once('(')?.1;
+    if !argument {
+        return inner
+            .trim()
+            .is_empty()
+            .then_some(GeneratorSpec { kind, n: None });
+    }
+    let n = inner.trim().parse::<u64>().ok()?;
+    Some(GeneratorSpec { kind, n: Some(n) })
+}
+
 fn default_expr(text: &str, path: &str, span: Span) -> Result<Expr, Diagnostic> {
     if text.is_empty() {
         return Err(Diagnostic::new(
@@ -199,46 +246,14 @@ fn default_expr(text: &str, path: &str, span: Span) -> Result<Expr, Diagnostic> 
         "false" => return Ok(expr(ExprKind::Bool(false), span)),
         _ => {}
     }
-    if let Some(key) = call(text, "var") {
-        return Ok(expr(ExprKind::Var(unquote(key)), span));
-    }
-    if let Some(key) = call(text, "secret") {
-        return Ok(expr(ExprKind::Secret(unquote(key)), span));
-    }
-    if call(text, "random_uuid").is_some() {
-        return Ok(expr(
-            ExprKind::Random {
-                kind: RandomKind::Uuid,
-                n: None,
-            },
+    if default_is_function_call(text) {
+        return Err(Diagnostic::new(
             span,
+            format!("{path}: function calls are not allowed as `??` defaults"),
+            "give the fallback a literal value; use `secret(KEY, <generator>)` for generated secrets",
         ));
     }
-    for (name, kind) in [
-        ("random_hex", RandomKind::Hex),
-        ("random_base64", RandomKind::Base64),
-        ("random_alnum", RandomKind::Alnum),
-    ] {
-        if let Some(length) = call(text, name) {
-            let n = if length.is_empty() {
-                None
-            } else {
-                length.parse::<u64>().ok()
-            };
-            return Ok(expr(ExprKind::Random { kind, n }, span));
-        }
-    }
     Ok(string(text, span))
-}
-
-fn call<'a>(text: &'a str, name: &str) -> Option<&'a str> {
-    text.strip_prefix(name)?
-        .strip_prefix('(')?
-        .strip_suffix(')')
-}
-
-fn unquote(value: &str) -> String {
-    value.trim().trim_matches('"').to_string()
 }
 
 fn non_empty<'a>(value: &'a str, path: &str, span: Span) -> Result<&'a str, Diagnostic> {
@@ -337,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_defaults_stay_typed() {
+    fn legacy_generator_fallbacks_become_the_second_argument() {
         let empty = BTreeSet::new();
         let template = context(&empty, &empty, &empty, &empty, &empty);
         let rendered = render(
@@ -347,16 +362,90 @@ mod tests {
             Span::at(crate::Position::new(1, 1, 0)),
         )
         .expect("renders");
-        let ExprKind::Fallback(left, right) = rendered.kind else {
-            panic!("expected fallback");
-        };
-        assert!(matches!(&left.kind, ExprKind::Secret(key) if key == "SECRET_KEY"));
         assert!(matches!(
-            right.kind,
-            ExprKind::Random {
-                kind: RandomKind::Hex,
-                n: Some(32)
+            rendered.kind,
+            ExprKind::GeneratedSecret {
+                ref key,
+                generator: GeneratorSpec {
+                    kind: RandomKind::Hex,
+                    n: Some(32)
+                }
+            } if key == "SECRET_KEY"
+        ));
+    }
+
+    #[test]
+    fn legacy_random_alnum_maps_to_random_string_and_app_maps_to_self() {
+        let empty = BTreeSet::new();
+        let template = context(&empty, &empty, &empty, &empty, &empty);
+        let rendered = render(
+            "${{ vars::TOKEN ?? random_alnum(8) }}",
+            &template,
+            "envs.common.TOKEN",
+            Span::at(crate::Position::new(1, 1, 0)),
+        )
+        .expect("renders");
+        assert!(matches!(
+            rendered.kind,
+            ExprKind::GeneratedVar {
+                generator: GeneratorSpec {
+                    kind: RandomKind::String,
+                    n: Some(8)
+                },
+                ..
             }
         ));
+
+        let rendered = render(
+            "${{ resources::app.domain }}",
+            &template,
+            "envs.common.DOMAIN",
+            Span::at(crate::Position::new(1, 1, 0)),
+        )
+        .expect("renders");
+        assert!(matches!(
+            rendered.kind,
+            ExprKind::Property { ref base, ref prop } if base == "self" && prop == "domain"
+        ));
+    }
+
+    #[test]
+    fn domains_migrate_to_name_and_unknown_self_properties_are_refused() {
+        let empty = BTreeSet::new();
+        let domains: BTreeSet<String> = ["main".to_string()].into_iter().collect();
+        let template = context(&empty, &empty, &empty, &domains, &empty);
+        let rendered = render(
+            "${{ domains::main }}",
+            &template,
+            "envs.common.DOMAIN",
+            Span::at(crate::Position::new(1, 1, 0)),
+        )
+        .expect("renders");
+        assert!(matches!(
+            rendered.kind,
+            ExprKind::Property { ref base, ref prop } if base == "main" && prop == "name"
+        ));
+
+        let error = render(
+            "${{ deployment::commit_sha }}",
+            &template,
+            "envs.common.COMMIT",
+            Span::at(crate::Position::new(1, 1, 0)),
+        )
+        .expect_err("unknown self property");
+        assert!(error.next.contains("self.url"));
+    }
+
+    #[test]
+    fn generator_on_a_non_secret_value_is_refused() {
+        let empty = BTreeSet::new();
+        let template = context(&empty, &empty, &empty, &empty, &empty);
+        let error = render(
+            "${{ components::api.url ?? random_hex(32) }}",
+            &template,
+            "envs.common.X",
+            Span::at(crate::Position::new(1, 1, 0)),
+        );
+        assert!(error.is_err());
     }
 }

@@ -21,8 +21,10 @@ pub enum ExprKind {
     Bool(bool),
     /// An integer literal.
     Int(u64),
-    /// A string literal.
+    /// A string literal with no interpolation.
     String(String),
+    /// A double-quoted string carrying `${<expr>}` interpolation sites.
+    Interpolated(Vec<InterpPart>),
     /// A bare feature name.
     Feature(String),
     /// `!<expr>`
@@ -37,15 +39,24 @@ pub enum ExprKind {
     Fallback(Box<Expr>, Box<Expr>),
     /// `var(KEY)`
     Var(String),
+    /// `var(KEY, <generator>)`
+    GeneratedVar {
+        /// The referenced variable key.
+        key: String,
+        /// The generator used the first time the key is unset.
+        generator: GeneratorSpec,
+    },
     /// `secret(KEY)`
     Secret(String),
-    /// `random_hex(n)`, `random_base64(n)`, `random_alnum(n)`, `random_uuid()`
-    Random {
-        /// Generator family.
-        kind: RandomKind,
-        /// Requested length, if any.
-        n: Option<u64>,
+    /// `secret(KEY, <generator>)`
+    GeneratedSecret {
+        /// The referenced secret key.
+        key: String,
+        /// The generator used the first time the key is unset.
+        generator: GeneratorSpec,
     },
+    /// A standalone `random_*()` call: always a static error, kept for a sharp diagnostic.
+    Random(GeneratorSpec),
     /// `<base>.<prop>` typed resource property.
     Property {
         /// Resource symbol.
@@ -59,13 +70,84 @@ pub enum ExprKind {
     EnvVar(String),
 }
 
-/// The secret generator families.
+/// One segment of a `"..."` string carrying `${<expr>}` interpolation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InterpPart {
+    /// Verbatim text between interpolation sites (already unescaped).
+    Text(String),
+    /// The expression inside one `${...}` site.
+    Expr(Box<Expr>),
+}
+
+/// The secret generator families accepted as `secret(KEY, <generator>)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RandomKind {
+    /// `random_string(n)` over `[A-Za-z0-9]`.
+    String,
+    /// `random_hex(n)`.
     Hex,
+    /// `random_base64(n)` URL-safe unpadded.
     Base64,
-    Alnum,
+    /// `random_uuid()` v4.
     Uuid,
+}
+
+impl RandomKind {
+    /// The canonical function spelling used in `fmt` and diagnostics.
+    #[must_use]
+    pub const fn call_name(self) -> &'static str {
+        match self {
+            Self::String => "random_string",
+            Self::Hex => "random_hex",
+            Self::Base64 => "random_base64",
+            Self::Uuid => "random_uuid",
+        }
+    }
+}
+
+/// A generator request: family plus the optional requested character length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GeneratorSpec {
+    /// Generator family.
+    pub kind: RandomKind,
+    /// Requested length (`None` only for `random_uuid()`).
+    pub n: Option<u64>,
+}
+
+impl GeneratorSpec {
+    /// The largest accepted length.
+    pub const MAX_LENGTH: u64 = 256;
+
+    /// Builds a length-bounded  generator, rejecting out-of-range lengths with a sharp remedy.
+    pub fn sized(kind: RandomKind, n: Option<u64>, span: Span) -> Result<Self, Diagnostic> {
+        if kind == RandomKind::Uuid {
+            return Ok(Self { kind, n: None });
+        }
+        let Some(n) = n else {
+            return Err(Diagnostic::new(
+                span,
+                format!("`{}` needs a length", kind.call_name()),
+                format!("write `{}(50)` with a length in 1..=256", kind.call_name()),
+            ));
+        };
+        if !(1..=Self::MAX_LENGTH).contains(&n) {
+            return Err(Diagnostic::new(
+                span,
+                format!("`{}` length {n} is out of range", kind.call_name()),
+                "use a length between 1 and 256",
+            ));
+        }
+        Ok(Self { kind, n: Some(n) })
+    }
+
+    /// The canonical call spelling, e.g. `random_string(50)`.
+    #[must_use]
+    pub fn call(&self) -> String {
+        match self.n {
+            Some(n) => format!("{}({n})", self.kind.call_name()),
+            None => format!("{}()", self.kind.call_name()),
+        }
+    }
 }
 
 /// One segment of an interpolated shell command.

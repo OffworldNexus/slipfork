@@ -43,7 +43,7 @@ impl<'a> Parser<'a> {
             "failed-deploy" => self.parse_hook(false, span).map(ServiceItem::FailedDeploy),
             "run" => self.parse_hook(false, span).map(ServiceItem::Run),
             "on" => self
-                .parse_on_after_keyword(span, |parser| parser.parse_service_item())
+                .parse_on_after_keyword(span, &mut |parser: &mut Self| parser.parse_service_item())
                 .map(ServiceItem::On),
             other => Err(Diagnostic::new(
                 span,
@@ -225,6 +225,15 @@ impl<'a> Parser<'a> {
                     pending.push(text);
                 }
                 Some(_) => {
+                    // A line beginning with `else` attaches to the previous block-bodied `on`.
+                    if self.lexer.starts_word("else")
+                        && let Some(CommandItem::On(on)) = block.items.last_mut()
+                        && on.else_body.is_none()
+                        && let Some(else_body) = self.parse_command_else()?
+                    {
+                        on.else_body = Some(else_body);
+                        continue;
+                    }
                     let item = match self.parse_on_command_item()? {
                         Some(on) => CommandItem::On(on),
                         None => {
@@ -275,7 +284,66 @@ impl<'a> Parser<'a> {
                 ));
             }
         };
-        Ok(Some(On { cond, body, span }))
+        let else_body = self.parse_command_else()?;
+        Ok(Some(On {
+            cond,
+            body,
+            else_body,
+            span,
+        }))
+    }
+
+    /// Parses `else { ... }`, `else: <command>`, or `else on <expr> ...` after a command guard.
+    fn parse_command_else(&mut self) -> Result<Option<OnElse<CommandItem>>, Diagnostic> {
+        self.lexer.skip_inline_space();
+        if !self.lexer.starts_word("else") {
+            return Ok(None);
+        }
+        let (_, span) = self.raw_word()?;
+        self.lexer.skip_inline_space();
+        if self.lexer.starts_word("on") {
+            let _ = self.raw_word()?;
+            let cond = self.parse_expr()?;
+            let token = self.bump()?;
+            let body = match token.kind {
+                TokenKind::Colon => OnBody::Inline(Box::new(self.parse_command_item_inline()?)),
+                TokenKind::LBrace => OnBody::Block(self.parse_command_block()?),
+                other => {
+                    return Err(Diagnostic::new(
+                        token.span,
+                        format!(
+                            "expected `:` or `{{` after `else on`, found {}",
+                            other.describe()
+                        ),
+                        "write `else on <expr>: <command>` or `else on <expr> { ... }`",
+                    ));
+                }
+            };
+            let else_body = self.parse_command_else()?;
+            return Ok(Some(OnElse::Chain(Box::new(On {
+                cond,
+                body,
+                else_body,
+                span,
+            }))));
+        }
+        let token = self.bump()?;
+        match token.kind {
+            TokenKind::Colon => Ok(Some(OnElse::Body(OnBody::Inline(Box::new(
+                self.parse_command_item_inline()?,
+            ))))),
+            TokenKind::LBrace => Ok(Some(OnElse::Body(OnBody::Block(
+                self.parse_command_block()?,
+            )))),
+            other => Err(Diagnostic::new(
+                token.span,
+                format!(
+                    "expected `:`, `{{`, or `on` after `else`, found {}",
+                    other.describe()
+                ),
+                "write `else { ... }`, `else: <command>`, or `else on <expr> ...`",
+            )),
+        }
     }
 
     /// One inline command item: another nested `on <expr>: ...`, or a shell command line.

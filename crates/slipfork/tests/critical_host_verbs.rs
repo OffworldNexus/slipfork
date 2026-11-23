@@ -345,3 +345,92 @@ fn auth_without_an_endpoint_fails_with_one_next_line() {
     assert_eq!(next_lines(&output), 1, "{}", text(&output));
     assert_clean(&output);
 }
+
+const GENERATED: &str = "# forkfile: 0.1\n\nenv app {\n    LOG_LEVEL = \"info\"\n    SECRET_KEY = secret(SECRET_KEY, random_hex(32))\n    TOKEN = var(TOKEN, random_uuid())\n}\n";
+
+#[test]
+fn generated_secrets_and_vars_persist_across_restarts_and_fail_closed() {
+    let lab = Lab::new("generated");
+    fs::write(lab.project.join("Forkfile"), GENERATED).expect("write generated Forkfile");
+
+    let before = lab.run(&["secret", "list", "--json"]);
+    assert!(before.status.success(), "{}", text(&before));
+    let value: Value = serde_json::from_slice(&before.stdout).expect("json list");
+    assert_eq!(value["app"]["SECRET_KEY"], "<minted on first up>");
+    assert!(
+        !lab.state().join("secrets.json").exists(),
+        "listing before `up` must never mint a secret"
+    );
+
+    let first = lab.run(&["env", "--json"]);
+    assert!(first.status.success(), "{}", text(&first));
+    assert_clean(&first);
+    let value: Value = serde_json::from_slice(&first.stdout).expect("json env");
+    let token = value["app"]["TOKEN"]
+        .as_str()
+        .expect("TOKEN is a visible variable")
+        .to_owned();
+    assert_eq!(value["app"]["SECRET_KEY"], "[REDACTED]");
+    assert_eq!(value["app"]["LOG_LEVEL"], "info");
+
+    let secrets = lab.state().join("secrets.json");
+    let vars = lab.state().join("vars.json");
+    assert_eq!(mode_of(&secrets), 0o600, "secrets.json must be 0600");
+    assert_eq!(mode_of(&vars), 0o600, "vars.json must be 0600");
+    let secret_bytes = fs::read(&secrets).expect("read secrets");
+    let var_bytes = fs::read(&vars).expect("read vars");
+
+    let listed = lab.run(&["secret", "list", "--json"]);
+    assert!(listed.status.success(), "{}", text(&listed));
+    assert_clean(&listed);
+    let value: Value = serde_json::from_slice(&listed.stdout).expect("json list");
+    assert_eq!(value["app"]["SECRET_KEY"], "[REDACTED]");
+    assert_eq!(
+        fs::read(&secrets).expect("read secrets"),
+        secret_bytes,
+        "`secret list` must never mint or rewrite a secret"
+    );
+    assert_eq!(
+        fs::read(&vars).expect("read vars"),
+        var_bytes,
+        "`secret list` must never rewrite vars.json"
+    );
+
+    let again = lab.run(&["env", "--json"]);
+    assert!(again.status.success(), "{}", text(&again));
+    let value: Value = serde_json::from_slice(&again.stdout).expect("json env");
+    assert_eq!(
+        value["app"]["TOKEN"].as_str(),
+        Some(token.as_str()),
+        "a second env must reuse the stored variable"
+    );
+    assert_eq!(fs::read(&secrets).expect("read secrets"), secret_bytes);
+    assert_eq!(fs::read(&vars).expect("read vars"), var_bytes);
+
+    shutdown(&lab.root);
+    let restarted = lab.run(&["env", "--json"]);
+    assert!(restarted.status.success(), "{}", text(&restarted));
+    let value: Value = serde_json::from_slice(&restarted.stdout).expect("json env");
+    assert_eq!(
+        value["app"]["TOKEN"].as_str(),
+        Some(token.as_str()),
+        "a fresh daemon must reuse the persisted variable"
+    );
+    assert_eq!(
+        fs::read(&secrets).expect("read secrets"),
+        secret_bytes,
+        "a fresh daemon must reuse the persisted secret"
+    );
+
+    fs::remove_file(&secrets).expect("drop secrets");
+    fs::remove_file(&vars).expect("drop vars");
+    let state = lab.state();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o500)).expect("deny writes");
+    let denied = lab.run(&["env"]);
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).expect("restore writes");
+    assert!(!denied.status.success(), "{}", text(&denied));
+    assert_eq!(next_lines(&denied), 1, "{}", text(&denied));
+    let rendered = text(&denied);
+    assert!(rendered.contains("writable"), "{rendered}");
+    assert!(!rendered.contains(ANSI), "{rendered}");
+}

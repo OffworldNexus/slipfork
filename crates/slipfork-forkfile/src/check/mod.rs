@@ -1,7 +1,7 @@
 //! Whole-file `Forkfile` semantics: all-branch `on` typing, build-time `arg`
 //! secret rejection, and route/port rules over one flat symbol namespace.
 
-mod expr;
+pub(crate) mod expr;
 mod policy;
 mod services;
 mod symbols;
@@ -78,12 +78,12 @@ fn collect_bindings(
                     collect_image_binding(item, env_keys, arg_keys);
                 }
             }
-            TopItem::On(on) => match &on.body {
+            TopItem::On(on) => on.for_each_branch(&mut |body| match body {
                 OnBody::Inline(inner) => {
-                    collect_bindings(std::slice::from_ref(inner.as_ref()), env_keys, arg_keys)
+                    collect_bindings(std::slice::from_ref(inner.as_ref()), env_keys, arg_keys);
                 }
                 OnBody::Block(block) => collect_bindings(&block.items, env_keys, arg_keys),
-            },
+            }),
             TopItem::Env(env) => collect_env_bindings(&env.entries.items, env_keys),
             TopItem::Features(_)
             | TopItem::Domain(_)
@@ -109,14 +109,14 @@ fn collect_image_binding(
             }
         }
         ImageItem::Env(env) => collect_env_bindings(&env.entries.items, env_keys),
-        ImageItem::On(on) => match &on.body {
+        ImageItem::On(on) => on.for_each_branch(&mut |body| match body {
             OnBody::Inline(inner) => collect_image_binding(inner, env_keys, arg_keys),
             OnBody::Block(block) => {
                 for item in &block.items {
                     collect_image_binding(item, env_keys, arg_keys);
                 }
             }
-        },
+        }),
         ImageItem::Dockerfile(_)
         | ImageItem::Stage(_)
         | ImageItem::Workdir(_)
@@ -135,12 +135,12 @@ fn collect_env_bindings(items: &[EnvItem], env_keys: &mut BTreeMap<String, Span>
             EnvItem::Entry(entry) => {
                 env_keys.entry(entry.key.clone()).or_insert(entry.span);
             }
-            EnvItem::On(on) => match &on.body {
+            EnvItem::On(on) => on.for_each_branch(&mut |body| match body {
                 OnBody::Inline(inner) => {
                     collect_env_bindings(std::slice::from_ref(inner.as_ref()), env_keys);
                 }
                 OnBody::Block(block) => collect_env_bindings(&block.items, env_keys),
-            },
+            }),
         }
     }
 }
@@ -157,12 +157,12 @@ fn declared_features(items: &[TopItem]) -> BTreeSet<String> {
                     }
                 }
             }
-            TopItem::On(on) => match &on.body {
+            TopItem::On(on) => on.for_each_branch(&mut |body| match body {
                 OnBody::Inline(inner) => {
                     features.extend(declared_features(std::slice::from_ref(inner.as_ref())));
                 }
                 OnBody::Block(block) => features.extend(declared_features(&block.items)),
-            },
+            }),
             _ => {}
         }
     }
@@ -175,12 +175,12 @@ fn collect_env_names(items: &[TopItem], out: &mut BTreeSet<String>) {
             TopItem::Env(env) => {
                 out.insert(env.group.clone());
             }
-            TopItem::On(on) => match &on.body {
+            TopItem::On(on) => on.for_each_branch(&mut |body| match body {
                 OnBody::Inline(inner) => {
                     collect_env_names(std::slice::from_ref(inner.as_ref()), out);
                 }
                 OnBody::Block(block) => collect_env_names(&block.items, out),
-            },
+            }),
             _ => {}
         }
     }
@@ -219,7 +219,7 @@ impl Checker {
             }
             TopItem::On(on) => {
                 expr::check_condition(&on.cond, features, &mut self.diags);
-                match &on.body {
+                on.for_each_branch(&mut |body| match body {
                     OnBody::Inline(inner) => {
                         self.check_top(inner, symbols, features, env_groups);
                     }
@@ -228,7 +228,7 @@ impl Checker {
                             self.check_top(item, symbols, features, env_groups);
                         }
                     }
-                }
+                });
             }
             TopItem::Postgres(postgres) => {
                 self.check_postgres_items(&postgres.body.items, features);
@@ -276,7 +276,7 @@ impl Checker {
             }
             ImageItem::On(on) => {
                 expr::check_condition(&on.cond, features, &mut self.diags);
-                match &on.body {
+                on.for_each_branch(&mut |body| match body {
                     OnBody::Inline(inner) => {
                         self.check_image_item(inner, symbols, features, env_groups, owner);
                     }
@@ -285,7 +285,7 @@ impl Checker {
                             self.check_image_item(item, symbols, features, env_groups, owner);
                         }
                     }
-                }
+                });
             }
             _ => {}
         }
@@ -299,12 +299,18 @@ impl Checker {
                 | ServiceItem::PostDeploy(hook)
                 | ServiceItem::FailedDeploy(hook)
                 | ServiceItem::Run(hook) => self.check_hook(hook, features),
-                ServiceItem::On(on) => match &on.body {
-                    OnBody::Inline(inner) => {
-                        self.check_service_items(std::slice::from_ref(inner.as_ref()), features);
-                    }
-                    OnBody::Block(block) => self.check_service_items(&block.items, features),
-                },
+                ServiceItem::On(on) => {
+                    expr::check_condition(&on.cond, features, &mut self.diags);
+                    on.for_each_branch(&mut |body| match body {
+                        OnBody::Inline(inner) => {
+                            self.check_service_items(
+                                std::slice::from_ref(inner.as_ref()),
+                                features,
+                            );
+                        }
+                        OnBody::Block(block) => self.check_service_items(&block.items, features),
+                    });
+                }
                 _ => {}
             }
         }
@@ -327,14 +333,14 @@ impl Checker {
             }
             EnvItem::On(on) => {
                 expr::check_condition(&on.cond, features, &mut self.diags);
-                match &on.body {
+                on.for_each_branch(&mut |body| match body {
                     OnBody::Inline(inner) => self.check_env_item(inner, symbols, features),
                     OnBody::Block(block) => {
                         for item in &block.items {
                             self.check_env_item(item, symbols, features);
                         }
                     }
-                }
+                });
             }
         }
     }
@@ -372,12 +378,12 @@ impl Checker {
                 CommandItem::Command(command) => self.check_command(command),
                 CommandItem::On(on) => {
                     expr::check_condition(&on.cond, features, &mut self.diags);
-                    match &on.body {
+                    on.for_each_branch(&mut |body| match body {
                         OnBody::Inline(inner) => {
                             self.check_command_items(std::slice::from_ref(inner.as_ref()), features)
                         }
                         OnBody::Block(block) => self.check_command_items(&block.items, features),
-                    }
+                    });
                 }
             }
         }
@@ -404,12 +410,12 @@ impl Checker {
         for item in items {
             if let PostgresItem::On(on) = item {
                 expr::check_condition(&on.cond, features, &mut self.diags);
-                match &on.body {
+                on.for_each_branch(&mut |body| match body {
                     OnBody::Inline(inner) => {
                         self.check_postgres_items(std::slice::from_ref(inner.as_ref()), features);
                     }
                     OnBody::Block(block) => self.check_postgres_items(&block.items, features),
-                }
+                });
             }
         }
     }
@@ -418,12 +424,12 @@ impl Checker {
         for item in items {
             if let RedisItem::On(on) = item {
                 expr::check_condition(&on.cond, features, &mut self.diags);
-                match &on.body {
+                on.for_each_branch(&mut |body| match body {
                     OnBody::Inline(inner) => {
                         self.check_redis_items(std::slice::from_ref(inner.as_ref()), features);
                     }
                     OnBody::Block(block) => self.check_redis_items(&block.items, features),
-                }
+                });
             }
         }
     }

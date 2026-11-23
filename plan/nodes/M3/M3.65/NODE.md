@@ -2,16 +2,21 @@
 id: M3.65
 title: "Implement Forkfile 0.1 on/else, domain.name vs self.{url,domain,scheme}, \"${...}\" interpolation & secret/var(KEY, generator)"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.60, M3.61]
-paths: ["crates/slipfork-forkfile/**", "crates/slipfork-ospp/**", "crates/slipfork/**"]
-attempts: 0
+paths:
+  - "crates/slipfork-forkfile/**"
+  - "crates/slipfork-ospp/**"
+  - "crates/slipfork/**"
+  - "crates/slipfork-lsp/**"
+  - "crates/slipfork-ingress/**"
+attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-23T01:11"
-updated: "2026-11-23T01:11"
+updated: "2026-11-23T01:42"
 ---
 
 # Goal

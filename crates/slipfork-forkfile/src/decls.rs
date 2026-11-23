@@ -69,7 +69,7 @@ impl<'a> Parser<'a> {
         let span = token.span;
         match token.kind {
             TokenKind::Ident(name) if name == "on" => self
-                .parse_on_after_keyword(span, |parser| parser.parse_env_item())
+                .parse_on_after_keyword(span, &mut |parser: &mut Self| parser.parse_env_item())
                 .map(EnvItem::On),
             TokenKind::Ident(key) => {
                 self.expect_punct(TokenKind::Eq, "`=`", "write `KEY = <expr>`")?;
@@ -119,7 +119,9 @@ impl<'a> Parser<'a> {
             }
             "version" => self.parse_version().map(PostgresItem::Version),
             "on" => self
-                .parse_on_after_keyword(token.span, |parser| parser.parse_postgres_item())
+                .parse_on_after_keyword(token.span, &mut |parser: &mut Self| {
+                    parser.parse_postgres_item()
+                })
                 .map(PostgresItem::On),
             other => Err(Diagnostic::new(
                 token.span,
@@ -155,7 +157,9 @@ impl<'a> Parser<'a> {
         match name.as_str() {
             "version" => self.parse_version().map(RedisItem::Version),
             "on" => self
-                .parse_on_after_keyword(token.span, |parser| parser.parse_redis_item())
+                .parse_on_after_keyword(token.span, &mut |parser: &mut Self| {
+                    parser.parse_redis_item()
+                })
                 .map(RedisItem::On),
             other => Err(Diagnostic::new(
                 token.span,
@@ -199,7 +203,7 @@ impl<'a> Parser<'a> {
                     .map(|(id, id_span)| S3Item::Cdn(CdnDecl { id, id_span, span }))
             }
             "on" => self
-                .parse_on_after_keyword(token.span, |parser| parser.parse_s3_item())
+                .parse_on_after_keyword(token.span, &mut |parser: &mut Self| parser.parse_s3_item())
                 .map(S3Item::On),
             other => Err(Diagnostic::new(
                 token.span,

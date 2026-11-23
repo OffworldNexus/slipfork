@@ -14,6 +14,7 @@ mod install;
 mod mounts;
 #[path = "daemon/ps.rs"]
 mod ps;
+mod secrets;
 mod status;
 mod ui;
 mod world;

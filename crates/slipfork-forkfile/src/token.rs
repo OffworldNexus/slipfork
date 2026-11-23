@@ -11,6 +11,10 @@ pub enum TokenKind {
     Int(u64),
     /// A double-quoted string with escapes already decoded.
     Str(String),
+    /// A double-quoted string carrying `${<expr>}` interpolation sites.
+    Template(Vec<TemplatePiece>),
+    /// A single-quoted literal string: never interpolated.
+    Literal(String),
     /// An `@tool` auto-prequel tool name.
     Tool(String),
     /// The `$port` interpolation.
@@ -64,7 +68,8 @@ impl TokenKind {
         match self {
             Self::Ident(name) => format!("`{name}`"),
             Self::Int(value) => format!("`{value}`"),
-            Self::Str(_) => "a string".to_string(),
+            Self::Str(_) | Self::Literal(_) => "a string".to_string(),
+            Self::Template(_) => "an interpolated string".to_string(),
             Self::Tool(name) => format!("`@{name}`"),
             Self::Port => "`$port`".to_string(),
             Self::Env(key) => format!("`$env.{key}`"),
@@ -89,6 +94,15 @@ impl TokenKind {
             Self::Eof => "end of file".to_string(),
         }
     }
+}
+
+/// One segment of a double-quoted string token: text, or a raw `${<expr>}` body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TemplatePiece {
+    /// Verbatim text with escapes already decoded.
+    Text(String),
+    /// The expression source inside `${...}` plus its span.
+    Expr(String, Span),
 }
 
 /// A token paired with the source span it covers.

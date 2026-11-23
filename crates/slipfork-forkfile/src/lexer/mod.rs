@@ -5,6 +5,8 @@ use crate::expr::CommandPart;
 use crate::span::{Position, Span};
 use crate::token::{Token, TokenKind};
 
+mod string;
+
 /// A streaming lexer over one `Forkfile` source string.
 pub(crate) struct Lexer<'a> {
     src: &'a str,
@@ -180,6 +182,7 @@ impl<'a> Lexer<'a> {
                 }
             }
             '"' => return self.lex_string(start),
+            '\'' => return self.lex_single_string(start),
             '@' => return self.lex_tool(start),
             '$' => return self.lex_variable(start),
             _ if current.is_ascii_alphabetic() || current == '_' => {
@@ -319,58 +322,6 @@ impl<'a> Lexer<'a> {
                 "use `$port` or `$env.KEY`",
             )),
         }
-    }
-
-    fn lex_string(&mut self, start: Position) -> Result<Token, Diagnostic> {
-        self.bump_char();
-        let mut value = String::new();
-        loop {
-            match self.peek_char() {
-                None | Some('\n') => return Err(Self::unterminated(start, self.position())),
-                Some('"') => {
-                    self.bump_char();
-                    return Ok(Token {
-                        kind: TokenKind::Str(value),
-                        span: Span::new(start, self.position()),
-                    });
-                }
-                Some('\\') => {
-                    let escape_start = self.position();
-                    self.bump_char();
-                    let Some(escaped) = self.bump_char() else {
-                        return Err(Self::unterminated(start, self.position()));
-                    };
-                    match escaped {
-                        '"' => value.push('"'),
-                        '\\' => value.push('\\'),
-                        'n' => value.push('\n'),
-                        't' => value.push('\t'),
-                        'r' => value.push('\r'),
-                        '\n' => return Err(Self::unterminated(start, self.position())),
-                        other => {
-                            return Err(Diagnostic::new(
-                                Span::new(escape_start, self.position()),
-                                format!("unknown escape `\\{other}`"),
-                                "use `\\\"`, `\\\\`, `\\n`, `\\t`, or `\\r`",
-                            ));
-                        }
-                    }
-                }
-                Some(_) => {
-                    if let Some(character) = self.bump_char() {
-                        value.push(character);
-                    }
-                }
-            }
-        }
-    }
-
-    fn unterminated(start: Position, end: Position) -> Diagnostic {
-        Diagnostic::new(
-            Span::new(start, end),
-            "unterminated string literal",
-            "close the string with `\"` before the end of the line",
-        )
     }
 }
 

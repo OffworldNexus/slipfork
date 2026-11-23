@@ -112,7 +112,7 @@ impl<'a> Parser<'a> {
             "failed-deploy" => self.parse_hook(false, span).map(ImageItem::FailedDeploy),
             "service" => self.parse_service(span).map(ImageItem::Service),
             "on" => self
-                .parse_on_after_keyword(span, |parser| parser.parse_image_item())
+                .parse_on_after_keyword(span, &mut |parser: &mut Self| parser.parse_image_item())
                 .map(ImageItem::On),
             other => Err(Diagnostic::new(
                 span,

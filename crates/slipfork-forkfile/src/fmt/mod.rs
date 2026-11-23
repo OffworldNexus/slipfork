@@ -1,7 +1,11 @@
 //! Canonical, comment-preserving rendering for `Forkfile` documents.
 
 use crate::ast::*;
-use crate::expr::*;
+mod expr;
+mod render;
+
+use expr::{quote, render_expr};
+use render::Renderer;
 
 /// Result of comparing a source document against its canonical rendering.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,22 +113,143 @@ fn render_block<T>(
 fn render_on<I>(renderer: &mut Renderer, on: &On<I>, mut item: impl FnMut(&mut Renderer, &I)) {
     match &on.body {
         OnBody::Inline(node) => {
-            let mut temporary = Renderer::new();
-            item(&mut temporary, node);
-            let rendered = temporary.finish();
-            let mut lines = rendered.lines();
-            if let Some(first) = lines.next() {
-                renderer.line(&format!("on {}: {first}", render_expr(&on.cond)));
+            let lines = inline_lines(&mut item, node);
+            if lines.len() > 1 || else_multiline(on.else_body.as_ref(), &mut item) {
+                renderer.line(&format!("on {} {{", render_expr(&on.cond)));
+                renderer.indented(|renderer| {
+                    for line in &lines {
+                        renderer.line(line);
+                    }
+                });
+                render_else_after_block(renderer, on.else_body.as_ref(), &mut item);
+                return;
             }
-            for line in lines {
-                renderer.line(line);
-            }
+            let mut line = format!("on {}: {}", render_expr(&on.cond), lines[0]);
+            render_else_inline(renderer, &mut line, on.else_body.as_ref(), &mut item);
         }
         OnBody::Block(block) => {
             renderer.line(&format!("on {} {{", render_expr(&on.cond)));
             renderer.indented(|renderer| render_block(renderer, block, &mut item));
+            render_else_after_block(renderer, on.else_body.as_ref(), &mut item);
+        }
+    }
+}
+
+/// Every rendered line of an inline item; a multi-line item falls back to block form.
+fn inline_lines<I>(item: &mut impl FnMut(&mut Renderer, &I), node: &I) -> Vec<String> {
+    let mut temporary = Renderer::new();
+    item(&mut temporary, node);
+    temporary
+        .finish()
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>()
+}
+
+/// The single-line rendering of an inline item (callers guard on [`inline_lines`] length).
+fn inline<I>(item: &mut impl FnMut(&mut Renderer, &I), node: &I) -> String {
+    inline_lines(item, node)
+        .first()
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Whether any `else` branch carries an inline item that renders on more than one line.
+fn else_multiline<I>(
+    else_body: Option<&OnElse<I>>,
+    item: &mut impl FnMut(&mut Renderer, &I),
+) -> bool {
+    match else_body {
+        None | Some(OnElse::Body(OnBody::Block(_))) => false,
+        Some(OnElse::Body(OnBody::Inline(node))) => inline_lines(&mut *item, node).len() > 1,
+        Some(OnElse::Chain(on)) => {
+            matches!(&on.body, OnBody::Inline(node) if inline_lines(&mut *item, node).len() > 1)
+                || else_multiline(on.else_body.as_ref(), item)
+        }
+    }
+}
+
+/// Appends ` else: <item>`, ` else { … }`, or ` else on … { … }` to an inline `on` line.
+fn render_else_inline<I>(
+    renderer: &mut Renderer,
+    line: &mut String,
+    else_body: Option<&OnElse<I>>,
+    item: &mut impl FnMut(&mut Renderer, &I),
+) {
+    match else_body {
+        None => renderer.line(line),
+        Some(OnElse::Body(OnBody::Inline(node))) => {
+            line.push_str(" else: ");
+            line.push_str(&inline(&mut *item, node));
+            renderer.line(line);
+        }
+        Some(OnElse::Body(OnBody::Block(block))) => {
+            line.push_str(" else {");
+            renderer.line(line);
+            renderer.indented(|renderer| render_block(renderer, block, &mut *item));
             renderer.line("}");
         }
+        Some(OnElse::Chain(on)) => match &on.body {
+            OnBody::Block(block) => {
+                line.push_str(&format!(" else on {} {{", render_expr(&on.cond)));
+                renderer.line(line);
+                renderer.indented(|renderer| render_block(renderer, block, &mut *item));
+                render_else_after_block(renderer, on.else_body.as_ref(), item);
+            }
+            OnBody::Inline(node) => {
+                line.push_str(&format!(
+                    " else on {}: {}",
+                    render_expr(&on.cond),
+                    inline(&mut *item, node)
+                ));
+                render_else_inline(renderer, line, on.else_body.as_ref(), item);
+            }
+        },
+    }
+}
+
+/// Closes a block-bodied `on`, rendering `} else {`, `} else on … {`, or `} else: <item>`.
+fn render_else_after_block<I>(
+    renderer: &mut Renderer,
+    else_body: Option<&OnElse<I>>,
+    item: &mut impl FnMut(&mut Renderer, &I),
+) {
+    match else_body {
+        None => renderer.line("}"),
+        Some(OnElse::Body(OnBody::Block(block))) => {
+            renderer.line("} else {");
+            renderer.indented(|renderer| render_block(renderer, block, &mut *item));
+            renderer.line("}");
+        }
+        Some(OnElse::Body(OnBody::Inline(node))) => {
+            let lines = inline_lines(&mut *item, node);
+            if lines.len() > 1 {
+                renderer.line("} else {");
+                renderer.indented(|renderer| {
+                    for line in &lines {
+                        renderer.line(line);
+                    }
+                });
+                renderer.line("}");
+            } else {
+                renderer.line(&format!("}} else: {}", lines[0]));
+            }
+        }
+        Some(OnElse::Chain(on)) => match &on.body {
+            OnBody::Block(block) => {
+                renderer.line(&format!("}} else on {} {{", render_expr(&on.cond)));
+                renderer.indented(|renderer| render_block(renderer, block, &mut *item));
+                render_else_after_block(renderer, on.else_body.as_ref(), item);
+            }
+            OnBody::Inline(node) => {
+                let mut line = format!(
+                    "}} else on {}: {}",
+                    render_expr(&on.cond),
+                    inline(&mut *item, node)
+                );
+                render_else_inline(renderer, &mut line, on.else_body.as_ref(), item);
+            }
+        },
     }
 }
 
@@ -362,135 +487,5 @@ fn render_version(version: &str) -> String {
         version.to_string()
     } else {
         quote(version)
-    }
-}
-
-fn render_expr(expr: &Expr) -> String {
-    render_expr_at(expr, 0)
-}
-
-fn render_expr_at(expr: &Expr, minimum: u8) -> String {
-    let precedence = expr_precedence(&expr.kind);
-    let rendered = match &expr.kind {
-        ExprKind::Bool(value) => value.to_string(),
-        ExprKind::Int(value) => value.to_string(),
-        ExprKind::String(value) => quote(value),
-        ExprKind::Feature(name) => name.clone(),
-        ExprKind::Var(key) => format!("var({key})"),
-        ExprKind::Secret(key) => format!("secret({key})"),
-        ExprKind::Random { kind, n } => match kind {
-            RandomKind::Uuid => "random_uuid()".to_string(),
-            RandomKind::Hex => format!("random_hex{}", render_count(*n)),
-            RandomKind::Base64 => format!("random_base64{}", render_count(*n)),
-            RandomKind::Alnum => format!("random_alnum{}", render_count(*n)),
-        },
-        ExprKind::Concat(left, right) => {
-            format!("{} + {}", render_expr_at(left, 4), render_expr_at(right, 5))
-        }
-        ExprKind::Property { base, prop } => format!("{base}.{prop}"),
-        ExprKind::Port => "$port".to_string(),
-        ExprKind::EnvVar(key) => format!("$env.{key}"),
-        ExprKind::Not(inner) => format!("!{}", render_expr_at(inner, 4)),
-        ExprKind::And(left, right) => {
-            format!("{} & {}", render_expr_at(left, 2), render_expr_at(right, 3))
-        }
-        ExprKind::Or(left, right) => {
-            format!("{} | {}", render_expr_at(left, 1), render_expr_at(right, 2))
-        }
-        ExprKind::Fallback(left, right) => {
-            format!(
-                "{} ?? {}",
-                render_expr_at(left, 0),
-                render_expr_at(right, 1)
-            )
-        }
-    };
-    if precedence < minimum {
-        format!("({rendered})")
-    } else {
-        rendered
-    }
-}
-
-fn render_count(count: Option<u64>) -> String {
-    match count {
-        Some(count) => format!("({count})"),
-        None => "()".to_string(),
-    }
-}
-
-fn expr_precedence(kind: &ExprKind) -> u8 {
-    match kind {
-        ExprKind::Fallback(..) => 0,
-        ExprKind::Or(..) => 1,
-        ExprKind::And(..) => 2,
-        ExprKind::Not(_) => 3,
-        _ => 5,
-    }
-}
-
-fn quote(value: &str) -> String {
-    let mut out = String::from("\"");
-    for character in value.chars() {
-        match character {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
-            other => out.push(other),
-        }
-    }
-    out.push('"');
-    out
-}
-
-struct Renderer {
-    out: String,
-    indent: usize,
-}
-
-impl Renderer {
-    fn new() -> Self {
-        Self {
-            out: String::new(),
-            indent: 0,
-        }
-    }
-
-    fn line(&mut self, text: &str) {
-        for _ in 0..self.indent {
-            self.out.push_str("  ");
-        }
-        self.out.push_str(text);
-        self.out.push('\n');
-    }
-
-    fn append(&mut self, text: &str) {
-        if self.out.ends_with('\n') {
-            self.out.pop();
-        }
-        self.out.push(' ');
-        self.out.push_str(text);
-        self.out.push('\n');
-    }
-
-    fn blank(&mut self) {
-        if !self.out.is_empty() && !self.out.ends_with("\n\n") {
-            self.out.push('\n');
-        }
-    }
-
-    fn indented(&mut self, body: impl FnOnce(&mut Self)) {
-        self.indent += 1;
-        body(self);
-        self.indent -= 1;
-    }
-
-    fn finish(mut self) -> String {
-        while self.out.ends_with("\n\n") {
-            self.out.pop();
-        }
-        self.out
     }
 }

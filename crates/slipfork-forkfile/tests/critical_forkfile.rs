@@ -3,9 +3,27 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use std::collections::BTreeMap;
+
 use slipfork_forkfile::{
-    BucketPolicy, DnsLabel, SecretValue, boot_plan, check, format_check, migrate, parse,
+    BucketPolicy, DnsLabel, GeneratorSpec, Resolvers, SecretValue, boot_plan, check, format_check,
+    migrate, parse,
 };
+
+fn eval_env(
+    document: &slipfork_forkfile::Forkfile,
+) -> BTreeMap<String, BTreeMap<String, (String, bool)>> {
+    let secret = |_: &str, _: &str, _: Option<&GeneratorSpec>| None;
+    let var = |_: &str, _: Option<&GeneratorSpec>| None;
+    document.eval_all_env_with(
+        "demo",
+        "http",
+        &Resolvers {
+            secret: &secret,
+            var: &var,
+        },
+    )
+}
 
 const SNOW: &str = r#"images:
   - id: backend
@@ -34,7 +52,7 @@ envs:
     REDIS_URL: "${{ resources::redis_clusters.cache.url }}"
     PUBLIC_URL: "${{ domains::main }}"
     SECRET_KEY: "${{ secrets::SECRET_KEY ?? random_hex(32) }}"
-    COMMIT: "${{ deployment::commit_sha }}"
+    COMMIT: "${{ deployment::domain }}"
 components:
   - id: api
     image: backend
@@ -84,11 +102,11 @@ s3 assets
 domain main
 
 env common {
-  COMMIT = deployment.commit_sha
+  COMMIT = self.domain
   DATABASE_URL = \"postgres://\" + app_db.url
-  PUBLIC_URL = main.domain
+  PUBLIC_URL = main.name
   REDIS_URL = cache.url
-  SECRET_KEY = secret(SECRET_KEY) ?? random_hex(32)
+  SECRET_KEY = secret(SECRET_KEY, random_hex(32))
 }
 
 on dev {
@@ -165,7 +183,7 @@ fn flat_namespace_duplicates_name_both_kinds_and_spans() {
 
 #[test]
 fn every_on_branch_is_typed_even_when_not_selected() {
-    let source = "# forkfile: 0.1\n\nfeatures {\n  dev\n}\n\nimage backend . {\n  on !dev: arg TOKEN = secret(TOKEN)\n}\n";
+    let source = "# forkfile: 0.1\n\nfeatures {\n  default = [dev]\n  dev\n}\n\nimage backend . {\n  on !dev: arg TOKEN = secret(TOKEN)\n}\n";
     let (_, diags) = check(&parse(source).expect("parses")).expect_err("branch is typed");
     assert!(
         diags
@@ -276,7 +294,7 @@ fn secret_values_redact_and_bucket_taint_follows_policy() {
         "# forkfile: 0.1\n\ns3 uploads\n\nenv common {\n  URL = uploads.url\n  KEY = uploads.secret_key\n  ACCESS = uploads.access_key\n  ENDPOINT = uploads.endpoint\n}\n",
     )
     .expect("parses");
-    let env = private.eval_all_env("demo", &|_, _| None, &|_| None);
+    let env = eval_env(&private);
     assert!(
         env["common"]["URL"].1,
         "private bucket url is secret-tainted"
@@ -290,7 +308,7 @@ fn secret_values_redact_and_bucket_taint_follows_policy() {
         "# forkfile: 0.1\n\ns3 uploads { policy public-read }\n\nenv common {\n  URL = uploads.url\n}\n",
     )
     .expect("parses");
-    let env = public.eval_all_env("demo", &|_, _| None, &|_| None);
+    let env = eval_env(&public);
     assert!(!env["common"]["URL"].1, "public-read url is non-secret");
 }
 
@@ -487,4 +505,193 @@ fn same_command_with_different_watched_inputs_stays_two_nodes() {
     assert!(plan.nodes[0].is_current(&dir));
     assert!(plan.nodes[1].is_current(&dir));
     fs::remove_dir_all(&dir).expect("clean lab dir");
+}
+
+#[test]
+fn interpolated_strings_typecheck_evaluate_and_round_trip() {
+    let source = "# forkfile: 0.1\n\ndomain main\ndomain dom-b\n\nenv base {\n  LOGIN = \"${self.url}/login\"\n  CALLBACK = \"${self.scheme}://${dom-b.name}/cb\"\n  ESCAPED = \"literal \\${not_an_expr}\"\n  SINGLE = '${also_literal}'\n}\n";
+    let document = parse(source).expect("interpolation parses");
+    check(&document).expect("interpolation typechecks");
+    let env = eval_env(&document);
+    assert_eq!(env["base"]["LOGIN"].0, "http://demo.localhost/login");
+    assert_eq!(env["base"]["CALLBACK"].0, "http://dom-b.demo.localhost/cb");
+    assert_eq!(env["base"]["ESCAPED"].0, "literal ${not_an_expr}");
+    assert_eq!(env["base"]["SINGLE"].0, "${also_literal}");
+
+    let formatted = slipfork_forkfile::format(&document);
+    assert!(formatted.contains("${self.url}/login"), "{formatted}");
+    let reparsed = parse(&formatted).expect("formatted interpolation reparses");
+    assert_eq!(document, reparsed);
+    assert_eq!(formatted, slipfork_forkfile::format(&reparsed));
+}
+
+#[test]
+fn interpolated_secret_taint_is_rejected_in_build_args() {
+    let source = "# forkfile: 0.1\n\nimage backend . {\n  arg TOKEN = \"${secret(TOKEN)}\"\n}\n";
+    let (_, diags) = check(&parse(source).expect("parses")).expect_err("tainted arg");
+    assert!(
+        diags
+            .items
+            .iter()
+            .any(|d| d.message.contains("bake a secret")),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn domains_expose_name_only_and_self_is_reserved() {
+    let source = "# forkfile: 0.1\n\ndomain main\n\nenv base {\n  BAD = main.url\n}\n";
+    let (_, diags) = check(&parse(source).expect("parses")).expect_err("domain url refused");
+    let diagnostic = diags
+        .items
+        .iter()
+        .find(|d| d.message.contains("not a domain property"))
+        .expect("domain diagnostic");
+    assert_eq!(
+        diagnostic.next,
+        "a domain is a bare hostname without a scheme; use 'main.name' for the hostname, 'self.url' for the app's primary URL, or '\"${self.scheme}://${main.name}\"' for an alternate domain's URL"
+    );
+
+    for source in [
+        "# forkfile: 0.1\n\ndomain self\n",
+        "# forkfile: 0.1\n\nimage self . {\n}\n",
+        "# forkfile: 0.1\n\nimage a . {\n  service self {\n  }\n}\n",
+    ] {
+        let (_, diags) = check(&parse(source).expect("parses")).expect_err("self reserved");
+        assert!(
+            diags
+                .items
+                .iter()
+                .any(|d| d.message.contains("`self` is reserved")),
+            "{diags:?}"
+        );
+    }
+}
+
+#[test]
+fn generators_are_only_the_second_argument_and_never_a_fallback() {
+    let standalone = "# forkfile: 0.1\n\nenv base {\n  TOKEN = random_string(8)\n}\n";
+    let (_, diags) = check(&parse(standalone).expect("parses")).expect_err("standalone refused");
+    let diagnostic = diags.first().expect("one diagnostic");
+    assert_eq!(
+        diagnostic.next,
+        "pass the generator as the second argument: secret(KEY, random_string(50))"
+    );
+
+    let fallback = "# forkfile: 0.1\n\nenv base {\n  TOKEN = secret(TOKEN) ?? random_hex(32)\n}\n";
+    let (_, diags) = check(&parse(fallback).expect("parses")).expect_err("fallback refused");
+    assert!(
+        diags.items.iter().any(|d| d
+            .message
+            .contains("function calls are not allowed as `??` defaults")),
+        "{diags:?}"
+    );
+
+    let out_of_range =
+        "# forkfile: 0.1\n\nenv base {\n  TOKEN = secret(TOKEN, random_string(0))\n}\n";
+    let diagnostics = parse(out_of_range).expect_err("length refused");
+    assert!(
+        diagnostics
+            .items
+            .iter()
+            .any(|d| d.message.contains("out of range")),
+        "{diagnostics:?}"
+    );
+
+    let generated = "# forkfile: 0.1\n\nenv base {\n  TOKEN = secret(TOKEN, random_string(50))\n  VAR = var(VAR, random_uuid())\n}\n";
+    let document = parse(generated).expect("generators parse");
+    check(&document).expect("generators typecheck");
+    let formatted = slipfork_forkfile::format(&document);
+    assert!(
+        formatted.contains("secret(TOKEN, random_string(50))"),
+        "{formatted}"
+    );
+    assert!(formatted.contains("var(VAR, random_uuid())"), "{formatted}");
+}
+
+#[test]
+fn on_else_selects_the_false_branch_and_formats_canonically() {
+    let source = "# forkfile: 0.1\n\nfeatures {\n  default = [dev]\n  dev\n}\n\nenv base {\n  on dev: VALUE = \"dev\" else: VALUE = \"prod\"\n}\n";
+    let document = parse(source).expect("else parses");
+    check(&document).expect("else typechecks");
+    let dev = eval_env(&document);
+    assert_eq!(dev["base"]["VALUE"].0, "dev");
+
+    let formatted = slipfork_forkfile::format(&document);
+    assert!(formatted.contains("else: VALUE = \"prod\""), "{formatted}");
+    let reparsed = parse(&formatted).expect("formatted else reparses");
+    assert_eq!(document, reparsed);
+
+    let blocked = "# forkfile: 0.1\n\nfeatures {\n  dev\n}\n\nimage backend . {\n  service api {\n    run {\n      on dev {\n        echo dev\n      } else {\n        echo prod\n      }\n    }\n  }\n}\n";
+    let document = parse(blocked).expect("block else parses");
+    check(&document).expect("block else typechecks");
+    let formatted = slipfork_forkfile::format(&document);
+    assert!(formatted.contains("} else {"), "{formatted}");
+    assert_eq!(document, parse(&formatted).expect("reparses"));
+}
+
+#[test]
+fn chained_else_on_picks_the_first_true_branch_and_formats_canonically() {
+    let source = "# forkfile: 0.1\n\nfeatures {\n  default = [dev]\n  dev\n  prod\n}\n\nimage backend . {\n  service api {\n    run {\n      on dev {\n        echo dev\n      } else on prod {\n        echo prod\n      } else {\n        echo fallback\n      }\n    }\n  }\n}\n";
+    let document = parse(source).expect("chained else parses");
+    check(&document).expect("chained else typechecks");
+    let image = document
+        .items
+        .items
+        .iter()
+        .find_map(|item| match item {
+            slipfork_forkfile::TopItem::Image(image) => Some(image),
+            _ => None,
+        })
+        .expect("image");
+    let service = image
+        .body
+        .items
+        .iter()
+        .find_map(|item| match item {
+            slipfork_forkfile::ImageItem::Service(service) => Some(service),
+            _ => None,
+        })
+        .expect("service");
+    let hook = service
+        .body
+        .items
+        .iter()
+        .find_map(|item| match item {
+            slipfork_forkfile::ServiceItem::Run(hook) => Some(hook),
+            _ => None,
+        })
+        .expect("run");
+    let features = document.active_features();
+    let texts: Vec<String> = hook
+        .commands(&features)
+        .iter()
+        .map(|command| command.text())
+        .collect();
+    assert_eq!(texts, ["echo dev"]);
+
+    let formatted = slipfork_forkfile::format(&document);
+    assert!(formatted.contains("} else on prod {"), "{formatted}");
+    assert_eq!(document, parse(&formatted).expect("reparses"));
+}
+
+#[test]
+fn no_else_branch_is_selected_when_the_condition_is_false() {
+    let source = "# forkfile: 0.1\n\nfeatures {\n  dev\n}\n\nenv base {\n  X = \"1\"\n  on dev: Y = \"2\"\n}\n";
+    let document = parse(source).expect("parses");
+    let env = eval_env(&document);
+    assert!(!env["base"].contains_key("Y"));
+}
+
+#[test]
+fn migration_refuses_an_unknown_deployment_property() {
+    let source = "envs:\n  common:\n    COMMIT: \"${{ deployment::commit_sha }}\"\n";
+    let diags = migrate(source).expect_err("unknown deployment property refused");
+    let first = diags.first().expect("one diagnostic");
+    assert!(first.message.contains("commit_sha"), "{}", first.message);
+    assert!(
+        first.next.contains("self.url") && first.next.contains("self.domain"),
+        "{}",
+        first.next
+    );
 }

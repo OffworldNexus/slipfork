@@ -84,6 +84,7 @@ pub(super) struct ImageCache {
     world: WorldName,
     project: PathBuf,
     doc: Forkfile,
+    scheme: String,
     puller: OciPuller,
     builder: NativeImageBuilder,
     images: Vec<ImageNode>,
@@ -109,6 +110,7 @@ impl ImageCache {
         architecture: Architecture,
         agent: &str,
         host: StepHost,
+        scheme: &str,
     ) -> Self {
         let credentials = Credentials::Anonymous;
         let images_root = layout.images_root();
@@ -156,6 +158,7 @@ impl ImageCache {
         let logs_root = layout.world_logs(&world);
         Self {
             world,
+            scheme: scheme.to_owned(),
             project: project.to_path_buf(),
             doc: doc.clone(),
             puller,
@@ -263,7 +266,10 @@ impl ImageCache {
                     .unwrap_or_else(|| PathBuf::from("Dockerfile")),
             );
             let mut args = BuildArgs::new();
-            for (key, value) in self.doc.eval_image_args(self.world.as_str(), image) {
+            for (key, value) in self
+                .doc
+                .eval_image_args(self.world.as_str(), &self.scheme, image)
+            {
                 args.declare(key, value);
             }
             let request = BuildRequest {
@@ -477,6 +483,7 @@ mod tests {
                 1000,
                 1000,
             ),
+            "http",
         );
         let mut sink = BootSink::for_step(
             Arc::new(Mutex::new(Emitter::closed())),

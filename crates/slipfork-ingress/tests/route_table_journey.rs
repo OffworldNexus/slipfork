@@ -338,7 +338,16 @@ fn s3_buckets_own_their_domains_and_the_cdn_aliases_the_bucket() {
         .expect("the service still serves the primary world authority");
     assert_eq!(primary.port, 8000);
 
-    let env = doc.eval_all_env("demo", &|_, _| None, &|_| None);
+    let secret = |_: &str, _: &str, _: Option<&slipfork_forkfile::GeneratorSpec>| None;
+    let var = |_: &str, _: Option<&slipfork_forkfile::GeneratorSpec>| None;
+    let env = doc.eval_all_env_with(
+        "demo",
+        "http",
+        &slipfork_forkfile::Resolvers {
+            secret: &secret,
+            var: &var,
+        },
+    );
     let common = env.get("common").expect("`env common` was visited");
     assert_eq!(common["CDN_DOMAIN"].0, "assets.demo.localhost");
     assert_eq!(common["CDN_URL"].0, "http://assets.demo.localhost");

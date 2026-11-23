@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use super::SymbolTable;
 use crate::ast::secret_property;
 use crate::diag::{Diagnostic, Diagnostics};
-use crate::expr::{Expr, ExprKind};
+use crate::expr::{Expr, ExprKind, InterpPart};
 use crate::span::Span;
 
 /// Where an expression is evaluated.
@@ -48,11 +48,31 @@ pub(super) fn check_value(
     diags: &mut Diagnostics,
 ) -> bool {
     match &expr.kind {
-        ExprKind::Secret(_) => {
+        ExprKind::Secret(_) | ExprKind::GeneratedSecret { .. } => {
             if mode == ValueMode::Build {
                 reject_secret(expr.span, diags);
             }
             true
+        }
+        ExprKind::Interpolated(parts) => {
+            let mut tainted = false;
+            for part in parts {
+                if let InterpPart::Expr(inner) = part {
+                    tainted |= check_value(inner, mode, symbols, diags);
+                }
+            }
+            tainted
+        }
+        ExprKind::Random(generator) => {
+            diags.push(Diagnostic::new(
+                expr.span,
+                format!(
+                    "`{}` is a secret generator, not a value",
+                    generator.kind.call_name()
+                ),
+                "pass the generator as the second argument: secret(KEY, random_string(50))",
+            ));
+            false
         }
         ExprKind::Property { base, prop } => {
             let tainted = property_taint(base, prop, expr.span, symbols, diags);
@@ -62,11 +82,10 @@ pub(super) fn check_value(
             tainted
         }
         ExprKind::Var(_)
-        | ExprKind::Random { .. }
+        | ExprKind::GeneratedVar { .. }
         | ExprKind::String(_)
-        | ExprKind::Int(_)
-        | ExprKind::Bool(_)
-        | ExprKind::Feature(_) => false,
+        | ExprKind::Int(_) => false,
+        ExprKind::Bool(_) | ExprKind::Feature(_) => false,
         ExprKind::Port | ExprKind::EnvVar(_) => {
             if mode == ValueMode::Build {
                 diags.push(Diagnostic::new(
@@ -84,6 +103,13 @@ pub(super) fn check_value(
             left | right
         }
         ExprKind::Fallback(left, right) => {
+            if let Some(call) = first_call(right) {
+                diags.push(Diagnostic::new(
+                    call.span,
+                    "function calls are not allowed as `??` defaults",
+                    "give the fallback a literal, `$port`, `$env.KEY`, or `self.<prop>`",
+                ));
+            }
             let left = check_value(left, mode, symbols, diags);
             let right = check_value(right, mode, symbols, diags);
             left | right
@@ -106,7 +132,15 @@ fn property_taint(
     symbols: &SymbolTable,
     diags: &mut Diagnostics,
 ) -> bool {
-    if base == "app" || base == "deployment" {
+    if base == "self" {
+        if matches!(prop, "url" | "domain" | "scheme") {
+            return false;
+        }
+        diags.push(Diagnostic::new(
+            span,
+            format!("`self` has no property `{prop}`"),
+            "use `self.url`, `self.domain`, or `self.scheme`",
+        ));
         return false;
     }
     let Some(symbol) = symbols.get(base) else {
@@ -117,6 +151,16 @@ fn property_taint(
         ));
         return false;
     };
+    if symbol.kind == super::SymbolKind::Domain && prop != "name" {
+        diags.push(Diagnostic::new(
+            span,
+            format!("`{base}.{prop}` is not a domain property"),
+            format!(
+                "a domain is a bare hostname without a scheme; use '{base}.name' for the hostname, 'self.url' for the app's primary URL, or '\"${{self.scheme}}://${{{base}.name}}\"' for an alternate domain's URL"
+            ),
+        ));
+        return false;
+    }
     let Some(properties) = symbol.kind.properties() else {
         diags.push(Diagnostic::new(
             span,
@@ -140,4 +184,35 @@ fn property_taint(
         return false;
     }
     secret_property(symbol.kind, symbol.policy, prop)
+}
+
+/// The first function call in `expr`, if any; interpolation sites are walked too.
+fn first_call(expr: &Expr) -> Option<&Expr> {
+    match &expr.kind {
+        ExprKind::Var(_)
+        | ExprKind::GeneratedVar { .. }
+        | ExprKind::Secret(_)
+        | ExprKind::GeneratedSecret { .. }
+        | ExprKind::Random(_) => Some(expr),
+        ExprKind::Interpolated(parts) => parts.iter().find_map(|part| match part {
+            InterpPart::Expr(inner) => first_call(inner),
+            InterpPart::Text(_) => None,
+        }),
+        ExprKind::Not(inner) => first_call(inner),
+        ExprKind::And(left, right)
+        | ExprKind::Or(left, right)
+        | ExprKind::Concat(left, right)
+        | ExprKind::Fallback(left, right) => first_call(left).or_else(|| first_call(right)),
+        _ => None,
+    }
+}
+
+/// The one canonical `??`-default predicate: text that starts a function call can never be a
+/// fallback value, so the migration path and the checker agree.
+pub(crate) fn default_is_function_call(text: &str) -> bool {
+    let text = text.trim();
+    let Some((name, rest)) = text.split_once('(') else {
+        return false;
+    };
+    !name.is_empty() && !name.contains(char::is_whitespace) && rest.ends_with(')')
 }

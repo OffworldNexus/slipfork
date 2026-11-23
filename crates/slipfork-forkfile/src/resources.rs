@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::ast::{Block, On, OnBody};
+use crate::ast::{ActiveBody, Block, On, OnBody};
 use crate::check::SymbolKind;
 use crate::expr::{Expr, ExprKind};
 use crate::span::Span;
@@ -205,13 +205,15 @@ fn walk_s3<'a>(
     for item in items {
         match item {
             S3Item::On(on) => {
-                if active.is_none_or(|active| condition_matches(&on.cond, active)) {
+                let mut matches =
+                    |expr: &Expr| active.is_none_or(|active| condition_matches(expr, active));
+                if let Some(body) = on.active_body(&mut matches) {
                     visit(item);
-                    match &on.body {
-                        OnBody::Inline(inner) => {
-                            walk_s3(std::slice::from_ref(inner.as_ref()), active, visit);
+                    match body {
+                        ActiveBody::Inline(inner) => {
+                            walk_s3(std::slice::from_ref(inner), active, visit);
                         }
-                        OnBody::Block(block) => walk_s3(&block.items, active, visit),
+                        ActiveBody::Block(block) => walk_s3(&block.items, active, visit),
                     }
                 }
             }
@@ -231,12 +233,12 @@ fn cdn_branches<'a>(
             S3Item::On(on) => {
                 let mut next = enclosing.clone();
                 condition_features(&on.cond, &mut next);
-                match &on.body {
+                on.for_each_branch(&mut |body| match body {
                     OnBody::Inline(inner) => {
                         cdn_branches(std::slice::from_ref(inner.as_ref()), &next, out);
                     }
                     OnBody::Block(block) => cdn_branches(&block.items, &next, out),
-                }
+                });
             }
             S3Item::Policy(_) => {}
         }

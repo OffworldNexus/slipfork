@@ -27,8 +27,9 @@ env common {
   REDIS_URL            = cache.url
   UPLOADS_URL          = uploads.url
   AWS_S3_CUSTOM_DOMAIN = static-cdn.domain
-  PUBLIC_URL           = main.url
-  SECRET_KEY           = secret(SECRET_KEY) ?? random_hex(32)
+  PUBLIC_URL           = self.url
+  PRIMARY_DOMAIN       = main.name
+  SECRET_KEY           = secret(SECRET_KEY, random_hex(32))
   on mail: SMTP_ADDR   = "127.0.0.1:1025"
 }
 

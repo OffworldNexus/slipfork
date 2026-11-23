@@ -31,6 +31,8 @@ required-features = ["live"]
 [dependencies]
 base64.workspace = true
 clap.workspace = true
+getrandom.workspace = true
+hex.workspace = true
 clap_complete.workspace = true
 clap_mangen.workspace = true
 console.workspace = true
@@ -47,8 +49,6 @@ slipfork-world = { path = "../slipfork-world" }
 tokio.workspace = true
 
 [dev-dependencies]
-getrandom.workspace = true
-hex.workspace = true
 hmac.workspace = true
 hpke.workspace = true
 libc.workspace = true

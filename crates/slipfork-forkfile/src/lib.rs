@@ -43,7 +43,7 @@ pub use boot::{BootPlan, DirectBin, PrequelTool, SetupNode, ToolExec, boot_plan,
 pub use check::{CheckedForkfile, Symbol, SymbolKind, SymbolTable, check};
 pub use diag::{Diagnostic, Diagnostics};
 pub use dns::{DnsError, DnsLabel};
-pub use eval::FeatureSet;
+pub use eval::{FeatureSet, Resolvers};
 pub use expr::*;
 pub use fmt::FormatCheck;
 pub use gate::{GatedItem, each_enabled};

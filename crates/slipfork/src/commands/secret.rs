@@ -21,6 +21,8 @@ fn table() -> Table<'static> {
 fn shown(entry: &Value) -> &'static str {
     if entry["set"].as_bool() == Some(true) {
         "[REDACTED]"
+    } else if entry["minted"].as_bool() == Some(true) {
+        "<minted on first up>"
     } else {
         "<unset>"
     }

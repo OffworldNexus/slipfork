@@ -404,7 +404,7 @@ impl Session {
             "unknown-component" => "run `slipfork env` to list this Forkfile's components",
             "unknown-secret" => "run `slipfork secret list` to see declared keys",
             "no-secret" => "run `slipfork secret list` to see stored keys",
-            "vault" => "check that the state directory is writable and not group-readable",
+            "vault" => "make the state directory writable",
             _ => "run `slipfork status` to inspect the daemon",
         };
         self.report(&error.code, &error.message, next, json)

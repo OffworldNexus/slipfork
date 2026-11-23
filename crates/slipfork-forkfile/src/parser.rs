@@ -28,7 +28,7 @@ pub(crate) struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn new(source: &'a str) -> Self {
+    pub(crate) fn new(source: &'a str) -> Self {
         Self {
             lexer: Lexer::new(source),
             peeked: None,
@@ -335,7 +335,7 @@ impl<'a> Parser<'a> {
             "features" => self.parse_features(span).map(TopItem::Features),
             "image" => self.parse_image(span).map(TopItem::Image),
             "on" => self
-                .parse_on_after_keyword(span, |parser| parser.parse_top())
+                .parse_on_after_keyword(span, &mut |parser: &mut Self| parser.parse_top())
                 .map(TopItem::On),
             "domain" => self
                 .expect_ident_spanned("a domain name", "write `domain <id>`")
@@ -355,27 +355,27 @@ impl<'a> Parser<'a> {
     pub(crate) fn parse_on_after_keyword<I>(
         &mut self,
         span: Span,
-        mut item: impl FnMut(&mut Self) -> Result<I, Diagnostic>,
+        item: &mut dyn FnMut(&mut Self) -> Result<I, Diagnostic>,
     ) -> Result<On<I>, Diagnostic> {
         let cond = self.parse_expr()?;
+        let body = self.parse_on_body(item)?;
+        let else_body = self.parse_on_else(item)?;
+        Ok(On {
+            cond,
+            body,
+            else_body,
+            span,
+        })
+    }
+
+    fn parse_on_body<I>(
+        &mut self,
+        item: &mut dyn FnMut(&mut Self) -> Result<I, Diagnostic>,
+    ) -> Result<OnBody<I>, Diagnostic> {
         let token = self.bump()?;
         match token.kind {
-            TokenKind::Colon => {
-                let inline = item(self)?;
-                Ok(On {
-                    cond,
-                    body: OnBody::Inline(Box::new(inline)),
-                    span,
-                })
-            }
-            TokenKind::LBrace => {
-                let body = self.parse_block_body(item)?;
-                Ok(On {
-                    cond,
-                    body: OnBody::Block(body),
-                    span,
-                })
-            }
+            TokenKind::Colon => Ok(OnBody::Inline(Box::new(item(self)?))),
+            TokenKind::LBrace => Ok(OnBody::Block(self.parse_block_body(item)?)),
             other => Err(Diagnostic::new(
                 token.span,
                 format!(
@@ -383,6 +383,37 @@ impl<'a> Parser<'a> {
                     other.describe()
                 ),
                 "write `on <expr>: <declaration>` or `on <expr> { ... }`",
+            )),
+        }
+    }
+
+    /// Parses `else { ... }`, `else: <item>`, or `else on <expr> ...` after an `on` body.
+    fn parse_on_else<I>(
+        &mut self,
+        item: &mut dyn FnMut(&mut Self) -> Result<I, Diagnostic>,
+    ) -> Result<Option<OnElse<I>>, Diagnostic> {
+        if !self.peek_ident_is("else")? {
+            return Ok(None);
+        }
+        let span = self.bump()?.span;
+        if self.peek_ident_is("on")? {
+            self.bump()?;
+            let chained = self.parse_on_after_keyword(span, item)?;
+            return Ok(Some(OnElse::Chain(Box::new(chained))));
+        }
+        let token = self.bump()?;
+        match token.kind {
+            TokenKind::Colon => Ok(Some(OnElse::Body(OnBody::Inline(Box::new(item(self)?))))),
+            TokenKind::LBrace => Ok(Some(OnElse::Body(OnBody::Block(
+                self.parse_block_body(item)?,
+            )))),
+            other => Err(Diagnostic::new(
+                token.span,
+                format!(
+                    "expected `:`, `{{`, or `on` after `else`, found {}",
+                    other.describe()
+                ),
+                "write `else { ... }`, `else: <declaration>`, or `else on <expr> ...`",
             )),
         }
     }

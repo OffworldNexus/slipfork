@@ -5,8 +5,5 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-base64.workspace = true
-hex.workspace = true
 serde.workspace = true
 serde_yaml_ng.workspace = true
-sha2.workspace = true

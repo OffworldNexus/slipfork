@@ -3136,3 +3136,14 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-23T01:20 [M3.60] (lead) VM 9/9: fork 2/2 (samples 3.98/4.46/4.97s <8.0s, snapshots <500ms), world 2/2 9.5s, status 5/5 17.5s; deb installed; demo+feat-auth live direct-bin
 - 2026-11-23T01:20 [M3.60] (lead) status active -> done
 - 2026-11-23T01:21 [M3.66] (conductor) edited fields
+- 2026-11-23T01:21 [M3.65] (lead) status ready -> active
+- 2026-11-23T01:21 [M3.65] (lead) attempt 1/3 started
+- 2026-11-23T01:21 [M3.65] (lead) base 892d4e4c3214500f0b42283e751dc884a6493370
+- 2026-11-23T01:25 [M3.65] (lead) attempt 2/3 started
+- 2026-11-23T01:26 [M3.65] (conductor) edited fields
+- 2026-11-23T01:26 [M3.65] (lead) edited fields
+- 2026-11-23T01:32 [M3.65] (lead) status active -> review
+- 2026-11-23T01:34 [M3.65] (lead) edited fields
+- 2026-11-23T01:34 [M3.65] (lead) triad FAIL: consolidated single fix pass (fmt inline truncation, error propagation, secret-list side effects, eval_all_env deletion, scheme threading, 500-LOC s
+- 2026-11-23T01:39 [M3.65] (lead) attempt 3/3 started
+- 2026-11-23T01:42 [M3.65] (lead) status review -> done

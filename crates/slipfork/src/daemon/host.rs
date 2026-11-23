@@ -34,18 +34,40 @@ pub(super) fn env(
     let document = document(&project)?;
     let components = document.env_bindings();
     let vault = FileSecretVault::new(vault_path(state_dir));
+    let vars = FileSecretVault::new(state_dir.join("vars.json"));
+    let resolver = crate::secrets::EnvironmentResolver::new(&vault, &vars, process_env);
+    let scheme = "http";
     let world = inferred_world(&project);
-    let evaluated = document.eval_all_env(
-        &world,
-        &|comp, key| {
-            vault
-                .load(comp, key)
-                .ok()
-                .flatten()
-                .map(|secret| secret.expose().to_owned())
-        },
-        &|key| process_env.get(key).cloned(),
-    );
+    let evaluated = {
+        let failure = std::cell::RefCell::new(None);
+        let secret =
+            |component: &str, key: &str, generator: Option<&slipfork_forkfile::GeneratorSpec>| {
+                resolver
+                    .secret(component, key, generator)
+                    .unwrap_or_else(|error| {
+                        failure.borrow_mut().replace(error);
+                        None
+                    })
+            };
+        let var = |key: &str, generator: Option<&slipfork_forkfile::GeneratorSpec>| {
+            resolver.var(key, generator).unwrap_or_else(|error| {
+                failure.borrow_mut().replace(error);
+                None
+            })
+        };
+        let evaluated = document.eval_all_env_with(
+            &world,
+            scheme,
+            &slipfork_forkfile::Resolvers {
+                secret: &secret,
+                var: &var,
+            },
+        );
+        if let Some(error) = failure.into_inner() {
+            return Err(Failure::new("vault", error.message));
+        }
+        evaluated
+    };
     let mut reply = serde_json::Map::new();
     for (component, declared) in components {
         if wanted.is_some_and(|id| id != component) {
@@ -106,8 +128,13 @@ pub(super) fn secret_list(state_dir: &Path, params: &Value) -> Result<Option<Val
             if !binding.is_secret() {
                 continue;
             }
-            let set = load(&vault, &component, &key)?.is_some();
-            keys.push(json!({ "key": key, "set": set }));
+            let declared_key = binding.secret.unwrap_or(&key);
+            let stored = load(&vault, &component, declared_key)?.is_some();
+            keys.push(json!({
+                "key": key,
+                "set": stored,
+                "minted": binding.secret_generator.is_some() && !stored,
+            }));
         }
         if !keys.is_empty() {
             reply.insert(component, Value::Array(keys));

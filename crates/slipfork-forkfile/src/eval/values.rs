@@ -1,13 +1,10 @@
-//! Expression and typed resource-property evaluation plus deterministic offline generators.
+//! Expression and typed resource-property evaluation.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use base64::Engine;
-use sha2::{Digest, Sha256};
-
 use crate::ast::{BucketPolicy, secret_property};
 use crate::check::SymbolKind;
-use crate::expr::{Expr, ExprKind, RandomKind};
+use crate::expr::{Expr, ExprKind, GeneratorSpec, InterpPart};
 
 /// Symbol metadata needed to evaluate `<base>.<prop>` inside one world.
 #[derive(Debug, Clone)]
@@ -44,9 +41,19 @@ impl BoundSymbol {
     }
 }
 
+/// A secret resolver: `(key, generator)`, already bound to one component.
+pub(super) type SecretLookup<'a> = dyn Fn(&str, Option<&GeneratorSpec>) -> Option<String> + 'a;
+
+/// A variable resolver: `(key, generator)`.
+pub(super) type VarLookup<'a> = dyn Fn(&str, Option<&GeneratorSpec>) -> Option<String> + 'a;
+
 pub(super) fn is_tainted(expr: &Expr, symbols: &BTreeMap<String, BoundSymbol>) -> bool {
     match &expr.kind {
-        ExprKind::Secret(_) | ExprKind::Random { .. } => true,
+        ExprKind::Secret(_) | ExprKind::GeneratedSecret { .. } | ExprKind::Random(_) => true,
+        ExprKind::Interpolated(parts) => parts.iter().any(|part| match part {
+            InterpPart::Expr(inner) => is_tainted(inner, symbols),
+            InterpPart::Text(_) => false,
+        }),
         ExprKind::Property { base, prop } => symbols
             .get(base)
             .is_some_and(|symbol| symbol.is_secret_property(prop)),
@@ -57,31 +64,70 @@ pub(super) fn is_tainted(expr: &Expr, symbols: &BTreeMap<String, BoundSymbol>) -
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn eval_expr(
     expr: &Expr,
     world: &str,
-    key: &str,
+    scheme: &str,
     symbols: &BTreeMap<String, BoundSymbol>,
-    secret_lookup: &dyn Fn(&str) -> Option<String>,
-    var_lookup: &dyn Fn(&str) -> Option<String>,
+    secret_lookup: &SecretLookup<'_>,
+    var_lookup: &VarLookup<'_>,
 ) -> Option<String> {
     match &expr.kind {
         ExprKind::String(text) => Some(text.clone()),
+        ExprKind::Interpolated(parts) => {
+            let mut out = String::new();
+            for part in parts {
+                match part {
+                    InterpPart::Text(text) => out.push_str(text),
+                    InterpPart::Expr(inner) => out.push_str(&eval_expr(
+                        inner,
+                        world,
+                        scheme,
+                        symbols,
+                        secret_lookup,
+                        var_lookup,
+                    )?),
+                }
+            }
+            Some(out)
+        }
         ExprKind::Bool(value) => Some(value.to_string()),
         ExprKind::Int(value) => Some(value.to_string()),
         ExprKind::Concat(left, right) => {
-            let l = eval_expr(left, world, key, symbols, secret_lookup, var_lookup)?;
-            let r = eval_expr(right, world, key, symbols, secret_lookup, var_lookup)?;
+            let l = eval_expr(left, world, scheme, symbols, secret_lookup, var_lookup)?;
+            let r = eval_expr(right, world, scheme, symbols, secret_lookup, var_lookup)?;
             Some(format!("{l}{r}"))
         }
         ExprKind::Fallback(left, right) => {
-            eval_expr(left, world, key, symbols, secret_lookup, var_lookup)
-                .or_else(|| eval_expr(right, world, key, symbols, secret_lookup, var_lookup))
+            eval_expr(left, world, scheme, symbols, secret_lookup, var_lookup)
+                .or_else(|| eval_expr(right, world, scheme, symbols, secret_lookup, var_lookup))
         }
-        ExprKind::Var(name) => var_lookup(name),
-        ExprKind::Secret(secret_name) => secret_lookup(secret_name),
-        ExprKind::Random { kind, n } => Some(generate_deterministic(*kind, *n, world, key)),
+        ExprKind::Var(name) => var_lookup(name, None),
+        ExprKind::GeneratedVar {
+            key: name,
+            generator,
+        } => var_lookup(name, Some(generator)),
+        ExprKind::Secret(secret_name) => secret_lookup(secret_name, None),
+        ExprKind::GeneratedSecret {
+            key: secret_name,
+            generator,
+        } => secret_lookup(secret_name, Some(generator)),
+        ExprKind::Random(_) => {
+            unreachable!("a standalone generator is rejected by the static checker")
+        }
+        ExprKind::Property { base, prop } if base == "self" => self_property(prop, world, scheme),
         ExprKind::Property { base, prop } => eval_property(symbols.get(base)?, prop, world),
+        _ => None,
+    }
+}
+
+fn self_property(prop: &str, world: &str, scheme: &str) -> Option<String> {
+    let domain = format!("{world}.localhost");
+    match prop {
+        "domain" => Some(domain),
+        "url" => Some(format!("{scheme}://{domain}")),
+        "scheme" => Some(scheme.to_owned()),
         _ => None,
     }
 }
@@ -116,8 +162,7 @@ fn eval_property(symbol: &BoundSymbol, prop: &str, world: &str) -> Option<String
                 format!("{id}.{world}.localhost")
             };
             match prop {
-                "domain" => Some(host),
-                "url" => Some(format!("http://{host}")),
+                "name" => Some(host),
                 _ => None,
             }
         }
@@ -148,58 +193,5 @@ pub(super) fn expand_feature(
         for child in children {
             expand_feature(child, groups, active);
         }
-    }
-}
-
-fn generate_deterministic(kind: RandomKind, n: Option<u64>, world: &str, key: &str) -> String {
-    let len = usize::try_from(n.unwrap_or(32)).unwrap_or(32).clamp(1, 256);
-    let mut bytes = Vec::with_capacity(len.max(32));
-    let mut counter = 0_u32;
-    while bytes.len() < len.max(32) {
-        let mut hasher = Sha256::new();
-        hasher.update(b"slipfork-local-random-v1:");
-        hasher.update(world.as_bytes());
-        hasher.update(b":");
-        hasher.update(key.as_bytes());
-        hasher.update(b":");
-        hasher.update(counter.to_le_bytes());
-        bytes.extend_from_slice(&hasher.finalize());
-        counter += 1;
-    }
-    match kind {
-        RandomKind::Hex => hex::encode(&bytes)[..len.min(bytes.len() * 2)].to_owned(),
-        RandomKind::Base64 => base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(&bytes)
-            .chars()
-            .take(len)
-            .collect(),
-        RandomKind::Alnum => {
-            const ALPHABET: &[u8] =
-                b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-            bytes
-                .iter()
-                .take(len)
-                .map(|b| ALPHABET[(*b as usize) % ALPHABET.len()] as char)
-                .collect()
-        }
-        RandomKind::Uuid => format!(
-            "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-4{:01x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-            bytes[0],
-            bytes[1],
-            bytes[2],
-            bytes[3],
-            bytes[4],
-            bytes[5],
-            bytes[6] & 0x0f,
-            bytes[7],
-            (bytes[8] & 0x3f) | 0x80,
-            bytes[9],
-            bytes[10],
-            bytes[11],
-            bytes[12],
-            bytes[13],
-            bytes[14],
-            bytes[15]
-        ),
     }
 }

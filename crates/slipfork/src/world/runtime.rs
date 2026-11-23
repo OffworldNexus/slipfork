@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use slipfork_forkfile::ast::Forkfile;
 use slipfork_image::{Architecture, StepHost};
-use slipfork_ospp::{FileSecretVault, SecretVault};
+use slipfork_ospp::FileSecretVault;
 use slipfork_world::{
     BootFailure, BootKind, BootState, BootStep, BtrfsEngine, Dirtiness, ImageStamp, PodEnv,
     PodHost, PodSpec, PostgresLauncher, ResourceKind, ResourceNode, ServiceNode, StepOutcome,
@@ -61,6 +61,7 @@ impl WorldRuntime {
         env: &HostEnv,
         emitter: Arc<Mutex<Emitter>>,
     ) -> Result<Self, String> {
+        let scheme = "http";
         let is_fork = StoreLayout::parse_fork_world(std::ffi::OsStr::new(world.as_str())).is_some();
         let engine = BtrfsEngine::new(StoreLayout::at(env.store_root_for(project)));
         let layout = engine.layout().clone();
@@ -108,6 +109,7 @@ impl WorldRuntime {
             architecture,
             &agent,
             step_host,
+            scheme,
         );
         let host = WorldHost::new(
             WorldTools {
@@ -160,17 +162,40 @@ impl WorldRuntime {
         // The `Forkfile` compiler owns every `arg`/`env` expression; this composition root only
         // supplies the world name and the vault lookup the compiler asks for.
         let vault = FileSecretVault::new(env.state_dir.join("secrets.json"));
-        let resolved_env = doc.eval_all_env(
-            world.as_str(),
-            &|component, key| {
-                vault
-                    .load(component, key)
-                    .ok()
-                    .flatten()
-                    .map(|secret| secret.expose().to_owned())
-            },
-            &|key| env.env.get(key).cloned(),
-        );
+        let vars = FileSecretVault::new(env.state_dir.join("vars.json"));
+        let resolver = crate::secrets::EnvironmentResolver::new(&vault, &vars, &env.env);
+        let resolved_env = {
+            let failure = std::cell::RefCell::new(None);
+            let secret =
+                |component: &str,
+                 key: &str,
+                 generator: Option<&slipfork_forkfile::GeneratorSpec>| {
+                    resolver
+                        .secret(component, key, generator)
+                        .unwrap_or_else(|error| {
+                            failure.borrow_mut().replace(error);
+                            None
+                        })
+                };
+            let var = |key: &str, generator: Option<&slipfork_forkfile::GeneratorSpec>| {
+                resolver.var(key, generator).unwrap_or_else(|error| {
+                    failure.borrow_mut().replace(error);
+                    None
+                })
+            };
+            let resolved = doc.eval_all_env_with(
+                world.as_str(),
+                scheme,
+                &slipfork_forkfile::Resolvers {
+                    secret: &secret,
+                    var: &var,
+                },
+            );
+            if let Some(error) = failure.into_inner() {
+                return Err(format!("{}; next: {}", error.message, error.next));
+            }
+            resolved
+        };
         Ok(Self {
             engine,
             layout,

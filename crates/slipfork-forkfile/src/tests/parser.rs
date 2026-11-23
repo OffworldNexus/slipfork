@@ -12,11 +12,11 @@ fn declaration_and_expression_nodes_carry_spans() {
         (3, 4)
     );
     let image = first_image(&doc);
-    assert_eq!(image.span.line(), 28);
+    assert_eq!(image.span.line(), 29);
     let service = first_service(image);
     assert_eq!(
         (service.span.line(), service_routes(service)[0].span.line()),
-        (32, 34)
+        (33, 35)
     );
     let env = doc
         .items
@@ -242,7 +242,7 @@ fn before_start_changed_patterns_and_run_block_hook() {
 
 #[test]
 fn image_knobs_parse_and_round_trip() {
-    let source = "# forkfile: 0.1\n\nimage backend . {\n  dockerfile Dockerfile.dev\n  workdir ./app\n  arg {\n    A = var(KEY) ?? \"x\"\n    B = random_base64(16)\n    C = random_alnum(8)\n    D = random_uuid()\n  }\n  env {\n    E = secret(S)\n  }\n}\n";
+    let source = "# forkfile: 0.1\n\nimage backend . {\n  dockerfile Dockerfile.dev\n  workdir ./app\n  arg {\n    A = var(KEY) ?? \"x\"\n    B = secret(B, random_base64(16))\n    C = secret(C, random_string(8))\n    D = secret(D, random_uuid())\n  }\n  env {\n    E = secret(S)\n  }\n}\n";
     let doc = parse(source).expect("parses");
     let image = first_image(&doc);
     assert!(
@@ -275,17 +275,32 @@ fn image_knobs_parse_and_round_trip() {
     ));
     assert!(matches!(
         &args.args.items[1].value.kind,
-        ExprKind::Random { kind, n } if *kind == RandomKind::Base64 && *n == Some(16)
+        ExprKind::GeneratedSecret {
+            generator: GeneratorSpec {
+                kind: RandomKind::Base64,
+                n: Some(16)
+            },
+            ..
+        }
     ));
     assert!(matches!(
         &args.args.items[2].value.kind,
-        ExprKind::Random { kind, n } if *kind == RandomKind::Alnum && *n == Some(8)
+        ExprKind::GeneratedSecret {
+            generator: GeneratorSpec {
+                kind: RandomKind::String,
+                n: Some(8)
+            },
+            ..
+        }
     ));
     assert!(matches!(
         &args.args.items[3].value.kind,
-        ExprKind::Random {
-            kind: RandomKind::Uuid,
-            n: None
+        ExprKind::GeneratedSecret {
+            generator: GeneratorSpec {
+                kind: RandomKind::Uuid,
+                n: None
+            },
+            ..
         }
     ));
     assert!(

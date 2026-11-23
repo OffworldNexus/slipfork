@@ -54,8 +54,12 @@ pub struct ResourceDecl<'a> {
 /// One declared runtime variable, classified for the vault without a source re-scan.
 #[derive(Debug, Clone)]
 pub struct EnvBinding<'a> {
-    /// The first `secret(KEY)` reachable through fallbacks or concatenation.
+    /// The first `secret(KEY)` reachable through fallbacks, concatenation, or interpolation.
     pub secret: Option<&'a str>,
+    /// The generator attached to that `secret(KEY, <generator>)`, when any.
+    pub secret_generator: Option<crate::expr::GeneratorSpec>,
+    /// The generator attached to a `var(KEY, <generator>)`, when any.
+    pub var_generator: Option<crate::expr::GeneratorSpec>,
     /// The static literal the declaration resolves to without the vault.
     pub literal: Option<String>,
 }
@@ -174,27 +178,27 @@ fn top_on<'a>(
     resources: &mut Vec<ResourceDecl<'a>>,
     domains: &mut Vec<&'a str>,
 ) {
-    match &on.body {
+    on.for_each_branch(&mut |body| match body {
         OnBody::Inline(inner) => top(inner.as_ref(), services, resources, domains),
         OnBody::Block(block) => {
             for item in &block.items {
                 top(item, services, resources, domains);
             }
         }
-    }
+    });
 }
 
 fn image_item<'a>(item: &'a ImageItem, image: &'a str, services: &mut Vec<ServiceDecl<'a>>) {
     match item {
         ImageItem::Service(service) => services.push(service_decl(service, image)),
-        ImageItem::On(on) => match &on.body {
+        ImageItem::On(on) => on.for_each_branch(&mut |body| match body {
             OnBody::Inline(inner) => image_item(inner.as_ref(), image, services),
             OnBody::Block(block) => {
                 for item in &block.items {
                     image_item(item, image, services);
                 }
             }
-        },
+        }),
         _ => {}
     }
 }
@@ -227,21 +231,36 @@ fn service_items<'a>(
 }
 
 fn service_on<'a>(on: &'a On<ServiceItem>, port: &mut Option<u16>, routes: &mut Vec<&'a Route>) {
-    match &on.body {
+    on.for_each_branch(&mut |body| match body {
         OnBody::Inline(inner) => service_items(std::slice::from_ref(inner.as_ref()), port, routes),
         OnBody::Block(block) => service_items(&block.items, port, routes),
-    }
+    });
 }
 
 fn postgres_version(items: &[PostgresItem]) -> Option<&str> {
-    items.iter().find_map(|item| match item {
-        PostgresItem::Version(version) => Some(version.as_str()),
-        PostgresItem::On(on) => match &on.body {
-            OnBody::Inline(inner) => postgres_version(std::slice::from_ref(inner.as_ref())),
-            OnBody::Block(block) => postgres_version(&block.items),
-        },
-        PostgresItem::Database(_) => None,
-    })
+    for item in items {
+        match item {
+            PostgresItem::Version(version) => return Some(version.as_str()),
+            PostgresItem::On(on) => {
+                let mut found = None;
+                on.for_each_branch(&mut |body| {
+                    if found.is_none() {
+                        found = match body {
+                            OnBody::Inline(inner) => {
+                                postgres_version(std::slice::from_ref(inner.as_ref()))
+                            }
+                            OnBody::Block(block) => postgres_version(&block.items),
+                        };
+                    }
+                });
+                if found.is_some() {
+                    return found;
+                }
+            }
+            PostgresItem::Database(_) => {}
+        }
+    }
+    None
 }
 
 fn postgres_databases(items: &[PostgresItem]) -> Vec<&str> {
@@ -249,12 +268,12 @@ fn postgres_databases(items: &[PostgresItem]) -> Vec<&str> {
     for item in items {
         match item {
             PostgresItem::Database(database) => databases.push(database.id.as_str()),
-            PostgresItem::On(on) => match &on.body {
+            PostgresItem::On(on) => on.for_each_branch(&mut |body| match body {
                 OnBody::Inline(inner) => {
                     databases.extend(postgres_databases(std::slice::from_ref(inner.as_ref())));
                 }
                 OnBody::Block(block) => databases.extend(postgres_databases(&block.items)),
-            },
+            }),
             PostgresItem::Version(_) => {}
         }
     }
@@ -262,13 +281,28 @@ fn postgres_databases(items: &[PostgresItem]) -> Vec<&str> {
 }
 
 fn redis_version(items: &[RedisItem]) -> Option<&str> {
-    items.iter().find_map(|item| match item {
-        RedisItem::Version(version) => Some(version.as_str()),
-        RedisItem::On(on) => match &on.body {
-            OnBody::Inline(inner) => redis_version(std::slice::from_ref(inner.as_ref())),
-            OnBody::Block(block) => redis_version(&block.items),
-        },
-    })
+    for item in items {
+        match item {
+            RedisItem::Version(version) => return Some(version.as_str()),
+            RedisItem::On(on) => {
+                let mut found = None;
+                on.for_each_branch(&mut |body| {
+                    if found.is_none() {
+                        found = match body {
+                            OnBody::Inline(inner) => {
+                                redis_version(std::slice::from_ref(inner.as_ref()))
+                            }
+                            OnBody::Block(block) => redis_version(&block.items),
+                        };
+                    }
+                });
+                if found.is_some() {
+                    return found;
+                }
+            }
+        }
+    }
+    None
 }
 
 fn s3_cdns<'a>(items: &'a [S3Item], domains: &mut Vec<&'a str>, cdns: &mut Vec<&'a str>) {
@@ -278,12 +312,12 @@ fn s3_cdns<'a>(items: &'a [S3Item], domains: &mut Vec<&'a str>, cdns: &mut Vec<&
                 domains.push(&cdn.id);
                 cdns.push(&cdn.id);
             }
-            S3Item::On(on) => match &on.body {
+            S3Item::On(on) => on.for_each_branch(&mut |body| match body {
                 OnBody::Inline(inner) => {
                     s3_cdns(std::slice::from_ref(inner.as_ref()), domains, cdns);
                 }
                 OnBody::Block(block) => s3_cdns(&block.items, domains, cdns),
-            },
+            }),
             S3Item::Policy(_) => {}
         }
     }
@@ -298,14 +332,14 @@ fn env_groups<'a>(
             let entry = groups.entry(env.group.clone()).or_default();
             env_items(&env.entries.items, entry);
         }
-        TopItem::On(on) => match &on.body {
+        TopItem::On(on) => on.for_each_branch(&mut |body| match body {
             OnBody::Inline(inner) => env_groups(inner, groups),
             OnBody::Block(block) => {
                 for item in &block.items {
                     env_groups(item, groups);
                 }
             }
-        },
+        }),
         _ => {}
     }
 }
@@ -322,14 +356,14 @@ fn env_images<'a>(
             components.insert(image.id.clone(), bindings.clone());
             image_services(&image.body.items, &bindings, components);
         }
-        TopItem::On(on) => match &on.body {
+        TopItem::On(on) => on.for_each_branch(&mut |body| match body {
             OnBody::Inline(inner) => env_images(inner, groups, components),
             OnBody::Block(block) => {
                 for item in &block.items {
                     env_images(item, groups, components);
                 }
             }
-        },
+        }),
         _ => {}
     }
 }
@@ -347,12 +381,12 @@ fn image_env<'a>(
                     bindings.extend(inherited.clone());
                 }
             }
-            ImageItem::On(on) => match &on.body {
+            ImageItem::On(on) => on.for_each_branch(&mut |body| match body {
                 OnBody::Inline(inner) => {
                     image_env(std::slice::from_ref(inner.as_ref()), groups, bindings);
                 }
                 OnBody::Block(block) => image_env(&block.items, groups, bindings),
-            },
+            }),
             _ => {}
         }
     }
@@ -368,12 +402,12 @@ fn image_services<'a>(
             ImageItem::Service(service) => {
                 components.insert(service.id.clone(), bindings.clone());
             }
-            ImageItem::On(on) => match &on.body {
+            ImageItem::On(on) => on.for_each_branch(&mut |body| match body {
                 OnBody::Inline(inner) => {
                     image_services(std::slice::from_ref(inner.as_ref()), bindings, components);
                 }
                 OnBody::Block(block) => image_services(&block.items, bindings, components),
-            },
+            }),
             _ => {}
         }
     }
@@ -383,30 +417,65 @@ fn env_items<'a>(items: &'a [EnvItem], bindings: &mut BTreeMap<String, EnvBindin
     for item in items {
         match item {
             EnvItem::Entry(entry) => {
+                let (secret, secret_generator) = secret_ref(&entry.value);
                 bindings.insert(
                     entry.key.clone(),
                     EnvBinding {
-                        secret: secret_key(&entry.value),
+                        secret,
+                        secret_generator,
+                        var_generator: var_generator(&entry.value),
                         literal: literal(&entry.value),
                     },
                 );
             }
-            EnvItem::On(on) => match &on.body {
+            EnvItem::On(on) => on.for_each_branch(&mut |body| match body {
                 OnBody::Inline(inner) => {
                     env_items(std::slice::from_ref(inner.as_ref()), bindings);
                 }
                 OnBody::Block(block) => env_items(&block.items, bindings),
-            },
+            }),
         }
     }
 }
 
-/// The first `secret(...)` reachable through fallbacks or concatenation.
-fn secret_key(expr: &Expr) -> Option<&str> {
+/// The first `secret(...)` reachable through fallbacks, concatenation, or interpolation.
+fn secret_ref(expr: &Expr) -> (Option<&str>, Option<crate::expr::GeneratorSpec>) {
     match &expr.kind {
-        ExprKind::Secret(key) => Some(key),
-        ExprKind::Fallback(left, right) => secret_key(left).or_else(|| secret_key(right)),
-        ExprKind::Concat(left, right) => secret_key(left).or_else(|| secret_key(right)),
+        ExprKind::Secret(key) => (Some(key), None),
+        ExprKind::GeneratedSecret { key, generator } => (Some(key), Some(*generator)),
+        ExprKind::Fallback(left, right) | ExprKind::Concat(left, right) => {
+            let first = secret_ref(left);
+            if first.0.is_some() {
+                first
+            } else {
+                secret_ref(right)
+            }
+        }
+        ExprKind::Interpolated(parts) => parts
+            .iter()
+            .find_map(|part| match part {
+                crate::expr::InterpPart::Expr(inner) => {
+                    let found = secret_ref(inner);
+                    found.0.map(|_| found)
+                }
+                crate::expr::InterpPart::Text(_) => None,
+            })
+            .unwrap_or((None, None)),
+        _ => (None, None),
+    }
+}
+
+/// The first `var(KEY, <generator>)` generator in the expression, when any.
+fn var_generator(expr: &Expr) -> Option<crate::expr::GeneratorSpec> {
+    match &expr.kind {
+        ExprKind::GeneratedVar { generator, .. } => Some(*generator),
+        ExprKind::Fallback(left, right) | ExprKind::Concat(left, right) => {
+            var_generator(left).or_else(|| var_generator(right))
+        }
+        ExprKind::Interpolated(parts) => parts.iter().find_map(|part| match part {
+            crate::expr::InterpPart::Expr(inner) => var_generator(inner),
+            crate::expr::InterpPart::Text(_) => None,
+        }),
         _ => None,
     }
 }
@@ -423,84 +492,4 @@ fn literal(expr: &Expr) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    const SOURCE: &str = r#"# forkfile: 0.1
-
-env base {
-  LOG_LEVEL = "info"
-  SECRET_KEY = secret(SECRET_KEY)
-  TURN = 2
-}
-
-image app . {
-  use env base
-  env {
-    EXTRA = true
-  }
-  service api {
-    route /
-  }
-  on dev {
-    service worker {
-      run: serve
-    }
-  }
-}
-"#;
-
-    #[test]
-    fn env_bindings_flatten_groups_images_services_and_on_blocks() {
-        let document = slipfork_forkfile_parse(SOURCE);
-        let bindings = document.env_bindings();
-
-        assert!(bindings["base"]["SECRET_KEY"].is_secret());
-        assert_eq!(
-            bindings["base"]["LOG_LEVEL"].literal.as_deref(),
-            Some("info")
-        );
-        assert_eq!(bindings["base"]["TURN"].literal.as_deref(), Some("2"));
-
-        // The image and both of its services inherit the group plus the inline block.
-        for component in ["app", "api", "worker"] {
-            assert_eq!(
-                bindings[component]["LOG_LEVEL"].literal.as_deref(),
-                Some("info"),
-                "{component} must inherit `use env base`"
-            );
-            assert_eq!(
-                bindings[component]["TURN"].literal.as_deref(),
-                Some("2"),
-                "{component}"
-            );
-            assert_eq!(
-                bindings[component]["EXTRA"].literal.as_deref(),
-                Some("true"),
-                "{component} must inherit the inline env block"
-            );
-            assert!(bindings[component]["SECRET_KEY"].is_secret(), "{component}");
-        }
-    }
-
-    fn slipfork_forkfile_parse(source: &str) -> crate::ast::Forkfile {
-        crate::parse(source).expect("the visitor fixture must be a valid Forkfile")
-    }
-
-    #[test]
-    fn services_name_their_enclosing_image_and_postgres_owns_its_databases() {
-        let document = slipfork_forkfile_parse(
-            "# forkfile: 0.1\n\
-             postgres pg { database app-db }\n\
-             image app . {\n\
-             \x20 service api { port 8000 }\n\
-             }\n",
-        );
-        let services = document.services();
-        assert_eq!(services.len(), 1);
-        assert_eq!(services[0].id, "api");
-        assert_eq!(services[0].image, Some("app"));
-        let resources = document.resources();
-        assert_eq!(resources.len(), 1);
-        assert_eq!(resources[0].id, "pg");
-        assert_eq!(resources[0].databases, vec!["app-db"]);
-    }
-}
+mod tests;
