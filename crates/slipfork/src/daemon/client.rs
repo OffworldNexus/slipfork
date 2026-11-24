@@ -146,6 +146,12 @@ impl DaemonClient {
         }
     }
 
+    /// The live socket descriptor, so a relay can drop the connection when its reader vanishes.
+    #[must_use]
+    pub(crate) fn stream_fd(&self) -> RawFd {
+        std::os::fd::AsRawFd::as_raw_fd(&self.stream)
+    }
+
     /// Aborts blocking polls as `"interrupted"` once `flag` is set by a `SIGINT` handler, while
     /// retrying benign `EINTR` wakeups such as `SIGWINCH`.
     #[must_use]

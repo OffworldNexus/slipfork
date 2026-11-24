@@ -1,7 +1,8 @@
 # CLI
 
 Every command renders one domain tree and fails with one `next:` line. World verbs talk to one
-per-user daemon; `docker` and `fmt`/`migrate` run in-process without contacting it.
+per-user daemon; `docker login|logout|list|images`, `fmt`, and `migrate` run in-process without
+contacting it. `docker pull` and `docker build` stream from that daemon like `up` does.
 
 ```console
 $ slipfork up
@@ -63,7 +64,7 @@ flowchart LR
 `slipfork up --no-cache` skips every sealed image and step lookup for one run, re-executes every
 `Dockerfile` instruction and replaces the same-key subvolume before booting; the next plain
 `slipfork up` is cached again. `slipfork docker build app --no-cache` does the same for one
-component and never contacts the daemon.
+component through the per-user daemon.
 
 `slipfork exec` allocates a real kernel PTY whenever stdin and stdout are terminals and `--json` is off, so `ipython`, `bash`, and `psql` keep their prompts, colours, and line editing. `-i` requires both terminals and fails closed without them, while `--no-interactive` keeps a plain pipe so prompts see immediate EOF.
 
@@ -93,8 +94,10 @@ $ slipfork fork prod-check -F -dev
 ## Docker-compatible registry verbs
 
 `slipfork docker` is a Docker-shaped CLI over the native OCI engine, not a Docker daemon: there is
-no `dockerd`, no socket, and no second build pipeline. Pulls and builds share the same sealed cache,
-step keys, and injected credentials that `up` uses.
+no `dockerd`, no Docker socket, and no second build pipeline. Pulls and builds stream from the same
+per-user daemon as `up`, sharing its sealed cache, step keys, and injected credentials; when the
+daemon is not installed the command auto-spawns an ephemeral one and prints the tarball hint.
+`login`, `logout`, `list`, and `images` stay in-process.
 
 ```console
 $ printf '%s\n' "$GH_TOKEN" | slipfork docker login ghcr.io --username octo --password-stdin

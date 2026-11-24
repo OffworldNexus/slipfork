@@ -10,8 +10,10 @@ mod frames;
 mod handoff;
 mod host;
 mod identity;
+pub(crate) mod image;
 mod ingress;
 mod lifecycle;
+mod lock;
 mod registry;
 mod rpc;
 mod spawn;
@@ -21,13 +23,12 @@ mod wire;
 pub use client::{DaemonClient, DaemonError};
 
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
+use std::fs;
 use std::io;
 use std::io::Write;
-use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -41,13 +42,13 @@ use slipfork_vcs::VcsWorkspace;
 
 /// A typed control-plane failure rendered as an `error` frame with a bare message.
 #[derive(Debug, Clone)]
-struct Failure {
+pub(crate) struct Failure {
     code: &'static str,
     message: String,
 }
 
 impl Failure {
-    fn new(code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -104,6 +105,8 @@ fn report(startup: &Startup) {
 
 struct Daemon {
     core: Mutex<Core>,
+    /// Serializes image builds/pulls so `images/refs.json` and `built.json` never race.
+    image_lock: Mutex<()>,
     socket: PathBuf,
     state_dir: PathBuf,
     /// This daemon's own binary and version, so a client can refuse a stale daemon.
@@ -120,7 +123,7 @@ impl Daemon {
                 "check that the state directory is writable",
             )
         })?;
-        let Some(lock) = lock_daemon(&host.runtime_dir).map_err(|error| {
+        let Some(lock) = lock::acquire(&host.runtime_dir).map_err(|error| {
             Startup::new(
                 format!("lock `{}`: {error}", host.runtime_dir.display()),
                 "check that XDG_RUNTIME_DIR is writable by this user",
@@ -154,6 +157,7 @@ impl Daemon {
         let _ = registry::store(&state_dir, &retained);
         Ok(Some(Self {
             core: Mutex::new(core),
+            image_lock: Mutex::new(()),
             socket,
             state_dir,
             identity,
@@ -295,6 +299,10 @@ impl Daemon {
                         &wire::error(&id, failure.code, &failure.message),
                     )?,
                 }
+                continue;
+            }
+            if matches!(request.method.as_str(), "image.build" | "image.pull") {
+                self.handle_image(&id, &request.method, &request.params, &mut writer)?;
                 continue;
             }
             let outcome = self.dispatch(&request, descriptor, &mut |event| {
@@ -471,27 +479,5 @@ impl Daemon {
             core.stop_all();
             let _ = fs::remove_file(&self.socket);
         }
-    }
-}
-
-fn lock_daemon(runtime_dir: &Path) -> io::Result<Option<File>> {
-    fs::create_dir_all(runtime_dir)?;
-    let path = runtime_dir.join("slipfork-daemon.lock");
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&path)?;
-    // SAFETY: `flock` only locks the live descriptor; no memory is shared.
-    let locked = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if locked == 0 {
-        return Ok(Some(file));
-    }
-    let error = io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
-        Ok(None)
-    } else {
-        Err(error)
     }
 }

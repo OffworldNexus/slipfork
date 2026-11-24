@@ -97,6 +97,11 @@ impl Core {
         self.worlds.len()
     }
 
+    /// The injected host state; an image RPC clones it before releasing the core lock.
+    pub(crate) fn host(&self) -> &HostEnv {
+        &self.host
+    }
+
     /// Every live entry, for the startup rewrite of a filtered registry.
     pub(crate) fn retained(&self) -> Vec<RegistryEntry> {
         self.worlds

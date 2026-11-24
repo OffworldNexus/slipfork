@@ -9,6 +9,7 @@ use std::process::ExitCode;
 use crate::commands::Session;
 
 mod build;
+mod printer;
 mod registry;
 
 /// Which `docker` subcommand to run.

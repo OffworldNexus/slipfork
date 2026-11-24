@@ -33,6 +33,11 @@ name = "critical_registry_live"
 path = "tests/critical_registry_live.rs"
 required-features = ["live"]
 
+[[test]]
+name = "image_rpc"
+path = "tests/image_rpc/main.rs"
+required-features = ["live"]
+
 [dependencies]
 base64.workspace = true
 clap.workspace = true
