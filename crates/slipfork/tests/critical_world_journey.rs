@@ -150,10 +150,12 @@ image app . {
 const MISSING_STAGE_DOCKERFILE: &str = "\
 FROM python:3.13-slim
 COPY --from=Missing-Stage /x /y
+WORKDIR /project
 ";
 // A `FROM` the engine cannot pull: the pull, not a child process, is the failing command.
 const UNPULLABLE_FROM_DOCKERFILE: &str = "\
 FROM 127.0.0.1:1/nope:latest
+WORKDIR /project
 CMD [\"true\"]
 ";
 
@@ -423,6 +425,11 @@ impl Journey {
             "badfrom",
             "crash",
             "converge",
+            "devroot",
+            "devcode",
+            "devkeep",
+            "devbaked",
+            "devbakedroot",
         ] {
             if let Ok(world) = WorldName::parse(world) {
                 let _ = engine.drop_world(&world);
@@ -800,6 +807,11 @@ impl Drop for Journey {
             "badfrom",
             "crash",
             "converge",
+            "devroot",
+            "devcode",
+            "devkeep",
+            "devbaked",
+            "devbakedroot",
         ] {
             if let Ok(world) = WorldName::parse(world) {
                 let _ = store_engine.drop_world(&world);
@@ -3100,6 +3112,149 @@ fn changed_build_inputs_rebuild_and_restart_converges() {
 }
 
 #[test]
+fn dev_mounts_follow_the_dockerfile_workdir_and_refuse_root() {
+    let journey = Journey::new();
+    require_tool("crun");
+    let unshare = require_tool("unshare");
+    require_userns(&unshare);
+    require_registry_egress();
+
+    // (a) No `WORKDIR`: `/` can never be overlaid, so `up` refuses before any pod exists.
+    let root = journey.project("devroot", DEV_FORKFILE);
+    fs::write(root.join("Dockerfile"), DEV_ROOT_DOCKERFILE).expect("write the root Dockerfile");
+    fs::write(root.join("hello.py"), DEV_HELLO).expect("write hello.py");
+    let refused = journey.slipfork(&root, &["up"]);
+    assert!(
+        !refused.status.success(),
+        "a `/` WORKDIR must refuse a dev boot:\n{}{}",
+        stdout(&refused),
+        stderr(&refused)
+    );
+    let refusal = format!("{}{}", stdout(&refused), stderr(&refused));
+    let lines: Vec<&str> = refusal
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    assert!(
+        lines.iter().any(|line| line.contains("dev image `app`")
+            && line.contains("Dockerfile")
+            && line.contains("WORKDIR")
+            && line.contains("`stage 1`")),
+        "the verdict names the image, Dockerfile, stage, and missing workdir:\n{refusal}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("next: set WORKDIR")),
+        "the refusal must carry the WORKDIR remedy:\n{refusal}"
+    );
+    assert!(
+        !root.join(".slipfork/world.json").exists(),
+        "a refused dev boot must never write world state"
+    );
+
+    // (b) `WORKDIR /code`: the pod runs there over the live checkout, no restart needed.
+    let code = journey.project("devcode", DEV_FORKFILE);
+    fs::write(code.join("Dockerfile"), DEV_CODE_DOCKERFILE).expect("write the /code Dockerfile");
+    fs::write(code.join("hello.py"), DEV_HELLO).expect("write hello.py");
+    let up = journey.slipfork(&code, &["up"]);
+    assert!(
+        up.status.success(),
+        "{}",
+        up_failure("`WORKDIR /code` must boot", &code, &up)
+    );
+    let pwd = journey.slipfork(&code, &["exec", "web", "--", "pwd"]);
+    assert_eq!(
+        stdout(&pwd).trim(),
+        "/code",
+        "exec must run in the Dockerfile WORKDIR:\n{}",
+        stderr(&pwd)
+    );
+    fs::write(code.join("hello.py"), "print('live edit')\n").expect("edit the host file");
+    let live = journey.slipfork(&code, &["exec", "web", "--", "cat", "hello.py"]);
+    assert_eq!(
+        stdout(&live),
+        "print('live edit')\n",
+        "host edits under `/code` must be live without a restart:\n{}",
+        stderr(&live)
+    );
+
+    // (c) An explicit `/project/api` WORKDIR keeps the `/project` bind: `/project/api` maps to
+    // `<project>/api`, so host edits there are live.
+    let kept = journey.project("devkeep", DEV_FORKFILE);
+    fs::write(kept.join("Dockerfile"), DEV_PROJECT_DOCKERFILE)
+        .expect("write the /project/api Dockerfile");
+    fs::create_dir_all(kept.join("api")).expect("create the api directory");
+    fs::write(kept.join("api/hello.py"), DEV_HELLO).expect("write api/hello.py");
+    let up = journey.slipfork(&kept, &["up"]);
+    assert!(
+        up.status.success(),
+        "{}",
+        up_failure("`WORKDIR /project/api` must boot", &kept, &up)
+    );
+    let pwd = journey.slipfork(&kept, &["exec", "web", "--", "pwd"]);
+    assert_eq!(stdout(&pwd).trim(), "/project/api");
+    fs::write(kept.join("api/hello.py"), "print('kept edit')\n").expect("edit api/hello.py");
+    let live = journey.slipfork(&kept, &["exec", "web", "--", "cat", "hello.py"]);
+    assert_eq!(stdout(&live), "print('kept edit')\n");
+
+    // (d) `-F -dev` is pure Docker: the image copy and its WORKDIR, never the host checkout.
+    let baked = journey.project("devbaked", DEV_FORKFILE);
+    fs::write(baked.join("Dockerfile"), DEV_CODE_DOCKERFILE).expect("write the /code Dockerfile");
+    fs::write(baked.join("hello.py"), DEV_HELLO).expect("write hello.py");
+    let up = journey.slipfork(&baked, &["up", "-F", "-dev"]);
+    assert!(
+        up.status.success(),
+        "{}",
+        up_failure("`-F -dev` must boot", &baked, &up)
+    );
+    fs::write(baked.join("hello.py"), "print('host only')\n").expect("edit the host file");
+    let baked_read = journey.slipfork(&baked, &["exec", "web", "--", "cat", "hello.py"]);
+    assert_eq!(
+        stdout(&baked_read),
+        DEV_HELLO,
+        "`-F -dev` must keep the baked copy:\n{}",
+        stderr(&baked_read)
+    );
+    let pwd = journey.slipfork(&baked, &["exec", "web", "--", "pwd"]);
+    assert_eq!(stdout(&pwd).trim(), "/code");
+
+    // (e) A no-WORKDIR image is refused only for `dev`: `-F -dev` still boots its baked copy.
+    let baked_root = journey.project("devbakedroot", DEV_FORKFILE);
+    fs::write(baked_root.join("Dockerfile"), DEV_ROOT_DOCKERFILE)
+        .expect("write the root Dockerfile");
+    fs::write(baked_root.join("hello.py"), DEV_HELLO).expect("write hello.py");
+    let up = journey.slipfork(&baked_root, &["up", "-F", "-dev"]);
+    assert!(
+        up.status.success(),
+        "{}",
+        up_failure("`-F -dev` must boot a no-WORKDIR image", &baked_root, &up)
+    );
+    let pwd = journey.slipfork(&baked_root, &["exec", "web", "--", "pwd"]);
+    assert_eq!(stdout(&pwd).trim(), "/");
+    let baked_read = journey.slipfork(&baked_root, &["exec", "web", "--", "cat", "/hello.py"]);
+    assert_eq!(
+        stdout(&baked_read),
+        DEV_HELLO,
+        "the image copy must be visible at `/`:\n{}",
+        stderr(&baked_read)
+    );
+    fs::write(baked_root.join("hello.py"), "print('host only')\n").expect("edit the host file");
+    let still_baked = journey.slipfork(&baked_root, &["exec", "web", "--", "cat", "/hello.py"]);
+    assert_eq!(
+        stdout(&still_baked),
+        DEV_HELLO,
+        "`-F -dev` must never see the host edit"
+    );
+
+    for project in [&code, &kept, &baked, &baked_root] {
+        let down = journey.slipfork(project, &["down"]);
+        assert!(down.status.success(), "final down: {}", stderr(&down));
+    }
+}
+
+#[test]
 fn help_lists_the_daily_verbs() {
     let output = Command::new(env!("CARGO_BIN_EXE_slipfork"))
         .arg("--help")
@@ -3131,6 +3286,38 @@ image app . {
   }
 }
 "#;
+
+const DEV_FORKFILE: &str = r#"# forkfile: 0.1
+image app . {
+  dockerfile Dockerfile
+  service web {
+    run: python3 -m http.server 8099
+  }
+}
+"#;
+
+// No WORKDIR: dev must refuse instead of overlaying the rootfs root.
+const DEV_ROOT_DOCKERFILE: &str = "\
+FROM python:3.13-slim
+COPY . .
+CMD [\"python3\", \"-m\", \"http.server\", \"8099\"]
+";
+
+const DEV_CODE_DOCKERFILE: &str = "\
+FROM python:3.13-slim
+WORKDIR /code
+COPY . .
+CMD [\"python3\", \"-m\", \"http.server\", \"8099\"]
+";
+
+const DEV_PROJECT_DOCKERFILE: &str = "\
+FROM python:3.13-slim
+WORKDIR /project/api
+COPY . .
+CMD [\"python3\", \"-m\", \"http.server\", \"8099\"]
+";
+
+const DEV_HELLO: &str = "print('baked')\n";
 
 // Real SigV4 PUT + auth/anon GET roundtrips on `uploads` (private) and `assets` (cdn public-read).
 const S3_PROBE: &str = r#"import datetime, hashlib, hmac, os, pathlib, time, urllib.error, urllib.request

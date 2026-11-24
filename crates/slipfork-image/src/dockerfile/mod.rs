@@ -4,6 +4,7 @@
 //! [`Instruction`] values, so no downstream module re-scans `$`, `<<`, or flag text.
 
 mod config;
+mod dev;
 mod instruction;
 mod parse;
 mod variables;

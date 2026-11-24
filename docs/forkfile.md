@@ -57,6 +57,13 @@ starts, with a `Forkfile:<line>:<col>` caret span naming the token.
 `/project`. Declare only extra switches, and let groups imply their members: `dev = [mail]` turns
 `mail` on whenever `dev` is on. Drop `dev` per command with `-F -dev` or `--no-default-features`.
 
+With `dev`, a Dockerfile-built image overlays its live build context at the target stage's
+`WORKDIR` and at any distinct whole-context `COPY` destination, so `slipfork exec` and
+`slipfork shell` see your edits immediately. An explicit `WORKDIR` under `/project` keeps that bind.
+
+A stage with no `WORKDIR` (still `/`) refuses a `dev` boot with one line + a `next:` hint.
+`-F -dev` keeps the image copy instead.
+
 `slipfork features` shows the resolved set and persists edits (`slipfork features +mail`,
 `slipfork features -dev`, `slipfork features reset`) into `.slipfork/features.json` for the next boot.
 

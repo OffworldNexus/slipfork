@@ -7,6 +7,8 @@ use super::rootfs::{is_file_in_rootfs, shim_exists};
 use slipfork_forkfile::{FeatureSet, direct_bin};
 use slipfork_world::{Bind, BindSource, PodEnv};
 
+use super::dev::DevMount;
+
 const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 pub(super) fn project_bind(project: &Path) -> Bind {
@@ -24,6 +26,27 @@ pub(super) fn project_binds(features: &FeatureSet, project: &Path) -> Vec<Bind> 
     } else {
         Vec::new()
     }
+}
+
+/// The binds a `dev` pod gets: the checkout at `/project` plus every Dockerfile destination the
+/// stage's live context must overlay (`WORKDIR`, whole-context `COPY` destination). `/` is never
+/// a bind target.
+pub(super) fn dev_binds(
+    features: &FeatureSet,
+    project: &Path,
+    mount: Option<&DevMount>,
+) -> Vec<Bind> {
+    let mut binds = project_binds(features, project);
+    if let Some(mount) = mount {
+        for destination in mount.overlays.iter().filter(|dest| dest.as_str() != "/") {
+            binds.push(Bind {
+                source: BindSource::Host(mount.context.clone()),
+                destination: destination.clone(),
+                read_only: false,
+            });
+        }
+    }
+    binds
 }
 
 pub(super) fn merge_env(
@@ -266,6 +289,39 @@ mod tests {
             project_binds(&bare, std::path::Path::new("/var/tmp/demo")).is_empty(),
             "a non-dev world must not see the live checkout"
         );
+    }
+
+    /// A `WORKDIR /app` + `COPY . /srv` stage overlays the context at both destinations; a
+    /// `COPY . .` stage keeps one `/app` overlay.
+    #[test]
+    fn a_dev_mount_binds_the_context_at_the_workdir_and_every_copy_destination() {
+        let checked = slipfork_forkfile::compile("# forkfile: 0.1\n\nfeatures {\n  dev\n}\n")
+            .expect("compile the fixture");
+        let dev = checked.document.default_features();
+        let project = std::path::Path::new("/var/tmp/demo");
+        let split = super::DevMount {
+            workdir: "/app".to_owned(),
+            context: std::path::PathBuf::from("/var/tmp/demo"),
+            overlays: vec!["/app".to_owned(), "/srv".to_owned()],
+        };
+        let binds = super::dev_binds(&dev, project, Some(&split));
+        let destinations: Vec<&str> = binds.iter().map(|bind| bind.destination.as_str()).collect();
+        assert_eq!(destinations, ["/project", "/app", "/srv"]);
+        assert!(
+            binds.iter().all(|bind| bind.destination != "/"),
+            "a dev bind must never overlay the rootfs root"
+        );
+
+        let same = super::DevMount {
+            overlays: vec!["/app".to_owned()],
+            ..split
+        };
+        let same_binds = super::dev_binds(&dev, project, Some(&same));
+        let destinations: Vec<&str> = same_binds
+            .iter()
+            .map(|bind| bind.destination.as_str())
+            .collect();
+        assert_eq!(destinations, ["/project", "/app"]);
     }
 
     fn touch(root: &TempDir, relative: &str) {

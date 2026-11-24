@@ -22,6 +22,7 @@ use super::HostEnv;
 use super::supervise::{BootSink, Emitter};
 
 pub(crate) mod capture;
+mod dev;
 mod execute;
 pub(crate) mod frames;
 mod helpers;
@@ -30,7 +31,8 @@ pub(crate) use images::pull_externals;
 mod ready;
 mod resources;
 mod rootfs;
-use helpers::{ServiceLaunch, merge_env, merge_path, project_binds, shell_command, upsert_env};
+use dev::DevMounts;
+use helpers::{ServiceLaunch, dev_binds, merge_env, merge_path, shell_command, upsert_env};
 
 /// The one line a non-zero pod exit writes into both the capture and the failure message.
 pub(crate) fn exit_line(command: &str, code: i32) -> String {
@@ -52,6 +54,7 @@ pub(super) struct WorldRuntime {
     pod_host: PodHost,
     boot_timeout: Duration,
     images: ImageCache,
+    dev_mounts: DevMounts,
     services: Vec<ServiceNode>,
     resources: Vec<ResourceNode>,
     clones: Mutex<Vec<PathBuf>>,
@@ -86,6 +89,17 @@ impl WorldRuntime {
             emitter,
         } = boot;
         let scheme = "http";
+        // The Dockerfile owner answers where each dev image mounts its checkout; a stage that
+        // never left `/` refuses the whole boot before the supervisor or any pod exists.
+        let dev_mounts = DevMounts::load(
+            project,
+            world.as_str(),
+            scheme,
+            &plan.images,
+            doc,
+            &features,
+        );
+        dev_mounts.preflight()?;
         let is_fork = StoreLayout::parse_fork_world(std::ffi::OsStr::new(world.as_str())).is_some();
         let engine = BtrfsEngine::new(StoreLayout::at(env.store_root_for(project)));
         let layout = engine.layout().clone();
@@ -237,6 +251,7 @@ impl WorldRuntime {
             pod_host,
             boot_timeout,
             images,
+            dev_mounts,
             services: plan.services.clone(),
             resources: plan.resources.clone(),
             clones: Mutex::new(initial_clones),
@@ -364,6 +379,13 @@ impl WorldRuntime {
         let built = self
             .built_for(step.image.as_ref(), log)
             .map_err(BootFailure::new)?;
+        let dev = match step.image.as_deref() {
+            Some(image) => self
+                .dev_mounts
+                .dev_for(image, &built)
+                .map_err(BootFailure::new)?,
+            None => None,
+        };
         let rootfs = self
             .clone_rootfs(&built.rootfs, &format!("boot{}", step.line), false)
             .map_err(BootFailure::new)?;
@@ -371,7 +393,9 @@ impl WorldRuntime {
         let spec = PodSpec {
             id: format!("boot-{seq}"),
             rootfs,
-            workdir: built.workdir,
+            workdir: dev
+                .as_ref()
+                .map_or_else(|| built.workdir.clone(), |mount| mount.workdir.clone()),
             argv: vec![
                 "/bin/sh".to_owned(),
                 "-c".to_owned(),
@@ -379,7 +403,7 @@ impl WorldRuntime {
             ],
             inherited_env: built.inherited_env,
             env: self.pod_env_for(&step.subject, step.image.as_deref(), None),
-            binds: project_binds(&self.features, &self.project),
+            binds: dev_binds(&self.features, &self.project, dev.as_ref()),
             files: Vec::new(),
         };
         // Setup and hook pods run to completion over `control.sock` with their pipes attached, so
@@ -412,7 +436,14 @@ impl WorldRuntime {
 
     fn start_service(&self, step: &BootStep, log: &mut BootSink) -> Result<Staged, String> {
         let sigma = step.subject.clone();
+        let image = step.image.as_deref().ok_or_else(|| {
+            format!(
+                "service `{sigma}` has no enclosing image\nnext: declare the service inside its image block"
+            )
+        })?;
         let built = self.built_for(step.image.as_ref(), log)?;
+        // Defense in depth: the same derivation that passed preflight refuses the bind here too.
+        let dev = self.dev_mounts.dev_for(image, &built)?;
         let rootfs = self.clone_rootfs(&built.rootfs, &format!("svc-{sigma}"), true)?;
         let port = self
             .services
@@ -425,8 +456,14 @@ impl WorldRuntime {
         let path = merge_path(&env, &built.inherited_env);
         let mut launch_env = Vec::new();
         let (argv, display) = if let Some(command) = &step.command {
-            let launch =
-                ServiceLaunch::resolve(&self.project, &built.workdir, &rootfs, &path, command);
+            let launch = ServiceLaunch::resolve(
+                &self.project,
+                dev.as_ref()
+                    .map_or(built.workdir.as_str(), |mount| mount.workdir.as_str()),
+                &rootfs,
+                &path,
+                command,
+            );
             launch_env = launch.env;
             (launch.argv, command.clone())
         } else if built.argv.is_empty() {
@@ -439,11 +476,13 @@ impl WorldRuntime {
         let mut spec = PodSpec {
             id: sigma,
             rootfs,
-            workdir: built.workdir,
+            workdir: dev
+                .as_ref()
+                .map_or_else(|| built.workdir.clone(), |mount| mount.workdir.clone()),
             argv,
             inherited_env: built.inherited_env,
             env,
-            binds: project_binds(&self.features, &self.project),
+            binds: dev_binds(&self.features, &self.project, dev.as_ref()),
             files: Vec::new(),
         };
         upsert_env(&mut spec.env, launch_env);

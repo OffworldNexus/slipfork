@@ -169,6 +169,8 @@ Root steps get Docker's default capability sets inside the user namespace, non-r
 
 `COPY`/`ADD --chown` accepts names or numbers resolved against the destination image (fail closed on unknown users), but every copied entry is written owned by the invoking uid; `--chmod` sets the mode. The build context is never mounted, so `RUN` writes only to the rootfs and explicit cache mounts.
 
+Under the built-in `dev` feature the runtime overlays `<project>/<build context>` at the target stage's effective `WORKDIR` and at any distinct whole-context `COPY`/`ADD` destination, so `slipfork exec` and `slipfork shell` read host edits through the live mounts; a `WORKDIR` already under `/project` keeps that bind. A stage whose effective `WORKDIR` is still `/` refuses the `dev` boot before any pod starts (one line + `next:`), because the rootfs root is never overlaid; `-F -dev` keeps the image copy and its `WORKDIR`.
+
 Runtime pods are unchanged: they keep the identity `$UID` baseline.
 
 !!! info "Why one mapping"

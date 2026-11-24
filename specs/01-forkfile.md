@@ -72,6 +72,8 @@ Each `image` declares a rootfs and encloses the `service`s and hooks that run in
 
 `dev` is built in and active for every local command: it is the switch that bind-mounts the checkout at `/project`. `-F -dev` (or `--no-default-features`) drops it and runs each image's own `ENTRYPOINT`/`CMD` with no `/project` bind.
 
+With `dev`, a Dockerfile-built image overlays its live build context at the target stage's effective `WORKDIR` and at any distinct whole-context `COPY`/`ADD` destination, so `slipfork exec` and `slipfork shell` see host edits immediately; an explicit `WORKDIR /project…` keeps that bind. A stage that never sets `WORKDIR` still runs from `/`, which cannot be overlaid, so a `dev` boot refuses before any pod starts (one line + `next:`); `-F -dev` keeps the image copy and its `WORKDIR`.
+
 `features` declares extra switches and groups. The default base is `{dev} ∪ features.default`, and a group implies its members transitively, so `dev = [mail]` turns `mail` on whenever `dev` is on. `-F/--features` edits that set per command (`-F mail`, `-F +mail`, `-F -dev`, `-F dev,mail`), and `slipfork features` persists the same edits to `.slipfork/features.json`.
 
 `on <expr>` accepts `dev`, `!dev`, `dev & mail` and `staging | preview`, switching Dockerfile stages, conditional `arg`s, hot-reloading `run:` commands and dev-only services. Slipfork type-checks every branch before booting anything.
