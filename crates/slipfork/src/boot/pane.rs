@@ -4,187 +4,30 @@
 //! 120ms-refreshed panel, re-applied on `SIGWINCH`. Every escape is emitted only for a colour TTY.
 
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::ui::Palette;
 use crate::ui::table::ColumnWidths;
 
 use super::build::LiveSteps;
-use super::region::{ScrollRegionGuard, take_resized};
+use super::region::ScrollRegionGuard;
 use super::render::{panel_line, running_row, status_line};
+
+use self::rows::{Slot, TaskRows};
+
+mod rows;
+#[cfg(test)]
+mod tests;
+mod ticker;
+
+pub(super) use ticker::Ticker;
 
 /// Braille spinner for a terminal that accepts ANSI.
 const BRAILLE: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
 /// A pane exists only for a colour terminal, so its block is always styled.
 const PALETTE: Palette = Palette::new(true);
-
-/// One live task row: its fixed slot, identity, and the clock its spinner reads.
-#[derive(Debug, Clone)]
-pub(super) struct Task {
-    pub(super) slot: usize,
-    pub(super) kind: String,
-    pub(super) name: String,
-    pub(super) started: Instant,
-    pub(super) done: bool,
-}
-
-/// Where one allocation landed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Slot {
-    /// A free content row.
-    Row(usize),
-    /// A free content row that required one physical region scroll first.
-    Scrolled(usize),
-    /// No region (`rows < 3`): counters only.
-    Unavailable,
-}
-
-impl Slot {
-    fn row(self) -> Option<usize> {
-        match self {
-            Self::Row(row) | Self::Scrolled(row) => Some(row),
-            Self::Unavailable => None,
-        }
-    }
-
-    fn scrolled(self) -> bool {
-        matches!(self, Self::Scrolled(_))
-    }
-}
-
-/// The 2D content grid: one fixed slot per task, scrolled one line at a time when it fills up.
-#[derive(Debug)]
-pub(super) struct TaskRows {
-    tasks: Vec<Task>,
-    /// The next free content row; `bottom + 1` means the grid is full.
-    next: usize,
-    bottom: usize,
-}
-
-impl TaskRows {
-    pub(super) fn new(next: usize, bottom: usize) -> Self {
-        Self {
-            tasks: Vec::new(),
-            next,
-            bottom,
-        }
-    }
-
-    /// Allocates a fixed row for one started task.
-    pub(super) fn begin(&mut self, kind: &str, name: &str) -> Slot {
-        let slot = self.take();
-        if let Some(row) = slot.row() {
-            self.tasks.push(Task {
-                slot: row,
-                kind: kind.to_owned(),
-                name: name.to_owned(),
-                started: Instant::now(),
-                done: false,
-            });
-        }
-        slot
-    }
-
-    /// Allocates a free row for one free-form line.
-    pub(super) fn place(&mut self) -> Slot {
-        self.take()
-    }
-
-    /// Marks the matching task finished and returns the fixed slot its row must be rewritten in.
-    pub(super) fn complete(&mut self, kind: &str, name: &str) -> Option<usize> {
-        let task = self
-            .tasks
-            .iter_mut()
-            .find(|task| !task.done && task.kind == kind && task.name == name)?;
-        task.done = true;
-        Some(task.slot)
-    }
-
-    /// Tasks that still own a spinning row, top to bottom.
-    pub(super) fn live(&self) -> impl Iterator<Item = &Task> {
-        self.tasks.iter().filter(|task| !task.done)
-    }
-
-    /// The names of every running task, in slot order.
-    pub(super) fn running(&self) -> Vec<&str> {
-        self.live().map(|task| task.name.as_str()).collect()
-    }
-
-    /// The blank row under the last task, when one is still free.
-    pub(super) fn free_row(&self) -> Option<usize> {
-        (self.next <= self.bottom).then_some(self.next)
-    }
-
-    /// The next allocation row, clamped to the content region.
-    pub(super) fn next_row(&self) -> usize {
-        self.next.min(self.bottom.max(1))
-    }
-
-    /// Lowers the grid's bottom when `block` is empty, without scrolling settled rows.
-    pub(super) fn set_bottom(&mut self, bottom: usize) {
-        self.bottom = bottom;
-    }
-
-    /// Reserves rows below `bottom` for a non-empty narrative block, returning the physical region
-    /// scrolls needed so settled rows at `bottom + 1 .. self.next` move up instead of being
-    /// overwritten by `block`.
-    pub(super) fn reserve_below(&mut self, bottom: usize) -> usize {
-        self.bottom = bottom;
-        let occupied = self.next.saturating_sub(1);
-        if occupied <= bottom {
-            return 0;
-        }
-        let shift = occupied - bottom;
-        for task in &mut self.tasks {
-            task.slot = task.slot.saturating_sub(shift);
-        }
-        self.tasks.retain(|task| task.slot >= 1);
-        self.next = bottom + 1;
-        shift
-    }
-
-    /// Re-seeds the grid after a resize, dropping rows the terminal no longer owns.
-    pub(super) fn fit(&mut self, next: usize, bottom: usize) {
-        self.bottom = bottom;
-        if bottom == 0 {
-            self.tasks.clear();
-            self.next = 1;
-            return;
-        }
-        self.next = next.clamp(1, bottom);
-        self.tasks.retain(|task| task.slot <= bottom);
-        for task in &mut self.tasks {
-            task.slot = task.slot.clamp(1, bottom);
-        }
-    }
-
-    fn take(&mut self) -> Slot {
-        if self.bottom == 0 {
-            return Slot::Unavailable;
-        }
-        let scrolled = self.next > self.bottom;
-        if scrolled {
-            // One line leaves the top of the region: every surviving slot moves up one, and a
-            // task that lived on row 1 is gone from the grid for good.
-            for task in &mut self.tasks {
-                task.slot = task.slot.saturating_sub(1);
-            }
-            self.tasks.retain(|task| task.slot >= 1);
-            self.next = self.bottom;
-        }
-        let slot = self.next;
-        self.next += 1;
-        if scrolled {
-            Slot::Scrolled(slot)
-        } else {
-            Slot::Row(slot)
-        }
-    }
-}
 
 /// The one shared live region: task rows, the injected [`LiveSteps`], the panel, and its guard.
 pub(super) struct Pane {
@@ -534,139 +377,4 @@ fn terminal_size() -> (usize, usize) {
     crossterm::terminal::size().map_or((80, 0), |(cols, rows)| {
         (usize::from(cols), usize::from(rows))
     })
-}
-
-/// Refreshes the visible pane every 120ms so every spinner and elapsed time stays live even when
-/// the daemon is quiet.
-pub(super) struct Ticker {
-    stop: Arc<AtomicBool>,
-    handle: Option<JoinHandle<()>>,
-}
-
-impl Ticker {
-    pub(super) fn start(pane: Arc<Mutex<Pane>>) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&stop);
-        let handle = thread::spawn(move || {
-            while !flag.load(Ordering::Relaxed) {
-                if take_resized() {
-                    let (cols, rows) = terminal_size();
-                    if let Ok(mut pane) = pane.lock() {
-                        pane.set_size(cols, rows);
-                    }
-                }
-                if let Ok(mut pane) = pane.lock() {
-                    pane.draw();
-                }
-                thread::sleep(Duration::from_millis(120));
-            }
-        });
-        Self {
-            stop,
-            handle: Some(handle),
-        }
-    }
-}
-
-impl Drop for Ticker {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Slot, TaskRows};
-    use crate::boot::render::{Node, completed_row, plan_widths};
-
-    /// Two `Started` events in one tick own two distinct rows, spin together, and finish in place.
-    #[test]
-    fn two_started_tasks_spin_on_their_own_rows_and_finish_in_place() {
-        let mut tasks = TaskRows::new(4, 10);
-        assert_eq!(tasks.begin("image", "base"), Slot::Row(4));
-        assert_eq!(tasks.begin("service", "front"), Slot::Row(5));
-        assert_eq!(tasks.running(), ["base", "front"]);
-
-        let widths = plan_widths(&[
-            ("image".to_owned(), "base".to_owned()),
-            ("service".to_owned(), "front".to_owned()),
-        ]);
-        let spinning: Vec<(usize, String)> = tasks
-            .live()
-            .map(|task| {
-                (
-                    task.slot,
-                    crate::boot::render::running_row(&task.kind, &task.name, '⠋', 900, &widths),
-                )
-            })
-            .collect();
-        assert_eq!(spinning[0].0, 4);
-        assert_eq!(spinning[1].0, 5);
-        for (slot, row) in &spinning {
-            assert!(row.contains('⠋'), "slot {slot} must spin: {row:?}");
-            assert!(row.contains("running"), "slot {slot}: {row:?}");
-        }
-
-        let finished = completed_row(
-            &Node {
-                kind: "image",
-                name: "base",
-                state: "Cached",
-                millis: 120,
-                run_id: None,
-                success: true,
-            },
-            &widths,
-            false,
-        );
-        assert!(finished.contains('✓'));
-        assert_eq!(
-            tasks.complete("image", "base"),
-            Some(4),
-            "the finished row rewrites slot 4"
-        );
-        assert_eq!(tasks.running(), ["front"], "the other row keeps spinning");
-        assert_eq!(
-            tasks.live().next().map(|task| task.slot),
-            Some(5),
-            "the live row never moves"
-        );
-        assert_eq!(tasks.complete("service", "front"), Some(5));
-        assert!(tasks.running().is_empty());
-    }
-
-    /// A full grid scrolls exactly one line and the task that leaves the top is gone for good.
-    #[test]
-    fn a_full_grid_scrolls_one_line_and_drops_the_top_task() {
-        let mut tasks = TaskRows::new(2, 2);
-        assert_eq!(tasks.begin("image", "one"), Slot::Row(2));
-        assert_eq!(tasks.begin("service", "two"), Slot::Scrolled(2));
-        let slots: Vec<usize> = tasks.live().map(|task| task.slot).collect();
-        assert_eq!(slots, [1, 2], "every surviving task moves up one row");
-
-        assert_eq!(tasks.begin("setup", "three"), Slot::Scrolled(2));
-        let names: Vec<&str> = tasks.running();
-        assert_eq!(names, ["two", "three"], "the row-1 task left the grid");
-        assert_eq!(tasks.complete("one", "gone"), None);
-    }
-
-    /// The narrative block shrinks the grid without dropping a settled row's slot, and shifts
-    /// bottom-row settled allocations upward when a block opens over `region_bottom`.
-    #[test]
-    fn narrative_block_reserves_rows_by_scrolling_settled_slots_upward() {
-        let mut tasks = TaskRows::new(5, 20);
-        assert_eq!(tasks.begin("service", "api"), Slot::Row(5));
-        assert_eq!(tasks.reserve_below(12), 0);
-        assert_eq!(tasks.next_row(), 6);
-        tasks.set_bottom(20);
-        assert_eq!(tasks.next_row(), 6, "restored bottom keeps the next slot");
-
-        let mut bottom_seeded = TaskRows::new(39, 39);
-        assert_eq!(bottom_seeded.place(), Slot::Row(39));
-        assert_eq!(bottom_seeded.reserve_below(38), 1);
-        assert_eq!(bottom_seeded.next_row(), 38);
-    }
 }

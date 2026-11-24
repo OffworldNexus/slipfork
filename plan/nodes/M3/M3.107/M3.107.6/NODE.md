@@ -1,17 +1,23 @@
 ---
 id: M3.107.6
-title: "Split boot/pane.rs into cohesive <=500-LOC modules (no behaviour change)"
+title: Split boot/pane.rs and daemon/lifecycle/logs.rs into cohesive modules (no behaviour change)
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.107.4]
-paths: [crates/slipfork/src/boot.rs, "crates/slipfork/src/boot/**"]
-attempts: 0
+paths:
+  - crates/slipfork/src/boot.rs
+  - "crates/slipfork/src/boot/**"
+  - crates/slipfork/src/daemon/lifecycle/logs.rs
+  - crates/slipfork/src/daemon/lifecycle/replay.rs
+  - "crates/slipfork/src/daemon/lifecycle/logs/**"
+  - crates/slipfork/src/daemon/lifecycle/mod.rs
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-24T13:58"
-updated: "2026-11-24T13:58"
+updated: "2026-11-24T14:35"
 ---
 
 # Goal
