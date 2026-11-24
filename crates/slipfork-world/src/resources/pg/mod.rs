@@ -7,7 +7,7 @@ mod wire;
 
 pub use databases::{DatabaseBootstrap, DatabaseFault, DatabaseName};
 pub use launcher::{PostgresClone, PostgresLauncher};
-pub use template::{PostgresTemplate, TemplateState};
+pub use template::{PgSeed, PostgresTemplate, SeedSpec, TemplateState};
 pub use wire::PostgresSession;
 
 /// Store subdirectory holding sealed golden templates.

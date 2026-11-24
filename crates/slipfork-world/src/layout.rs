@@ -15,6 +15,8 @@ pub const WORLDS_DIR: &str = "worlds";
 pub const PODS_DIR: &str = "pods";
 /// Persistent per-pod capture files live here, so `logs` survives `down`.
 pub const LOGS_DIR: &str = "logs";
+/// Content-addressed sealed nodes live here (`specs/03` §6).
+pub const SNAPSHOTS_DIR: &str = "snapshots";
 /// Project-relative directory holding project snapshots.
 pub const FORKS_DIR: &str = ".forks";
 
@@ -85,6 +87,12 @@ impl StoreLayout {
     #[must_use]
     pub fn logs_root(&self) -> PathBuf {
         self.store_root.join(LOGS_DIR)
+    }
+
+    /// `<mount>/.slipfork-store/snapshots`: every sealed content-addressed node plus `.lock`.
+    #[must_use]
+    pub fn snapshots_root(&self) -> PathBuf {
+        self.store_root.join(SNAPSHOTS_DIR)
     }
 
     /// `<mount>/.slipfork-store/logs/<world>`: one world's capture directory.

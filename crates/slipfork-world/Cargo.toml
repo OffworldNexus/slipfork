@@ -11,6 +11,7 @@ live = []
 [dependencies]
 base64.workspace = true
 hmac.workspace = true
+hex.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
@@ -24,7 +25,6 @@ subtle.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-hex.workspace = true
 hmac.workspace = true
 libc.workspace = true
 # Dev-only cycle (`slipfork-image` depends on this crate) so the live gate can pull its own
@@ -48,4 +48,9 @@ required-features = ["live"]
 [[test]]
 name = "critical_pod_runtime"
 path = "tests/critical_pod_runtime.rs"
+required-features = ["live"]
+
+[[test]]
+name = "critical_snapshot_graph"
+path = "tests/critical_snapshot_graph.rs"
 required-features = ["live"]

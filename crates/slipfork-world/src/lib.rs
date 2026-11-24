@@ -43,6 +43,7 @@ pub mod run_log;
 #[allow(unsafe_code)]
 mod runtime_dir;
 mod secure_file;
+pub mod snapshot;
 #[allow(unsafe_code)]
 mod supervisor;
 
@@ -88,9 +89,15 @@ pub use pod_log::{CHUNK, DIVIDER_CLOSE, DIVIDER_OPEN, LogKind, LogLine, LogReade
 pub use port::{Dirtiness, ForkPaths, WorldEngine};
 pub use reap::{kill_group, reap_world_tree};
 pub use resources::{
-    DatabaseBootstrap, DatabaseFault, DatabaseName, ImageFacts, PostgresClone, PostgresLauncher,
-    PostgresTemplate, RedisLauncher, ResourceKind, S3Bucket, S3Credentials, S3Server,
-    TemplateState,
+    DatabaseBootstrap, DatabaseFault, DatabaseName, ImageFacts, PgSeed, PostgresClone,
+    PostgresLauncher, PostgresTemplate, RedisLauncher, ResourceKind, S3Bucket, S3Credentials,
+    S3Server, SeedSpec, TemplateState,
 };
 pub use runtime_dir::RuntimePods;
+pub use snapshot::{
+    BuildGraph, Cache, Facts, GC_GRACE_MS, GcOutcome, GcReport, KEY_DOMAIN, LEASE_FILE, Lease,
+    LeaseEntry, Node, NodeKey, NodeKind, Parallelism, Pin, PublishOutcome, RECORD_VERSION,
+    ReconcileFailed, Reconciled, SnapshotError, SnapshotResult, SnapshotSlot, SnapshotStore,
+    gc_mark_set, normalize_canon,
+};
 pub use supervisor::{PodStatus, WorldHost, WorldSupervisor, WorldTools, pod_statuses};

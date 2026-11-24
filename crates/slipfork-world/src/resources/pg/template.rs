@@ -14,6 +14,7 @@ use crate::layout::StoreLayout;
 use crate::pod::{Bind, BindSource, PodEnv, PodSpec};
 use crate::port::{Dirtiness, WorldEngine};
 use crate::resources::binary_in;
+use crate::snapshot::NodeKey;
 
 use super::launcher::clear_stale_state;
 use super::{
@@ -103,24 +104,12 @@ impl PostgresTemplate {
     /// The curated dataset carries nothing world-specific, so every world (and every fork) can
     /// clone it; child databases are created later inside the world.
     pub fn initdb_spec(&self, pod: &str, rootfs: &Path, data: &Path) -> Result<PodSpec> {
-        let initdb = binary_in(rootfs, &INITDB_CANDIDATES).ok_or_else(|| Error::MissingTool {
-            tool: "initdb",
-            path: rootfs.join(INITDB_CANDIDATES[0]),
-        })?;
+        let seed = PgSeed::spec(rootfs)?;
         Ok(PodSpec {
             id: pod.to_owned(),
             rootfs: rootfs.to_path_buf(),
             workdir: "/".to_owned(),
-            argv: vec![
-                initdb,
-                "-D".to_owned(),
-                PGDATA.to_owned(),
-                "-U".to_owned(),
-                "postgres".to_owned(),
-                "--auth=trust".to_owned(),
-                "--encoding=UTF8".to_owned(),
-                "--no-sync".to_owned(),
-            ],
+            argv: seed.argv,
             inherited_env: Vec::new(),
             env: vec![PodEnv::new("POSTGRES_HOST_AUTH_METHOD", "trust")],
             binds: vec![Bind {
@@ -213,6 +202,68 @@ impl PostgresTemplate {
             fs::read_to_string(self.stamp()),
             Ok(version) if version.trim() == TEMPLATE_VERSION
         ))
+    }
+}
+
+/// The `initdb` argv a sealed `seed` node hashes, rootfs-absolute.
+fn initdb_argv(initdb: String) -> Vec<String> {
+    vec![
+        initdb,
+        "-D".to_owned(),
+        PGDATA.to_owned(),
+        "-U".to_owned(),
+        "postgres".to_owned(),
+        "--auth=trust".to_owned(),
+        "--encoding=UTF8".to_owned(),
+        "--no-sync".to_owned(),
+    ]
+}
+
+/// The immutable value a `seed` node is built from: `initdb` argv + template version (§6.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeedSpec {
+    argv: Vec<String>,
+    template_version: String,
+}
+
+impl SeedSpec {
+    /// The exact `initdb` argv the seed subvolume is built with.
+    #[must_use]
+    pub fn argv(&self) -> &[String] {
+        &self.argv
+    }
+
+    /// The template contract, bumped when the `initdb` invocation changes.
+    #[must_use]
+    pub fn template_version(&self) -> &str {
+        &self.template_version
+    }
+
+    /// The content-addressed `seed` key over the `postgres` image it was built from.
+    #[must_use]
+    pub fn node_key(&self, arch: &str, image: &NodeKey) -> NodeKey {
+        NodeKey::seed(arch, image, &self.argv, &self.template_version)
+    }
+}
+
+/// The `postgres` seed node's value: argv discovery plus the template version, no pods, no disk.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PgSeed;
+
+impl PgSeed {
+    /// The template contract this build reproduces.
+    pub const TEMPLATE_VERSION: &'static str = TEMPLATE_VERSION;
+
+    /// Discovers `initdb` inside `rootfs` and freezes the argv a `seed` node hashes.
+    pub fn spec(rootfs: &Path) -> Result<SeedSpec> {
+        let initdb = binary_in(rootfs, &INITDB_CANDIDATES).ok_or_else(|| Error::MissingTool {
+            tool: "initdb",
+            path: rootfs.join(INITDB_CANDIDATES[0]),
+        })?;
+        Ok(SeedSpec {
+            argv: initdb_argv(initdb),
+            template_version: TEMPLATE_VERSION.to_owned(),
+        })
     }
 }
 
