@@ -83,6 +83,16 @@ impl Credentials {
     }
 }
 
+/// The registry's shared timeout and TLS configuration: 15 s connect and 300 s read timeouts,
+/// workspace TLS, redirects followed. A fresh agent is built per call — there is no singleton.
+/// Registry pulls and `ADD <http(s)://…>` downloads both configure `ureq` this way.
+pub(crate) fn agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(15))
+        .timeout_read(Duration::from_secs(300))
+        .build()
+}
+
 /// HTTPS client for one injected registry scheme.
 pub struct RegistryClient {
     agent: ureq::Agent,
@@ -95,12 +105,8 @@ impl RegistryClient {
     /// Builds the client; no socket opens until a session runs.
     #[must_use]
     pub fn new(credentials: Credentials, user_agent: impl Into<String>) -> Self {
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(Duration::from_secs(15))
-            .timeout_read(Duration::from_secs(300))
-            .build();
         Self {
-            agent,
+            agent: agent(),
             credentials,
             user_agent: user_agent.into(),
             scheme: RegistryScheme::Https,

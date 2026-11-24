@@ -92,28 +92,6 @@ pub struct FsInfoArgs {
     pub reserved: [u8; 944],
 }
 
-pub(crate) fn fsid(dir: &File, path: &Path) -> Result<[u8; BTRFS_FSID_SIZE]> {
-    let mut args = FsInfoArgs {
-        max_id: 0,
-        num_devices: 0,
-        fsid: [0; BTRFS_FSID_SIZE],
-        nodesize: 0,
-        sectorsize: 0,
-        clone_alignment: 0,
-        csum_type: 0,
-        csum_size: 0,
-        flags: 0,
-        generation: 0,
-        metadata_uuid: [0; BTRFS_FSID_SIZE],
-        reserved: [0; 944],
-    };
-    // SAFETY: `dir` is a live Btrfs directory fd and `args` matches `btrfs_ioctl_fs_info_args`.
-    check("read btrfs filesystem uuid", path, unsafe {
-        libc::ioctl(dir.as_raw_fd(), FS_INFO as _, &mut args)
-    })?;
-    Ok(args.fsid)
-}
-
 pub(crate) fn get_flags(dir: &File, path: &Path) -> Result<SubvolumeFlags> {
     let mut flags: u64 = 0;
     // SAFETY: `dir` holds a live descriptor and the kernel writes exactly one `u64` through it.

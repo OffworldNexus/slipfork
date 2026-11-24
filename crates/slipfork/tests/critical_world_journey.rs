@@ -14,6 +14,7 @@ use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -21,7 +22,8 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use slipfork_world::{
-    BtrfsEngine, Dirtiness, STORE_DIR, StoreLayout, WorldEngine, WorldName, is_subvolume_path,
+    BtrfsEngine, Dirtiness, LogStore, STORE_DIR, StoreLayout, WorldEngine, WorldName,
+    is_subvolume_path,
 };
 
 const BTRFS_SUPER_MAGIC: u64 = 0x9123_683E;
@@ -103,6 +105,25 @@ image app . {
   dockerfile Dockerfile
   service broken {
     run: @uv run python -c "raise SystemExit(7)"
+  }
+}
+"#;
+
+// The run-catalog journey: one image whose `RUN` fails before any pod can start.
+const FAIL_BUILD_DOCKERFILE: &str = "\
+FROM python:3.13-slim
+RUN sh -c 'echo failed-run-marker; echo failed-run-error >&2; exit 9'
+WORKDIR /project
+CMD [\"python3\", \"--version\"]
+";
+
+const CATALOG_FORKFILE: &str = r#"# forkfile: 0.1
+image app . {
+  dockerfile Dockerfile
+  service api {
+    port 8000
+    route /
+    run: @uv run python app.py
   }
 }
 "#;
@@ -225,7 +246,8 @@ fn require_registry_egress() {
     );
 }
 
-fn mount_store_for(path: &Path) -> PathBuf {
+/// The longest mount containing `path`, exactly as the daemon's store-root resolver sees it.
+fn mount_for(path: &Path) -> PathBuf {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;
 
@@ -269,13 +291,23 @@ fn mount_store_for(path: &Path) -> PathBuf {
         }
     }
     best.map_or_else(|| PathBuf::from("/"), |(mount, _)| mount)
-        .join(STORE_DIR)
+}
+
+/// The store root the CLI resolves for `run`: `<mount>/.slipfork-store` on a writable non-`/`
+/// mount, else `$XDG_DATA_HOME/slipfork/store` — the same `LogStore::root_for` rule.
+fn expected_store_root(run: &Path, data_home: &Path) -> PathBuf {
+    let mount = mount_for(run);
+    let probe = mount.join(format!(".slipfork-write-probe-{}", std::process::id()));
+    let writable = fs::write(&probe, b"").is_ok();
+    let _ = fs::remove_file(&probe);
+    LogStore::root_for(std::slice::from_ref(&mount), run, data_home, writable)
 }
 
 /// The scratch root plus its projects: `Drop` always tears both worlds down and removes the root.
 struct Journey {
     run: PathBuf,
     runtime: PathBuf,
+    data_home: PathBuf,
     store_root: PathBuf,
     projects: RefCell<Vec<PathBuf>>,
 }
@@ -283,9 +315,10 @@ struct Journey {
 impl Journey {
     fn new() -> Self {
         let run = live_run_root();
-        let store_root = mount_store_for(&run);
+        let data_home = run.join("data");
+        let store_root = expected_store_root(&run, &data_home);
         let engine = BtrfsEngine::new(StoreLayout::at(&store_root));
-        for world in ["good", "baked", "broken", "logs"] {
+        for world in ["good", "baked", "broken", "logs", "buildfail"] {
             if let Ok(world) = WorldName::parse(world) {
                 let _ = engine.drop_world(&world);
             }
@@ -293,6 +326,7 @@ impl Journey {
         Self {
             run,
             runtime: require_tmpfs_runtime_dir(),
+            data_home,
             store_root,
             projects: RefCell::new(Vec::new()),
         }
@@ -327,6 +361,7 @@ impl Journey {
             .env("NO_COLOR", "1")
             .env("XDG_RUNTIME_DIR", &self.runtime)
             .env("XDG_STATE_HOME", self.run.join("state"))
+            .env("XDG_DATA_HOME", &self.data_home)
             .output()
             .expect("the slipfork binary must be runnable")
     }
@@ -339,6 +374,7 @@ impl Journey {
             .env("NO_COLOR", "1")
             .env("XDG_RUNTIME_DIR", &self.runtime)
             .env("XDG_STATE_HOME", self.run.join("state"))
+            .env("XDG_DATA_HOME", &self.data_home)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -360,6 +396,7 @@ impl Journey {
             project,
             &self.runtime,
             &self.run.join("state"),
+            &self.data_home,
             args,
             cols,
             rows,
@@ -380,6 +417,7 @@ impl Pty {
         project: &Path,
         runtime: &Path,
         state: &Path,
+        data_home: &Path,
         args: &[&str],
         cols: u16,
         rows: u16,
@@ -429,6 +467,7 @@ impl Pty {
                 .env("NO_COLOR", "1")
                 .env("XDG_RUNTIME_DIR", runtime)
                 .env("XDG_STATE_HOME", state)
+                .env("XDG_DATA_HOME", data_home)
                 .stdin(Stdio::from(slave.try_clone().expect("clone the slave")))
                 .stdout(Stdio::from(slave.try_clone().expect("clone the slave")))
                 .stderr(Stdio::from(slave.try_clone().expect("clone the slave")));
@@ -604,6 +643,7 @@ impl Drop for Journey {
                     .env("NO_COLOR", "1")
                     .env("XDG_RUNTIME_DIR", &self.runtime)
                     .env("XDG_STATE_HOME", self.run.join("state"))
+                    .env("XDG_DATA_HOME", &self.data_home)
                     .output();
             }
             self.shutdown_daemon();
@@ -642,7 +682,7 @@ impl Drop for Journey {
             }
         }
         let store_engine = BtrfsEngine::new(StoreLayout::at(&self.store_root));
-        for world in ["good", "baked", "broken", "logs"] {
+        for world in ["good", "baked", "broken", "logs", "buildfail"] {
             if let Ok(world) = WorldName::parse(world) {
                 let _ = store_engine.drop_world(&world);
             }
@@ -731,6 +771,23 @@ impl Journey {
             }
         }
     }
+}
+
+/// Every entry name directly under `dir`, sorted, minus the journey's isolated `state` dir.
+fn sorted_listing(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .expect("read the scratch root")
+        .map(|entry| {
+            entry
+                .expect("read a scratch entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| name != "state")
+        .collect();
+    names.sort();
+    names
 }
 
 /// The last 80 lines of a project's supervisor log, for a failing `up` panic message.
@@ -907,6 +964,19 @@ fn world_up_restart_down_journey() {
     let good = journey.project("good", GOOD_FORKFILE);
     fs::write(good.join("probe.py"), S3_PROBE).expect("write probe.py");
 
+    // The owner's regression: `up` must never convert the checkout into a subvolume, adopt a
+    // sibling, or replace a single inode. Record the identity before the first boot.
+    assert!(
+        !is_subvolume_path(&good).unwrap_or(true),
+        "the fixture must be a plain directory, not a subvolume: {}",
+        good.display()
+    );
+    let parent = good.parent().expect("scratch root").to_path_buf();
+    let project_before = fs::metadata(&good).expect("stat the project");
+    let app_before = fs::metadata(good.join("app.py")).expect("stat app.py");
+    let forkfile_before = fs::metadata(good.join("Forkfile")).expect("stat Forkfile");
+    let listing_before = sorted_listing(&parent);
+
     // 1. First boot: exactly one deduplicated `uv sync`, then hooks and both services.
     let first = journey.slipfork(&good, &["up"]);
     let first_out = stdout(&first);
@@ -915,6 +985,47 @@ fn world_up_restart_down_journey() {
         first.status.success(),
         "{}",
         up_failure("first `up` failed", &good, &first)
+    );
+
+    // `up` is read-only over its own checkout: identical inodes, an unchanged parent listing, no
+    // `.slipfork-adopt` sibling, and still a plain directory (never a subvolume).
+    let project_after = fs::metadata(&good).expect("restat the project after `up`");
+    assert_eq!(
+        (project_after.ino(), project_after.dev()),
+        (project_before.ino(), project_before.dev()),
+        "`up` must never replace the project directory with a subvolume"
+    );
+    let app_after = fs::metadata(good.join("app.py")).expect("restat app.py");
+    assert_eq!(
+        (app_after.ino(), app_after.dev()),
+        (app_before.ino(), app_before.dev()),
+        "`up` must leave `app.py` in place"
+    );
+    let forkfile_after = fs::metadata(good.join("Forkfile")).expect("restat Forkfile");
+    assert_eq!(
+        (forkfile_after.ino(), forkfile_after.dev()),
+        (forkfile_before.ino(), forkfile_before.dev()),
+        "`up` must leave `Forkfile` in place"
+    );
+    assert_eq!(
+        fs::read_to_string(good.join("app.py")).expect("read app.py after `up`"),
+        APP_PY,
+        "`up` must never rewrite the checkout's own files"
+    );
+    assert!(
+        !is_subvolume_path(&good).unwrap_or(true),
+        "`up` must never convert a plain checkout into a subvolume"
+    );
+    let listing_after = sorted_listing(&parent);
+    assert_eq!(
+        listing_after, listing_before,
+        "`up` must not touch the project's parent directory"
+    );
+    assert!(
+        !listing_after
+            .iter()
+            .any(|name| name.contains(".slipfork-adopt")),
+        "`up` must never adopt a sibling: {listing_after:?}"
     );
     assert!(
         first_out.contains("✓ Ready -> http://good.localhost"),
@@ -1207,8 +1318,12 @@ fn world_up_restart_down_journey() {
         "{refused}"
     );
     assert!(
-        refused.contains("  next: slipfork shell api, worker, probe, pg, cache"),
-        "the refusal must list every shellable target: {refused}"
+        refused.contains("\nnext: slipfork shell api, worker, probe, pg, cache"),
+        "the refusal must list every shellable target at column 0: {refused}"
+    );
+    assert!(
+        !refused.contains("\n  next:"),
+        "the remedy never carries a residual indent: {refused}"
     );
     assert!(!refused.contains('\u{1b}'), "NO_COLOR refusals stay plain");
     let unknown = journey.slipfork(&good, &["shell", "apii"]);
@@ -1218,7 +1333,10 @@ fn world_up_restart_down_journey() {
         refused.contains("✗ No shellable target 'apii'"),
         "{refused}"
     );
-    assert!(refused.contains("  next: slipfork shell api"), "{refused}");
+    assert!(
+        refused.contains("\nnext: slipfork shell api"),
+        "the remedy starts at column 0: {refused}"
+    );
 
     let mut api = journey.pty(&good, &["shell", "api"], 120, 40);
     api.expect("(good:api)", Duration::from_secs(20));
@@ -1405,8 +1523,9 @@ fn world_up_restart_down_journey() {
         failed_out.contains("→ [") || failed_out.contains('✗'),
         "failure must keep a phase header or the ✗ tail:\nstdout={failed_out}\nstderr={failed_err}"
     );
-    // A service failure is one crisp plain remedy line (`boot::render::failure_sentence`) and
-    // nothing else: no `error:`, no `next:`, and no numbered `Forkfile:` line.
+    // A service failure prints its crisp sentence on `stderr` plus exactly one catalog-derived
+    // remedy (`boot::render::failure_sentence`) on the stream that carries the boot rows: no
+    // `error:`, no numbered `Forkfile:` line, no second hint.
     let stderr_lines: Vec<&str> = failed_err
         .lines()
         .map(str::trim)
@@ -1414,15 +1533,44 @@ fn world_up_restart_down_journey() {
         .collect();
     assert_eq!(
         stderr_lines,
-        ["✗ Failed to start service broken — check logs with: slipfork logs broken"],
-        "a service failure prints exactly one crisp remedy line:\nstdout={failed_out}\nstderr={failed_err}"
+        ["✗ Failed to start service broken"],
+        "a service failure prints exactly one sentence on stderr:\nstdout={failed_out}\nstderr={failed_err}"
     );
-    for forbidden in ["error:", "next:", "Forkfile:"] {
+    let failure_copy = format!("{failed_out}\n{failed_err}");
+    let remedies: Vec<&str> = failure_copy
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| line.strip_prefix("next: slipfork logs -r "))
+        .collect();
+    assert_eq!(
+        remedies.len(),
+        1,
+        "a service failure prints exactly one `-r` remedy across both streams:\n{failure_copy}"
+    );
+    assert!(
+        !remedies[0].is_empty(),
+        "the one remedy must replay a run:\n{failure_copy}"
+    );
+    let run_id = remedies[0].to_owned();
+    assert_eq!(failure_copy.matches("next:").count(), 1, "{failure_copy}");
+    for forbidden in ["error:", "check logs with:", "Forkfile:"] {
         assert!(
-            !failed_err.contains(forbidden),
-            "a service failure must not print `{forbidden}`:\n{failed_err}"
+            !failure_copy.contains(forbidden),
+            "a service failure must not print `{forbidden}`:\n{failure_copy}"
         );
     }
+    let replay = journey.slipfork(&broken, &["logs", "-r", &run_id]);
+    assert!(
+        replay.status.success(),
+        "the printed `-r {run_id}` must replay the failed service run: {}",
+        stderr(&replay)
+    );
+    let by_target = journey.slipfork(&broken, &["logs", "broken"]);
+    assert!(
+        by_target.status.success(),
+        "`logs broken` must read the failed service capture: {}",
+        stderr(&by_target)
+    );
     assert!(
         broken.join(".slipfork/world.json").is_file(),
         "the world must stay up after a failed service"
@@ -1440,6 +1588,21 @@ fn world_up_restart_down_journey() {
         }),
         "the failed service row must render `broken` with `failed` as its last column:\n{listed_text}"
     );
+    // Re-running `up` on the live failed world takes `Heal` (`Request::Restart`), refuses `Ready`
+    // when `broken` exits again, and leaves `down` able to reap the restarted pod cleanly.
+    let heal_failed = journey.slipfork(&broken, &["up"]);
+    assert!(
+        !heal_failed.status.success(),
+        "heal of a permanently broken service must fail:\n{}",
+        up_failure("second `up` on broken succeeded", &broken, &heal_failed)
+    );
+    assert!(
+        !stdout(&heal_failed).contains("✓ Ready")
+            && stderr(&heal_failed).contains("next: slipfork logs broken"),
+        "heal failure must name `next: slipfork logs broken`:\nstdout={}\nstderr={}",
+        stdout(&heal_failed),
+        stderr(&heal_failed)
+    );
     let down = journey.slipfork(&broken, &["down"]);
     assert!(
         down.status.success(),
@@ -1450,6 +1613,150 @@ fn world_up_restart_down_journey() {
         stdout(&down).contains("→ [1/1] stopping broken"),
         "down must stream its phase header:\n{}",
         stdout(&down)
+    );
+
+    // 3a. The failed service run is still the newest record: a real `down` (never a later
+    // successful rebuild) keeps `logs broken`, `logs -r <id>` and `--runs` readable.
+    for args in [
+        &["logs", "broken"][..],
+        &["logs", "-r", run_id.as_str()][..],
+        &["logs", "--runs"][..],
+    ] {
+        let replay = journey.slipfork(&broken, args);
+        assert!(
+            replay.status.success(),
+            "`{args:?}` must work after `down`: {}",
+            stderr(&replay)
+        );
+    }
+    let catalog = journey.slipfork(&broken, &["logs", "--runs"]);
+    assert!(
+        stdout(&catalog)
+            .lines()
+            .any(|line| line.contains(&format!("#{run_id}")) && line.contains("failed")),
+        "the failed service run survives `down`:\n{}",
+        stdout(&catalog)
+    );
+
+    // 3b. A failing image `RUN` is a durable catalog run: `logs <image>` and `logs -r <id>` replay
+    // the build output, `--runs` lists it, and a later successful boot plus `down` keeps all three.
+    let buildfail = journey.project("buildfail", CATALOG_FORKFILE);
+    fs::write(buildfail.join("Dockerfile"), FAIL_BUILD_DOCKERFILE)
+        .expect("write the failing Dockerfile");
+    let failed_build = journey.slipfork(&buildfail, &["up"]);
+    assert_eq!(
+        failed_build.status.code(),
+        Some(1),
+        "{}",
+        up_failure(
+            "a failing image RUN must fail `up`",
+            &buildfail,
+            &failed_build
+        )
+    );
+    let build_failure = format!("{}{}", stdout(&failed_build), stderr(&failed_build));
+    assert_eq!(
+        build_failure.matches("next:").count(),
+        1,
+        "an image failure prints exactly one `next:`:\n{build_failure}"
+    );
+    let build_run = build_failure
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("next: slipfork logs -r "))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| panic!("the image failure must name its run:\n{build_failure}"))
+        .to_owned();
+    let image_log = journey
+        .store_root
+        .join("logs")
+        .join("buildfail")
+        .join("app.log");
+    assert!(
+        image_log.is_file(),
+        "the failed build must leave `{}`",
+        image_log.display()
+    );
+    assert!(
+        !buildfail.join(".slipfork/world.json").exists(),
+        "a cold image build failure with zero pods must tear its empty world down immediately"
+    );
+    let by_image = journey.slipfork(&buildfail, &["logs", "app"]);
+    assert!(
+        by_image.status.success(),
+        "`logs app` after a failed build: {}",
+        stderr(&by_image)
+    );
+    assert!(
+        stdout(&by_image).contains("failed-run-marker"),
+        "`logs app` must replay the failed RUN output:\n{}",
+        stdout(&by_image)
+    );
+    let by_run = journey.slipfork(&buildfail, &["logs", "-r", &build_run]);
+    assert!(
+        by_run.status.success(),
+        "`logs -r {build_run}`: {}",
+        stderr(&by_run)
+    );
+    assert!(
+        stdout(&by_run).contains("failed-run-marker"),
+        "`logs -r {build_run}` must replay the failed RUN output:\n{}",
+        stdout(&by_run)
+    );
+    let catalog = journey.slipfork(&buildfail, &["logs", "--runs"]);
+    assert!(
+        catalog.status.success(),
+        "`logs --runs`: {}",
+        stderr(&catalog)
+    );
+    let catalog_text = stdout(&catalog);
+    assert!(
+        catalog_text
+            .lines()
+            .any(|line| line.contains(&format!("#{build_run}")) && line.contains("failed")),
+        "`--runs` must list the failed image run:\n{catalog_text}"
+    );
+    let catalog_json = journey.slipfork(&buildfail, &["logs", "--runs", "--json"]);
+    assert!(
+        catalog_json.status.success(),
+        "`logs --runs --json`: {}",
+        stderr(&catalog_json)
+    );
+    let catalog_json_text = stdout(&catalog_json);
+    assert!(
+        !catalog_json_text.contains('\u{1b}'),
+        "`--runs --json` stays escape-free:\n{catalog_json_text}"
+    );
+    let record = catalog_json_text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|value| value["run_id"].as_str() == Some(build_run.as_str()))
+        .unwrap_or_else(|| panic!("no JSON record for {build_run}:\n{catalog_json_text}"));
+    assert_eq!(record["kind"], "image", "{record}");
+    assert_eq!(record["target"], "app", "{record}");
+    assert_eq!(record["state"], "failed", "{record}");
+    assert!(record["started_ms"].is_u64(), "{record}");
+    assert!(record["finished_ms"].is_u64(), "{record}");
+    assert!(record["duration_ms"].is_u64(), "{record}");
+    assert_eq!(record["world"], "buildfail", "{record}");
+    assert!(
+        record["project"]
+            .as_str()
+            .is_some_and(|project| project.ends_with("buildfail")),
+        "{record}"
+    );
+
+    // The bare run id is a first-class target, not only an `-r` spec.
+    let bare_run = journey.slipfork(&buildfail, &["logs", &build_run]);
+    assert!(
+        bare_run.status.success(),
+        "`logs {build_run}` must replay the run: {}",
+        stderr(&bare_run)
+    );
+    assert!(
+        stdout(&bare_run).contains("failed-run-marker"),
+        "`logs {build_run}` must replay the captured output:\n{}",
+        stdout(&bare_run)
     );
 
     // 4. Down and re-up: the stamped `uv sync` is skipped and named as such.
@@ -1637,6 +1944,28 @@ fn world_up_restart_down_journey() {
         );
     }
     assert!(!good.join(".slipfork/world.json").exists());
+    // The whole up/restart/down lifecycle leaves the checkout inode-identical, never a
+    // subvolume, and never adopted into a sibling.
+    let project_final = fs::metadata(&good).expect("stat the project after teardown");
+    assert_eq!(
+        (project_final.ino(), project_final.dev()),
+        (project_before.ino(), project_before.dev()),
+        "`up`/`restart`/`down` must never replace the project directory"
+    );
+    assert!(
+        !is_subvolume_path(&good).unwrap_or(true),
+        "teardown must never convert the checkout into a subvolume"
+    );
+    assert!(
+        !fs::read_dir(&parent)
+            .expect("read the scratch root after teardown")
+            .flatten()
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .contains(".slipfork-adopt")),
+        "no `.slipfork-adopt` sibling may survive teardown"
+    );
     assert!(!broken.join(".slipfork/world.json").exists());
 
     // 6. No per-project `.slipfork-store` exists, and no run subvolume survives in the mount store.

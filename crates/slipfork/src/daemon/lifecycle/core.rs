@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::Arc;
 use std::time::Instant;
@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use slipfork_ingress::{IngressRegistry, IngressTable};
 use slipfork_vcs::VcsWorkspace;
 use slipfork_world::control::{PROTOCOL_VERSION, Request};
+use slipfork_world::{LogStore, WorldName};
 
 use super::super::Failure;
 use super::super::rpc::{key_of, pid_alive, world_answers, world_call};
@@ -26,6 +27,8 @@ pub(crate) enum World {
         project: PathBuf,
         /// Validated world id.
         world: String,
+        /// Canonical tmpfs pod root (`<runtime_dir>/slipfork/pods/<world>`).
+        pods_dir: PathBuf,
         /// Supervisor process id.
         supervisor_pid: u32,
     },
@@ -135,14 +138,61 @@ impl Core {
 
     pub(crate) fn forget(&mut self, key: &str) {
         if let Some(world) = self.worlds.remove(key) {
-            let project = match world {
-                World::Booting { project, .. } => project,
-                World::Live { entry, .. } => entry.project,
+            let (project, name) = match world {
+                World::Booting { project, world, .. } => (project, world),
+                World::Live { entry, .. } => (entry.project, entry.world),
             };
+            Self::report_retain(self.retain_runs(&project, &name));
             let _ = registry::store_fingerprint(&self.state_dir, &project, None);
         }
         self.ingress = None;
         let _ = self.persist();
+    }
+
+    /// The canonical `<store>/logs/<world>` store for `project`, live or stopped.
+    pub(crate) fn log_store(&self, project: &Path) -> Option<LogStore> {
+        let world = match self.worlds.get(&key_of(project)) {
+            Some(world) => world.name().to_owned(),
+            None => crate::world::world_name(project, None)
+                .ok()?
+                .as_str()
+                .to_owned(),
+        };
+        Some(LogStore::at(
+            self.host.store_root_for(project),
+            WorldName::parse(&world).ok()?,
+        ))
+    }
+
+    /// Prunes one explicit world's captures to [`slipfork_world::RETAIN_RUNS`] successes plus every
+    /// failure, returning how many were removed.
+    ///
+    /// A `failed` record and its `.log`/`.idx` are never pruned: the artifact an operator needs
+    /// after a failed boot or a `down` must outlive every teardown.
+    pub(crate) fn retain_runs(&self, project: &Path, world: &str) -> Result<usize, Failure> {
+        let store = LogStore::at(
+            self.host.store_root_for(project),
+            WorldName::parse(world).map_err(|error| Failure::new("no-world", error.to_string()))?,
+        );
+        store.retain(slipfork_world::RETAIN_RUNS).map_err(|error| {
+            Failure::new(
+                "run-retain",
+                format!(
+                    "cannot prune run captures in `{}`: {error}",
+                    store.run_dir().display()
+                ),
+            )
+        })
+    }
+
+    /// Reports a prune failure on stderr without failing the teardown that triggered it.
+    pub(super) fn report_retain(outcome: Result<usize, Failure>) {
+        if let Err(failure) = outcome {
+            eprintln!(
+                "slipfork daemon: {}",
+                failure.message.lines().next().unwrap_or_default()
+            );
+        }
     }
 
     pub(crate) fn restart(

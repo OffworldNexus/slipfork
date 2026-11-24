@@ -6,7 +6,7 @@
 
 use std::fs;
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -106,33 +106,19 @@ fn btrfs_lifecycle() {
         "worlds/ must be owned"
     );
 
-    // 1b. Adoption inside an unmounted parent subvolume (distinct `st_dev`, same `BTRFS_IOC_FS_INFO`
-    // `fsid`) must succeed without falsely reporting `CrossDevice`.
-    let parent_subvol = run.join("home-subvol");
-    engine
-        .create_subvolume(&parent_subvol)
-        .expect("create parent subvolume");
-    let nested_checkout = parent_subvol.join("checkout");
-    fs::create_dir_all(&nested_checkout).expect("seed nested checkout");
-    fs::write(nested_checkout.join("Forkfile"), "# forkfile: 0.1\n").expect("seed Forkfile");
-    engine
-        .adopt_project(&nested_checkout)
-        .expect("adopt checkout inside an unmounted subvolume on the same Btrfs mount");
-    assert!(is_subvolume_path(&nested_checkout).expect("nested checkout becomes a subvolume"));
-    engine
-        .destroy(&nested_checkout, Dirtiness::Clean, false)
-        .expect("destroy nested checkout");
-    engine
-        .destroy(&parent_subvol, Dirtiness::Clean, false)
-        .expect("destroy parent subvolume");
+    // 1b. A plain (non-subvolume) checkout is seeded here for 3b's copy proof.
+    let plain = run.join("plaincheck");
+    fs::create_dir_all(&plain).expect("seed a plain checkout");
+    fs::write(plain.join("Forkfile"), "# forkfile: 0.1\n").expect("seed Forkfile");
 
-    // 2. Plain checkout -> in-place subvolume conversion with zero copying.
+    // 2. A subvolume checkout keeps the `SNAP_CREATE_V2` fast path; seed the demo tree in place.
     let project = run.join("demo");
+    engine
+        .create_subvolume(&project)
+        .expect("create the demo subvolume");
     fs::create_dir_all(project.join("src")).expect("seed project tree");
     fs::write(project.join("src/main.rs"), "fn main() {}\n").expect("seed source");
     fs::write(project.join("Cargo.toml"), "[package]\nname = \"demo\"\n").expect("seed manifest");
-    // A nested tree, git metadata, and a symlink: a directory cannot cross a subvolume root with
-    // `rename(2)`, so conversion must rebuild each directory rather than fail with `EXDEV`.
     fs::create_dir_all(project.join("src/nested")).expect("seed nested tree");
     fs::write(project.join("src/nested/main.rs"), "pub fn nested() {}\n")
         .expect("seed nested file");
@@ -147,64 +133,7 @@ fn btrfs_lifecycle() {
     fs::write(project.join("run.sh"), "#!/bin/sh\necho demo\n").expect("seed script");
     fs::set_permissions(project.join("run.sh"), fs::Permissions::from_mode(0o755))
         .expect("pin the executable mode");
-    assert!(!is_subvolume_path(&project).expect("probe plain directory"));
-    engine
-        .adopt_project(&project)
-        .expect("convert the checkout in place");
-    assert!(is_subvolume_path(&project).expect("probe converted checkout"));
-    assert_eq!(
-        fs::read_to_string(project.join("src/main.rs")).expect("read converted payload"),
-        "fn main() {}\n",
-        "in-place conversion must not lose file contents"
-    );
-    assert_eq!(
-        fs::read_to_string(project.join("src/nested/main.rs")).expect("read nested payload"),
-        "pub fn nested() {}\n",
-        "conversion must rebuild nested directories instead of refusing the cross-subvolume move"
-    );
-    assert_eq!(
-        fs::metadata(project.join("src/nested"))
-            .expect("probe the converted nested directory")
-            .permissions()
-            .mode()
-            & 0o777,
-        0o750,
-        "conversion must carry directory modes across the subvolume boundary"
-    );
-    assert_eq!(
-        fs::read_to_string(project.join(".git/HEAD")).expect("read git head"),
-        "ref: refs/heads/develop\n",
-        "`.git` must move recursively, never be dropped"
-    );
-    assert!(
-        fs::symlink_metadata(project.join("link"))
-            .expect("probe the converted symlink")
-            .file_type()
-            .is_symlink(),
-        "a symlink must move as a link, never as a followed copy"
-    );
-    assert_eq!(
-        fs::read_link(project.join("link")).expect("read the converted symlink"),
-        Path::new("src/nested/main.rs"),
-        "the symlink target must survive conversion unchanged"
-    );
-    assert_eq!(
-        fs::read_to_string(project.join("run.sh")).expect("read the converted script"),
-        "#!/bin/sh\necho demo\n",
-        "file contents must survive conversion unchanged"
-    );
-    assert_eq!(
-        fs::metadata(project.join("run.sh"))
-            .expect("probe the converted script")
-            .permissions()
-            .mode()
-            & 0o777,
-        0o755,
-        "conversion must preserve executable file modes"
-    );
-    engine
-        .adopt_project(&project)
-        .expect("conversion must be idempotent");
+    assert!(is_subvolume_path(&project).expect("probe the demo subvolume"));
 
     // 3. World data subvolume under worlds/.
     let world = WorldName::parse("demo").expect("valid world name");
@@ -213,6 +142,92 @@ fn btrfs_lifecycle() {
     assert_eq!(
         engine.create_world(&world).expect("idempotent world"),
         world_data
+    );
+
+    // 3b. `fork` on a plain checkout copies the tree into `<project>/.forks/<name>` and leaves the
+    // parent inode untouched; the copy is a plain directory, never a subvolume.
+    let dir_inode = fs::metadata(&plain).expect("stat the plain checkout").ino();
+    fs::create_dir_all(plain.join("src/nested")).expect("seed the plain tree");
+    fs::write(plain.join("src/main.rs"), "fn main() {}\n").expect("seed plain source");
+    fs::write(plain.join("src/nested/main.rs"), "pub fn nested() {}\n")
+        .expect("seed the plain nested file");
+    fs::set_permissions(plain.join("src/nested"), fs::Permissions::from_mode(0o750))
+        .expect("pin the plain nested mode");
+    fs::write(plain.join("run.sh"), "#!/bin/sh\necho demo\n").expect("seed the plain script");
+    fs::set_permissions(plain.join("run.sh"), fs::Permissions::from_mode(0o755))
+        .expect("pin the plain executable mode");
+    symlink("src/nested/main.rs", plain.join("link")).expect("seed the plain symlink");
+    fs::create_dir_all(plain.join(".forks/stale")).expect("seed a stale fork tree");
+    let copy = ForkName::parse("feat-copy").expect("valid fork name");
+    let copied = engine
+        .fork(&plain, &world, &copy)
+        .expect("fork a plain checkout");
+    assert_eq!(
+        fs::metadata(&plain)
+            .expect("restat the plain checkout")
+            .ino(),
+        dir_inode,
+        "fork must never swap the parent checkout inode"
+    );
+    assert_eq!(
+        fs::read_to_string(copied.project.join("src/main.rs")).expect("read the copied source"),
+        "fn main() {}\n"
+    );
+    assert_eq!(
+        fs::read_to_string(copied.project.join("src/nested/main.rs")).expect("read nested copy"),
+        "pub fn nested() {}\n"
+    );
+    assert_eq!(
+        fs::metadata(copied.project.join("src/nested"))
+            .expect("probe the copied nested directory")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o750,
+        "copy_checkout must carry directory modes"
+    );
+    assert_eq!(
+        fs::metadata(copied.project.join("run.sh"))
+            .expect("probe the copied script")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755,
+        "copy_checkout must preserve executable modes"
+    );
+    assert!(
+        fs::symlink_metadata(copied.project.join("link"))
+            .expect("probe the copied symlink")
+            .file_type()
+            .is_symlink(),
+        "copy_checkout must recreate symlinks, never follow them"
+    );
+    assert_eq!(
+        fs::read_link(copied.project.join("link")).expect("read the copied symlink"),
+        Path::new("src/nested/main.rs")
+    );
+    assert!(
+        !copied.project.join(".forks").exists(),
+        "copy_checkout must never copy `.forks` into the fork"
+    );
+    assert!(
+        !is_subvolume_path(&copied.project).expect("probe the copied checkout"),
+        "a copied checkout is a plain directory, not a subvolume"
+    );
+    assert!(
+        is_subvolume_path(&copied.world).expect("probe the world snapshot"),
+        "the world snapshot is still a real subvolume"
+    );
+    engine
+        .drop_fork(&plain, &world, &copy, Dirtiness::Clean, false)
+        .expect("drop the copied fork");
+    assert!(
+        !copied.project.exists(),
+        "drop must remove the copied checkout directory"
+    );
+    assert!(
+        !copied.world.exists(),
+        "drop must remove the paired world snapshot"
     );
 
     // 4. Steady-state CoW fork of the project AND the world data subvolume, measured over three

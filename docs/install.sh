@@ -181,6 +181,65 @@ sha256_of() {
     fi
 }
 
+provision_services() {
+    units=$1
+    bindir=$2
+    [ -f "$units/slipfork.service" ] || return 0
+    [ -d /run/systemd/system ] || return 0
+    case "${SLIPFORK_INSTALL_NO_SERVICE:-0}" in
+        0 | "") ;;
+        *) return 0 ;;
+    esac
+    target=""
+    if [ "$(id -u)" -eq 0 ]; then
+        [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] || return 0
+        target=$SUDO_USER
+        target_uid=$(id -u "$target" 2>/dev/null) || return 0
+        target_home=$(getent passwd "$target" 2>/dev/null | cut -d: -f6)
+        [ -n "$target_home" ] || return 0
+        config="$target_home/.config"
+        loginctl enable-linger "$target" >/dev/null 2>&1 || true
+    else
+        config=${XDG_CONFIG_HOME:-$HOME/.config}
+        loginctl enable-linger "$(id -un)" >/dev/null 2>&1 || true
+    fi
+    command -v systemctl >/dev/null 2>&1 || return 0
+    if [ -n "$target" ]; then
+        command -v runuser >/dev/null 2>&1 || return 0
+        as_user() {
+            runuser -u "$target" -- env XDG_RUNTIME_DIR="/run/user/$target_uid" \
+                DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$target_uid/bus" "$@"
+        }
+    else
+        as_user() { "$@"; }
+    fi
+    mkdir -p "$config/systemd/user" 2>/dev/null || return 0
+    sed "s|^ExecStart=/usr/bin/slipfork |ExecStart=$bindir/slipfork |" \
+        "$units/slipfork.service" >"$config/systemd/user/slipfork.service" 2>/dev/null || return 0
+    if [ -n "$target" ]; then
+        chown -R "$target" "$config/systemd" 2>/dev/null || true
+    fi
+    as_user systemctl --user daemon-reload >/dev/null 2>&1 || return 0
+    as_user systemctl --user enable --now slipfork.service >/dev/null 2>&1 || true
+    # The system :80 socket is provisioned only when root names a real user.
+    [ -n "$target" ] || return 0
+    [ -f "$units/slipfork-ingress.socket" ] || return 0
+    [ -f "$units/slipfork-ingress@.service" ] || return 0
+    install -m 0644 "$units/slipfork-ingress.socket" \
+        /etc/systemd/system/slipfork-ingress.socket 2>/dev/null || return 0
+    install -m 0644 "$units/slipfork-ingress@.service" \
+        /etc/systemd/system/slipfork-ingress@.service 2>/dev/null || return 0
+    printf 'User=%s\nEnvironment=XDG_RUNTIME_DIR=/run/user/%s\n' "$target" "$target_uid" \
+        >>/etc/systemd/system/slipfork-ingress@.service 2>/dev/null || true
+    profile=$(dirname "$units")/apparmor/slipfork
+    if [ -f "$profile" ] && command -v apparmor_parser >/dev/null 2>&1; then
+        install -m 0644 "$profile" /etc/apparmor.d/slipfork 2>/dev/null || true
+        apparmor_parser -r -W /etc/apparmor.d/slipfork >/dev/null 2>&1 || true
+    fi
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable --now slipfork-ingress.socket >/dev/null 2>&1 || true
+}
+
 install_archive() {
     url=$(archive_url)
     tmp=$(mktemp -d "${TMPDIR:-/var/tmp}/slipfork-install.XXXXXX")
@@ -229,6 +288,7 @@ install_archive() {
     [ -f "$root/LICENSE" ] && install -m 0644 "$root/LICENSE" "$prefix/share/slipfork-LICENSE"
     "$prefix/bin/slipfork" --version </dev/null >/dev/null ||
         die "$prefix/bin/slipfork does not run" "run $prefix/bin/slipfork doctor and check the loader with ldd"
+    provision_services "$prefix/share/slipfork/systemd" "$prefix/bin"
     say "${green}$(printf '\342\234\223')${reset} Installed ${bold}slipfork${reset} into $prefix/bin"
     say "next: run ${bold}slipfork doctor${reset} inside your project, then ${bold}slipfork up${reset}"
 }

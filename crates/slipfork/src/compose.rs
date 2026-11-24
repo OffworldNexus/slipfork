@@ -3,7 +3,7 @@
 //! Nothing below this module reads `std::env`, `/proc`, the terminal, or the working directory:
 //! `main` calls these functions once and injects the resulting plain values.
 
-use std::ffi::{CStr, OsStr, OsString};
+use std::ffi::{OsStr, OsString};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
@@ -62,7 +62,7 @@ pub fn detect_ui(args: &[OsString]) -> UiMode {
 }
 
 /// Assembles the injected host environment for this invocation.
-pub fn host(args: &[OsString], cwd: &Path, terminal: Terminal) -> Result<HostEnv, String> {
+pub fn host(_args: &[OsString], _cwd: &Path, terminal: Terminal) -> Result<HostEnv, String> {
     let exe = std::env::current_exe()
         .map_err(|error| format!("cannot locate the slipfork binary: {error}"))?;
     // SAFETY: `geteuid(2)`/`getegid(2)` only read this process's credentials.
@@ -71,18 +71,7 @@ pub fn host(args: &[OsString], cwd: &Path, terminal: Terminal) -> Result<HostEnv
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
         .unwrap_or_else(|| PathBuf::from(format!("/var/tmp/slipfork-state-{uid}")));
-    // Under `sudo`, install into the invoking user's config dir, never `/root`.
-    let invoking_home = std::env::var("SUDO_USER")
-        .ok()
-        .map(|user| PathBuf::from("/home").join(user));
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .or_else(|| invoking_home.clone());
-    let config_base = if uid == 0 {
-        invoking_home.or_else(|| home.clone())
-    } else {
-        home.clone()
-    };
+    let home = std::env::var_os("HOME").map(PathBuf::from);
     let path: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|paths| std::env::split_paths(&paths).collect())
         .unwrap_or_default();
@@ -94,20 +83,9 @@ pub fn host(args: &[OsString], cwd: &Path, terminal: Terminal) -> Result<HostEnv
     let mounts = std::fs::read_to_string("/proc/self/mountinfo")
         .map(|text| mounts::parse_mountinfo(&text))
         .unwrap_or_default();
-    let project = active_project(args, cwd);
-    let store_root = mounts::store_root(&mounts, &project);
-    // Resolve the ingress principal and OpenRC flavour exactly once here; `install` and the
-    // handoff receive plain values and never probe ambient host state themselves.
-    let ingress_uid = std::env::var("SUDO_UID")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(uid);
     let install_root = std::env::var_os("SLIPFORK_INSTALL_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/"));
-    let ingress_user = passwd_name(ingress_uid);
-    let openrc =
-        install_root.join("sbin/openrc-run").exists() || install_root.join("etc/conf.d").is_dir();
     Ok(HostEnv {
         exe,
         path,
@@ -115,7 +93,6 @@ pub fn host(args: &[OsString], cwd: &Path, terminal: Terminal) -> Result<HostEnv
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(format!("/run/user/{uid}"))),
         state_dir: state_home.join("slipfork"),
-        store_root,
         mounts,
         arch: std::env::consts::ARCH,
         uid,
@@ -125,13 +102,6 @@ pub fn host(args: &[OsString], cwd: &Path, terminal: Terminal) -> Result<HostEnv
             Path::new("/run/systemd/resolve/resolv.conf"),
         ),
         home,
-        config_dir: std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| config_base.map(|base| base.join(".config")))
-            .unwrap_or_else(|| PathBuf::from(format!("/var/tmp/slipfork-config-{uid}"))),
-        ingress_uid,
-        ingress_user,
-        openrc,
         install_root,
         hostname: host_name(),
         display: std::env::var_os("DISPLAY").is_some()
@@ -141,14 +111,6 @@ pub fn host(args: &[OsString], cwd: &Path, terminal: Terminal) -> Result<HostEnv
         opener,
         env: std::env::vars().collect(),
     })
-}
-
-/// Resolves the project directory for this invocation (`--project` under `__supervise`, else `cwd`).
-fn active_project(args: &[OsString], cwd: &Path) -> PathBuf {
-    if let Some(path) = crate::cli::verbs::Cli::preparse_supervise_project(args) {
-        return std::fs::canonicalize(&path).unwrap_or(path);
-    }
-    cwd.to_path_buf()
 }
 
 /// Reads this host's name once; the kernel truncates anything longer than 255 bytes.
@@ -164,38 +126,6 @@ fn host_name() -> String {
         .position(|byte| *byte == 0)
         .unwrap_or(buffer.len());
     String::from_utf8_lossy(&buffer[..end]).into_owned()
-}
-
-/// Resolves the passwd name for the injected ingress uid, falling back to the number.
-fn passwd_name(uid: u32) -> String {
-    let mut record = std::mem::MaybeUninit::<libc::passwd>::uninit();
-    let mut result = std::ptr::null_mut();
-    let mut buffer = vec![0_u8; 16 * 1024];
-    // SAFETY: `getpwuid_r` only reads the live uid and writes into `record`/`buffer`; `result`
-    // points back at `record` on success, which is then initialized.
-    let status = unsafe {
-        libc::getpwuid_r(
-            uid,
-            record.as_mut_ptr(),
-            buffer.as_mut_ptr().cast(),
-            buffer.len(),
-            &mut result,
-        )
-    };
-    if status != 0 || result.is_null() {
-        return uid.to_string();
-    }
-    // SAFETY: `result` is non-null and only set after a successful `getpwuid_r`.
-    let record = unsafe { record.assume_init() };
-    // SAFETY: `pw_name` is a NUL-terminated string owned by the live passwd record.
-    let name = unsafe { CStr::from_ptr(record.pw_name) }
-        .to_string_lossy()
-        .into_owned();
-    if name.is_empty() {
-        uid.to_string()
-    } else {
-        name
-    }
 }
 
 /// Resolves the one resolver file every pod and image step binds as `/etc/resolv.conf`.

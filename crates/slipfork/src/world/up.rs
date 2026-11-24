@@ -397,12 +397,13 @@ impl Session {
         already_rendered: bool,
     ) -> ExitCode {
         if json_mode {
+            let (message, embedded) = super::split_remedy(&error.message);
             println!(
                 "{}",
                 json!({ "error": {
                     "code": error.code,
-                    "message": error.message,
-                    "next": next,
+                    "message": message,
+                    "next": embedded.as_deref().unwrap_or(next),
                 }})
             );
             return ExitCode::FAILURE;

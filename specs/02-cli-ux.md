@@ -134,13 +134,14 @@ On error the guard clears the panel, restores the screen, prints the failed row 
 
 ```text
 ✗ image     backend   failed                    84ms
-  Forkfile:12: `RUN pnpm run build` failed: `crun` exited with code 1
-  next: fix the `RUN` command above, then rerun `slipfork up`
-✗ Failed to build image backend — check logs with: slipfork logs backend
+  `RUN pnpm run build` failed: `crun` exited with code 1
+  next: slipfork logs -r 3f9c21
+✗ Failed to build image backend
 ```
 
-The indented detail rows carry the `Forkfile:<line>:` context the daemon reported and exactly one
-`next:` remedy (`next:` dim, the command bold), so a failure never ends in prose.
+The indented detail row carries the step's message alone, then exactly one `next:` remedy
+(`next:` dim, the command bold); the `Forkfile:<line>` location lives only in
+`slipfork logs -r <id>` and the raw `--json` step event, so a failure never ends in prose.
 
 `NO_COLOR`, `TERM=dumb` and pipes emit zero `\x1b[` bytes and zero SGR; the ASCII path uses `\r` only and `--json` is pure JSON.
 
@@ -169,10 +170,13 @@ The boot row reserves its last seven cells for a dim `#id`:
 ✓ setup     backend          ready      812ms
 ```
 
-A failure names the exact replay command, one `✗` per line:
+A failure prints the step's message, its one `next:` replay command, then the bare verdict:
 
 ```text
-✗ Failed to run setup 'uv sync' (backend) — check logs with: slipfork logs -r c91e04
+✗ setup     backend   failed                    84ms
+  `uv sync` failed: exit status 1
+  next: slipfork logs -r c91e04
+✗ Failed to run setup 'uv sync' (backend)
 ```
 
 `slipfork logs -r <id>` accepts `c91e04`, `#c91e04`, `last`, or `failed`, replays the run log cleanly through the indexed reader, and honours `--since`/`--until`/`-t`/`--json` exactly like service logs. `slipfork logs --runs` prints the catalog as a borderless table, so any past id can be found:
@@ -227,4 +231,6 @@ With `dev` active Slipfork bind-mounts the live checkout at `/project`, so `uvic
   before the first `started`; `--json` forwards it verbatim (extra keys are forward-compatible) with
   zero escapes. `down` carries the same frame on its event stream and still answers one final object.
 - **Payloads:** `up`/`restart` → `{world, url, elapsed_ms, nodes:[{kind,name,state,duration_ms}]}`; `down` → `{world, elapsed_ms}`; `fork` → `{fork, world, project, url, elapsed_ms, snapshot_ms}`; `drop` → `{dropped, elapsed_ms}`; `doctor` → `{ready, checks:[{name,ok,detail,next?}]}`; `status`/`ps` → `{worlds:[...]}` including `state` (`live`/`stopped`), `port`, `started_at_ms`, `url`, `routes` (each `{prefix, port, mode, domain?}`), `orphaned` and `stopped_forks` (membership means stopped; stopped rows omit `supervisor_pid`/`started_at_ms`); failures → `{"error":{code,message,next}}`.
-- **Ephemeral daemon:** auto-start warns on stderr and names `slipfork daemon install`.
+- **Ephemeral daemon:** auto-start warns once on stderr; distribution packages installed with
+  `sudo` enable and start the per-user unit and the `:80` socket for the installing user, so the
+  fallback appears only on tarball, headless, or rootless installs.

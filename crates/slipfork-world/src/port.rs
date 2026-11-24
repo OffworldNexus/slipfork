@@ -40,9 +40,6 @@ pub trait WorldEngine: Send + Sync {
     /// Creates `<mount>/.slipfork-store/{images,worlds}` when missing.
     fn ensure_store(&self) -> Result<()>;
 
-    /// Converts a plain checkout into a Btrfs subvolume in place, exactly once.
-    fn adopt_project(&self, project: &Path) -> Result<()>;
-
     /// Creates the `worlds/<world>` data subvolume and returns its path.
     fn create_world(&self, world: &WorldName) -> Result<PathBuf>;
 

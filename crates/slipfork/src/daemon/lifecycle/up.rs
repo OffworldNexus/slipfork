@@ -2,35 +2,51 @@
 
 use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use serde_json::Value;
-use slipfork_world::control::{PROTOCOL_VERSION, Request, decode_init_frame, encode};
+use serde_json::{Value, json};
+use slipfork_world::RuntimePods;
+use slipfork_world::control::{PROTOCOL_VERSION, Request};
 
 use super::core::{Core, World};
 use crate::daemon::Failure;
 use crate::daemon::boot::BootSession;
 use crate::daemon::registry::{self, Fingerprint};
-use crate::daemon::rpc::{key_of, pid_alive, world_answers};
+use crate::daemon::rpc::{key_of, pid_alive, world_answers, world_call_within};
+use crate::ps::PsService;
 use crate::world::features::WorldFeatures;
 
 /// Longest a single reconcile control call may block (`List`, `Stop`, `Shutdown`).
 const RECONCILE_CALL: Duration = Duration::from_secs(10);
 /// Longest the old supervisor gets to exit after `Shutdown` before its group is killed.
 const RECONCILE_EXIT: Duration = Duration::from_secs(10);
+const REAP_BUDGET: Duration = Duration::from_secs(5);
+const HEAL_INSPECT: Duration = Duration::from_secs(2);
+const HEAL_RESTART: Duration = Duration::from_secs(30);
+const HEAL_SETTLE: Duration = Duration::from_millis(250);
+const HEAL_POLL: Duration = Duration::from_millis(50);
+const HEAL_VERIFY: Duration = Duration::from_millis(1500);
 
 /// What one `up` must do, decided under the daemon lock and executed outside it.
 pub(crate) enum UpAction {
-    /// The live world's `Forkfile` fingerprint still matches: answer `0ms`.
-    Idle(Value),
+    /// The live world's fingerprint still matches: verify/restart its pods outside the lock.
+    Heal(Box<Heal>),
     /// Detached live world that must be stopped before `begin_up` re-applies the plan.
     Reconcile(Box<Reconcile>),
     /// Nothing live; boot normally.
     Boot,
+}
+
+/// An unchanged world detached from [`Core`] so its health check never holds the daemon lock.
+pub(crate) struct Heal {
+    world: String,
+    project: PathBuf,
+    pods_dir: PathBuf,
+    supervisor_pid: u32,
+    started_at_ms: u64,
+    fork: Option<String>,
 }
 
 /// A live world detached from [`Core`] so the world calls run without the daemon lock.
@@ -42,9 +58,7 @@ pub(crate) struct Reconcile {
 }
 
 impl Core {
-    /// Decides one idempotent `up` without performing any blocking world call while the core lock
-    /// is held. An edited `Forkfile` detaches the live world for [`reconcile`], which stops every
-    /// orphan, shuts the world down, and lets `begin_up` re-apply the plan from cache.
+    /// Decides one idempotent `up`: unchanged heals outside the lock; edited reconciles then boots.
     pub(crate) fn up_plan(&mut self, params: &Value) -> Result<UpAction, Failure> {
         let project = PathBuf::from(
             params
@@ -77,11 +91,16 @@ impl Core {
             }
             _ => false,
         };
-        if unchanged {
-            return Ok(UpAction::Idle(serde_json::json!({
-                "world": entry.world,
-                "url": format!("http://{}.localhost", entry.world),
-                "elapsed_ms": 0,
+        // Only heal when every declared service already wrote its bundle; a half-booted world
+        // whose hook failed before bundling a service must reconcile to run the full DAG.
+        if unchanged && services_bundled(&project, &entry.pods_dir) {
+            return Ok(UpAction::Heal(Box::new(Heal {
+                world: entry.world,
+                project: entry.project,
+                pods_dir: entry.pods_dir,
+                supervisor_pid: entry.supervisor_pid,
+                started_at_ms: entry.started_at_ms,
+                fork: entry.fork,
             })));
         }
         let Some(World::Live { entry, child }) = self.worlds.remove(&key) else {
@@ -99,36 +118,142 @@ impl Core {
     }
 }
 
-/// Stops every live pod the edited `Forkfile` no longer declares, shuts the detached world down,
-/// and reaps it. Runs with **no daemon lock held**, so `ps`/`ping` stay responsive.
+pub(crate) fn heal(plan: Heal, emit: &mut dyn FnMut(Value)) -> Result<Value, Failure> {
+    let started = Instant::now();
+    let mut latest = down_rows(&plan, "daemon-up-health", HEAL_INSPECT)?;
+    if latest.is_empty() {
+        return Ok(ready(&plan.world, 0));
+    }
+    let label = format!("Verifying {}", plan.world);
+    emit(json!({"event":"started","step":1,"total":1,"kind":"world","label":label}));
+    let mut restart_error = None;
+    for row in &latest {
+        let request = Request::Restart {
+            v: PROTOCOL_VERSION,
+            id: format!("daemon-up-restart-{}", row.id),
+            service: Some(row.id.clone()),
+        };
+        if let Err(error) = world_call_within(&plan.pods_dir, &request, HEAL_RESTART) {
+            restart_error
+                .get_or_insert_with(|| error.lines().next().unwrap_or("restart failed").to_owned());
+        }
+    }
+    let deadline = Instant::now() + HEAL_VERIFY;
+    let mut last_error = None;
+    let mut healthy_since = None;
+    while Instant::now() < deadline {
+        match down_rows(&plan, "daemon-up-recheck", HEAL_INSPECT) {
+            Ok(rows) if rows.is_empty() => {
+                let since = *healthy_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= HEAL_SETTLE {
+                    let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    emit(
+                        json!({"event":"finished","step":1,"total":1,"kind":"world","name":plan.world,"state":"running","label":format!("Recovered {}", plan.world),"detail":"services running","elapsed_ms":ms,"duration_ms":ms}),
+                    );
+                    return Ok(ready(&plan.world, ms));
+                }
+            }
+            Ok(rows) => (latest, healthy_since) = (rows, None),
+            Err(error) => (last_error, healthy_since) = (Some(error.message), None),
+        }
+        std::thread::sleep(HEAL_POLL);
+    }
+    let id = &latest.first().expect("heal keeps the initial down row").id;
+    let detail = restart_error
+        .or(last_error)
+        .and_then(|error| error.lines().next().map(|line| format!(": {line}")))
+        .unwrap_or_default();
+    Err(Failure::new(
+        "world-unhealthy",
+        format!("service `{id}` is not running{detail}\nnext: slipfork logs {id}"),
+    ))
+}
+
+fn ready(world: &str, elapsed_ms: u64) -> Value {
+    json!({ "world": world, "url": format!("http://{world}.localhost"), "elapsed_ms": elapsed_ms })
+}
+
+fn down_rows(plan: &Heal, id: &str, timeout: Duration) -> Result<Vec<PsService>, Failure> {
+    let request = Request::List {
+        v: PROTOCOL_VERSION,
+        id: id.to_owned(),
+    };
+    let reply = world_call_within(&plan.pods_dir, &request, timeout)
+        .map_err(|error| world_failure(&plan.world, &error))?;
+    let pods = slipfork_world::pod_statuses(&reply)
+        .map_err(|error| world_failure(&plan.world, &error.to_string()))?;
+    Ok(super::ps::WorldView::new(
+        &plan.project,
+        &plan.world,
+        plan.fork.as_deref(),
+        plan.started_at_ms,
+        plan.supervisor_pid,
+        true,
+        false,
+        &pods,
+    )
+    .service_rows()
+    .iter()
+    .filter(|row| !row.orphaned && !row.running)
+    .cloned()
+    .collect())
+}
+
+fn world_failure(world: &str, error: &str) -> Failure {
+    let message = format!("cannot inspect `{world}`: {error}\nnext: slipfork status");
+    Failure::new("world-unhealthy", message)
+}
+
+/// Stops undeclared pods, shuts the detached world down, and reaps it — with no daemon lock held.
 pub(crate) fn reconcile(plan: Reconcile) {
     let declared = declared_ids(&plan.project);
     if let Some(declared) = &declared
-        && let Some(pods) = call_world(
+        && let Ok(pods) = world_call_within(
             &plan.pods_dir,
             &Request::List {
                 v: PROTOCOL_VERSION,
                 id: "daemon-reconcile-list".to_owned(),
             },
+            RECONCILE_CALL,
         )
     {
         for pod in slipfork_world::pod_statuses(&pods).unwrap_or_default() {
             if !pod.running || declared.iter().any(|id| id == &pod.id) {
                 continue;
             }
-            let _ = call_world(
+            let _ = world_call_within(
                 &plan.pods_dir,
                 &Request::Stop {
                     v: PROTOCOL_VERSION,
                     id: format!("daemon-stop-{}", pod.id),
                     pod: pod.id,
                 },
+                RECONCILE_CALL,
             );
         }
     }
-    let _ = shut_down(&plan.pods_dir);
-    wait_or_kill(plan.supervisor_pid, plan.child, RECONCILE_EXIT);
+    let _ = world_call_within(
+        &plan.pods_dir,
+        &Request::Shutdown {
+            v: PROTOCOL_VERSION,
+            id: "daemon-reconcile-down".to_owned(),
+        },
+        RECONCILE_CALL,
+    );
+    wait_or_kill(
+        plan.supervisor_pid,
+        &plan.pods_dir,
+        plan.child,
+        RECONCILE_EXIT,
+    );
     let _ = fs::remove_file(plan.project.join(".slipfork/world.json"));
+}
+
+fn services_bundled(project: &Path, pods_dir: &Path) -> bool {
+    declared_ids(project).is_some_and(|ids| {
+        ids.iter()
+            .all(|id| pods_dir.join(id).join("config.json").is_file())
+    })
 }
 
 /// The ids the current `Forkfile` declares; `None` when it does not compile.
@@ -147,55 +272,17 @@ fn declared_ids(project: &Path) -> Option<Vec<String>> {
     )
 }
 
-/// One typed control call with a bounded read; `None` on any transport or reply failure.
-fn call_world(pods_dir: &Path, request: &Request) -> Option<Value> {
-    let path = slipfork_world::control::control_socket_path(pods_dir).ok()?;
-    let mut stream = UnixStream::connect(&path).ok()?;
-    stream.set_read_timeout(Some(RECONCILE_CALL)).ok()?;
-    stream.write_all(&encode(request).ok()?).ok()?;
-    stream.flush().ok()?;
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    reader.read_line(&mut line).ok()?;
-    match decode_init_frame(line.trim()).ok()? {
-        slipfork_world::control::InitFrame::Reply { ok, error, .. } => match (error, ok) {
-            (None, Some(value)) => Some(value),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Sends `Shutdown` and tolerates the init's `Stopped` reply.
-fn shut_down(pods_dir: &Path) -> std::io::Result<()> {
-    let path = slipfork_world::control::control_socket_path(pods_dir)
-        .map_err(|error| std::io::Error::other(error.to_string()))?;
-    let mut stream = UnixStream::connect(&path)?;
-    stream.set_read_timeout(Some(RECONCILE_CALL))?;
-    let request = Request::Shutdown {
-        v: PROTOCOL_VERSION,
-        id: "daemon-reconcile-down".to_owned(),
-    };
-    stream
-        .write_all(&encode(&request).map_err(|error| std::io::Error::other(error.to_string()))?)?;
-    stream.flush()?;
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    let _ = reader.read_line(&mut line);
-    Ok(())
-}
-
-/// Waits `budget` for the supervisor to exit, then kills its `-pgid` and reaps it.
-fn wait_or_kill(pid: u32, mut child: Option<Child>, budget: Duration) {
+/// Waits `budget` for the supervisor to exit, then kills and reaps its full world process tree.
+fn wait_or_kill(pid: u32, pods_dir: &Path, mut child: Option<Child>, budget: Duration) {
     let deadline = Instant::now() + budget;
     loop {
         if let Some(handle) = child.as_mut() {
             match handle.try_wait() {
-                Ok(Some(_)) | Err(_) => return,
+                Ok(Some(_)) | Err(_) => break,
                 Ok(None) => {}
             }
         } else if !pid_alive(pid) {
-            return;
+            break;
         }
         if Instant::now() >= deadline {
             break;
@@ -206,9 +293,7 @@ fn wait_or_kill(pid: u32, mut child: Option<Child>, budget: Duration) {
         let _ = handle.kill();
         let _ = handle.wait();
     }
-    if let Ok(pid) = i32::try_from(pid) {
-        slipfork_world::kill_group(pid);
-    }
+    slipfork_world::reap_world_tree(pid, Some(pods_dir), REAP_BUDGET);
 }
 
 impl Core {
@@ -254,6 +339,7 @@ impl Core {
         let requested = params.get("world").and_then(Value::as_str);
         let world = crate::world::world_name(&project, requested)
             .map_err(|message| Failure::new("invalid-world", message))?;
+        let pods_dir = RuntimePods::world_root(&self.host.runtime_dir, &world);
         let log_dir = project.join(".slipfork");
         fs::create_dir_all(&log_dir).map_err(|error| {
             Failure::new(
@@ -294,10 +380,11 @@ impl Core {
             World::Booting {
                 project: project.clone(),
                 world: world.as_str().to_owned(),
+                pods_dir: pods_dir.clone(),
                 supervisor_pid: child.id(),
             },
         );
-        let mut session = BootSession::new(key, log_path, child, project.clone());
+        let mut session = BootSession::new(key, log_path, child, pods_dir, project.clone());
         if let Some(fork) = layout_fork(&project) {
             session.reserve_fork(fork);
         }
@@ -306,9 +393,6 @@ impl Core {
 }
 
 /// The fork name when `project` is the canonical `<parent>/.forks/<fork>` checkout.
-///
-/// `up <fork>` re-boots an existing checkout through [`Core::begin_up`], so the published registry
-/// entry must still carry the fork name for `ps` to nest it under its parent world.
 fn layout_fork(project: &Path) -> Option<String> {
     let forks = project.parent()?;
     if !forks

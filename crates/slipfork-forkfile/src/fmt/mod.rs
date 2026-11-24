@@ -30,7 +30,7 @@ pub fn render_diff(original: &str, formatted: &str, label: &str) -> String {
     crate::diff::line_diff(original, formatted, label)
 }
 
-/// Renders a parsed document canonically: 2-space indents, one blank line
+/// Renders a parsed document canonically: 4-space indents, one blank line
 /// between top-level blocks, comments and declaration order preserved.
 #[must_use]
 pub fn format(doc: &Forkfile) -> String {

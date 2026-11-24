@@ -1,4 +1,4 @@
-" Vim indent file: Forkfile (2-space, brace aware)
+" Vim indent file: Forkfile (4-space, brace aware)
 " Vim 8+ / Neovim compatible, no external dependencies.
 
 if exists("b:did_indent")

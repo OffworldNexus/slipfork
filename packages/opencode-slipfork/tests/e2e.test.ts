@@ -58,6 +58,28 @@ function childEnv(runtime: string, state: string): Record<string, string | undef
   return env;
 }
 
+/** Reproduce the composition root's allowlisted `process.env` snapshot (`src/index.ts`). */
+function pluginEnv(): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = {};
+  for (const key of CHILD_ENV_KEYS) env[key] = process.env[key];
+  return env;
+}
+
+/** The CLI's own `message\nnext:` refusal document, decoded exactly like `src/cli.ts`. */
+function refusal(
+  args: readonly string[],
+  cwd: string,
+  env: Record<string, string | undefined>,
+): string {
+  const raw = spawnSync(binary(), [...args], { cwd, env, encoding: "utf8", timeout: 30_000 });
+  expect(raw.status).not.toBe(0);
+  const decoded = decodeCliFailure(String(raw.stdout)) ?? decodeCliFailure(String(raw.stderr));
+  expect(decoded).toBeDefined();
+  expect(decoded).toContain("\nnext: ");
+  if (decoded === undefined) throw new Error(`no refusal document for slipfork ${args.join(" ")}`);
+  return decoded;
+}
+
 interface Lab {
   root: string;
   project: string;
@@ -154,13 +176,7 @@ test("real CLI journey: refusals, listing, shell exports, and session reaping", 
   const probe = lab(scratch());
 
   // The refusal message must equal the CLI's own `message\nnext:` document from this binary.
-  const raw = spawnSync(binary(), ["fork", "feat", "--json"], {
-    cwd: probe.project,
-    env: probe.env,
-    encoding: "utf8",
-  });
-  const decoded = decodeCliFailure(String(raw.stdout));
-  expect(decoded).toBeDefined();
+  const decoded = refusal(["fork", "feat", "--json"], probe.project, probe.env);
   const forkError = await probe.coordinator
     .createFork({
       sourceDirectory: probe.project,
@@ -174,11 +190,11 @@ test("real CLI journey: refusals, listing, shell exports, and session reaping", 
     { directory: probe.project, type: "root" },
   ]);
 
+  const decodedDrop = refusal(["drop", "feat", "--json", "--force"], probe.project, probe.env);
   const dropError = await probe.coordinator
     .removeFork({ directory: forkDirectory(probe.project, "feat"), force: true })
     .then(() => undefined, (reason: Error) => reason);
-  expect(dropError?.message).toContain("is not a Btrfs subvolume");
-  expect(dropError?.message).toContain("retry `slipfork drop`");
+  expect(dropError?.message).toBe(`slipfork drop 'feat' failed: ${decodedDrop}`);
 
   // A created fork (recorded by the coordinator) exports its world and URL verbatim.
   const checkout = probe.coordinator.adoptFork({
@@ -297,6 +313,10 @@ test("composition root: Plugin.define registers every hook and this binary docum
 
   const definition = hooks.worktrees[0]!;
   expect(definition.id).toBe("slipfork");
+
+  // Both refusals equal this binary's own `message\nnext:` document from this checkout.
+  const decodedFork = refusal(["fork", "feat", "--json"], probe.project, pluginEnv());
+
   const created = await Effect.runPromise(
     definition.create({
       sourceDirectory: probe.project,
@@ -306,10 +326,12 @@ test("composition root: Plugin.define registers every hook and this binary docum
     () => "created",
     (error: Error) => error.message,
   );
-  expect(created).toContain("is not a Btrfs subvolume");
+  expect(created).toBe(`slipfork fork 'feat' failed: ${decodedFork}`);
 
   const listed = await Effect.runPromise(definition.list(probe.project));
   expect(listed).toEqual([{ directory: probe.project, type: "root" }]);
+
+  const decodedDrop = refusal(["drop", "feat", "--json", "--force"], probe.project, pluginEnv());
 
   const removed = await Effect.runPromise(
     definition.remove({ directory: forkDirectory(probe.project, "feat"), force: true }),
@@ -317,7 +339,7 @@ test("composition root: Plugin.define registers every hook and this binary docum
     () => "removed",
     (error: Error) => error.message,
   );
-  expect(removed).toContain("retry `slipfork drop`");
+  expect(removed).toBe(`slipfork drop 'feat' failed: ${decodedDrop}`);
 
   const shellEvent: ShellCreateBefore = {
     command: "true",

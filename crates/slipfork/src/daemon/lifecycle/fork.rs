@@ -85,13 +85,6 @@ impl Core {
     pub(crate) fn inspect_fork(&self, params: &Value) -> Result<ForkTarget, Failure> {
         let started = Instant::now();
         let project = project_param(params)?;
-        // Probe before touching the mount store: a refusal must not create `.slipfork-store`.
-        if !is_subvolume_path(&project).unwrap_or(false) {
-            return Err(Failure::new(
-                "not-btrfs",
-                format!("`{}` is not a Btrfs subvolume", project.display()),
-            ));
-        }
         let (parent, pods_dir) = match self.worlds.get(&key_of(&project)) {
             Some(World::Live { entry, .. }) => (entry.world.clone(), entry.pods_dir.clone()),
             Some(World::Booting { world, .. }) => {
@@ -275,6 +268,7 @@ impl Core {
         self.ingress = None;
         let _ = self.persist();
         let forked = StoreLayout::fork_world_name(&prepared.world_name, &prepared.fork_name);
+        Self::report_retain(self.retain_runs(&prepared.parent, forked.as_str()));
         let _ = RuntimePods::purge(&self.host.runtime_dir, &forked);
         let engine = BtrfsEngine::new(StoreLayout::at(self.host.store_root_for(&prepared.parent)));
         let _ = engine.drop_fork(
@@ -384,12 +378,6 @@ impl Core {
     ) -> Result<Value, Failure> {
         let started = Instant::now();
         let project = project_param(params)?;
-        if !is_subvolume_path(&project).unwrap_or(false) {
-            return Err(Failure::new(
-                "not-btrfs",
-                format!("`{}` is not a Btrfs subvolume", project.display()),
-            ));
-        }
         let name =
             param_name(params).ok_or_else(|| Failure::new("bad-params", "`name` is required"))?;
         let force = params
@@ -406,7 +394,7 @@ impl Core {
         let fork_world = layout.fork_world(&world, &fork);
         let fork_key = key_of(&fork_project);
         let registered = self.worlds.contains_key(&fork_key);
-        let has_checkout = is_subvolume_path(&fork_project).unwrap_or(false);
+        let has_checkout = fork_project.is_dir();
         let has_world = is_subvolume_path(&fork_world).unwrap_or(false);
         if !registered && !has_checkout && !has_world {
             return Err(Failure::new(
@@ -414,6 +402,9 @@ impl Core {
                 format!("no fork named `{}` exists", fork.as_str()),
             ));
         }
+        // Only a real fork is pruned, and the store root belongs to the PARENT project.
+        let fork_world_name = StoreLayout::fork_world_name(&world, &fork);
+        Self::report_retain(self.retain_runs(&project, fork_world_name.as_str()));
         // Refuse dirty work before stopping anything: a refusal leaves the fork running.
         let dirtiness = if force || !has_checkout {
             Dirtiness::Clean
@@ -508,11 +499,19 @@ fn param_name(params: &Value) -> Option<&str> {
 /// Maps a Btrfs refusal to a typed code and a bare one-line message (the CLI owns the `next:`).
 fn btrfs_failure(error: &WorldError, project: &Path) -> Failure {
     match error {
-        WorldError::NotBtrfs { .. }
-        | WorldError::CrossDevice { .. }
-        | WorldError::NotASubvolume { .. } => Failure::new(
+        WorldError::NotBtrfs { .. } => Failure::new(
             "not-btrfs",
-            format!("`{}` is not a Btrfs subvolume", project.display()),
+            format!("`{}` is not on a Btrfs filesystem", project.display()),
+        ),
+        WorldError::NestedMount { .. } => {
+            Failure::new("nested-mount", first_line(&error.to_string()))
+        }
+        WorldError::UnsupportedEntry { .. } => {
+            Failure::new("unsupported-entry", first_line(&error.to_string()))
+        }
+        WorldError::NotASubvolume { path } => Failure::new(
+            "not-subvolume",
+            format!("`{}` is not a Btrfs subvolume", path.display()),
         ),
         WorldError::RefusedDirtyCheckout { target } => {
             Failure::new("dirty-fork", format!("{target} has uncommitted changes"))

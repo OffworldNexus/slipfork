@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -29,6 +29,11 @@ mod resources;
 mod rootfs;
 
 use helpers::{ServiceLaunch, merge_env, merge_path, project_binds, shell_command, upsert_env};
+
+/// The one line a non-zero pod exit writes into both the capture and the failure message.
+pub(crate) fn exit_line(command: &str, code: i32) -> String {
+    format!("`{command}` exited with {code}")
+}
 use images::{BuiltImage, ImageCache};
 use ready::{Ready, Staged};
 
@@ -47,6 +52,7 @@ pub(super) struct WorldRuntime {
     services: Vec<ServiceNode>,
     resources: Vec<ResourceNode>,
     clones: Mutex<Vec<PathBuf>>,
+    live_world: AtomicBool,
     counter: AtomicUsize,
     total_steps: usize,
     emitter: Arc<Mutex<Emitter>>,
@@ -66,12 +72,7 @@ impl WorldRuntime {
         let is_fork = StoreLayout::parse_fork_world(std::ffi::OsStr::new(world.as_str())).is_some();
         let engine = BtrfsEngine::new(StoreLayout::at(env.store_root_for(project)));
         let layout = engine.layout().clone();
-        if !is_fork || !layout.world(&world).exists() {
-            engine
-                .adopt_project(project)
-                .and_then(|()| engine.ensure_store())
-                .map_err(|error| error.to_string())?;
-        }
+        engine.ensure_store().map_err(|error| error.to_string())?;
         let world_engine: Arc<dyn WorldEngine> = Arc::new(engine.clone());
         let architecture = Architecture::from_oci(env.arch)
             .ok_or_else(|| format!("unsupported host architecture `{}`", env.arch))?;
@@ -198,7 +199,7 @@ impl WorldRuntime {
                 &features,
             );
             if let Some(error) = failure.into_inner() {
-                return Err(format!("{}; next: {}", error.message, error.next));
+                return Err(format!("{}\nnext: {}", error.message, error.next));
             }
             resolved
         };
@@ -217,6 +218,7 @@ impl WorldRuntime {
             services: plan.services.clone(),
             resources: plan.resources.clone(),
             clones: Mutex::new(initial_clones),
+            live_world: AtomicBool::new(false),
             counter: AtomicUsize::new(0),
             total_steps: plan.steps.len(),
             emitter,
@@ -226,8 +228,9 @@ impl WorldRuntime {
     /// Executes one DAG node with zero global lock: staging uses narrow collaborator scopes and
     /// [`Staged::await_ready`] polls sockets outside all locks.
     ///
-    /// Steps that can execute real work arm a lazy run capture; a cache hit discards it, so a
-    /// `cached`/`up to date` row never mints a `#run_id`.
+    /// Every step opens its run capture eagerly, before it executes anything; a `cached`/`up to
+    /// date` outcome discards it. A capture that cannot be opened fails the step instead of
+    /// silently running it unrecorded.
     pub(super) fn execute(
         &self,
         index: usize,
@@ -240,18 +243,17 @@ impl WorldRuntime {
             &step.label,
             &step.node_name(),
         );
-        if matches!(
-            step.kind,
-            BootKind::Image | BootKind::Setup | BootKind::Hook
-        ) {
-            let command = step.command.clone().unwrap_or_else(|| step.subject.clone());
-            log = log.capture_run(
-                &self.layout.world_logs(&self.world),
-                step.kind.as_str(),
-                &step.node_name(),
-                &command,
-            );
-        }
+        // Armed for every kind: a pod that dies inside `launch_pod` must still leave a record and a
+        // readable capture, and only a cached outcome throws it away.
+        let command = step.command.clone().unwrap_or_else(|| step.subject.clone());
+        let store = slipfork_world::LogStore::at(self.layout.store_root(), self.world.clone());
+        log = log.capture_run(
+            &store,
+            &self.project,
+            step.kind.as_str(),
+            &step.node_name(),
+            &command,
+        )?;
         let started = std::time::Instant::now();
         let mut staged = match self.execute_step(step, &mut log) {
             Ok(staged) => staged,
@@ -266,8 +268,8 @@ impl WorldRuntime {
         let outcome = staged.await_ready();
         let duration = elapsed_ms(started);
         let run_id = match &outcome {
-            // A `cached` step executed zero commands: its capture is removed and no id is shown.
-            Ok(done) if matches!(done.state, BootState::Cached) => {
+            // A no-op step executed zero commands: its capture is removed and no id is shown.
+            Ok(done) if matches!(done.state, BootState::Cached | BootState::UpToDate) => {
                 log.discard_run();
                 None
             }
@@ -335,13 +337,26 @@ impl WorldRuntime {
         self.engine.flush_store().map_err(|error| error.to_string())
     }
 
+    /// Records that at least one long-lived pod or native S3 endpoint entered the world.
+    pub(super) fn mark_live_world(&self) {
+        self.live_world.store(true, Ordering::Release);
+    }
+
+    /// Whether any resource or service entered the world; a cold build/hook failure with `false`
+    /// tears the empty world down immediately instead of orphaning `slipfork-world-init`.
+    pub(super) fn has_live_world(&self) -> bool {
+        self.live_world.load(Ordering::Acquire)
+    }
+
     /// Writes `<pods>/<id>/config.json` and launches the detached container concurrently over
     /// `<pods>/control.sock`, with zero supervisor lock held.
     pub(super) fn launch_pod(&self, spec: &PodSpec) -> Result<u32, String> {
         write_bundle(spec, &self.pod_host, &self.pods_dir.join(&spec.id))
             .map_err(|error| error.to_string())?;
-        control::launch_pod(&self.pods_dir, spec, self.boot_timeout)
-            .map_err(|error| error.to_string())
+        let pid = control::launch_pod(&self.pods_dir, spec, self.boot_timeout)
+            .map_err(|error| error.to_string())?;
+        self.mark_live_world();
+        Ok(pid)
     }
 
     /// Runs one setup/hook/`initdb` pod over `<pods>/control.sock` with zero supervisor lock held.
@@ -451,9 +466,10 @@ impl WorldRuntime {
         } else {
             // A command that printed nothing still leaves one real line in its run capture, so a
             // failed step is never reported against an empty `slipfork logs -r <id>`.
-            let _ = writeln!(log, "`{command}` exited with {code}");
+            let line = exit_line(&command, code);
+            let _ = writeln!(log, "{line}");
             let _ = log.flush();
-            let mut message = format!("`{command}` exited with {code}");
+            let mut message = line;
             for line in tail {
                 message.push_str("\n  ");
                 message.push_str(&line);
@@ -535,6 +551,18 @@ impl WorldRuntime {
         self.images.stamps()
     }
 
+    /// Stops an empty world immediately and sweeps ephemeral pod rootfs clones.
+    pub(super) fn stop_and_cleanup(&self) -> Result<(), String> {
+        let stopped = self
+            .supervisor
+            .lock()
+            .map_err(|_| "world supervisor lock poisoned".to_owned())?
+            .stop()
+            .map_err(|error| error.to_string());
+        self.sweep_clones();
+        stopped
+    }
+
     /// Blocks until the world init exits, then sweeps ephemeral pod rootfs clones.
     pub(super) fn await_exit_and_cleanup(&self) -> Result<(), String> {
         let awaited = self
@@ -543,6 +571,11 @@ impl WorldRuntime {
             .map_err(|_| "world supervisor lock poisoned".to_owned())?
             .await_exit()
             .map_err(|error| error.to_string());
+        self.sweep_clones();
+        awaited
+    }
+
+    fn sweep_clones(&self) {
         let clones = self
             .clones
             .lock()
@@ -553,7 +586,6 @@ impl WorldRuntime {
         }
         let _ = fs::remove_dir(self.layout.world_pods(&self.world));
         let _ = fs::remove_dir(self.layout.pods_root());
-        awaited
     }
 }
 

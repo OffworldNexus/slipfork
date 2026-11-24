@@ -56,9 +56,9 @@ const fn octal_digit(byte: u8) -> Option<u8> {
     }
 }
 
-/// Selects `<mount>/.slipfork-store` for the longest mount point containing `project`.
+/// Selects the longest mount point containing `project`, falling back to `/`.
 #[must_use]
-pub fn store_root(mounts: &[PathBuf], project: &Path) -> PathBuf {
+pub fn mount_for<'a>(mounts: &'a [PathBuf], project: &Path) -> &'a Path {
     let mut best: Option<(&Path, usize)> = None;
     for mount in mounts {
         if project.starts_with(mount) {
@@ -68,6 +68,5 @@ pub fn store_root(mounts: &[PathBuf], project: &Path) -> PathBuf {
             }
         }
     }
-    let mount = best.map_or_else(|| Path::new("/"), |(mount, _)| mount);
-    mount.join(slipfork_world::STORE_DIR)
+    best.map_or(Path::new("/"), |(mount, _)| mount)
 }

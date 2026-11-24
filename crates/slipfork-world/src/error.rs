@@ -31,8 +31,6 @@ impl NameKind {
 pub enum Error {
     /// The path is not on a `BTRFS_SUPER_MAGIC` filesystem.
     NotBtrfs { path: PathBuf },
-    /// The path lives on a different filesystem than the injected Btrfs mount.
-    CrossDevice { path: PathBuf, mount: PathBuf },
     /// The path is a plain directory instead of a subvolume root.
     NotASubvolume { path: PathBuf },
     /// The path exists but is not a directory.
@@ -43,14 +41,10 @@ pub enum Error {
     InvalidName { kind: NameKind, name: String },
     /// `drop`/`destroy` met uncommitted changes without `--force`.
     RefusedDirtyCheckout { target: String },
-    /// Leftover `.slipfork-adopt*` siblings blocked the in-place conversion.
-    AdoptionCollision { path: PathBuf },
-    /// The in-place conversion met a mount point nested inside the checkout.
+    /// A fork checkout copy met a mount point nested inside the checkout.
     NestedMount { path: PathBuf },
-    /// The in-place conversion met a FIFO, socket, or device node it cannot copy.
+    /// A fork checkout copy met a FIFO, socket, or device node it cannot copy.
     UnsupportedEntry { path: PathBuf },
-    /// The converted subvolume could not replace the checkout and survives at `path`.
-    LeftoverSubvolume { path: PathBuf, target: PathBuf },
     /// The tmpfs-only pod runtime directory sits on persistent disk.
     RuntimeNotTmpfs { path: PathBuf },
     /// A required host tool is missing.
@@ -135,16 +129,9 @@ impl fmt::Display for Error {
                 "`{}` is not on Btrfs\nnext: mount the drive with `-o user_subvol_rm_allowed,noatime`; Slipfork needs Btrfs for CoW forks",
                 path.display()
             ),
-            Self::CrossDevice { path, mount } => write!(
-                f,
-                "`{}` is on a different filesystem than the Btrfs mount `{}`\nnext: move the project onto `{}`; CoW clones cannot cross filesystems",
-                path.display(),
-                mount.display(),
-                mount.display()
-            ),
             Self::NotASubvolume { path } => write!(
                 f,
-                "`{}` is not a Btrfs subvolume\nnext: run `slipfork up` once so the checkout is converted in place",
+                "`{}` is not a Btrfs subvolume Slipfork can snapshot\nnext: remove or move aside that entry, then retry; Slipfork only treats subvolumes it created as its own",
                 path.display()
             ),
             Self::NotADirectory { path } => write!(
@@ -168,11 +155,6 @@ impl fmt::Display for Error {
                 f,
                 "`{target}` has uncommitted changes\nnext: commit or stash them, or re-run with `--force` to discard the checkout"
             ),
-            Self::AdoptionCollision { path } => write!(
-                f,
-                "`{}` already has 64 `.slipfork-adopt*` siblings\nnext: remove the leftover conversion siblings and retry",
-                path.display()
-            ),
             Self::RuntimeNotTmpfs { path } => write!(
                 f,
                 "`{}` is not on tmpfs\nnext: export XDG_RUNTIME_DIR to a tmpfs such as /run/user/$UID so pod secrets never reach disk",
@@ -180,21 +162,13 @@ impl fmt::Display for Error {
             ),
             Self::NestedMount { path } => write!(
                 f,
-                "`{}` is a mount point inside the checkout\nnext: unmount it and re-run `slipfork up`; in-place conversion never copies across a mount",
+                "`{}` is a mount point inside the checkout\nnext: unmount it and re-run `slipfork fork`; copying a checkout never spans a mount",
                 path.display()
             ),
             Self::UnsupportedEntry { path } => write!(
                 f,
-                "`{}` is a FIFO, socket, or device node\nnext: remove it and re-run `slipfork up`; only directories, files, and symlinks convert in place",
+                "`{}` is a FIFO, socket, or device node\nnext: remove it and re-run `slipfork fork`; only directories, files, and symlinks are copied into a fork",
                 path.display()
-            ),
-            Self::LeftoverSubvolume { path, target } => write!(
-                f,
-                "the converted checkout survives at `{}` but could not replace `{}`\nnext: move `{}` onto `{}` yourself; every file is intact",
-                path.display(),
-                target.display(),
-                path.display(),
-                target.display()
             ),
             Self::MissingTool { tool, path } => write!(
                 f,

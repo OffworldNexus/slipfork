@@ -40,11 +40,51 @@ if command -v apparmor_parser >/dev/null 2>&1 && [ -f /etc/apparmor.d/slipfork ]
     apparmor_parser -r -W /etc/apparmor.d/slipfork >/dev/null 2>&1 || true
 fi
 systemctl --system daemon-reload >/dev/null 2>&1 || true
+# The package ships both units; enable and start them for the installing user.
+# Rootless or container installs (no SUDO_USER) stay silent.
+if [ -d /run/systemd/system ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+    runuser=$(command -v runuser 2>/dev/null || true)
+    if [ -z "$runuser" ] && [ -x /usr/sbin/runuser ]; then runuser=/usr/sbin/runuser; fi
+    if [ -z "$runuser" ] && [ -x /sbin/runuser ]; then runuser=/sbin/runuser; fi
+    if command -v systemctl >/dev/null 2>&1 &&
+        command -v loginctl >/dev/null 2>&1 &&
+        [ -n "$runuser" ] && uid=$(id -u "$SUDO_USER" 2>/dev/null); then
+        loginctl enable-linger "$SUDO_USER" >/dev/null 2>&1 || true
+        systemctl start "user@$uid.service" >/dev/null 2>&1 || true
+        "$runuser" -u "$SUDO_USER" -- env \
+            XDG_RUNTIME_DIR="/run/user/$uid" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+            systemctl --user enable --now slipfork.service >/dev/null 2>&1 || true
+        if [ -f /usr/lib/systemd/system/slipfork-ingress@.service ]; then
+            install -m 0644 /usr/lib/systemd/system/slipfork-ingress@.service \
+                /etc/systemd/system/slipfork-ingress@.service 2>/dev/null || true
+            printf 'User=%s\nEnvironment=XDG_RUNTIME_DIR=/run/user/%s\n' \
+                "$SUDO_USER" "$uid" >>/etc/systemd/system/slipfork-ingress@.service 2>/dev/null || true
+            systemctl daemon-reload >/dev/null 2>&1 || true
+            systemctl enable --now slipfork-ingress.socket >/dev/null 2>&1 || true
+        fi
+    else
+        echo "next: loginctl enable-linger $SUDO_USER && sudo -iu $SUDO_USER systemctl --user enable --now slipfork.service" >&2
+    fi
+fi
 
 %preun
 if [ "$1" = 0 ] && command -v systemctl >/dev/null 2>&1; then
     systemctl --system stop slipfork-ingress.socket >/dev/null 2>&1 || true
     systemctl --system disable slipfork-ingress.socket >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/slipfork-ingress@.service
+    systemctl --system daemon-reload >/dev/null 2>&1 || true
+fi
+if [ "$1" = 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+    runuser=$(command -v runuser 2>/dev/null || true)
+    if [ -z "$runuser" ] && [ -x /usr/sbin/runuser ]; then runuser=/usr/sbin/runuser; fi
+    if [ -z "$runuser" ] && [ -x /sbin/runuser ]; then runuser=/sbin/runuser; fi
+    if [ -n "$runuser" ] && uid=$(id -u "$SUDO_USER" 2>/dev/null); then
+        "$runuser" -u "$SUDO_USER" -- env \
+            XDG_RUNTIME_DIR="/run/user/$uid" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+            systemctl --user disable --now slipfork.service >/dev/null 2>&1 || true
+    fi
 fi
 
 %files

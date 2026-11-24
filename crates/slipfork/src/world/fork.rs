@@ -76,6 +76,15 @@ impl Session {
                     "not-btrfs" => {
                         "move the project onto a btrfs mount, then retry `slipfork fork`".to_owned()
                     }
+                    "nested-mount" => {
+                        "unmount the nested mount, then retry `slipfork fork`".to_owned()
+                    }
+                    "unsupported-entry" => {
+                        "remove the FIFO, socket, or device node from the checkout, then retry `slipfork fork`".to_owned()
+                    }
+                    "not-subvolume" => {
+                        "remove or move aside the entry that is not a Slipfork subvolume, then retry `slipfork fork`".to_owned()
+                    }
                     "git-branch" | "git-missing" | "invalid-fork" => {
                         "pass a fork name: `slipfork fork <name>`".to_owned()
                     }

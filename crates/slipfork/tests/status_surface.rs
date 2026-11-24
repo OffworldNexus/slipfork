@@ -1,20 +1,18 @@
-//! Lab tests for the pure status renderer, `doctor`, and `daemon install`.
+//! Lab tests for the pure status renderer and `doctor`.
 //!
 //! The renderer journey feeds real `ps` JSON through the public typed renderer; the CLI cases run
-//! the real binary against a daemon-free `/var/tmp` runtime, and `daemon install` writes real files
-//! into injected roots under `/var/tmp`.
+//! the real binary against a daemon-free `/var/tmp` runtime.
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use slipfork::boot::{Node, boot_widths, completed_row, elapsed_text, pane_geometry, status_line};
-use slipfork::install::{self, InstallHost, UnitWriter};
 use slipfork::status::{self, Options};
 use slipfork::ui::table::{ColumnWidths, visible_width};
+use slipfork_world::LogStore;
 
 #[test]
 fn mountinfo_unescapes_octal_and_picks_the_longest_containing_mount() {
@@ -34,73 +32,54 @@ fn mountinfo_unescapes_octal_and_picks_the_longest_containing_mount() {
             PathBuf::from(r"/mnt/my drive\data"),
         ]
     );
-    let store = |project: &str| slipfork::mounts::store_root(&mounts, Path::new(project));
+    let mount = |project: &str| slipfork::mounts::mount_for(&mounts, Path::new(project));
     assert_eq!(
-        store("/var/lib/slipfork/t/fork-live-1/demo"),
-        PathBuf::from("/var/lib/slipfork/.slipfork-store")
+        mount("/var/lib/slipfork/t/fork-live-1/demo"),
+        Path::new("/var/lib/slipfork")
     );
     assert_eq!(
-        store("/var/lib/slipfork2/demo"),
-        PathBuf::from("/var/lib/slipfork2/.slipfork-store"),
+        mount("/var/lib/slipfork2/demo"),
+        Path::new("/var/lib/slipfork2"),
         "the nested mount must win over its parent"
     );
+    assert_eq!(mount("/var/lib/slipfork-other/demo"), Path::new("/"));
     assert_eq!(
-        store("/var/lib/slipfork-other/demo"),
-        PathBuf::from("/.slipfork-store")
-    );
-    assert_eq!(
-        store(r"/mnt/my drive\data/app"),
-        PathBuf::from(r"/mnt/my drive\data/.slipfork-store"),
+        mount(r"/mnt/my drive\data/app"),
+        Path::new(r"/mnt/my drive\data"),
         "octal-unescaped mounts stay matchable"
     );
-}
 
-#[test]
-fn openrc_install_names_the_injected_user_and_keeps_a_user_edit() {
-    let root = scratch("openrc");
-    let host = InstallHost {
-        exe: PathBuf::from("/usr/bin/slipfork"),
-        path: Vec::new(),
-        config_dir: root.join("config"),
-        install_root: root.clone(),
-        uid: 1000,
-        ingress_uid: 1000,
-        ingress_user: "builder".to_owned(),
-        openrc: true,
-    };
-    let writer = UnitWriter::from_host(&host);
-    let planned = writer.plan(true);
-    let conf_d = root.join("etc/conf.d");
-    let (conf_path, conf) = planned
-        .iter()
-        .find(|(path, _)| path.parent().is_some_and(|parent| parent == conf_d))
-        .expect("an OpenRC host plans a conf.d file");
-    assert!(
-        conf.contains("SLIPFORK_INGRESS_USER=builder\n"),
-        "the conf must name the injected user: {conf}"
-    );
-    let service = planned
-        .iter()
-        .find(|(path, _)| path.ends_with(install::SERVICE_UNIT))
-        .map(|(_, contents)| contents)
-        .expect("the ingress service is still planned on an OpenRC host");
-    assert!(service.contains("User=1000\n"), "{service}");
-
-    let written = writer.write_all(true).expect("write the install plan");
-    assert!(written.contains(conf_path), "{written:?}");
+    let data_home = Path::new("/var/tmp/slipfork-data");
     assert_eq!(
-        fs::read_to_string(conf_path).expect("read the conf"),
-        conf.clone()
+        LogStore::root_for(
+            &mounts,
+            Path::new("/var/lib/slipfork-other/demo"),
+            data_home,
+            true
+        ),
+        data_home.join("slipfork/store"),
+        "a `/`-rooted project resolves under data_home, never `/.slipfork-store`"
     );
-
-    fs::write(conf_path, "SLIPFORK_INGRESS_USER=alice\n").expect("simulate a user edit");
-    writer.write_all(true).expect("keep the user edit");
     assert_eq!(
-        fs::read_to_string(conf_path).expect("re-read the kept conf"),
-        "SLIPFORK_INGRESS_USER=alice\n"
+        LogStore::root_for(
+            &mounts,
+            Path::new("/var/lib/slipfork2/demo"),
+            data_home,
+            true
+        ),
+        PathBuf::from("/var/lib/slipfork2/.slipfork-store"),
+        "a writable nested mount owns its own store"
     );
-    assert_eq!(writer.preserved_conf(true), Some(conf_path.clone()));
-    fs::remove_dir_all(&root).expect("remove the scratch directory");
+    assert_eq!(
+        LogStore::root_for(
+            &mounts,
+            Path::new("/var/lib/slipfork2/demo"),
+            data_home,
+            false
+        ),
+        data_home.join("slipfork/store"),
+        "a mount this user cannot write resolves under data_home"
+    );
 }
 
 const ANSI: &str = "\u{1b}[";
@@ -778,8 +757,10 @@ fn doctor_has_four_plain_rows_and_fails_closed_on_missing_tools() {
         assert!(stdout.contains(name), "missing {name}: {stdout}");
     }
     assert!(stdout.contains("crun not installed"), "{stdout}");
+    // The unit name is a copy-verbatim remedy; the jargon guard covers the rest.
+    let readable = stdout.replace("slipfork-ingress", "");
     for jargon in ["netns", "ingress", "unprivileged user", ":80"] {
-        assert!(!stdout.contains(jargon), "leaked `{jargon}`: {stdout}");
+        assert!(!readable.contains(jargon), "leaked `{jargon}`: {stdout}");
     }
     assert!(!stdout.contains(ANSI), "piped doctor stays plain: {stdout}");
 
@@ -833,67 +814,6 @@ fn doctor_has_four_plain_rows_and_fails_closed_on_missing_tools() {
     } else {
         assert!(stdout.contains("rootless container sandboxing"), "{stdout}");
     }
-    let _ = fs::remove_dir_all(&root);
-}
-
-#[test]
-fn daemon_install_writes_every_unit_byte_for_byte() {
-    let root = scratch("install");
-    let exe = PathBuf::from(env!("CARGO_BIN_EXE_slipfork"));
-    let writer = UnitWriter {
-        system_root: root.join("etc/systemd/system"),
-        user_root: root.join("config/systemd/user"),
-        config_root: root.join("config"),
-        apparmor_root: root.join("etc/apparmor.d"),
-        conf_d_root: root.join("etc/conf.d"),
-        exe: exe.clone(),
-        ingress_uid: 1000,
-        ingress_user: "builder".to_owned(),
-        openrc: false,
-    };
-    let written = writer.write_all(true).expect("write every unit");
-    assert_eq!(written.len(), 4, "{written:?}");
-    let exe = exe.display().to_string();
-    assert_eq!(
-        fs::read_to_string(writer.user_root.join("slipfork.service")).expect("user unit"),
-        install::USER_UNIT.replace("{exe}", &exe)
-    );
-    assert_eq!(
-        fs::read_to_string(writer.system_root.join(install::SOCKET_UNIT)).expect("socket unit"),
-        install::INGRESS_SOCKET
-    );
-    assert_eq!(
-        fs::read_to_string(writer.system_root.join(install::SERVICE_UNIT)).expect("service unit"),
-        install::INGRESS_SERVICE
-            .replace("{exe}", &exe)
-            .replace("{uid}", "1000")
-    );
-    assert_eq!(
-        fs::read_to_string(writer.apparmor_root.join(install::APPARMOR_FILE)).expect("profile"),
-        install::APPARMOR_PROFILE
-    );
-    for path in &written {
-        let mode = fs::metadata(path)
-            .expect("stat the unit")
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(mode, 0o644, "{}", path.display());
-    }
-
-    // Without root the CLI must refuse before writing anything.
-    let denied = isolated(&root, &["daemon", "install", "--ingress"]);
-    assert_eq!(denied.status.code(), Some(1));
-    let stderr = String::from_utf8(denied.stderr).expect("errors are UTF-8");
-    assert!(
-        stderr.contains("next: sudo slipfork daemon install --ingress"),
-        "{stderr}"
-    );
-    assert!(
-        !root.join("config/systemd/user/slipfork.service").exists()
-            || root.join("etc/systemd/system").exists(),
-        "root validation must happen before any write"
-    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -1081,10 +1001,12 @@ fn a_down_root_still_scopes_running_forks_and_stopped_siblings_from_disk() {
     let root = scratch("scope-down");
     let demo = root.join("demo");
     let forks = demo.join(".forks");
+    // A copied plain checkout is a real fork; a name `ForkName::parse` rejects is ignored.
     for (path, name) in [
         (&demo, "demo"),
         (&forks.join("youpi"), "youpi"),
         (&forks.join("feat-auth"), "feat-auth"),
+        (&forks.join("Junk dir"), "junk"),
     ] {
         fs::create_dir_all(path).expect("create the lab project");
         fs::write(
@@ -1116,8 +1038,8 @@ fn a_down_root_still_scopes_running_forks_and_stopped_siblings_from_disk() {
     }));
     let options = Options::new(false).with_home(Some(root.clone()));
 
-    // The project root shows the stopped root and the live fork, but a plain directory under
-    // `.forks` is not a subvolume checkout and never poses as a phantom stopped fork.
+    // The project root shows the stopped root and the live fork; a copied plain checkout under
+    // `.forks` is a real stopped fork, while an invalid name is never treated as one.
     let scoped = status::scope(&live, &slipfork_world::ProjectScope::resolve(&demo));
     assert_eq!(
         scoped.worlds.len(),
@@ -1132,16 +1054,22 @@ fn a_down_root_still_scopes_running_forks_and_stopped_siblings_from_disk() {
     assert_eq!(scoped.worlds[0].world, "demo");
     assert_eq!(scoped.worlds[0].forks.len(), 1);
     assert_eq!(scoped.worlds[0].forks[0].fork.as_deref(), Some("feat-auth"));
-    assert!(
-        scoped.worlds[0].stopped_forks.is_empty(),
-        "a plain directory is not a fork checkout: {scoped:?}"
+    assert_eq!(
+        scoped.worlds[0].stopped_forks.len(),
+        1,
+        "a copied plain checkout is a stopped fork: {scoped:?}"
     );
+    assert_eq!(scoped.worlds[0].stopped_forks[0].name, "youpi");
     let text = status::render(&scoped, &options);
     assert!(text.contains("○ demo"), "{text}");
     assert!(text.contains("● feat-auth"), "{text}");
     assert!(
-        !text.contains("○ youpi"),
-        "a plain directory must not pose as a stopped fork: {text}"
+        text.contains("○ youpi"),
+        "a plain copied checkout renders as a stopped fork: {text}"
+    );
+    assert!(
+        !text.contains("Junk dir"),
+        "a directory whose name is not a fork must not pose as one: {text}"
     );
     assert_eq!(text.matches("○ demo").count(), 1, "{text}");
     assert_eq!(text.matches("● feat-auth").count(), 1, "{text}");

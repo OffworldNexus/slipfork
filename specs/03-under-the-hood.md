@@ -16,7 +16,9 @@ $ slipfork fork feat-auth
 
 ## 1. Pure Btrfs Layout, `<world>/.slipfork-world-stamp.json` & Persistent Logs
 
-Everything lives natively on one Btrfs mount — your checkout (`~/projects/demo`) is a Btrfs subvolume (converted transparently on first `slipfork up`), and `<btrfs_mount>/.slipfork-store` holds flat sibling subvolumes plus persistent component logs:
+Everything lives natively on one Btrfs mount — your checkout (`~/projects/demo`) works whether it is a Btrfs subvolume or a plain directory, and the store holds flat sibling subvolumes plus persistent component logs. The store root is `<btrfs_mount>/.slipfork-store` on a writable non-`/` mount, and `$XDG_DATA_HOME/slipfork/store` when the longest mount is `/` or is not writable, so a Btrfs-root host never writes `/.slipfork-store`:
+
+`slipfork up` calls only `ensure_store` and never converts or rewrites your checkout. `slipfork fork` snapshots a subvolume checkout with one CoW ioctl and copies a plain checkout's tree instead, with no adoption or conversion step.
 
 ```text
 <btrfs-mount>/
@@ -24,7 +26,9 @@ Everything lives natively on one Btrfs mount — your checkout (`~/projects/demo
 │   └── .forks/feat-auth/                         # CoW project snapshot (one ioctl)
 └── .slipfork-store/
     ├── images/                                   # Read-only OCI & Dockerfile step subvolumes
-    ├── logs/<world>/<id>.log                     # Persistent image/hook/resource/service logs (survives failed up & down)
+    ├── logs/<world>/<id>.log                     # Persistent pod/resource/service logs (survives failed up & down)
+    ├── logs/<world>/runs/index.jsonl             # One catalog record per executed run (survives failed up & down)
+    ├── logs/<world>/runs/<run_id>.log            # That run's captured stdout/stderr (`logs -r <id>`)
     ├── pods/<world>/                             # Ephemeral writable pod rootfs clones (deleted on down & drop)
     ├── templates/postgres-18/                    # Golden initdb subvolume (sealed BTRFS_SUBVOL_RDONLY)
     └── worlds/
@@ -39,13 +43,17 @@ A project, world, or `PGDATA` clone is one `BTRFS_IOC_SNAP_CREATE_V2` ioctl (`~0
 ```mermaid
 flowchart LR
   Tpl["templates/postgres-18\n(BTRFS_SUBVOL_RDONLY)"] -.->|"up (one CoW ioctl)"| Pg["worlds/demo.pg.pg\n(+ world_epoch)"]
-  Proj["~/projects/demo\n(code + deps + .slipfork/)"] ==>|"fork (one CoW ioctl)"| FProj[".forks/feat-auth"]
+  Proj["~/projects/demo\n(code + deps + .slipfork/)"] ==>|"fork (one CoW ioctl; plain checkout is copied)"| FProj[".forks/feat-auth"]
   World["worlds/demo\n(s3 + redis + .slipfork-world-stamp.json)"] ==>|"fork (one CoW ioctl)"| FWorld["worlds/feat-auth--demo"]
   Pg ==>|"fork (CHECKPOINT + syncfs, then CoW)"| FPg["worlds/feat-auth--demo.pg.pg"]
 ```
 
-!!! info "Epoch-paired stamps & persistent `<store>/logs/<world>/<id>.log`"
-    When a world finishes booting, Slipfork writes one `world_epoch` into **both** `<world>/.slipfork-world-stamp.json` and `worlds/<world>.pg.<id>/.slipfork-pg-stamp.json` so `fork` reuses stamps in `0ms` when epochs match. Every image build, setup, hook, resource, and service writes to `<store>/logs/<world>/<id>.log` (retained across failed cold `up` and `down`, truncated only on that component's next build/boot, and removed on `drop`), while `down` deletes only `<runtime_dir>/pods/<world>` and `<store>/pods/<world>/`.
+!!! info "Epoch-paired stamps, run catalog & persistent logs"
+    When a world finishes booting, Slipfork writes one `world_epoch` into **both** `<world>/.slipfork-world-stamp.json` and `worlds/<world>.pg.<id>/.slipfork-pg-stamp.json` so `fork` reuses stamps in `0ms` when epochs match.
+
+    Every executed image pull/build, setup, hook, resource, and service start mints a six-character `run_id` and appends one record (`run_id, kind, target, command, state, started_ms, finished_ms, duration_ms, project, world`) to `<store>/logs/<world>/runs/index.jsonl` **before** the step runs. The step's output lands in `runs/<run_id>.log`, while a live pod also keeps `<store>/logs/<world>/<id>.log`; so `slipfork logs <image>` replays a failed build and `slipfork logs -r <id>|last|failed` replays one record even after a failed cold `up` or `down`.
+
+    Retention keeps the newest 20 successful runs per world and never prunes a `failed` or crashed (`running`) record, so the artifact an operator needs outlives every teardown; `down` deletes only `<runtime_dir>/pods/<world>` and `<store>/pods/<world>/`, and `drop` removes the world's logs.
 
 **Pod user baseline.** Every pod runs as the invoking `$UID`/`$GID` (identity-mapped into the world user namespace) with a synthetic two-line `/etc/passwd`. Unprivileged pods get a writable `0755` `/home/slipfork` inside their CoW rootfs and `HOME=/home/slipfork` in `config.json` whenever the merged image/Forkfile env leaves `HOME` unset, empty, or `/root`; a declared non-`/root` `HOME` always wins and uid `0` keeps `/root`. Images such as `python:3.13-slim` and `node:22-slim` therefore need no `ENV HOME` change for `uv`, `pnpm`, `git`, or `bash` to write caches.
 

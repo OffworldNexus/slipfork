@@ -109,25 +109,38 @@ impl Session {
         };
         let params = json!({ "project": self.cwd(), "runs": true });
         let mut records: Vec<RunRow> = Vec::new();
+        let mut catalog: Vec<Value> = Vec::new();
+        let mut skipped = 0_usize;
         let outcome = client.call_streaming("logs", params, &mut |event| {
-            if event["event"].as_str() == Some("runs")
-                && let Some(rows) = event["rows"].as_array()
-            {
-                records.extend(rows.iter().filter_map(RunRow::from_value));
+            if event["event"].as_str() == Some("runs") {
+                if let Some(rows) = event["rows"].as_array() {
+                    records.extend(rows.iter().filter_map(RunRow::from_value));
+                    catalog.extend(rows.iter().cloned());
+                }
+                skipped = usize::try_from(event["skipped"].as_u64().unwrap_or(0)).unwrap_or(0);
             }
         });
         match outcome {
             Ok(_) => {
                 if args.json {
-                    for record in &records {
-                        let line = serde_json::to_string(&record.to_value()).unwrap_or_default();
+                    // The daemon already matched `RunRecord`'s 10 documented keys; forward verbatim.
+                    for record in &catalog {
+                        let line = serde_json::to_string(record).unwrap_or_default();
                         let _ = emit(&format!("{line}\n"));
                     }
-                } else if records.is_empty() {
-                    println!("no recorded runs yet — `slipfork up` records one per executed step");
+                    if skipped > 0 {
+                        let _ = emit(&format!("{}\n", json!({ "skipped": skipped })));
+                    }
                 } else {
-                    for line in render_runs(&records, self.color()) {
-                        println!("{line}");
+                    if let Some(notice) = empty_runs_notice(records.len(), skipped) {
+                        println!("{notice}");
+                    } else if !records.is_empty() {
+                        for line in render_runs(&records, self.color()) {
+                            println!("{line}");
+                        }
+                    }
+                    if let Some(notice) = skipped_notice(skipped) {
+                        eprintln!("{notice}");
                     }
                 }
                 ExitCode::SUCCESS
@@ -190,6 +203,24 @@ impl Session {
         let next = refusal_next(error, verb);
         self.report(&error.code, &error.message, &next, json)
     }
+}
+
+/// The bare-catalog hint; a record-bearing or skipped-line-bearing catalog never prints it.
+fn empty_runs_notice(records: usize, skipped: usize) -> Option<&'static str> {
+    (records == 0 && skipped == 0)
+        .then_some("no recorded runs yet — `slipfork up` records one per executed step")
+}
+
+/// The one human notice for catalog lines written by an older schema.
+fn skipped_notice(skipped: usize) -> Option<String> {
+    let (noun, verb) = match skipped {
+        0 => return None,
+        1 => ("entry", "is"),
+        _ => ("entries", "are"),
+    };
+    Some(format!(
+        "{skipped} {noun} from an older schema {verb} not listed"
+    ))
 }
 
 /// The one remedy for a typed streaming refusal.
@@ -256,6 +287,12 @@ impl Renderer {
             .unwrap_or_default();
         let ts_ms = event.get("ts_ms").and_then(Value::as_u64);
         if kind == "roster" {
+            // `logs -r --json` mirrors the catalog record before its captured lines.
+            if self.json
+                && let Some(run) = event.get("run")
+            {
+                let _ = emit(&format!("{run}\n"));
+            }
             self.roster(event);
             return;
         }
@@ -347,5 +384,32 @@ impl Renderer {
         self.pods
             .entry(pod.to_owned())
             .or_insert(PALETTE[index % PALETTE.len()])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{empty_runs_notice, skipped_notice};
+
+    /// An older-schema line is reported in words, and singular/plural read correctly.
+    #[test]
+    fn the_skipped_notice_counts_old_schema_lines() {
+        assert_eq!(skipped_notice(0), None);
+        assert_eq!(
+            skipped_notice(1).as_deref(),
+            Some("1 entry from an older schema is not listed")
+        );
+        assert_eq!(
+            skipped_notice(2).as_deref(),
+            Some("2 entries from an older schema are not listed")
+        );
+    }
+
+    /// A record-bearing or skipped-line-bearing catalog never claims nothing was recorded.
+    #[test]
+    fn the_empty_notice_only_shows_for_a_truly_empty_catalog() {
+        assert!(empty_runs_notice(0, 0).is_some());
+        assert_eq!(empty_runs_notice(1, 0), None);
+        assert_eq!(empty_runs_notice(0, 1), None);
     }
 }

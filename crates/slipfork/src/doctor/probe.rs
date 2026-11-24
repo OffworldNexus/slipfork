@@ -249,11 +249,28 @@ fn daemon(host: &HostEnv) -> Check {
         "Daemon",
         false,
         vec![
-            Part::Bad("not installed".to_owned()),
-            Part::Dim("start it with `slipfork daemon install`".to_owned()),
+            Part::Bad("not running".to_owned()),
+            Part::Dim("`slipfork up` starts it automatically".to_owned()),
         ],
-        Some("run `slipfork daemon install` to start the background service".to_owned()),
+        Some(
+            "run `slipfork up` (packages enable `slipfork.service`; otherwise \
+             `systemctl --user enable --now slipfork`)"
+                .to_owned(),
+        ),
     )
+}
+
+/// The ingress socket unit as shipped: packages use `/usr/lib`, hand installs `/etc`.
+fn ingress_socket(install_root: &Path) -> Option<PathBuf> {
+    ["etc/systemd/system", "usr/lib/systemd/system"]
+        .iter()
+        .map(|directory| install_root.join(directory).join("slipfork-ingress.socket"))
+        .find(|path| path.is_file())
+}
+
+/// Whether OpenRC ships the ingress service under this install root.
+fn openrc_ingress(install_root: &Path) -> bool {
+    install_root.join("etc/init.d/slipfork-ingress").is_file()
 }
 
 fn domains(host: &HostEnv) -> Check {
@@ -265,9 +282,17 @@ fn domains(host: &HostEnv) -> Check {
             .stderr(Stdio::null())
             .status()
             .is_ok_and(|status| status.success())
+    }) || find(&host.path, "rc-service").is_some_and(|rc_service| {
+        Command::new(rc_service)
+            .args(["slipfork-ingress", "status"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
     });
     if active {
-        Check::new(
+        return Check::new(
             "Domains",
             true,
             vec![
@@ -275,24 +300,33 @@ fn domains(host: &HostEnv) -> Check {
                 Part::Dim("local domain routing active".to_owned()),
             ],
             None,
-        )
-    } else {
-        let installed = crate::install::system_socket_path(&host.install_root).is_file();
-        let detail = if installed {
-            "local domain routing inactive"
-        } else {
-            "local domain routing not installed"
-        };
-        Check::new(
-            "Domains",
-            false,
-            vec![
-                Part::Url("http://*.localhost".to_owned()),
-                Part::Dim(detail.to_owned()),
-            ],
-            Some("run `sudo slipfork daemon install` to turn on local domain routing".to_owned()),
-        )
+        );
     }
+    let openrc = openrc_ingress(&host.install_root);
+    let socket = ingress_socket(&host.install_root);
+    let detail = if openrc || socket.is_some() {
+        "local domain routing inactive"
+    } else {
+        "local domain routing not installed"
+    };
+    let next = if openrc {
+        "start it with `sudo rc-service slipfork-ingress start`"
+    } else if socket.is_some() {
+        "enable it with `sudo systemctl enable --now slipfork-ingress.socket`"
+    } else {
+        "packages enable `slipfork-ingress.socket`; otherwise copy \
+         `/usr/share/slipfork/systemd/*` into the unit directories, then \
+         `sudo systemctl enable --now slipfork-ingress.socket`"
+    };
+    Check::new(
+        "Domains",
+        false,
+        vec![
+            Part::Url("http://*.localhost".to_owned()),
+            Part::Dim(detail.to_owned()),
+        ],
+        Some(next.to_owned()),
+    )
 }
 
 fn shorten(path: &Path, home: Option<&Path>) -> String {

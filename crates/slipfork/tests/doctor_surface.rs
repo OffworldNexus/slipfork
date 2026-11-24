@@ -128,6 +128,35 @@ fn visible_rows(text: &str) -> Vec<String> {
 }
 
 #[test]
+fn a_packaged_socket_reads_installed_but_inactive() {
+    let lab = Lab::new();
+    let install_root = lab.root.join("root");
+    let unit_dir = install_root.join("usr/lib/systemd/system");
+    std::fs::create_dir_all(&unit_dir).expect("create the packaged unit tree");
+    std::fs::write(unit_dir.join("slipfork-ingress.socket"), "[Socket]\n")
+        .expect("write the packaged socket unit");
+    let output = lab
+        .command(env!("CARGO_BIN_EXE_slipfork"))
+        .arg("doctor")
+        .env("SLIPFORK_INSTALL_ROOT", &install_root)
+        .output()
+        .expect("run doctor against the packaged unit tree");
+    let plain = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        plain.contains("local domain routing inactive"),
+        "a packaged socket must read installed-but-inactive: {plain}"
+    );
+    assert!(
+        !plain.contains("local domain routing not installed"),
+        "a packaged socket is not missing: {plain}"
+    );
+    assert!(
+        plain.contains("sudo systemctl enable --now slipfork-ingress.socket"),
+        "the packaged remedy must enable the socket: {plain}"
+    );
+}
+
+#[test]
 fn doctor_has_four_plain_rows_and_styled_roles_on_a_terminal() {
     let lab = Lab::new();
     let raw = pty(&lab, &["doctor"], &[]);
@@ -157,9 +186,11 @@ fn doctor_has_four_plain_rows_and_styled_roles_on_a_terminal() {
             "{needle} must carry its SGR role: {raw:?}"
         );
     }
-    // The `slirp4netns` package name is the one string a user must copy verbatim; the jargon
-    // guard still covers every other occurrence of `netns`.
-    let readable = plain.replace("slirp4netns", "");
+    // The package name and unit name are strings a user must copy verbatim; the jargon guard
+    // still covers every other occurrence of `netns` and `ingress`.
+    let readable = plain
+        .replace("slirp4netns", "")
+        .replace("slipfork-ingress", "");
     for word in JARGON {
         assert!(
             !readable.contains(word),

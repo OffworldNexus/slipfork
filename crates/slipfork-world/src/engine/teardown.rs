@@ -10,12 +10,27 @@ use crate::error::{Error, Result};
 use super::BtrfsEngine;
 
 /// Destroys `path` when it exists; an entry already unlinked by a racing reaper is `Ok(())`.
+///
+/// A fork checkout may be a Btrfs subvolume (a subvolume checkout) or a plain copied directory
+/// (a fork of a plain checkout), so a non-subvolume is removed with `remove_dir_all`.
 pub(super) fn destroy_if_present(path: &Path) -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
-    match BtrfsEngine::destroy_subvolume(path) {
-        Ok(()) => Ok(()),
+    match btrfs::is_subvolume_path(path) {
+        Ok(true) => match BtrfsEngine::destroy_subvolume(path) {
+            Ok(()) => Ok(()),
+            Err(Error::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        },
+        Ok(false) => {
+            if let Err(source) = fs::remove_dir_all(path)
+                && source.kind() != io::ErrorKind::NotFound
+            {
+                return Err(Error::io("remove", path, source));
+            }
+            Ok(())
+        }
         Err(Error::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }

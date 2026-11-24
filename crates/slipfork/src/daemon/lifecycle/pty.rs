@@ -270,7 +270,7 @@ fn refusal_s3(target: &str, shellable: &[String]) -> Failure {
     };
     Failure::new(
         "shell-refused",
-        format!("✗ '{target}' is an s3 bucket, not a shell\n  next: {next}"),
+        format!("✗ '{target}' is an s3 bucket, not a shell\nnext: {next}"),
     )
 }
 
@@ -281,7 +281,7 @@ fn refusal_unknown(target: &str, shellable: &[String]) -> Failure {
     );
     Failure::new(
         "shell-refused",
-        format!("✗ No shellable target '{target}'\n  next: {next}"),
+        format!("✗ No shellable target '{target}'\nnext: {next}"),
     )
 }
 

@@ -2,7 +2,7 @@
 
 Open a `Forkfile` and it just works: `# forkfile: 0.1` is detected, directives,
 components, `@tool` runners, `$port`, `$env.KEY` and `"${...}"` interpolation
-are highlighted, and `{ ... }` blocks indent 2 spaces — no plugins, no LSP required.
+are highlighted, and `{ ... }` blocks indent 4 spaces — no plugins, no LSP required.
 
 ## Install
 
@@ -28,11 +28,11 @@ are enabled (default in Neovim and in most Vim configs).
 ```forkfile
 # forkfile: 0.1
 image api . {
-  service web {
-    port 8000
-    route /api
-    run: @uv run uvicorn app --port $port
-  }
+    service web {
+        port 8000
+        route /api
+        run: @uv run uvicorn app --port $port
+    }
 }
 ```
 
@@ -44,7 +44,7 @@ highlights the builtin, operator, and dotted property inside the interpolation.
 
 ## Editing ergonomics
 
-- 2-space indent, `expandtab`, `{`/`}` aware; `} else {` and
+- 4-space indent, `expandtab`, `{`/`}` aware; `} else {` and
   `} else on dev {` align with the opening block and stay net-zero.
 - `commentstring=# %s` and `comments=:#`, so `gcc` / `gc` comment toggling works.
 

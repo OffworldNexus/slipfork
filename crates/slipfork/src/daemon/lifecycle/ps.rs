@@ -28,6 +28,7 @@ impl Core {
                     project,
                     world,
                     supervisor_pid,
+                    ..
                 } => rows.push((
                     None,
                     WorldView::new(project, world, None, 0, *supervisor_pid, true, true, &[])
@@ -400,4 +401,53 @@ fn started_at(entry: &crate::daemon::registry::RegistryEntry) -> u64 {
                 .map(|since| since.as_millis() as u64)
         })
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+    use std::fs;
+    use std::path::PathBuf;
+
+    use super::{PsWorld, attach_stopped};
+
+    /// A real disk scratch project under `/var/tmp`, removed even when an assertion panics.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(prefix: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_nanos());
+            let dir =
+                PathBuf::from("/var/tmp").join(format!("{prefix}-{}-{nanos}", std::process::id()));
+            fs::create_dir_all(&dir).expect("create the disk scratch project");
+            Self(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A project that simply has no forks yet must not surface a `problem` row.
+    #[test]
+    fn a_project_without_a_forks_dir_reports_no_problem() {
+        let scratch = Scratch::new("slipfork-ps-no-forks");
+        let mut world = PsWorld::stopped(&scratch.0, "demo", None);
+        attach_stopped(&mut world, &BTreeSet::new());
+        assert!(
+            world.problem.is_none(),
+            "a missing `.forks` must not become a problem row: {:?}",
+            world.problem
+        );
+        assert!(world.stopped_forks.is_empty());
+        assert!(
+            slipfork_world::fork_checkouts(&scratch.0)
+                .expect("list fork checkouts for a project with no `.forks`")
+                .is_empty()
+        );
+    }
 }

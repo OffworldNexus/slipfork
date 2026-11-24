@@ -15,7 +15,7 @@ use crate::commands::{
 };
 use crate::world::{DownArgs, DropArgs, ForkArgs, RestartArgs, SuperviseArgs, UpArgs};
 
-use super::verbs::{Cli, Command, DaemonCommand, SecretCommand};
+use super::verbs::{Cli, Command, SecretCommand};
 
 /// The one remedy every JSON usage rejection carries.
 const USAGE_NEXT: &str = "run `slipfork --help` to see the available surface.";
@@ -184,9 +184,6 @@ fn dispatch(cli: Cli, session: Session) -> ExitCode {
                 }
             }
         }
-        Command::Daemon {
-            command: DaemonCommand::Install { ingress },
-        } => session.daemon_install(ingress, json),
         Command::Help { command } => print_help(command.as_deref(), session.color(), json),
         Command::Version => emit(&format!("slipfork {}\n", env!("CARGO_PKG_VERSION"))),
         Command::Supervise { project, world } => {

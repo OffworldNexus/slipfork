@@ -199,11 +199,11 @@ fn live_stdio_journey_publishes_diagnostics_hover_definition_and_formatting() {
 
     let edits = client.request(
         "textDocument/formatting",
-        json!({ "textDocument": { "uri": FORMAT_URI }, "options": { "tabSize": 2, "insertSpaces": true } }),
+        json!({ "textDocument": { "uri": FORMAT_URI }, "options": { "tabSize": 4, "insertSpaces": true } }),
     );
     let new_text = edits[0]["newText"].as_str().expect("formatted text");
-    assert!(new_text.contains("\n  service web {\n"), "{new_text}");
-    assert!(new_text.contains("\n    port 8080\n"), "{new_text}");
+    assert!(new_text.contains("\n    service web {\n"), "{new_text}");
+    assert!(new_text.contains("\n        port 8080\n"), "{new_text}");
 
     client.notify(
         "textDocument/didChange",
@@ -216,7 +216,7 @@ fn live_stdio_journey_publishes_diagnostics_hover_definition_and_formatting() {
     assert_eq!(diagnostics["diagnostics"], json!([]));
     let edits = client.request(
         "textDocument/formatting",
-        json!({ "textDocument": { "uri": FORMAT_URI }, "options": { "tabSize": 2, "insertSpaces": true } }),
+        json!({ "textDocument": { "uri": FORMAT_URI }, "options": { "tabSize": 4, "insertSpaces": true } }),
     );
     assert_eq!(edits, json!([]), "formatting must be idempotent");
 

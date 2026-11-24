@@ -1,6 +1,7 @@
-# The per-user daemon unit. `slipfork daemon install` writes the same unit under
-# $XDG_CONFIG_HOME/systemd/user; this copy is what the package ships so a
-# `systemctl --user enable --now slipfork` works without installing first.
+# The per-user daemon unit. The package ships it and its install hook enables
+# and starts it for the installing user, so `slipfork up` usually needs nothing.
+# A tarball or headless install copies it to $XDG_CONFIG_HOME/systemd/user and
+# runs `systemctl --user enable --now slipfork`.
 [Unit]
 Description=Slipfork per-user daemon
 

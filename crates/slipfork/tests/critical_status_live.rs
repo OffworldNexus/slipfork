@@ -42,6 +42,14 @@ image box from python:3.13-slim {\n  pre-deploy: sh -c 'echo rolling-tail-1; sle
 const FAIL_FORKFILE: &str = "# forkfile: 0.1\n\
 image box from python:3.13-slim {\n  pre-deploy: sh -c 'exit 3'\n  service worker {\n    run: sleep 3600\n  }\n}\n";
 
+/// A portless service must survive the 650ms boot window before dying. Its first launch creates
+/// `/tmp/once` and exits 7 after 0.8s, so the first `up` boots; the restart reuses the pod rootfs,
+/// sees the marker, and dies in milliseconds, keeping the strict failure verdict deterministic.
+const DEAD_SERVICE_FORKFILE: &str = "# forkfile: 0.1\n\
+image box from python:3.13-slim {\n\
+\x20 service web {\n    run: sh -c 'if [ -e /tmp/once ]; then exit 7; fi; touch /tmp/once; sleep 0.8; exit 7'\n  }\n\
+}\n";
+
 const ONE_SERVICE: &str = "# forkfile: 0.1\n\
 postgres pg {\n  version 18\n}\n\
 redis cache\n\
@@ -957,9 +965,21 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         "the failed row must render: {failed_readable}"
     );
     assert!(
-        failed_readable.contains("✗ Failed to run hook")
-            && failed_readable.contains("check logs with: slipfork logs"),
-        "the one failure sentence must point at the log: {failed_readable}"
+        failed_readable.contains("✗ Failed to run hook"),
+        "the failure sentence must name the hook: {failed_readable}"
+    );
+    assert_eq!(
+        failed_readable.matches("next:").count(),
+        1,
+        "a failure prints exactly one `next:` line: {failed_readable}"
+    );
+    assert!(
+        failed_readable.contains("next: slipfork logs -r "),
+        "the one remedy replays the catalog run: {failed_readable}"
+    );
+    assert!(
+        !failed_readable.contains("check logs with:"),
+        "the superseded hint copy is gone: {failed_readable}"
     );
     // A failed boot may have no published live entry; best-effort cleanup before the next boot.
     let _ = run(&project, &env, &["down"]);
@@ -1387,4 +1407,113 @@ fn live_prompt_is_byte_identical_across_lifecycle_verbs() {
         assert_prompt(&run, args, seed_row);
     }
     drop(guard);
+}
+
+/// A crashed long-lived service must never yield `✓ Ready`.
+///
+/// `world_answers` only proves the control socket connects, so the canonical `ps` rows decide
+/// health: the restart always fails with the exact `next:` remedy, and `up` must never report
+/// Ready while a subsequent `ps` still shows the service down. `--json` must agree.
+#[test]
+fn live_up_never_reports_ready_for_a_dead_service() {
+    let root = test_root();
+    let store_root = mount_store_for(&root);
+    let env = LabEnv::isolated(&root);
+    let suffix = unique_suffix();
+    let project_name = format!("dead-{suffix}");
+    let world_id = project_name.clone();
+    let project = root.join(&project_name);
+    prepare(&project, &store_root, &world_id, DEAD_SERVICE_FORKFILE);
+    let _guard = WorldGuard {
+        project: project.clone(),
+        env: env.clone(),
+        store_root,
+        world: world_id.clone(),
+        keep: false,
+    };
+
+    let boot = run(&project, &env, &["up"]);
+    assert!(
+        boot.status.success(),
+        "the world must boot before its service dies:\n{}",
+        failure_detail(&env, &boot)
+    );
+
+    // Reads the canonical `ps` row so `up`'s verdict is judged against the same health model.
+    let web_running = |label: &str| -> bool {
+        let ps = run(&project, &env, &["ps", "--json"]);
+        let detail = failure_detail(&env, &ps);
+        let reply: serde_json::Value = serde_json::from_slice(&ps.stdout)
+            .unwrap_or_else(|error| panic!("{label}: ps --json does not parse: {error}\n{detail}"));
+        let rows = reply["worlds"]
+            .as_array()
+            .and_then(|worlds| worlds.first())
+            .map(services)
+            .unwrap_or_default();
+        let row = rows
+            .iter()
+            .find(|row| row["id"] == "web")
+            .unwrap_or_else(|| panic!("{label}: the `web` row is missing: {reply}\n{detail}"));
+        row["running"].as_bool().unwrap_or_else(|| {
+            panic!("{label}: the `web` row has no boolean `running`: {row}\n{detail}")
+        })
+    };
+    wait_until("web to exit", Duration::from_secs(20), || {
+        !web_running("waiting for web")
+    });
+
+    // The service dies immediately on every relaunch: `up` must fail, never print Ready.
+    let again = run(&project, &env, &["up"]);
+    let detail = failure_detail(&env, &again);
+    let stdout = String::from_utf8_lossy(&again.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&again.stderr).into_owned();
+    assert!(
+        !again.status.success(),
+        "a permanently dead service must fail `up`: {detail}"
+    );
+    assert!(
+        stderr.contains("next: slipfork logs web"),
+        "a down service must fail with the exact log remedy: {detail}"
+    );
+    assert!(
+        !stdout.contains("✓ Ready") && !stdout.contains('✓'),
+        "a failed `up` must not print a Ready check mark: {detail}"
+    );
+
+    let json = run(&project, &env, &["up", "--json"]);
+    let detail = failure_detail(&env, &json);
+    let stdout = String::from_utf8_lossy(&json.stdout);
+    let verdict_line = stdout
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_else(|| panic!("up --json printed no verdict: {stdout}\n{detail}"));
+    let verdict: serde_json::Value = serde_json::from_str(verdict_line).unwrap_or_else(|error| {
+        panic!("up --json verdict does not parse: {error}\n{stdout}\n{detail}")
+    });
+    assert!(
+        !json.status.success(),
+        "a permanently dead service must fail `up --json`: {verdict}\n{detail}"
+    );
+    assert_eq!(
+        verdict["error"]["code"], "world-unhealthy",
+        "the JSON verdict must carry the world failure code: {verdict}\n{detail}"
+    );
+    assert_eq!(
+        verdict["error"]["next"], "slipfork logs web",
+        "the JSON `next` must be the embedded log remedy, not a generic fallback: {verdict}\n{detail}"
+    );
+    assert!(
+        verdict.get("url").is_none(),
+        "an unhealthy world must carry no success `url`: {verdict}\n{detail}"
+    );
+    let message = verdict["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("web") && !message.contains("next:"),
+        "the JSON message must name the dead service without a duplicate `next:` line: {verdict}\n{detail}"
+    );
+    assert!(
+        !web_running("after up --json"),
+        "the JSON verdict must match `ps`: web stays down\n{detail}"
+    );
 }

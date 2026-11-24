@@ -18,7 +18,7 @@ pub(crate) const REMEDY_CRUN: &str =
 pub(crate) const REMEDY_USERNS: &str = "install util-linux and check that unprivileged user namespaces are enabled (`sysctl kernel.unprivileged_userns_clone=1`); then confirm `unshare --user --map-current-user -- true` succeeds for this user";
 /// Remedy for a non-tmpfs runtime directory.
 pub(crate) const REMEDY_RUNTIME: &str =
-    "point `$XDG_RUNTIME_DIR` at a writable tmpfs owned by this user (`slipfork daemon install`)";
+    "point `$XDG_RUNTIME_DIR` at a writable tmpfs owned by this user (`/run/user/<uid>`)";
 /// Remedy for an invalid pod description.
 pub(crate) const REMEDY_POD: &str = "use a lowercase pod id and absolute in-container paths";
 

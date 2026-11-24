@@ -2,9 +2,9 @@
 //! `<store>/logs/<world>/<image>.log`, so `slipfork logs <image>` reads failed-build output.
 
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use slipfork_world::pod_log;
+use slipfork_world::{LogStore, pod_log};
 
 use crate::world::supervise::strip_ansi;
 
@@ -12,28 +12,32 @@ use crate::world::supervise::strip_ansi;
 /// `<store>/logs/<world>/<image>.log`, so `slipfork logs <image>` reads failed-build output.
 pub(super) struct BuildLog<'a> {
     sink: &'a mut dyn Write,
-    logs_root: PathBuf,
+    dir: PathBuf,
     id: String,
     pending: Vec<u8>,
 }
 
 impl<'a> BuildLog<'a> {
-    pub(super) fn new(sink: &'a mut dyn Write, logs_root: &Path, id: &str) -> Self {
+    /// Taps `store`'s world capture directory for `id`, so no caller recomputes a logs path.
+    pub(super) fn new(sink: &'a mut dyn Write, store: &LogStore, id: &str) -> Self {
         Self {
             sink,
-            logs_root: logs_root.to_path_buf(),
+            dir: store.world_logs(),
             id: id.to_owned(),
             pending: Vec::new(),
         }
     }
 
-    /// Writes one cleaned line to the live sink and the `slipfork logs` capture.
+    /// Writes one cleaned, newline-terminated line to the live sink and the `slipfork logs`
+    /// capture. The sink (`EventLog`) is line-buffered: without `\n` it would hold every build
+    /// line — including the failure cause — until an unrelated flush, so the run capture stays empty.
     fn emit(&mut self, line: &[u8]) -> io::Result<()> {
         let Some(text) = clean_line(line) else {
             return Ok(());
         };
         self.sink.write_all(text.as_bytes())?;
-        let _ = pod_log::append(&self.logs_root, &self.id, text.as_bytes());
+        self.sink.write_all(b"\n")?;
+        let _ = pod_log::append(&self.dir, &self.id, text.as_bytes());
         Ok(())
     }
 
@@ -43,11 +47,15 @@ impl<'a> BuildLog<'a> {
         let _ = self.emit(&pending);
     }
 
-    /// Flushes the buffered tail and appends every line of a failed build's error, so
-    /// `<store>/logs/<world>/<image>.log` is never empty after a failure.
+    /// Flushes the buffered tail and appends every line of a failed build's error, so the run
+    /// capture is never empty after a failure. A `next:` remedy is not captured output: skipping it
+    /// keeps `logs <image>` from printing a second, circular hint.
     pub(super) fn fail(&mut self, error: &str) {
         self.finish();
         for line in error.lines() {
+            if line.trim_start().starts_with("next:") {
+                continue;
+            }
             let _ = self.emit(line.as_bytes());
         }
     }
@@ -87,6 +95,8 @@ mod tests {
     use std::fs;
     use std::io::Write;
 
+    use slipfork_world::{LogStore, WorldName};
+
     use super::BuildLog;
 
     fn temp(prefix: &str) -> tempfile::TempDir {
@@ -99,30 +109,36 @@ mod tests {
     #[test]
     fn a_failed_run_tees_its_output_and_error_into_the_image_log() {
         let root = temp("image-log");
-        let logs_root = root.path().join("logs");
+        let store = LogStore::at(
+            root.path(),
+            WorldName::parse("demo").expect("valid world name"),
+        );
         let mut mirror = Vec::new();
-        let mut tee = BuildLog::new(&mut mirror, &logs_root, "frontend");
+        let mut tee = BuildLog::new(&mut mirror, &store, "frontend");
         tee.write_all(b"step 1/2 npm ci\nstep 2/2 npm run build\nnpm ERR! missing script: build")
             .expect("stream the failing RUN output");
         tee.fail(
-            "build `frontend` failed: Dockerfile:12: `RUN npm run build` failed: `crun` exited with code 1\nnext: run `slipfork logs frontend`",
+            "build `frontend` failed: Dockerfile:12: `RUN npm run build` failed: `crun` exited with code 1\nnext: fix the command above; then rerun `slipfork up`",
         );
 
         drop(tee);
 
-        let captured = fs::read_to_string(logs_root.join("frontend.log"))
+        let captured = fs::read_to_string(store.world_logs().join("frontend.log"))
             .expect("the failed build must leave a log capture");
         for fragment in [
             "step 2/2 npm run build",
             "npm ERR! missing script: build",
             "Dockerfile:12: `RUN npm run build` failed",
-            "next: run `slipfork logs frontend`",
         ] {
             assert!(
                 captured.contains(fragment),
                 "missing `{fragment}` in:\n{captured}"
             );
         }
+        assert!(
+            !captured.contains("next:"),
+            "the capture carries no embedded remedy:\n{captured}"
+        );
         assert_eq!(
             captured.matches("Dockerfile:12").count(),
             1,
@@ -131,12 +147,21 @@ mod tests {
 
         let mirror = String::from_utf8(mirror).expect("the live sink mirrors UTF-8 output");
         assert!(
-            mirror.contains("npm ERR! missing script: build"),
-            "{mirror}"
+            mirror.contains("npm ERR! missing script: build\n"),
+            "the sink receives a newline-terminated line: {mirror:?}"
         );
         assert!(
-            mirror.contains("Dockerfile:12: `RUN npm run build` failed"),
-            "{mirror}"
+            mirror
+                .contains("Dockerfile:12: `RUN npm run build` failed: `crun` exited with code 1\n"),
+            "the failure cause reaches the sink once, framed: {mirror:?}"
+        );
+        assert!(
+            !mirror.contains("next:"),
+            "a remedy never reaches the sink: {mirror:?}"
+        );
+        assert!(
+            !captured.trim().is_empty(),
+            "the capture is never empty after a failure"
         );
     }
 }

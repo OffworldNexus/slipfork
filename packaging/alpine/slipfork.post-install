@@ -1,0 +1,6 @@
+#!/bin/sh
+# The package ships the OpenRC ingress script, but apk runs install hooks with a
+# PATH-only environment: SUDO_USER is never set here, so the hook cannot know
+# who installed the package. docs/install.md shows the three commands that set
+# /etc/conf.d/slipfork-ingress and start the service.
+exit 0

@@ -47,6 +47,7 @@ flowchart LR
 | `slipfork fork [name]` | Snapshot code and world data, boot the fork on its own URL |
 | `slipfork drop <name>` | Stop a fork and delete its snapshots; `-f` discards a dirty checkout |
 | `slipfork logs [-f] [-a] [-t] [--since <time>] [--until <time>] [targets]...` | Merged service logs; `-a` adds images and resources; several targets merge in time order |
+| `slipfork logs -r <id>\|last\|failed` | Replay one recorded step run; `--runs` lists the whole catalog |
 | `slipfork shell <target>` | Real PTY: `bash`/`sh`, `psql`, or `redis-cli` for one declared target |
 | `slipfork exec [-i\|--no-interactive] [service\|image] -- <cmd>` | Run any command in a pod with a real PTY on a terminal; exit code forwarded |
 | `slipfork env [component]` | Resolved runtime variables, secrets redacted |
@@ -57,7 +58,6 @@ flowchart LR
 | `slipfork fmt` | Format a Forkfile; `--check` reports only |
 | `slipfork migrate` | Convert a legacy `snow.yml` into a `Forkfile` |
 | `slipfork completions <shell>` | Print bash, zsh or fish completions |
-| `slipfork daemon install` | Write the per-user unit; `--ingress` adds the system socket |
 
 `slipfork exec` allocates a real kernel PTY whenever stdin and stdout are terminals and `--json` is off, so `ipython`, `bash`, and `psql` keep their prompts, colours, and line editing. `-i` requires both terminals and fails closed without them, while `--no-interactive` keeps a plain pipe so prompts see immediate EOF.
 
@@ -179,13 +179,17 @@ $ slipfork up
 ```
 
 A successful run ends at `✓ Ready`; there is no trailing reminder. A cache hit says `cached`, never
-`pulled` or `built`. A failure keeps its red row and points at the log, then leaves the world running
-for inspection:
+`pulled` or `built`. A failure keeps its red row, prints exactly one catalog-derived `next:` replay
+command, and leaves the captured output readable for inspection:
 
 ```console
-✗ image     backend   failed                    84ms
-✗ Failed to build image backend — check logs with: slipfork logs backend
+✗ image     api       failed                    84ms
+✗ Failed to build image api
+next: slipfork logs -r c91e04
 ```
+
+A step that never opened a capture (an image whose run target is unreadable) prints its own remedy
+instead of a log command that resolves nowhere.
 
 !!! info "`doctor` leads with a verdict"
 
@@ -216,13 +220,29 @@ Refusals are one line plus one remedy on stderr:
 ```console
 $ slipfork shell uploads
 ✗ 'uploads' is an s3 bucket, not a shell
-  next: slipfork shell api, pg, cache
+next: slipfork shell api, pg, cache
 ```
 
 `slipfork logs <image>` reads an image build log, including after a failed cold `up`, and
-`slipfork logs -f api worker` follows and merges several targets. `--since 30m` / `--until 2h`
-accept `30s`, `5m`, `2h`, `1d` or RFC 3339, and `-t` adds a timestamp gutter; `--json` lines
-carry `ts_ms`.
+`slipfork logs -f api worker` follows and merges several targets. Every executed step also lands in
+one run catalog, so a lost id is never lost output:
+
+```console
+$ slipfork logs app              # replays the failed image build
+$ slipfork logs -r failed        # the newest failed step run
+$ slipfork logs --runs           # #run_id kind step status duration recorded
+```
+
+`logs <target>` resolves a live pod first, then the newest catalog record whose target is that id
+(an image id, a hook, or a service), then the recorded run. `logs -r <id>|last|failed` and `--runs`
+read the same catalog, and all of it survives `down`: retention keeps the newest 20 successful runs
+per world and never prunes a `failed` or crashed one.
+
+The store lives at `<btrfs_mount>/.slipfork-store` on a writable non-`/` mount and
+`$XDG_DATA_HOME/slipfork/store` otherwise, so a Btrfs-root host never writes `/.slipfork-store`.
+`--since 30m` / `--until 2h` accept `30s`, `5m`, `2h`, `1d` or RFC 3339, and `-t` adds a timestamp
+gutter; `--json` lines carry `ts_ms`, while `--runs --json` mirrors
+`run_id, kind, target, command, state, started_ms, finished_ms, duration_ms, project, world`.
 
 ## Completions
 

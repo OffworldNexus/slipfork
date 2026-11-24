@@ -102,7 +102,7 @@ fn inline_on_with_else_round_trips_through_canonical_block_form() {
     let inline = "# forkfile: 0.1\n\nimage app . {\n  service web {\n    on dev: run: /bin/echo dev\n    else {\n      run: /bin/echo prod\n    }\n  }\n}\n";
     let formatted = format(&parse(inline).expect("inline else parses"));
     assert!(
-        formatted.contains("    on dev {\n      run: /bin/echo dev\n    } else {"),
+        formatted.contains("        on dev {\n            run: /bin/echo dev\n        } else {"),
         "inline `on` + else must render the canonical block form:\n{formatted}"
     );
 }

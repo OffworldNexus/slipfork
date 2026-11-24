@@ -85,12 +85,12 @@ modes:
 const MIGRATED: &str = "# forkfile: 0.1
 # migrated from snow.yml
 features {
-  dev
+    dev
 }
 
 postgres pg {
-  version 16
-  database app_db
+    version 16
+    database app_db
 }
 
 redis cache
@@ -102,40 +102,40 @@ s3 assets
 domain main
 
 env common {
-  COMMIT = self.domain
-  DATABASE_URL = \"postgres://\" + app_db.url
-  PUBLIC_URL = main.name
-  REDIS_URL = cache.url
-  SECRET_KEY = secret(SECRET_KEY, random_hex(32))
+    COMMIT = self.domain
+    DATABASE_URL = \"postgres://\" + app_db.url
+    PUBLIC_URL = main.name
+    REDIS_URL = cache.url
+    SECRET_KEY = secret(SECRET_KEY, random_hex(32))
 }
 
 on dev {
-  env dev {
-    DEBUG = \"1\"
-  }
+    env dev {
+        DEBUG = \"1\"
+    }
 }
 
 image backend . {
-  dockerfile Dockerfile
-  use env common
-  service api {
-    port 8000
-    route /api
-    before-start: alembic upgrade head
-    run: gunicorn app.main:app
-  }
-  service worker {
-    run: celery -A app.worker worker
-  }
+    dockerfile Dockerfile
+    use env common
+    service api {
+        port 8000
+        route /api
+        before-start: alembic upgrade head
+        run: gunicorn app.main:app
+    }
+    service worker {
+        run: celery -A app.worker worker
+    }
 }
 
 image frontend ./front {
-  on dev: use env common
-  service front {
-    port 4173
-    route /
-    run: node server.js
-  }
+    on dev: use env common
+    service front {
+        port 4173
+        route /
+        run: node server.js
+    }
 }
 ";
 
@@ -248,7 +248,7 @@ fn policy_parses_formats_canonically_and_round_trips() {
     let source = "# forkfile: 0.1\n\ns3 assets {\n  cdn static-cdn\n  policy public-read\n}\n";
     let document = parse(source).expect("parses");
     let formatted = slipfork_forkfile::format(&document);
-    let expected = "# forkfile: 0.1\ns3 assets {\n  policy public-read\n  cdn static-cdn\n}\n";
+    let expected = "# forkfile: 0.1\ns3 assets {\n    policy public-read\n    cdn static-cdn\n}\n";
     assert_eq!(formatted, expected);
     let reparsed = parse(&formatted).expect("reparses");
     assert_eq!(slipfork_forkfile::format(&reparsed), formatted);
@@ -619,7 +619,7 @@ fn on_else_selects_the_false_branch_and_formats_canonically() {
 
     let formatted = slipfork_forkfile::format(&document);
     assert!(
-        formatted.contains("on dev {\n    VALUE = \"dev\"\n  } else: VALUE = \"prod\""),
+        formatted.contains("on dev {\n        VALUE = \"dev\"\n    } else: VALUE = \"prod\""),
         "inline `on` + else must render the canonical block form:\n{formatted}"
     );
     let reparsed = parse(&formatted).expect("formatted else reparses");

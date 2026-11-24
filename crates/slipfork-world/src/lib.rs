@@ -14,7 +14,6 @@
 //! # fn main() -> slipfork_world::Result<()> {
 //! let engine = BtrfsEngine::new(StoreLayout::at(PathBuf::from("/mnt/btrfs/.slipfork-store")));
 //! engine.ensure_store()?;
-//! engine.adopt_project(&PathBuf::from("/mnt/btrfs/projects/demo"))?;
 //! # Ok(())
 //! # }
 //! ```
@@ -24,12 +23,14 @@
 pub mod boot;
 #[allow(unsafe_code)]
 mod btrfs;
+mod checkout;
 pub mod control;
 mod engine;
 mod error;
 #[allow(unsafe_code)]
 pub mod fdpass;
 mod layout;
+mod log_store;
 pub mod namespaces;
 mod pod;
 mod pod_env;
@@ -64,6 +65,7 @@ pub mod uapi {
         SUBVOL_GETFLAGS, SUBVOL_SETFLAGS, VolArgs, VolArgsV2, request,
     };
 }
+pub use checkout::copy_checkout;
 pub use control::{
     ControlError, FrameLines, InitFrame, OutputKind, PROTOCOL_VERSION, Request, S3BucketSpec,
     S3WorldConfig, Stream, configure_s3, decode_init_frame, decode_request, encode, launch_pod,
@@ -76,13 +78,14 @@ pub use layout::{
     FORKS_DIR, ForkDir, ForkName, PODS_DIR, ProjectScope, STORE_DIR, StoreLayout, WorldName,
     fork_checkout, fork_checkouts, fork_under, fork_world_id, project_root, world_id_for_project,
 };
+pub use log_store::{LogStore, RETAIN_RUNS};
 pub use namespaces::{NAMESPACE_KINDS, NamespaceIdentity, NamespaceTable};
 pub use pod::{
     Bind, BindSource, PodBundle, PodEnv, PodFile, PodHost, PodSpec, is_reusable_pod, write_bundle,
 };
 pub use pod_log::{CHUNK, DIVIDER_CLOSE, DIVIDER_OPEN, LogKind, LogLine, LogReader, LogSink};
 pub use port::{Dirtiness, ForkPaths, WorldEngine};
-pub use reap::kill_group;
+pub use reap::{kill_group, reap_world_tree};
 pub use resources::{
     DatabaseBootstrap, DatabaseFault, DatabaseName, ImageFacts, PostgresClone, PostgresLauncher,
     PostgresTemplate, RedisLauncher, ResourceKind, S3Bucket, S3Credentials, S3Server,

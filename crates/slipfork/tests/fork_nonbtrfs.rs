@@ -1,29 +1,17 @@
-//! `fork`/`drop` on a project that is not a Btrfs subvolume: real daemon, typed remedy.
+//! `fork`/`drop` with no running world: fail closed with one typed remedy line.
 //!
-//! The project lives on `/var/tmp` (disk, never RAM `/tmp`), so the engine's own subvolume probe
-//! refuses before any snapshot exists. No engine is faked and no world is booted.
+//! The scratch project lives on `/var/tmp` (disk, never RAM `/tmp`) and is deliberately never
+//! booted. `fork` refuses with `no-world` before touching the checkout, and `drop` refuses with
+//! `no-fork` for a fork this world has never created. No engine is faked and no world is booted.
 
 use std::fs;
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const ANSI: &str = "\u{1b}[";
-const BTRFS_SUPER_MAGIC: u64 = 0x9123_683E;
-
-fn fs_magic(path: &Path) -> u64 {
-    let Ok(file) = fs::File::open(path) else {
-        return 0;
-    };
-    // SAFETY: `statfs` is plain-old-data and the descriptor stays live across the call.
-    let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
-    // SAFETY: the kernel writes one `statfs` through the valid pointer.
-    let ret = unsafe { libc::fstatfs(file.as_raw_fd(), &mut stat) };
-    if ret == 0 { stat.f_type as u64 } else { 0 }
-}
 
 fn scratch() -> PathBuf {
     let nanos = SystemTime::now()
@@ -58,36 +46,52 @@ fn shutdown(root: &Path) {
 }
 
 #[test]
-fn fork_on_a_non_btrfs_project_fails_closed_with_the_btrfs_remedy() {
-    assert_ne!(
-        fs_magic(Path::new("/var/tmp")),
-        BTRFS_SUPER_MAGIC,
-        "fail closed: `/var/tmp` is Btrfs; next: run this suite on a host whose `/var/tmp` is not Btrfs"
-    );
+fn fork_and_drop_without_a_running_world_fail_closed() {
     let root = scratch();
-    let output = run(&root, &["fork", "feat-auth"]);
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not a Btrfs subvolume"), "{stderr}");
-    assert!(stderr.contains("next:"), "{stderr}");
-    assert!(stderr.contains("btrfs mount"), "{stderr}");
+    let project = root.join("demo");
+
+    // A `fork` with no running world must name the missing prerequisite and snapshot nothing.
+    let fork = run(&root, &["fork", "feat-auth"]);
+    assert_eq!(fork.status.code(), Some(1), "{fork:?}");
+    let stderr = String::from_utf8_lossy(&fork.stderr);
     assert_eq!(stderr.matches("next:").count(), 1, "{stderr}");
+    assert!(stderr.contains("next: run `slipfork up` first"), "{stderr}");
     assert!(!stderr.contains(ANSI), "piped errors stay plain: {stderr}");
     assert!(
-        !root.join("demo/.forks").exists(),
+        !project.join(".forks").exists(),
         "a refusal must not snapshot the project"
     );
 
-    let json = run(&root, &["fork", "feat-auth", "--json"]);
-    assert_eq!(json.status.code(), Some(1), "{json:?}");
-    let stdout = String::from_utf8_lossy(&json.stdout);
-    assert!(stdout.contains("\"code\":\"not-btrfs\""), "{stdout}");
+    let fork_json = run(&root, &["fork", "feat-auth", "--json"]);
+    assert_eq!(fork_json.status.code(), Some(1), "{fork_json:?}");
+    let stdout = String::from_utf8_lossy(&fork_json.stdout);
+    assert!(stdout.contains("\"code\":\"no-world\""), "{stdout}");
     assert!(!stdout.contains(ANSI), "--json emits zero ANSI: {stdout}");
+    assert!(
+        !project.join(".forks").exists(),
+        "`--json` must not snapshot the project either"
+    );
 
+    // `drop` for a fork this world never created must name the missing fork, not a missing world.
     let drop = run(&root, &["drop", "feat-auth"]);
     assert_eq!(drop.status.code(), Some(1), "{drop:?}");
     let stderr = String::from_utf8_lossy(&drop.stderr);
     assert_eq!(stderr.matches("next:").count(), 1, "{stderr}");
+    assert!(
+        stderr.contains("next: run `slipfork ps` to list this world's forks"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains(ANSI), "piped errors stay plain: {stderr}");
+
+    let drop_json = run(&root, &["drop", "feat-auth", "--json"]);
+    assert_eq!(drop_json.status.code(), Some(1), "{drop_json:?}");
+    let stdout = String::from_utf8_lossy(&drop_json.stdout);
+    assert!(stdout.contains("\"code\":\"no-fork\""), "{stdout}");
+    assert!(!stdout.contains(ANSI), "--json emits zero ANSI: {stdout}");
+    assert!(
+        !project.join(".forks").exists(),
+        "a refused drop must not create a checkout"
+    );
 
     shutdown(&root);
     let _ = fs::remove_dir_all(&root);

@@ -139,7 +139,6 @@ fn help_and_version_are_the_shipped_surface() {
             "fmt",
             "migrate",
             "completions",
-            "daemon",
             "help",
             "version"
         ],

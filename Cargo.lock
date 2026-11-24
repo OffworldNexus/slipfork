@@ -1530,7 +1530,7 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
 name = "slipfork"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "clap",
@@ -1560,7 +1560,7 @@ dependencies = [
 
 [[package]]
 name = "slipfork-forkfile"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_yaml_ng",
@@ -1568,7 +1568,7 @@ dependencies = [
 
 [[package]]
 name = "slipfork-image"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "flate2",
@@ -1586,7 +1586,7 @@ dependencies = [
 
 [[package]]
 name = "slipfork-ingress"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "httparse",
  "libc",
@@ -1598,7 +1598,7 @@ dependencies = [
 
 [[package]]
 name = "slipfork-lsp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde_json",
  "slipfork-forkfile",
@@ -1606,7 +1606,7 @@ dependencies = [
 
 [[package]]
 name = "slipfork-ospp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "getrandom 0.3.4",
@@ -1625,14 +1625,14 @@ dependencies = [
 
 [[package]]
 name = "slipfork-vcs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "tempfile",
 ]
 
 [[package]]
 name = "slipfork-world"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "hex",

@@ -3,7 +3,6 @@
 //! Every verb, positional, and flag that ships is declared exactly once here. `--help`,
 //! `slipfork completions <shell>`, and the `slipfork(1)` manpage are derived from this tree.
 
-use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::builder::styling::{AnsiColor, Effects, Styles};
@@ -19,8 +18,7 @@ Examples:
   slipfork up feat-auth
   slipfork restart -s worker
   slipfork logs -f api
-  slipfork exec api -- pytest -q
-  slipfork daemon install";
+  slipfork exec api -- pytest -q";
 
 /// The one help palette: every verb inherits it from the root `Cli`.
 const STYLES: Styles = Styles::styled()
@@ -59,31 +57,7 @@ pub struct Cli {
     pub command: Option<Command>,
 }
 
-impl Cli {
-    /// Reads the hidden `__supervise --project <PATH>` spelling before clap parses, so the
-    /// composition root resolves the store root without walking raw argv itself.
-    #[must_use]
-    pub fn preparse_supervise_project(args: &[OsString]) -> Option<PathBuf> {
-        if args.first()? != "__supervise" {
-            return None;
-        }
-        let mut index = 1;
-        while index < args.len() {
-            let argument = &args[index];
-            if argument == "--project" {
-                return args.get(index + 1).map(PathBuf::from);
-            }
-            if let Some(value) = argument
-                .to_str()
-                .and_then(|argument| argument.strip_prefix("--project="))
-            {
-                return Some(PathBuf::from(value));
-            }
-            index += 1;
-        }
-        None
-    }
-}
+impl Cli {}
 
 /// `-F, --features` plus `--no-default-features`, shared by `up`, `fork`, and `env`.
 #[derive(Debug, Clone, Default, clap::Args)]
@@ -297,12 +271,6 @@ pub enum Command {
         shell: Shell,
     },
 
-    /// Install the per-user unit (and with sudo the system :80 socket).
-    Daemon {
-        #[command(subcommand)]
-        command: DaemonCommand,
-    },
-
     /// Print this overview, or one verb's help.
     Help {
         /// Verb to describe (default: this overview).
@@ -319,17 +287,6 @@ pub enum Command {
         project: PathBuf,
         #[arg(long = "name", value_name = "NAME")]
         world: String,
-    },
-}
-
-/// `slipfork daemon` subcommands.
-#[derive(Debug, Subcommand)]
-pub enum DaemonCommand {
-    /// Write the per-user daemon unit; --ingress adds the system :80 socket.
-    Install {
-        /// Install the system :80 socket, its template unit, and AppArmor (needs root).
-        #[arg(long)]
-        ingress: bool,
     },
 }
 

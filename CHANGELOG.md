@@ -3,6 +3,31 @@
 All notable, user-visible changes to Slipfork. The format follows Keep a Changelog, and versions
 follow Semantic Versioning while the `# forkfile: 0.1` format is pre-`1.0`.
 
+## [0.1.1] - 2026-11-24
+
+### Added
+
+- `ADD http(s)://…` in the native Dockerfile builder, fetched and hashed like local build context.
+- `make install` / `make uninstall` put a branch build in a user PATH prefix without touching
+  packaged binaries.
+
+### Changed
+
+- Package install now enables and starts the per-user daemon and the system `:80` ingress for the
+  installing user (linger, systemd units, AppArmor), so `slipfork daemon install` is gone.
+- `slipfork up` never adopts or rewrites your checkout; `fork` copies a plain checkout before
+  snapshotting it.
+- `up` verifies service health and refuses `✓ Ready` while a service is dead.
+- `slipfork fmt` defaults to 4-space indents, and the Zed extension manifest is fixed.
+- Logs come from one durable run catalog: failed runs survive, `slipfork logs <image>` reads an
+  image build, `-r <id>` selects a run, `--runs` lists them, and each failure ends with one `next:`
+  command. The store stays user-writable on a Btrfs-root host.
+
+### Fixed
+
+- `ps` no longer warns when `.forks` is absent.
+- The plugin e2e asserts the real drop refusal.
+
 ## [0.1.0] - 2026-11-23
 
 ### Added
@@ -24,9 +49,9 @@ follow Semantic Versioning while the `# forkfile: 0.1` format is pre-`1.0`.
   — with a `✓ Ready` verdict or one counted remedy per failing row.
 - `slipfork fmt` and `slipfork migrate` format and convert `Forkfile`s; `slipfork completions`
   prints bash, zsh or fish scripts generated from the same verb table as `--help`.
-- One per-user daemon serves every world behind a stateless `:80` `.localhost` ingress;
-  `slipfork daemon install` writes the user unit and `sudo slipfork daemon install --ingress` adds
-  the system socket and AppArmor profile.
+- One per-user daemon serves every world behind a stateless `:80` `.localhost` ingress; package
+  install hooks enable and start both the per-user daemon and the system `:80` socket for the
+  installing user, and rootless installs stay silent.
 - Native packages for Debian/Ubuntu (`.deb`), Fedora/RHEL/Rocky/Alma/openSUSE (`.rpm`), Arch
   (pacman + AUR) and Alpine (`.apk`), plus portable glibc/musl archives and a universal installer.
 - A standalone `slipfork-lsp` language server with releases for Linux, macOS and Windows.

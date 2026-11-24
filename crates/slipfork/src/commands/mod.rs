@@ -182,10 +182,6 @@ impl Session {
         doctor::run(&self.host, &self.cwd, json, self.color())
     }
 
-    /// Writes the per-user unit, and with root the system `:80` socket and profile.
-    pub fn daemon_install(&self, ingress: bool, json: bool) -> ExitCode {
-        crate::install::install(&self.host.install_host(), ingress, json, self.color())
-    }
     /// The one refusal for a host verb that never reached the daemon.
     fn daemon_failure(&self, error: &DaemonError, json: bool) -> ExitCode {
         self.report(
@@ -215,25 +211,21 @@ impl Session {
         let palette = Palette::new(self.color());
         // A daemon message may already carry its own `next:` line; that remedy wins, and the
         // renderer still prints exactly one.
-        let mut embedded = None;
+        let (body, embedded) = crate::world::split_remedy(message);
         let mut emitted = false;
-        for line in message.lines() {
-            if let Some(remedy) = line.strip_prefix("next: ") {
-                embedded.get_or_insert(remedy.to_owned());
-            } else if !line.is_empty() {
-                if palette.color() {
-                    if emitted {
-                        eprintln!("{}", palette.value(line));
-                    } else {
-                        eprintln!("{} {}", palette.icon_bad(), palette.value(line));
-                    }
-                } else if emitted {
-                    eprintln!("{line}");
+        for line in body.lines() {
+            if palette.color() {
+                if emitted {
+                    eprintln!("{}", palette.value(line));
                 } else {
-                    eprintln!("error: {line}");
+                    eprintln!("{} {}", palette.icon_bad(), palette.value(line));
                 }
-                emitted = true;
+            } else if emitted {
+                eprintln!("{line}");
+            } else {
+                eprintln!("error: {line}");
             }
+            emitted = true;
         }
         let next = embedded.as_deref().map_or(next, |remedy| remedy);
         if palette.color() {

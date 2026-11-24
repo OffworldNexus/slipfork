@@ -16,6 +16,7 @@ pub(crate) use target::{TargetError, Targets};
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -37,8 +38,6 @@ pub struct HostEnv {
     pub runtime_dir: PathBuf,
     /// `$XDG_STATE_HOME/slipfork`, or `~/.local/state/slipfork`.
     pub state_dir: PathBuf,
-    /// `<mount>/.slipfork-store` resolved by `main.rs` for the active project directory.
-    pub store_root: PathBuf,
     /// Host mount points read once by `main.rs` from `/proc/self/mountinfo`.
     pub mounts: Vec<PathBuf>,
     /// Host architecture name (`std::env::consts::ARCH`).
@@ -55,14 +54,6 @@ pub struct HostEnv {
     pub resolv_conf: PathBuf,
     /// `$HOME`, used to shorten paths in the status tree.
     pub home: Option<PathBuf>,
-    /// `$XDG_CONFIG_HOME` (or `~/.config`), where `daemon install` writes the user unit.
-    pub config_dir: PathBuf,
-    /// UID the system `:80` ingress runs as (`SUDO_UID` when installing as root).
-    pub ingress_uid: u32,
-    /// Passwd name of [`Self::ingress_uid`], resolved once by the composition root.
-    pub ingress_user: String,
-    /// The install root runs OpenRC (`/sbin/openrc-run` or `/etc/conf.d`).
-    pub openrc: bool,
     /// Prefix for system paths (`SLIPFORK_INSTALL_ROOT`, `/` by default).
     pub install_root: PathBuf,
     /// Host name from `gethostname(2)`, read once by the composition root.
@@ -81,28 +72,29 @@ pub struct HostEnv {
 }
 
 impl HostEnv {
-    /// `<mount>/.slipfork-store` for `project`, selected from the mount table injected by `main.rs`.
+    /// `<mount>/.slipfork-store` (or `<data_home>/slipfork/store`) for `project`.
+    ///
+    /// The mount table, the data home, and the selected mount's writability are all injected by
+    /// this composition root; [`slipfork_world::LogStore::root_for`] owns the rule.
     #[must_use]
     pub(crate) fn store_root_for(&self, project: &Path) -> PathBuf {
-        if project.as_os_str().is_empty() || self.mounts.is_empty() {
-            return self.store_root.clone();
-        }
-        crate::mounts::store_root(&self.mounts, project)
+        let mount = crate::mounts::mount_for(&self.mounts, project);
+        slipfork_world::LogStore::root_for(
+            &self.mounts,
+            project,
+            &self.data_home(),
+            can_write(mount),
+        )
     }
 
-    /// The minimal install view the shared unit writer needs.
-    #[must_use]
-    pub(crate) fn install_host(&self) -> crate::install::InstallHost {
-        crate::install::InstallHost {
-            exe: self.exe.clone(),
-            path: self.path.clone(),
-            config_dir: self.config_dir.clone(),
-            install_root: self.install_root.clone(),
-            uid: self.uid,
-            ingress_uid: self.ingress_uid,
-            ingress_user: self.ingress_user.clone(),
-            openrc: self.openrc,
-        }
+    /// `$XDG_DATA_HOME`, else `$HOME/.local/share`, read from the once-snapshotted environment.
+    fn data_home(&self) -> PathBuf {
+        self.env
+            .get("XDG_DATA_HOME")
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from)
+            .or_else(|| self.home.as_ref().map(|home| home.join(".local/share")))
+            .unwrap_or_else(|| PathBuf::from(format!("/var/tmp/slipfork-data-{}", self.uid)))
     }
 
     pub(crate) fn tool(&self, name: &str) -> Result<PathBuf, String> {
@@ -126,6 +118,15 @@ impl HostEnv {
         }
         self.tool("slipfork-world-init")
     }
+}
+
+/// Whether this user can write `path`; probed by the composition root, never by a library crate.
+fn can_write(path: &Path) -> bool {
+    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `access(2)` only reads this process's effective credentials and `path`'s mode.
+    unsafe { libc::access(path.as_ptr(), libc::W_OK) == 0 }
 }
 
 /// Parsed `slipfork up [target] [-F ...] [--no-default-features]` arguments.
@@ -249,15 +250,24 @@ fn fork_world(project: &Path) -> Option<slipfork_world::WorldName> {
     ))
 }
 
-pub(super) fn fail(message: impl std::fmt::Display, next: &str) -> ExitCode {
-    let text = message.to_string();
-    let mut embedded = None;
-    for line in text.lines() {
-        if let Some(remedy) = line.strip_prefix("next: ") {
-            embedded.get_or_insert(remedy.to_owned());
+/// Splits an embedded `next: <remedy>` line out of a daemon message.
+pub(crate) fn split_remedy(message: &str) -> (String, Option<String>) {
+    let mut lines = Vec::new();
+    let mut remedy = None;
+    for line in message.lines() {
+        if let Some(next) = line.strip_prefix("next: ") {
+            remedy.get_or_insert_with(|| next.to_owned());
         } else if !line.is_empty() {
-            eprintln!("error: {line}");
+            lines.push(line);
         }
+    }
+    (lines.join("\n"), remedy)
+}
+
+pub(super) fn fail(message: impl std::fmt::Display, next: &str) -> ExitCode {
+    let (body, embedded) = split_remedy(&message.to_string());
+    for line in body.lines() {
+        eprintln!("error: {line}");
     }
     eprintln!("next: {}", embedded.as_deref().unwrap_or(next));
     ExitCode::FAILURE

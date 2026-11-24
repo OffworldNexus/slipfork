@@ -15,7 +15,7 @@ LIVE_SUITES := \
 	slipfork/critical_status_live \
 	slipfork/critical_fork_live
 
-.PHONY: fmt clippy test check coverage guard test-tools live-test lsp-assets js-test typecheck packages-check docs-check docs-serve
+.PHONY: fmt clippy test check coverage guard test-tools live-test lsp-assets js-test typecheck packages-check docs-check docs-serve install uninstall
 
 fmt:
 	$(CARGO) fmt --all
@@ -136,6 +136,53 @@ live-test:
 			XDG_RUNTIME_DIR="$(LIVE_RUNTIME_DIR)" SLIPFORK_TEST_ROOT="$(SLIPFORK_TEST_ROOT)" \
 			$(CARGO) test -p "$$pkg" --features "$$pkg/live" --test "$$test" -- --test-threads=1; \
 	done
+
+# ---------------------------------------------------------------------------
+# Development installs: a branch build into your own prefix, never /usr.
+# ---------------------------------------------------------------------------
+PREFIX ?= $(HOME)/.local
+BINDIR ?= $(PREFIX)/bin
+TARGET_DIR ?= $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR),target)
+DEV_BINS := slipfork slipfork-lsp slipfork-world-init
+
+# The package and `install.sh --user` own the well-known bins: refuse /usr, /bin and /sbin,
+# and never clobber a binary this Makefile did not put there (receipt: .slipfork-dev-install).
+SYSTEM_BINS := /usr|/usr/|/usr/*|/bin|/bin/|/bin/*|/sbin|/sbin/|/sbin/*
+RECEIPT := .slipfork-dev-install
+
+install:
+	@set -eu; \
+	case "$(BINDIR)" in \
+	  "") echo "install: refusing an empty BINDIR; next: install the package, or set PREFIX=/some/user/dir make install" >&2; exit 2 ;; \
+	  $(SYSTEM_BINS)) echo "install: refusing $(BINDIR); next: install the package, or set PREFIX=/some/user/dir make install" >&2; exit 2 ;; esac; \
+	if [ ! -f "$(BINDIR)/$(RECEIPT)" ]; then \
+	  for bin in $(DEV_BINS); do \
+	    if [ -e "$(BINDIR)/$$bin" ] || [ -L "$(BINDIR)/$$bin" ]; then \
+	      echo "install: $(BINDIR)/$$bin exists and was not installed by make; next: remove it or set PREFIX=$$HOME/.local/opt/slipfork make install" >&2; exit 2; \
+	    fi; \
+	  done; \
+	fi; \
+	$(CARGO) build --release --target-dir "$(TARGET_DIR)" -p slipfork --bin slipfork; \
+	$(CARGO) build --release --target-dir "$(TARGET_DIR)" -p slipfork-lsp --bin slipfork-lsp; \
+	$(CARGO) build --release --target-dir "$(TARGET_DIR)" -p slipfork-world --bin slipfork-world-init; \
+	install -d -m 0755 "$(BINDIR)"; \
+	for bin in $(DEV_BINS); do install -m 0755 "$(TARGET_DIR)/release/$$bin" "$(BINDIR)/$$bin"; done; \
+	( cd "$(BINDIR)" && sha256sum $(DEV_BINS) > "$(RECEIPT)" ); \
+	echo "installed $(DEV_BINS) -> $(BINDIR); next: put $(BINDIR) before /usr/bin in PATH, then run hash -r"
+
+# Removes exactly the three binaries it installed, proven by the receipt; never systemd units,
+# the store, or a binary from the package / `install.sh`.
+uninstall:
+	@set -eu; \
+	case "$(BINDIR)" in \
+	  "") echo "uninstall: refusing an empty BINDIR; next: remove the package, or set PREFIX=/some/user/dir make uninstall" >&2; exit 2 ;; \
+	  $(SYSTEM_BINS)) echo "uninstall: refusing $(BINDIR); next: remove the package, or set PREFIX=/some/user/dir make uninstall" >&2; exit 2 ;; esac; \
+	receipt="$(BINDIR)/$(RECEIPT)"; \
+	[ -f "$$receipt" ] || { echo "uninstall: no make install receipt in $(BINDIR); next: remove those files yourself, or use the installer's --uninstall" >&2; exit 2; }; \
+	( cd "$(BINDIR)" && sha256sum -c --quiet "$(RECEIPT)" >/dev/null 2>&1 ) || { echo "uninstall: $(BINDIR) no longer holds the make-installed binaries; next: remove them yourself, or use the installer's --uninstall" >&2; exit 2; }; \
+	for bin in $(DEV_BINS); do rm -f "$(BINDIR)/$$bin"; done; \
+	rm -f "$$receipt"; \
+	echo "removed $(DEV_BINS) from $(BINDIR)"
 
 # ---------------------------------------------------------------------------
 # Distribution artifacts (specs/06-distribution-and-docs.md §1-§8).
