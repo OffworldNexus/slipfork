@@ -2942,8 +2942,22 @@ fn changed_build_inputs_rebuild_and_restart_converges() {
     require_userns(&unshare);
     require_registry_egress();
 
+    // The copied content is unique per process: a previous run's sealed step must never be
+    // mistaken for this run's rebuild, even on a warm shared store.
+    let salt = format!(
+        "{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after the epoch")
+            .as_nanos()
+    );
+    let seed_one = format!("one-{salt}");
+    let seed_two = format!("two-{salt}");
+    let seed_three = format!("three-{salt}");
+
     let project = journey.project("converge", CONVERGE_FORKFILE);
-    fs::write(project.join("seed.txt"), "one").expect("write the copied context");
+    fs::write(project.join("seed.txt"), &seed_one).expect("write the copied context");
     fs::write(project.join("Dockerfile"), CONVERGE_DOCKERFILE_ONE).expect("write the Dockerfile");
 
     // 1. Cold boot builds the image.
@@ -3024,8 +3038,9 @@ fn changed_build_inputs_rebuild_and_restart_converges() {
     );
     assert_eq!(latest_image_run(&journey, &project), dockerfile_run);
 
-    // 5. A copied context edit changes the canonical context digest and rebuilds.
-    fs::write(project.join("seed.txt"), "two").expect("edit the copied context");
+    // 5. A copied context edit changes the canonical context digest, rebuilds, and the new
+    // content is what the image actually holds.
+    fs::write(project.join("seed.txt"), &seed_two).expect("edit the copied context");
     let context_edit = journey.slipfork(&project, &["up"]);
     assert!(
         context_edit.status.success(),
@@ -3036,10 +3051,51 @@ fn changed_build_inputs_rebuild_and_restart_converges() {
             &context_edit
         )
     );
+    assert!(
+        stdout(&context_edit).contains(&seed_two),
+        "the edited COPY input must execute in the build:\n{}",
+        stdout(&context_edit)
+    );
     let context_run = latest_image_run(&journey, &project);
     assert_ne!(
         dockerfile_run, context_run,
         "a copied context edit must produce a new image run id"
+    );
+    let shown = journey.slipfork(&project, &["exec", "web", "--", "cat", "/seed.txt"]);
+    assert!(shown.status.success(), "{}", stderr(&shown));
+    assert_eq!(
+        stdout(&shown).trim(),
+        seed_two,
+        "the rebuilt image must hold the edited COPY content"
+    );
+
+    // 5b. A world with no recorded head (a pre-digest boot or a lost fingerprint file) must
+    // still reconcile on a copied-file edit; the old mtime heuristic would serve the stale image.
+    let fingerprints = journey.run.join("state/slipfork/worlds-fingerprints.json");
+    fs::remove_file(&fingerprints).expect("drop the recorded head");
+    fs::write(project.join("seed.txt"), &seed_three).expect("edit the copied context again");
+    let lost_head = journey.slipfork(&project, &["up"]);
+    assert!(
+        lost_head.status.success(),
+        "{}",
+        up_failure("the lost-head context edit must boot", &project, &lost_head)
+    );
+    assert!(
+        stdout(&lost_head).contains(&seed_three),
+        "a lost recorded head must not hide a copied-file edit:\n{}",
+        stdout(&lost_head)
+    );
+    assert_ne!(
+        context_run,
+        latest_image_run(&journey, &project),
+        "a lost recorded head must still rebuild on a copied context edit"
+    );
+    let shown = journey.slipfork(&project, &["exec", "web", "--", "cat", "/seed.txt"]);
+    assert!(shown.status.success(), "{}", stderr(&shown));
+    assert_eq!(
+        stdout(&shown).trim(),
+        seed_three,
+        "the rebuilt image must hold the second edited COPY content"
     );
 
     // 6. A Forkfile edit (add a service) converges on `restart`, not a stale pod restart.

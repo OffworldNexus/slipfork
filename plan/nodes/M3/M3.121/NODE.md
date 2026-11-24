@@ -2,7 +2,7 @@
 id: M3.121
 title: "Build-context COPY edits do not rebuild; M3.115's live test fails at HEAD"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.118]
@@ -13,11 +13,11 @@ paths:
   - crates/slipfork/src/world/runtime/images.rs
   - "crates/slipfork-image/tests/critical_dockerfile_live.rs"
   - crates/slipfork/tests/critical_world_journey.rs
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-24T17:46"
-updated: "2026-11-24T19:20"
+updated: "2026-11-24T20:01"
 ---
 
 # Problem (found by lead during M3.117 VM capture, binary at the M3.117 tree)

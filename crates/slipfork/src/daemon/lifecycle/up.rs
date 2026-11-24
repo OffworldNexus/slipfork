@@ -4,7 +4,7 @@ use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use slipfork_world::RuntimePods;
@@ -90,9 +90,7 @@ impl Core {
         }
         // Only heal when the recorded head still matches disk AND every declared service already
         // wrote its bundle; a half-booted or edited world reconciles to re-run the full DAG.
-        if !self.world_stale(&project, current, entry.started_at_ms)
-            && services_bundled(&project, &entry.pods_dir)
-        {
+        if !self.world_stale(&project, current) && services_bundled(&project, &entry.pods_dir) {
             return Ok(UpAction::Heal(Box::new(Heal {
                 world: entry.world,
                 project: entry.project,
@@ -108,27 +106,19 @@ impl Core {
         Ok(UpAction::Reconcile(Box::new(plan)))
     }
 
-    /// Whether the live world's recorded head (`Forkfile` + every image's `Dockerfile` + context)
-    /// differs from `current`. A world booted before fingerprints were recorded still matches when
-    /// its inputs predate the boot; otherwise it reconciles once and records the current head.
-    pub(crate) fn world_stale(
-        &self,
-        project: &Path,
-        current: Option<Fingerprint>,
-        started_at_ms: u64,
-    ) -> bool {
+    /// Whether the live world's recorded head (`Forkfile` + every image's `Dockerfile` + copied
+    /// context) differs from `current`.
+    ///
+    /// A world with no recorded head — booted by a pre-digest binary, or whose fingerprint file
+    /// was lost — always reconciles once and records the canonical digest on the next boot. It
+    /// never guesses from mtimes: a `Dockerfile` mtime cannot see an edited file that `COPY`
+    /// brings in, so the old heuristic would silently serve a stale image.
+    pub(crate) fn world_stale(&self, project: &Path, current: Option<Fingerprint>) -> bool {
         let recorded = registry::load_fingerprints(&self.state_dir)
             .ok()
             .and_then(|mut all| all.remove(&key_of(project)));
         match (&current, &recorded) {
             (Some(current), Some(recorded)) => current != recorded,
-            (Some(current), None) => {
-                let predates = inputs_predate(project, started_at_ms);
-                if predates {
-                    let _ = registry::store_fingerprint(&self.state_dir, project, Some(current));
-                }
-                !predates
-            }
             _ => true,
         }
     }
@@ -469,51 +459,6 @@ pub(crate) fn fingerprint(project: &Path) -> Option<Fingerprint> {
         digest: format!("{:016x}", hasher.finish()),
         features,
     })
-}
-
-/// Whether `Forkfile`, any image's `Dockerfile`, and their optional feature/ignore files all
-/// predate `started_at_ms`.
-fn inputs_predate(project: &Path, started_at_ms: u64) -> bool {
-    if started_at_ms == 0 {
-        return false;
-    }
-    if !file_predates(&project.join("Forkfile"), started_at_ms) {
-        return false;
-    }
-    let features_path = WorldFeatures::path(project);
-    if features_path.exists() && !file_predates(&features_path, started_at_ms) {
-        return false;
-    }
-    let Ok(source) = fs::read_to_string(project.join("Forkfile")) else {
-        return false;
-    };
-    let Ok(checked) = slipfork_forkfile::compile(&source) else {
-        return false;
-    };
-    let Ok(features) = WorldFeatures::load_resolved(project, &checked.document) else {
-        return false;
-    };
-    let Ok(plan) = slipfork_world::world_plan_with(&checked.document, project, &features) else {
-        return false;
-    };
-    plan.images
-        .iter()
-        .filter(|image| image.from.is_none())
-        .all(|image| {
-            let paths = image.paths(project);
-            let ignore = paths.context.join(".dockerignore");
-            file_predates(&paths.dockerfile, started_at_ms)
-                && (!ignore.exists() || file_predates(&ignore, started_at_ms))
-        })
-}
-
-fn file_predates(path: &Path, started_at_ms: u64) -> bool {
-    fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-        .map(|since| since.as_millis() as u64 <= started_at_ms)
-        .unwrap_or(false)
 }
 
 #[cfg(test)]

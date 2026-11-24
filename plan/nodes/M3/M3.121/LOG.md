@@ -27,3 +27,19 @@ status superseded -> ready
 ## 2026-11-24T19:20 [conductor]
 
 Owner-relevant split verified by the M3.124 lead: Dockerfile instruction edits now rebuild/fail correctly (M3.115), but editing a file included by COPY does NOT rebuild; M3.115's own live test changed_build_inputs_rebuild_and_restart_converges fails 2/2 on clean HEAD 43cfeff. Fix the build-input digest so per-COPY source content changes the image/step key; the test must pass. Queued behind M3.118 because both edit critical_world_journey.rs.
+
+## 2026-11-24T19:42 [conductor]
+
+status ready -> active
+
+## 2026-11-24T19:55 [lead]
+
+attempt 1/3 started
+
+## 2026-11-24T19:55 [lead]
+
+base b637448ebdeb53810238c0ef55517c4dd8dc02f7 (worktree .worktrees/m3-121)
+
+## 2026-11-24T20:01 [lead]
+
+status active -> done

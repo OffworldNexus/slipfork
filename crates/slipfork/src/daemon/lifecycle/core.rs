@@ -217,19 +217,18 @@ impl Core {
                 "no world is running in this directory",
             ));
         };
-        let (world, started_at_ms) = match entity {
-            World::Booting { world, .. } => (world.clone(), None),
-            World::Live { entry, .. } => (entry.world.clone(), Some(entry.started_at_ms)),
-        };
-        let Some(started_at_ms) = started_at_ms else {
-            return Err(Failure::new(
-                "world-booting",
-                format!("world `{world}` is still starting"),
-            ));
+        let world = match entity {
+            World::Booting { world, .. } => {
+                return Err(Failure::new(
+                    "world-booting",
+                    format!("world `{world}` is still starting"),
+                ));
+            }
+            World::Live { entry, .. } => entry.world.clone(),
         };
         // The same staleness check `up` uses: an edited `Forkfile`, `Dockerfile`, or copied
         // context stops the old world and boots the new plan instead of restarting stale pods.
-        if self.world_stale(&project, current, started_at_ms) {
+        if self.world_stale(&project, current) {
             let Some(plan) = self.detach_live(&key) else {
                 return Err(Failure::new(
                     "no-world",
