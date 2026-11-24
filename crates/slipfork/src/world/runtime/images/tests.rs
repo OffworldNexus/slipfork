@@ -4,13 +4,44 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use slipfork_forkfile::parse;
-use slipfork_image::{Architecture, RegistryCredentials, StepHost};
-use slipfork_world::{BtrfsEngine, ImageNode, StoreLayout, WorldEngine, WorldName};
+use slipfork_image::{Architecture, BuildReport, ImageConfig, RegistryCredentials, StepHost};
+use slipfork_world::{BootState, BtrfsEngine, ImageNode, StoreLayout, WorldEngine, WorldName};
 
-use super::ImageCache;
+use super::{ImageCache, image_state};
 use crate::world::supervise::{BootSink, Emitter};
+
+/// A build that applied no filesystem step is `cached`, never a `<1ms` "built": this covers both
+/// a fully reused image and a metadata-only `FROM`+`ENV` `Dockerfile`.
+#[test]
+fn zero_executed_steps_is_cached_not_built() {
+    let report = BuildReport {
+        rootfs: PathBuf::from("/images/web"),
+        key: "deadbeef".to_owned(),
+        config: ImageConfig::default(),
+        cache_hits: 0,
+        cache_misses: 0,
+        build_time: Duration::from_micros(40),
+        last: None,
+        base_digest: None,
+    };
+    assert!(
+        matches!(image_state(&report), BootState::Cached),
+        "{report:?}"
+    );
+    // A partial reuse still applied a step, so it is a real build.
+    let partially_reused = BuildReport {
+        cache_hits: 2,
+        cache_misses: 1,
+        ..report
+    };
+    assert!(
+        matches!(image_state(&partially_reused), BootState::Built),
+        "{partially_reused:?}"
+    );
+}
 
 /// A build the engine cannot even spawn has no child output: its raw one-line cause becomes the
 /// capture, so `logs -r` never replays an empty block.

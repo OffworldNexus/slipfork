@@ -244,12 +244,14 @@ inputs  = sorted "name=value\0" pairs listed per kind below
 | `base` | sealed subvolume | — | `manifest=<sha256>` (`FROM` tag resolved), `platform` |
 | `external` | sealed subvolume | — | `manifest=<sha256>` of a `COPY --from <ref>` image |
 | `step` (`RUN`) | sealed subvolume | previous step | `config=<ENV/WORKDIR/USER/SHELL digest>`, every in-scope `ARG` value |
-| `step` (`COPY`/`ADD`) | sealed subvolume | previous step (+ `--from` stage/external key) | `sources=<Merkle(path, mode, bytes or link target)>` over paths the sources match after `.dockerignore`; remote `ADD`: `--checksum`, else the URL |
+| `step` (`COPY`/`ADD`) | sealed subvolume | previous step (+ `--from` stage/external key) | context copy: `sources=<Merkle(path, mode, bytes or link target)>` over paths the sources match after `.dockerignore`; `--from`: `sources=from:<source key>:<paths>`; remote `ADD`: `--checksum`, else the URL |
 | `image` | record only | last step | final config digest (`ENV`, `WORKDIR`, `USER`, `ENTRYPOINT`, `CMD`, `EXPOSE`) |
 | `seed` | sealed subvolume (`PGDATA`) | `postgres` image | `initdb` argv + template version |
 | `effect` | lease entry | image | phase, slot, rendered command, `when changed(...)` input Merkle |
 | `service` | lease entry | image | canonical compiled service spec (command, env text with world values, ports, routes) |
 | `world` | lease `head` | every seed, effect, service | `spec` = compiled runtime spec digest: resources, routes, domains, active features |
+
+A `COPY --from`/`ADD --from` step's `sources` input is the **source node key** (`from:<key>:<paths>`), not a second Merkle walk of a rootfs that does not exist yet at plan time. That key already content-addresses the source tree transitively — the `external` node for an image digest, or the last materialized node of an earlier stage.
 
 - `ENV`, `WORKDIR`, `USER`, `SHELL`, `ARG`, `LABEL`, `EXPOSE`, `CMD` create no subvolume; they fold into the next step's `config` and the `image` node.
 - A `COPY` key sees only the files it copies, so an edit elsewhere in the context invalidates nothing.
@@ -280,7 +282,12 @@ One `SnapshotStore` (`slipfork-world`, owned by `__daemon`) holds every sealed n
 
 It returns `Reconciled { head, built, reused, pruned, pin }`, or `ReconcileFailed { node, run_id, line, cause, built, reused }`. Every executed node mints a run id in the world's run catalog (§1), so the failure row's `next: slipfork logs -r <id>` always resolves; nodes sealed before a failure stay valid, so the retry resumes after them.
 
-`materialize: Fn(&Node, &Path, &mut dyn FnMut(&str)) -> Result<Facts> + Send + Sync` is a closure the `Reconciler` builds per node kind; there is no new trait. `OciPuller` unpacks `base`/`external`, `NativeImageBuilder` applies one `step` or returns an `image` node's OCI config as facts, and `seed` runs `initdb` in a one-shot build container on the `postgres` image through the daemon's `StepHost` (the empty slot bound as `PGDATA`), never a world pod.
+`materialize: Fn(&Node, &Path, &mut dyn FnMut(&str)) -> Result<Facts> + Send + Sync` is a closure the `Reconciler` builds per node kind; there is no new trait. `OciPuller` unpacks a `base` into its slot from the planned manifest digest and clones a pre-pulled `external` rootfs into its slot, `NativeImageBuilder` applies one `step` or returns an `image` node's OCI config as facts, and `seed` runs `initdb` in a one-shot build container on the `postgres` image through the daemon's `StepHost` (the empty slot bound as `PGDATA`), never a world pod.
+
+!!! note "Externals are pre-pulled before reconcile, for now"
+    Until the daemon owns every pull (§6.7 slice 3), the composition root pre-pulls each `COPY --from` external into `images/oci/<digest>` and hands it to the plan, so the planner keys the `external` node by that digest and the materializer clones the sealed rootfs into the node slot.
+
+    A `base` node (`FROM`) unpacks into its slot from the **planned manifest digest**, so a tag that moved between plan and materialize cannot change the bytes. A tag is re-resolved only when a tag-only registry returns `404` for the digest path, and the resolved digest is still required to equal the planned one.
 
 `Cache::Cold` (`--no-cache`) re-resolves floating tags and rebuilds every materialized node. A rebuilt node replaces its same-key twin with `renameat2(RENAME_EXCHANGE)`; pods cloned from the twin are independent CoW subvolumes and keep running.
 
@@ -374,7 +381,7 @@ sequenceDiagram
 | :--- | :--- | :--- | :--- |
 | 1 | `slipfork-world` `snapshot/{graph,key,store,slot,gc,lease}.rs`; PG seed in `resources/pg/template.rs` | — | Unit: key grammar, waves, head, mark closure. Lab: real-Btrfs reconcile, mid-wave failure, `RENAME_EXCHANGE`, gc with zero grace. |
 | 2 | `slipfork-image` `plan/{refs,planner,sources}.rs`, `builder/materialize.rs`, `OciPuller` slot unpack + re-read credentials; switch `ImageCache` and CLI `docker build` call sites to plan + `reconcile` in the same slice; delete `steps.rs` | 1 | Unit: per-`COPY` source Merkle honours `.dockerignore`. Lab: `critical_dockerfile_live` rebuilds only the edited suffix. |
-| 3 | `slipfork` `daemon/reconcile/{mod,progress}.rs`; `up`/`restart`/`docker build`/`docker pull` reconcile in `__daemon`; supervise takes `WorldHeads`; delete `ImageCache` | 2 | Up journey: failed `RUN` keeps the old world serving; `docker build` then `up` is all `cached`. |
+| 3 | `slipfork` `daemon/reconcile/{mod,progress}.rs`; `up`/`restart`/`docker build`/`docker pull` reconcile in `__daemon` (which then owns every pull, `COPY --from` externals included); supervise takes `WorldHeads`; delete `ImageCache` | 2 | Up journey: failed `RUN` keeps the old world serving; `docker build` then `up` is all `cached`. |
 | 4 | `slipfork-world` `boot/` (split `schedule.rs` into `schedule/{waves,gate}.rs`) + `slipfork` `up_plan` (split `up.rs` into `up/{plan,heal}.rs`) and `fork`: `Lease` replaces stamps; `BootStep` keys; Idle by head; fork re-keys world nodes; gc after reconcile; `--no-cache`; delete fingerprints; `specs/02` (§4 Idle rule, `--no-cache`) + `TESTING_PLAN.md` | 3 | Journey: Dockerfile/context edit leaves Idle; fork boots with zero materialization and its next `up` is Idle; `drop` + gc frees unique nodes. |
 
 ---

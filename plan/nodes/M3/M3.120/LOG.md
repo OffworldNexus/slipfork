@@ -71,3 +71,23 @@ slice 2 VM proof (private tree /mnt/sf-m3120, no do_vm sync, as slipfork user w/
 ## 2026-11-24T23:49 [lead]
 
 addendum: fork checkouts never contain .forks/.slipfork-store (engine owner, one layout::is_managed_entry predicate shared with copy_checkout); real-Btrfs test proves two existing forks + seeded stale partial -> third checkout clean, parent intact, fork_checkouts empty on the checkout, subvolume path; VM live test ok 0.11s
+
+## 2026-11-24T23:54 [lead]
+
+committed slice 2 b209bbc (31 files, +2576/-1066) + addendum a419321; make check rc=0 after both; node stays active for slices 3-4
+
+## 2026-11-24T23:55 [lead]
+
+status active -> active
+
+## 2026-11-24T23:55 [lead]
+
+attempt 3/3 started
+
+## 2026-11-24T23:55 [lead]
+
+slice 3 base a419321
+
+## 2026-11-25T00:04 [lead]
+
+slice 3a landed: image BootState = Cached iff cache_misses==0 (zero executed steps never 'built'; warm rebuild labels cached, Idle prints no image row), unit test zero_executed_steps_is_cached_not_built; specs/03 §6.1 COPY --from=source-key rule, §6.2 planned-digest unpack + externals pre-pull note, §6.7 row 3 daemon owns pulls; make check rc=0; say nothing about a cutover that is not committed

@@ -7,11 +7,11 @@ owner: implementer
 priority: 3
 depends_on: [M3.117, M3.115, M3.118, M3.114, M3.111]
 paths: ["crates/slipfork-world/**", "crates/slipfork-image/**", "specs/02-cli-ux.md", TESTING_PLAN.md]
-attempts: 2
+attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-24T17:09"
-updated: "2026-11-24T22:06"
+updated: "2026-11-24T23:55"
 ---
 
 # Goal

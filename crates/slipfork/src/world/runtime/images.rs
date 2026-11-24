@@ -11,8 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use slipfork_forkfile::FeatureSet;
 use slipfork_forkfile::ast::Forkfile;
 use slipfork_image::{
-    Architecture, BuildArgs, BuildRequest, Cache, ImageLayout, ImageReference, NativeImageBuilder,
-    OciPuller, PulledImage, RegistryCredentials, StepHost, StepTrace,
+    Architecture, BuildArgs, BuildReport, BuildRequest, Cache, ImageLayout, ImageReference,
+    NativeImageBuilder, OciPuller, PulledImage, RegistryCredentials, StepHost, StepTrace,
 };
 use slipfork_world::run_log::RunNote;
 use slipfork_world::{
@@ -321,13 +321,7 @@ impl ImageCache {
             {
                 traces.insert(image.to_owned(), last.clone());
             }
-            // A sealed step cache hit is `cached`; only an actually applied step is `built`. A
-            // metadata-only `FROM`+`ENV` Dockerfile has zero hits, so it is still a real build.
-            let state = if report.cache_hits > 0 && report.cache_misses == 0 {
-                BootState::Cached
-            } else {
-                BootState::Built
-            };
+            let state = image_state(&report);
             Ok((
                 BuiltImage {
                     rootfs: report.rootfs,
@@ -383,6 +377,18 @@ impl ImageCache {
             .unwrap_or_default()
     }
 }
+/// `cached` unless the build actually applied a filesystem step.
+///
+/// Zero executed steps is never "built": a fully reused image and a metadata-only `FROM`+`ENV`
+/// `Dockerfile` both report no misses, and the renderer already prints `cached` without a count.
+fn image_state(report: &BuildReport) -> BootState {
+    if report.cache_misses == 0 {
+        BootState::Cached
+    } else {
+        BootState::Built
+    }
+}
+
 /// A failure with no executed instruction to name.
 fn plain_failure(message: String) -> BuildFailure {
     BuildFailure {
