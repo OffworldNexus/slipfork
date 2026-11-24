@@ -273,6 +273,19 @@ pub(crate) fn validate_name(kind: NameKind, raw: &str) -> Result<String> {
     Ok(raw.to_owned())
 }
 
+/// Top-level project entries that belong to Slipfork's bookkeeping, never to a checkout.
+///
+/// `.forks` holds the project's own fork tree (copying it in would recurse into the destination)
+/// and `.slipfork-store` holds the Btrfs store, which must never be copied into a checkout.
+pub(crate) const MANAGED_ENTRIES: [&str; 2] = [FORKS_DIR, STORE_DIR];
+
+/// Whether a project-root entry is one of Slipfork's own [`MANAGED_ENTRIES`].
+pub(crate) fn is_managed_entry(name: &OsStr) -> bool {
+    MANAGED_ENTRIES
+        .iter()
+        .any(|managed| name == OsStr::new(managed))
+}
+
 /// `<project>/.forks`.
 #[must_use]
 pub(crate) fn project_forks_dir(project: &Path) -> PathBuf {

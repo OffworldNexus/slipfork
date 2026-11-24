@@ -2,6 +2,7 @@ pub(crate) mod readiness;
 mod teardown;
 
 use std::fs::{self, File};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::btrfs::{self, SubvolumeFlags};
@@ -124,6 +125,56 @@ impl BtrfsEngine {
         drop(dir);
         let parent = Self::open_dir(&parent)?;
         btrfs::destroy(&parent, path, &name)
+    }
+
+    /// Strips Slipfork's own bookkeeping out of a freshly created checkout.
+    ///
+    /// `SNAP_CREATE_V2` clones the whole project tree, so the parent's `.forks` tree and the
+    /// `.slipfork-store` mount store would surface inside the new checkout (as nested stubs or as
+    /// copied entries) and be advertised as phantom forks. Both names are removed from the
+    /// checkout only — the parent tree is never mutated. A nested subvolume is unsealed and
+    /// destroyed through the engine, anything else through `remove_dir_all`, and an entry a
+    /// racing reaper already unlinked is `Ok(())`.
+    fn strip_managed_dirs(&self, checkout: &Path) -> Result<()> {
+        let entries =
+            fs::read_dir(checkout).map_err(|source| Error::io("read", checkout, source))?;
+        for entry in entries {
+            let entry = entry.map_err(|source| Error::io("read", checkout, source))?;
+            let name = entry.file_name();
+            if !layout::is_managed_entry(&name) {
+                continue;
+            }
+            let path = entry.path();
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(source) if source.kind() == io::ErrorKind::NotFound => continue,
+                Err(source) => return Err(Error::io("inspect", &path, source)),
+            };
+            if metadata.is_dir() {
+                let is_subvolume = match btrfs::is_subvolume_path(&path) {
+                    Ok(is_subvolume) => is_subvolume,
+                    Err(Error::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
+                // Reachable when the project itself is the Btrfs mount root: `<project>/.slipfork-store`
+                // is then a real nested subvolume and must go through `SNAP_DESTROY_V2`. A normal
+                // project snapshot only surfaces an `ino == 2` stub, which `remove_dir_all` reaps.
+                if is_subvolume {
+                    Self::destroy_subvolume(&path)?;
+                } else if let Err(source) = fs::remove_dir_all(&path)
+                    && source.kind() != io::ErrorKind::NotFound
+                {
+                    return Err(Error::io("remove", &path, source));
+                }
+            } else if let Err(source) = fs::remove_file(&path)
+                && source.kind() != io::ErrorKind::NotFound
+            {
+                return Err(Error::io("remove", &path, source));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -286,6 +337,18 @@ impl WorldEngine for BtrfsEngine {
                 let _ = fs::remove_dir_all(&stage);
                 return Err(Error::io("publish", &project_snapshot, source));
             }
+        }
+        // Publication cloned the parent's own `.forks`/`.slipfork-store` bookkeeping into the
+        // checkout: nested snapshots surface as stubs and copied entries look like forks, so every
+        // follower of a fork would report phantom `checkout missing` rows. Strip them now; a
+        // failure destroys every snapshot this fork created and fails closed rather than returning
+        // a checkout that still holds managed directories.
+        if let Err(error) = self.strip_managed_dirs(&project_snapshot) {
+            for (_, target) in &jobs {
+                let _ = teardown::destroy_if_present(target);
+            }
+            let _ = teardown::destroy_if_present(&project_snapshot);
+            return Err(error);
         }
         Ok(ForkPaths {
             project: project_snapshot,

@@ -67,3 +67,7 @@ slice 2: image plan/materialize green — RefResolver (tag->digest, pinned unpac
 ## 2026-11-24T23:47 [lead]
 
 slice 2 VM proof (private tree /mnt/sf-m3120, no do_vm sync, as slipfork user w/ XDG_RUNTIME_DIR): critical_dockerfile_live 6/6, critical_snapshot_graph 1/1, btrfs addendum test 1/1; CLI guard: up built->cached, docker build warm 4/0, COPY edit 3 misses, .git-only 0, Dockerfile edit 1, dev /project live, fork rows all <1ms + clean checkout, up --no-cache built; make check rc=0
+
+## 2026-11-24T23:49 [lead]
+
+addendum: fork checkouts never contain .forks/.slipfork-store (engine owner, one layout::is_managed_entry predicate shared with copy_checkout); real-Btrfs test proves two existing forks + seeded stale partial -> third checkout clean, parent intact, fork_checkouts empty on the checkout, subvolume path; VM live test ok 0.11s
