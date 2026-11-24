@@ -134,7 +134,7 @@ impl DaemonClient {
             Ok(reply) => reply,
             // A daemon that cannot even answer `ping` predates this handshake.
             Err(error) if error.code == "unknown-method" => {
-                return Err(identity.predates(&self.socket));
+                return Err(identity.predates(None, &self.socket));
             }
             Err(error) => return Err(error),
         };
