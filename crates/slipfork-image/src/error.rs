@@ -13,6 +13,10 @@ pub enum Error {
         reference: String,
         reason: &'static str,
     },
+    /// A credential store entry named no registry host at all.
+    InvalidRegistry { registry: String },
+    /// A registry login probe was refused for the injected credentials.
+    LoginRejected { registry: String, detail: String },
     /// The registry refused the request after authentication.
     Unauthorized {
         registry: String,
@@ -136,6 +140,12 @@ impl Error {
             Self::InvalidReference { reference, reason } => {
                 format!("`{reference}` is not a valid image reference ({reason})")
             }
+            Self::InvalidRegistry { registry } => {
+                format!("`{registry}` is not a registry host")
+            }
+            Self::LoginRejected { registry, detail } => {
+                format!("registry `{registry}` rejected the login: {detail}")
+            }
             Self::Unauthorized {
                 registry,
                 repository,
@@ -146,9 +156,10 @@ impl Error {
             Self::Token { realm } => format!("no bearer token in the response from `{realm}`"),
             Self::Http { url, status } => format!("`{url}` returned HTTP {status}"),
             Self::Transport { url, message } => format!("could not reach `{url}`: {message}"),
-            Self::Json { url, .. } => {
+            Self::Json { url, .. } if is_remote_url(url) => {
                 format!("`{url}` did not return a manifest or token document")
             }
+            Self::Json { url, .. } => format!("`{url}` is not valid JSON"),
             Self::NoMatchingPlatform { wanted, available } => {
                 format!("image has no `{wanted}` manifest (available: {available})")
             }
@@ -194,6 +205,8 @@ impl Error {
     pub fn remedy(&self) -> Option<String> {
         let remedy = match self {
             Self::InvalidReference { .. } => "use `<registry>/<repository>[:tag|@sha256:…>`, e.g. `postgres:18`".to_owned(),
+            Self::InvalidRegistry { .. } => "use a registry host such as `ghcr.io` or `registry-1.docker.io`".to_owned(),
+            Self::LoginRejected { .. } => "check the username and secret for that registry, then retry".to_owned(),
             Self::Unauthorized { .. } => "add credentials for that registry or pull a public image".to_owned(),
             Self::Challenge { .. } | Self::Token { .. } => "check the registry credentials and retry".to_owned(),
             Self::Http { status, .. } => http_remedy(*status).to_owned(),
@@ -214,7 +227,13 @@ impl Error {
             Self::ExternalImageMissing { .. } => "declare the stage with `FROM <image> AS <name>` above this `COPY`, or fix the `--from=` reference".to_owned(),
             Self::CrunMissing { .. } => "install crun from your distribution (`apt install crun`, `dnf install crun`, `pacman -S crun`) and retry".to_owned(),
             Self::Interrupted { .. } => "retry `slipfork up`".to_owned(),
-            Self::Json { .. } | Self::Io { .. } | Self::World(_) => return None,
+            Self::Json { url, .. } if is_remote_url(url) => {
+                "retry the pull; the registry returned a body that is not a manifest or token".to_owned()
+            }
+            Self::Json { url, .. } => {
+                format!("fix the JSON in `{url}` or delete it to pull anonymously")
+            }
+            Self::Io { .. } | Self::World(_) => return None,
         };
         Some(remedy)
     }
@@ -239,6 +258,11 @@ impl fmt::Display for Error {
         }
         Ok(())
     }
+}
+
+/// Whether a typed `url` field is a remote endpoint rather than a local store path.
+fn is_remote_url(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
 }
 
 /// Remedy for a bare HTTP status, kept to one scannable line.

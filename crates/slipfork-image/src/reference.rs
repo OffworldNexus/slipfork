@@ -118,12 +118,29 @@ fn invalid(reference: &str, reason: &'static str) -> Error {
     }
 }
 
-/// Maps Docker Hub's aliases onto the one host that serves the Distribution API.
-fn canonical_registry(host: &str) -> String {
-    match host {
-        DOCKER_HUB | "index.docker.io" | "registry.hub.docker.com" => DOCKER_HUB_API.to_owned(),
+/// Canonical registry host: no scheme, path, userinfo, or trailing slash; lowercase; Docker Hub
+/// web aliases collapse to the one host that serves the Distribution API. Any explicit port stays.
+#[must_use]
+pub fn canonical_host(host: &str) -> String {
+    let lower = host.trim().to_ascii_lowercase();
+    let rest = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+        .unwrap_or(&lower);
+    let authority = rest.split('/').next().unwrap_or_default();
+    let authority = authority.rsplit('@').next().unwrap_or(authority);
+    let authority = authority.trim_end_matches('/');
+    match authority {
+        DOCKER_HUB | "index.docker.io" | "registry.hub.docker.com" | DOCKER_HUB_API => {
+            DOCKER_HUB_API.to_owned()
+        }
         other => other.to_owned(),
     }
+}
+
+/// Maps Docker Hub's aliases onto the one host that serves the Distribution API.
+fn canonical_registry(host: &str) -> String {
+    canonical_host(host)
 }
 
 fn is_registry(component: &str) -> bool {
@@ -183,5 +200,27 @@ fn validate_digest(digest: &str) -> std::result::Result<(), &'static str> {
         Ok(())
     } else {
         Err("a digest needs the `<algorithm>:<lowercase-hex>` form")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonical_host;
+
+    #[test]
+    fn canonical_host_strips_scheme_path_userinfo_and_collapses_hub_aliases() {
+        for raw in [
+            "docker.io",
+            "index.docker.io",
+            "registry.hub.docker.com",
+            "registry-1.docker.io",
+            "https://index.docker.io/v1/",
+            "HTTP://DOCKER.IO/",
+        ] {
+            assert_eq!(canonical_host(raw), "registry-1.docker.io", "{raw}");
+        }
+        assert_eq!(canonical_host(" https://user@ghcr.io/team/ "), "ghcr.io");
+        assert_eq!(canonical_host("ghcr.io:5000/"), "ghcr.io:5000");
+        assert_eq!(canonical_host("docker.io:5000"), "docker.io:5000");
     }
 }

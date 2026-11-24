@@ -40,8 +40,15 @@ fn main() -> ExitCode {
     let host = match compose::host(args, &cwd, terminal) {
         Ok(host) => host,
         Err(error) => {
-            eprintln!("error: {error}");
-            eprintln!("next: run `slipfork` from an installed binary.");
+            let (body, next) = world::split_remedy(&error);
+            for line in body.lines() {
+                eprintln!("error: {line}");
+            }
+            eprintln!(
+                "next: {}",
+                next.as_deref()
+                    .unwrap_or("run `slipfork` from an installed binary.")
+            );
             return ExitCode::from(2);
         }
     };

@@ -15,7 +15,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use slipfork_image::{Architecture, Credentials, ImageLayout, ImageReference, OciPuller};
+use slipfork_image::{Architecture, ImageLayout, ImageReference, OciPuller, RegistryCredentials};
 use slipfork_world::{
     Bind, BindSource, BtrfsEngine, Dirtiness, ImageFacts, OutputKind, PodEnv, PodHost, PodSpec,
     PostgresLauncher, PostgresTemplate, RedisLauncher, ResourceKind, StoreLayout, Stream,
@@ -281,7 +281,7 @@ fn require_images(engine: &BtrfsEngine, run: &Path) -> Images {
     let puller = OciPuller::new(
         Arc::new(BtrfsEngine::new(StoreLayout::new(&cache))),
         ImageLayout::new(store.images_root()),
-        Credentials::Anonymous,
+        RegistryCredentials::default(),
         Architecture::from_oci(std::env::consts::ARCH)
             .unwrap_or_else(|| fail_closed("this host architecture has no OCI platform mapping")),
         format!("slipfork-tests/{}", env!("CARGO_PKG_VERSION")),

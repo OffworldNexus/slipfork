@@ -17,6 +17,7 @@ use crate::{doctor, status};
 
 // `mod auth;` is dormant past 0.1.0: OSPP pairing returns in a later release.
 // mod auth;
+mod docker;
 mod env;
 mod exec;
 mod features;
@@ -28,6 +29,7 @@ mod secret;
 mod streams;
 mod timeparse;
 // pub use auth::AuthArgs;
+pub use docker::{DockerArgs, DockerVerb};
 pub use env::EnvArgs;
 pub use exec::{ExecArgs, TargetArgs};
 pub use features::FeaturesArgs;

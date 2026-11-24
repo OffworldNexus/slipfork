@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use slipfork_forkfile::parse;
-use slipfork_image::{Architecture, StepHost};
+use slipfork_image::{Architecture, RegistryCredentials, StepHost};
 use slipfork_world::{BtrfsEngine, ImageNode, StoreLayout, WorldEngine, WorldName};
 
 use super::ImageCache;
@@ -44,6 +44,7 @@ fn a_failed_build_writes_no_synthetic_capture() {
         }],
         BTreeMap::new(),
         Architecture::X86_64,
+        RegistryCredentials::default(),
         "slipfork-tests/0.1",
         StepHost::new(
             "/nonexistent/crun",
@@ -125,6 +126,7 @@ fn an_unpulled_external_copy_fails_at_its_dockerfile_line() {
         }],
         BTreeMap::new(),
         Architecture::X86_64,
+        RegistryCredentials::default(),
         "slipfork-tests/0.1",
         StepHost::new(
             "/nonexistent/crun",

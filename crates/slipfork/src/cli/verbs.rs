@@ -234,6 +234,15 @@ pub enum Command {
         command: SecretCommand,
     },
 
+    /// Docker-compatible registry and image verbs; never a Docker daemon.
+    ///
+    /// `login`/`logout` manage the owner-only credential store, `list`/`images` inspect it and the
+    /// OCI cache, and `pull`/`build` reuse the native engine that `up` boots.
+    Docker {
+        #[command(subcommand)]
+        command: DockerCommand,
+    },
+
     /// Open the world or service URL in your browser, printing it when headless.
     Open {
         /// Open this service's route (default: the primary route).
@@ -313,6 +322,53 @@ pub enum SecretCommand {
     Unset {
         /// COMPONENT.KEY to remove.
         target: String,
+    },
+}
+
+/// `slipfork docker` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum DockerCommand {
+    /// Verify credentials against a registry, then save them to the 0600 store.
+    Login {
+        /// Registry host (default: Docker Hub).
+        #[arg(value_name = "HOST", default_value = "docker.io")]
+        host: String,
+        /// Registry username.
+        #[arg(long, value_name = "USERNAME")]
+        username: String,
+        /// Read the password from one stdin line instead of the terminal prompt.
+        #[arg(long)]
+        password_stdin: bool,
+    },
+
+    /// Forget one host's stored credentials.
+    Logout {
+        /// Registry host (default: Docker Hub).
+        #[arg(value_name = "HOST", default_value = "docker.io")]
+        host: String,
+    },
+
+    /// List the hosts in the Slipfork credential store.
+    List,
+
+    /// List cached OCI references and their digests.
+    Images,
+
+    /// Pull one OCI reference into the sealed image cache.
+    Pull {
+        /// Full reference, e.g. `ghcr.io/owner/image:tag`.
+        #[arg(value_name = "REFERENCE")]
+        reference: String,
+    },
+
+    /// Build one `Forkfile` image component, streaming its Dockerfile steps.
+    Build {
+        /// Image component id declared in this directory's Forkfile.
+        #[arg(value_name = "COMPONENT")]
+        component: String,
+        /// Build only up to this Dockerfile stage.
+        #[arg(long, value_name = "STAGE")]
+        target: Option<String>,
     },
 }
 

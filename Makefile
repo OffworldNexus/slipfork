@@ -13,7 +13,8 @@ LIVE_SUITES := \
 	slipfork-world/pod_control_lab \
 	slipfork/critical_world_journey \
 	slipfork/critical_status_live \
-	slipfork/critical_fork_live
+	slipfork/critical_fork_live \
+	slipfork/critical_registry_live
 
 .PHONY: fmt clippy test check coverage guard test-tools live-test lsp-assets js-test typecheck packages-check docs-check docs-serve install uninstall
 

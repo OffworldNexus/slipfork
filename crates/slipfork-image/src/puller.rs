@@ -10,12 +10,13 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use slipfork_world::{Dirtiness, ImageFacts, WorldEngine, is_subvolume_path};
 
+use crate::credentials::RegistryCredentials;
 use crate::digest::DigestReader;
 use crate::error::{Error, Result};
 use crate::layout::ImageLayout;
 use crate::manifest::ImageManifest;
 use crate::reference::ImageReference;
-use crate::registry::{Credentials, RegistryClient, RegistryScheme};
+use crate::registry::{RegistryClient, RegistryScheme};
 use crate::step_log::{StepLog, StepPlace};
 use crate::unpack::LayerUnpacker;
 use crate::{Architecture, BaseImageBuilder};
@@ -117,7 +118,7 @@ impl OciPuller {
     pub fn new(
         world: Arc<dyn WorldEngine>,
         layout: ImageLayout,
-        credentials: Credentials,
+        credentials: RegistryCredentials,
         architecture: Architecture,
         user_agent: String,
     ) -> Self {

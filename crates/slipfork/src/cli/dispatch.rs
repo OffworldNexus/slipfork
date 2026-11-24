@@ -10,12 +10,12 @@ use clap::{ColorChoice, CommandFactory, FromArgMatches};
 use serde_json::json;
 
 use crate::commands::{
-    EnvArgs, ExecArgs, FeaturesArgs, FmtArgs, LogsArgs, MigrateArgs, OpenArgs, SecretArgs,
-    SecretVerb, Session, TargetArgs, emit,
+    DockerArgs, DockerVerb, EnvArgs, ExecArgs, FeaturesArgs, FmtArgs, LogsArgs, MigrateArgs,
+    OpenArgs, SecretArgs, SecretVerb, Session, TargetArgs, emit,
 };
 use crate::world::{DownArgs, DropArgs, ForkArgs, RestartArgs, SuperviseArgs, UpArgs};
 
-use super::verbs::{Cli, Command, SecretCommand};
+use super::verbs::{Cli, Command, DockerCommand, SecretCommand};
 
 /// The one remedy every JSON usage rejection carries.
 const USAGE_NEXT: &str = "run `slipfork --help` to see the available surface.";
@@ -149,6 +149,31 @@ fn dispatch(cli: Cli, session: Session) -> ExitCode {
                 SecretCommand::Unset { target } => (SecretVerb::Unset, Some(target)),
             };
             session.secret(&SecretArgs { verb, target, json })
+        }
+        Command::Docker { command } => {
+            let verb = match command {
+                DockerCommand::Login {
+                    host,
+                    username,
+                    password_stdin,
+                } => DockerVerb::Login {
+                    host,
+                    username,
+                    password_stdin,
+                },
+                DockerCommand::Logout { host } => DockerVerb::Logout { host },
+                DockerCommand::List => DockerVerb::List,
+                DockerCommand::Images => DockerVerb::Images,
+                DockerCommand::Pull { reference } => DockerVerb::Pull { reference },
+                DockerCommand::Build { component, target } => {
+                    DockerVerb::Build { component, target }
+                }
+            };
+            session.docker(&DockerArgs {
+                verb,
+                json,
+                verbose,
+            })
         }
         Command::Open { service } => session.open(&OpenArgs { service, json }),
         // `slipfork auth` is deferred past 0.1.0; restore this arm with the `verbs` variant.

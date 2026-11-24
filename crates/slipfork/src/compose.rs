@@ -7,6 +7,8 @@ use std::ffi::{OsStr, OsString};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
+use slipfork_image::RegistryCredentials;
+
 use crate::mounts;
 use crate::ui::UiMode;
 use crate::world::HostEnv;
@@ -74,6 +76,23 @@ pub fn host(_args: &[OsString], _cwd: &Path, terminal: Terminal) -> Result<HostE
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
         .unwrap_or_else(|| PathBuf::from(format!("/var/tmp/slipfork-state-{uid}")));
     let home = std::env::var_os("HOME").map(PathBuf::from);
+    // `XDG_CONFIG_HOME` must be absolute; a relative one is ignored per the XDG base spec.
+    let config_dir = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| home.as_ref().map(|home| home.join(".config")))
+        .unwrap_or_else(|| PathBuf::from(format!("/var/tmp/slipfork-config-{uid}")));
+    let docker_config = home.as_ref().map(|home| home.join(".docker/config.json"));
+    let registries_path = config_dir.join("slipfork/registries.json");
+    let registry_credentials =
+        RegistryCredentials::load(&registries_path, docker_config.as_deref()).map_err(|error| {
+            format!(
+                "cannot load `{}`: {}\nnext: fix the JSON in `{}` or delete it to pull anonymously",
+                registries_path.display(),
+                error.cause(),
+                registries_path.display()
+            )
+        })?;
     let path: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|paths| std::env::split_paths(&paths).collect())
         .unwrap_or_default();
@@ -112,6 +131,8 @@ pub fn host(_args: &[OsString], _cwd: &Path, terminal: Terminal) -> Result<HostE
         color: terminal.mode.color(),
         opener,
         env: std::env::vars().collect(),
+        config_dir,
+        registry_credentials,
     })
 }
 

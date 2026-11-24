@@ -4,13 +4,17 @@ use std::io::Read;
 use std::time::Duration;
 
 use base64::Engine as _;
-use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 
 use crate::Architecture;
+use crate::credentials::{RegistryCredentials, is_loopback};
 use crate::digest;
 use crate::error::{Error, Result};
 use crate::manifest::{Document, ImageManifest};
-use crate::reference::ImageReference;
+use crate::reference::{ImageReference, canonical_host};
+
+mod auth;
+
+use auth::{Bearer, Challenge, fetch_token_body, http_error, login_probe, may_retry, token_url};
 
 const MANIFEST_ACCEPT: &str = "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json";
 
@@ -22,15 +26,6 @@ pub enum RegistryScheme {
     Https,
     /// Loopback reference registries in the lab.
     Http,
-}
-
-impl RegistryScheme {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Https => "https",
-            Self::Http => "http",
-        }
-    }
 }
 
 /// Registry credentials; `Debug` never prints the password.
@@ -96,7 +91,7 @@ pub(crate) fn agent() -> ureq::Agent {
 /// HTTPS client for one injected registry scheme.
 pub struct RegistryClient {
     agent: ureq::Agent,
-    credentials: Credentials,
+    credentials: RegistryCredentials,
     user_agent: String,
     scheme: RegistryScheme,
 }
@@ -104,7 +99,7 @@ pub struct RegistryClient {
 impl RegistryClient {
     /// Builds the client; no socket opens until a session runs.
     #[must_use]
-    pub fn new(credentials: Credentials, user_agent: impl Into<String>) -> Self {
+    pub fn new(credentials: RegistryCredentials, user_agent: impl Into<String>) -> Self {
         Self {
             agent: agent(),
             credentials,
@@ -130,8 +125,41 @@ impl RegistryClient {
         }
     }
 
+    /// The credentials that apply to `registry`'s host, anonymous when none are stored.
+    #[must_use]
+    pub fn credentials_for(&self, registry: &str) -> Credentials {
+        self.credentials.credentials_for(registry)
+    }
+
+    /// Verifies `registry` accepts the injected credentials without pulling an image.
+    ///
+    /// Discovery is unauthenticated: `200` means the registry serves anonymous reads; a Bearer
+    /// challenge mints a token for its `realm` and `service` with **no** scope (ghcr's placeholder
+    /// `repository:user/image:pull` is never requested). A refusal is one typed error whose
+    /// `next:` names the remedy.
+    pub fn login(&self, registry: &str) -> Result<()> {
+        let registry = canonical_host(registry);
+        if registry.is_empty() {
+            return Err(Error::InvalidRegistry { registry });
+        }
+        let authorization = self.credentials_for(&registry).header();
+        let url = format!("{}/v2/", self.base(&registry));
+        login_probe(
+            &self.agent,
+            &self.user_agent,
+            &url,
+            authorization.as_deref(),
+            &registry,
+        )
+    }
+
     fn base(&self, registry: &str) -> String {
-        format!("{}://{registry}", self.scheme.as_str())
+        let scheme = if self.scheme == RegistryScheme::Http || is_loopback(registry) {
+            "http"
+        } else {
+            "https"
+        };
+        format!("{scheme}://{registry}")
     }
 }
 
@@ -141,39 +169,6 @@ pub struct RegistrySession<'a> {
     reference: &'a ImageReference,
     token: Option<Bearer>,
     probed: bool,
-}
-
-/// A cached bearer token plus the exact `service`/`scope` it was minted for.
-#[derive(Debug, Clone)]
-struct Bearer {
-    value: String,
-    service: Option<String>,
-    scope: Option<String>,
-}
-
-impl Bearer {
-    fn minted_for(challenge: &Challenge, value: String) -> Self {
-        Self {
-            value,
-            service: challenge.service.clone(),
-            scope: challenge.scope.clone(),
-        }
-    }
-
-    /// The token is only reusable for the challenge whose `service` and `scope` it encodes.
-    fn matches(&self, challenge: &Challenge) -> bool {
-        self.service == challenge.service && self.scope == challenge.scope
-    }
-}
-
-/// A 401 challenge justifies a new token only when the cached one was minted for other terms.
-fn needs_fresh_token(current: Option<&Bearer>, challenge: &Challenge) -> bool {
-    current.is_none_or(|bearer| !bearer.matches(challenge))
-}
-
-/// One re-fetch and one retry per request; a second 401 with the same terms is terminal.
-fn may_retry(retried: bool, current: Option<&Bearer>, challenge: &Challenge) -> bool {
-    !retried && needs_fresh_token(current, challenge)
 }
 
 impl RegistrySession<'_> {
@@ -334,29 +329,14 @@ impl RegistrySession<'_> {
     }
 
     fn fetch_token(&self, challenge: &Challenge) -> Result<String> {
-        let url = token_url(challenge);
-        let mut request = self
-            .client
-            .agent
-            .get(&url)
-            .set("User-Agent", &self.client.user_agent);
-        if let Some(header) = self.client.credentials.header() {
-            request = request.set("Authorization", &header);
-        }
-        let response = request.call().map_err(|err| self.map_error(&url, err))?;
-        let body = read_body(response, &url)?;
-        #[derive(serde::Deserialize)]
-        struct TokenBody {
-            token: Option<String>,
-            access_token: Option<String>,
-        }
-        let body: TokenBody = serde_json::from_slice(&body).map_err(|source| Error::Json {
-            url: url.clone(),
-            source,
-        })?;
-        body.token
-            .or(body.access_token)
-            .ok_or(Error::Token { realm: url })
+        let credentials = self.client.credentials_for(self.reference.registry());
+        let authorization = credentials.header();
+        fetch_token_body(
+            &self.client.agent,
+            &token_url(challenge),
+            &self.client.user_agent,
+            authorization.as_deref(),
+        )
     }
 
     fn unauthorized(&self) -> Error {
@@ -369,14 +349,7 @@ impl RegistrySession<'_> {
     fn map_error(&self, url: &str, err: ureq::Error) -> Error {
         match err {
             ureq::Error::Status(401, _) => self.unauthorized(),
-            ureq::Error::Status(status, _) => Error::Http {
-                url: url.to_owned(),
-                status,
-            },
-            ureq::Error::Transport(transport) => Error::Transport {
-                url: url.to_owned(),
-                message: transport.to_string(),
-            },
+            err => http_error(url, err),
         }
     }
 }
@@ -410,72 +383,6 @@ fn read_body(response: ureq::Response, url: &str) -> Result<Vec<u8>> {
     Ok(body)
 }
 
-/// One parsed `WWW-Authenticate: Bearer` challenge.
-struct Challenge {
-    realm: String,
-    service: Option<String>,
-    scope: Option<String>,
-}
-
-impl Challenge {
-    fn parse(header: &str) -> Option<Self> {
-        let (scheme, rest) = header.split_once(' ')?;
-        if !scheme.eq_ignore_ascii_case("bearer") {
-            return None;
-        }
-        let mut realm = None;
-        let mut service = None;
-        let mut scope = None;
-        for part in rest.split(',') {
-            let Some((key, value)) = part.trim().split_once('=') else {
-                continue;
-            };
-            let value = value.trim().trim_matches('"').to_owned();
-            match key.trim().to_ascii_lowercase().as_str() {
-                "realm" => realm = Some(value),
-                "service" => service = Some(value),
-                "scope" => scope = Some(value),
-                _ => {}
-            }
-        }
-        Some(Self {
-            realm: realm?,
-            service,
-            scope,
-        })
-    }
-}
-
-/// The challenge's `realm`, `service`, and `scope` verbatim: Docker Hub's realm is
-/// `https://auth.docker.io/token` and its service is `registry.docker.io`.
-fn token_url(challenge: &Challenge) -> String {
-    let mut query: Vec<String> = Vec::new();
-    if let Some(service) = &challenge.service {
-        query.push(format!("service={}", encode_query(service)));
-    }
-    if let Some(scope) = &challenge.scope {
-        query.push(format!("scope={}", encode_query(scope)));
-    }
-    if query.is_empty() {
-        challenge.realm.clone()
-    } else {
-        format!("{}?{}", challenge.realm, query.join("&"))
-    }
-}
-
-/// Query values keep token scopes readable: only what breaks a query string is escaped.
-const QUERY: &AsciiSet = &NON_ALPHANUMERIC
-    .remove(b'-')
-    .remove(b'.')
-    .remove(b'_')
-    .remove(b'~')
-    .remove(b':')
-    .remove(b'/');
-
-fn encode_query(value: &str) -> String {
-    utf8_percent_encode(value, QUERY).to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use std::io::{Read, Write};
@@ -483,9 +390,10 @@ mod tests {
     use std::thread;
 
     use crate::Architecture;
+    use crate::credentials::RegistryCredentials;
     use crate::reference::ImageReference;
 
-    use super::{Credentials, RegistryClient, RegistryScheme};
+    use super::{RegistryClient, RegistryScheme};
 
     const MANIFEST: &str = r#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","size":2},"layers":[]}"#;
 
@@ -579,8 +487,9 @@ mod tests {
         let (addr, server) = serve_registry();
         let reference =
             ImageReference::parse(&format!("{addr}/owner/app:latest")).expect("parse a reference");
-        let client = RegistryClient::new(Credentials::Anonymous, "slipfork/test".to_owned())
-            .with_scheme(RegistryScheme::Http);
+        let client =
+            RegistryClient::new(RegistryCredentials::default(), "slipfork/test".to_owned())
+                .with_scheme(RegistryScheme::Http);
         let mut session = client.session(&reference);
 
         let resolved = session
@@ -607,6 +516,139 @@ mod tests {
         assert!(
             seen.iter().any(|line| line.starts_with("GET /v2/ HTTP")),
             "the ping still runs: {seen:?}"
+        );
+    }
+
+    /// Serves a scoped `/v2/` Bearer challenge then the token endpoint, capturing every head.
+    fn serve_login(
+        token_status: &'static str,
+    ) -> (String, thread::JoinHandle<Vec<(String, String)>>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the loopback registry");
+        let port = listener
+            .local_addr()
+            .expect("read the loopback address")
+            .port();
+        let addr = format!("127.0.0.1:{port}");
+        let realm = format!("http://{addr}/token");
+        let handle = thread::spawn(move || {
+            let mut seen = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept a login request");
+                let (line, head) = read_request_line(&mut stream);
+                seen.push((line.clone(), head.clone()));
+                if line.starts_with("GET /v2/ HTTP") {
+                    respond(
+                        &mut stream,
+                        "401 Unauthorized",
+                        &format!(
+                            "WWW-Authenticate: Bearer realm=\"{realm}\",service=\"ghcr.io\",scope=\"repository:user/image:pull\"\r\n"
+                        ),
+                        b"",
+                    );
+                } else if line.starts_with("GET /token") {
+                    if token_status == "200 OK" {
+                        respond(
+                            &mut stream,
+                            token_status,
+                            "Content-Type: application/json\r\n",
+                            br#"{"token":"t"}"#,
+                        );
+                    } else {
+                        respond(&mut stream, token_status, "", b"");
+                    }
+                } else {
+                    respond(&mut stream, "404 Not Found", "", b"");
+                }
+            }
+            seen
+        });
+        (addr, handle)
+    }
+
+    /// A loopback host selects HTTP by itself, and login mints a scope-less token with Basic.
+    #[test]
+    fn login_probe_mints_a_scopeless_token_over_auto_http() {
+        let (addr, server) = serve_login("200 OK");
+        let credentials = RegistryCredentials::default().with_host(&addr, "octo", "s3cret");
+        let client = RegistryClient::new(credentials, "slipfork/test".to_owned());
+
+        client
+            .login(&addr)
+            .expect("a loopback login probes over plain HTTP");
+
+        let seen = server.join().expect("the loopback registry exits");
+        let (line, head) = seen
+            .iter()
+            .find(|(line, _)| line.starts_with("GET /token"))
+            .expect("exactly one token mint");
+        assert!(line.contains("service=ghcr.io"), "{line}");
+        assert!(
+            !line.contains("scope="),
+            "login never mints ghcr's placeholder scope: {line}"
+        );
+        assert!(
+            head.contains("Authorization: Basic "),
+            "login sends the injected Basic header: {head}"
+        );
+    }
+
+    /// A refused login probe is one typed error whose `next:` carries the remedy, never a secret.
+    #[test]
+    fn login_probe_reports_bad_credentials_as_one_typed_error() {
+        let (addr, server) = serve_login("401 Unauthorized");
+        let credentials = RegistryCredentials::default().with_host(&addr, "octo", "wrong-secret");
+        let client = RegistryClient::new(credentials, "slipfork/test".to_owned());
+
+        let error = client
+            .login(&addr)
+            .expect_err("bad credentials must fail the login");
+
+        assert!(
+            matches!(error, crate::Error::LoginRejected { .. }),
+            "{error:?}"
+        );
+        let text = error.to_string();
+        assert!(text.contains("next: "), "{text}");
+        assert!(
+            !text.contains("wrong-secret"),
+            "the secret stays out: {text}"
+        );
+        let _ = server.join();
+    }
+
+    /// A `401` with no `WWW-Authenticate` header is terminal: no identical retry is sent.
+    #[test]
+    fn login_probe_reports_a_challengeless_401_without_retrying() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the loopback registry");
+        let port = listener
+            .local_addr()
+            .expect("read the loopback address")
+            .port();
+        let addr = format!("127.0.0.1:{port}");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept one login request");
+            let (line, _) = read_request_line(&mut stream);
+            respond(&mut stream, "401 Unauthorized", "", b"");
+            line
+        });
+
+        let credentials = RegistryCredentials::default().with_host(&addr, "octo", "s3cret");
+        let client = RegistryClient::new(credentials, "slipfork/test".to_owned());
+        let error = client
+            .login(&addr)
+            .expect_err("a headerless 401 cannot authenticate");
+
+        assert!(
+            matches!(error, crate::Error::LoginRejected { .. }),
+            "{error:?}"
+        );
+        let text = error.to_string();
+        assert!(text.contains("next: "), "{text}");
+        assert!(text.contains("HTTP 401"), "{text}");
+        let line = server.join().expect("the loopback registry exits");
+        assert!(
+            line.starts_with("GET /v2/ HTTP"),
+            "only one probe is sent: {line}"
         );
     }
 }

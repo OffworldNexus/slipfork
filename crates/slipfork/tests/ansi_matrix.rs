@@ -98,6 +98,7 @@ fn json_probe(verb: &str) -> Option<Vec<&'static str>> {
         "env" => vec!["env", "--json"],
         "features" => vec!["features", "--json"],
         "secret" => vec!["secret", "list", "--json"],
+        "docker" => vec!["docker", "logout", "docker.io", "--json"],
         "open" => vec!["open", "--json"],
         "fmt" => vec!["fmt", "--check", "--json"],
         "migrate" => vec!["migrate", "--json"],

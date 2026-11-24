@@ -93,6 +93,11 @@ pub const VERBS: &[VerbSpec] = &[
         flags: &["--json"],
     },
     VerbSpec {
+        name: "docker",
+        summary: "Docker-compatible registry and image verbs.",
+        flags: &["--json"],
+    },
+    VerbSpec {
         name: "open",
         summary: "Open the world or service URL in your browser.",
         flags: &["--json"],

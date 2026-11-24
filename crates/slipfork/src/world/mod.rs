@@ -12,6 +12,7 @@ mod supervise;
 mod target;
 mod up;
 
+pub(crate) use runtime::pull_externals;
 pub(crate) use target::{TargetError, Targets};
 
 use std::collections::BTreeMap;
@@ -22,6 +23,7 @@ use std::process::ExitCode;
 
 use serde::{Deserialize, Serialize};
 use slipfork_forkfile::FeatureEdit;
+use slipfork_image::RegistryCredentials;
 
 /// Ambient host state, resolved exactly once in `main.rs` and injected everywhere below.
 ///
@@ -69,6 +71,10 @@ pub struct HostEnv {
     pub opener: Option<PathBuf>,
     /// The process environment snapshot, read once by the composition root.
     pub env: BTreeMap<String, String>,
+    /// `$XDG_CONFIG_HOME`, else `~/.config`: the root of `slipfork/registries.json`.
+    pub config_dir: PathBuf,
+    /// Per-host registry credentials, loaded once by the composition root.
+    pub registry_credentials: RegistryCredentials,
 }
 
 impl HostEnv {

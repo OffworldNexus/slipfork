@@ -248,12 +248,12 @@ fn read_secret_value(tty: bool, label: &str) -> Result<String, String> {
 }
 
 /// Restores the terminal echo flag on drop.
-struct EchoGuard {
+pub(crate) struct EchoGuard {
     saved: libc::termios,
 }
 
 impl EchoGuard {
-    fn disable() -> Option<Self> {
+    pub(crate) fn disable() -> Option<Self> {
         // SAFETY: both calls operate on a live `termios` for stdin and never share memory.
         unsafe {
             let mut saved: libc::termios = std::mem::zeroed();

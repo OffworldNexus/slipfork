@@ -28,6 +28,11 @@ name = "critical_fork_live"
 path = "tests/critical_fork_live.rs"
 required-features = ["live"]
 
+[[test]]
+name = "critical_registry_live"
+path = "tests/critical_registry_live.rs"
+required-features = ["live"]
+
 [dependencies]
 base64.workspace = true
 clap.workspace = true
@@ -49,10 +54,12 @@ slipfork-world = { path = "../slipfork-world" }
 tokio.workspace = true
 
 [dev-dependencies]
+flate2.workspace = true
 hmac.workspace = true
 hpke.workspace = true
 libc.workspace = true
 p256.workspace = true
 sha2.workspace = true
+tar.workspace = true
 tempfile.workspace = true
 tungstenite.workspace = true

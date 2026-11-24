@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use slipfork_forkfile::FeatureSet;
 use slipfork_forkfile::ast::Forkfile;
 use slipfork_image::{
-    Architecture, BuildArgs, BuildRequest, Credentials, ImageLayout, ImageReference,
-    NativeImageBuilder, OciPuller, PulledImage, StepHost, StepLayout, StepTrace,
+    Architecture, BuildArgs, BuildRequest, ImageLayout, ImageReference, NativeImageBuilder,
+    OciPuller, PulledImage, RegistryCredentials, StepHost, StepLayout, StepTrace,
 };
 use slipfork_world::run_log::RunNote;
 use slipfork_world::{
@@ -24,6 +24,8 @@ mod flight;
 mod log;
 mod pull;
 pub(super) mod record;
+
+pub(crate) use pull::pull_externals;
 
 use flight::{FlightRole, FlightTable, acquire_flight, wait_flight};
 use log::{BuildLog, failed_note, from_note, success_note};
@@ -77,12 +79,12 @@ impl ImageCache {
         images: Vec<ImageNode>,
         adopted: BTreeMap<String, ImageStamp>,
         architecture: Architecture,
+        credentials: RegistryCredentials,
         agent: &str,
         host: StepHost,
         scheme: &str,
         features: FeatureSet,
     ) -> Self {
-        let credentials = Credentials::Anonymous;
         let images_root = layout.images_root();
         let mut sealed = BTreeMap::new();
         for (id, stamp) in adopted {

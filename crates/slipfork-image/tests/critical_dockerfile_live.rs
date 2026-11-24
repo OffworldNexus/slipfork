@@ -21,9 +21,10 @@ use std::thread;
 use std::time::Duration;
 
 use slipfork_image::{
-    BuildArgs, BuildEvent, BuildRequest, Command, Credentials, CrunStepRuntime, ExternalImage,
-    ImageConfig, ImageLayout, ImageReference, NativeImageBuilder, OciPuller, Port, Protocol,
-    RegistryScheme, RunSpec, StepHost, StepLayout, StepLog, Stream, external_references,
+    BuildArgs, BuildEvent, BuildRequest, Command, CrunStepRuntime, ExternalImage, ImageConfig,
+    ImageLayout, ImageReference, NativeImageBuilder, OciPuller, Port, Protocol,
+    RegistryCredentials, RegistryScheme, RunSpec, StepHost, StepLayout, StepLog, Stream,
+    external_references,
 };
 use slipfork_world::{BtrfsEngine, Dirtiness, StoreLayout, WorldEngine, is_subvolume_path};
 
@@ -152,7 +153,7 @@ fn native_dockerfile_multistage_build_lifecycle() {
     let puller = OciPuller::new(
         Arc::clone(&engine) as Arc<dyn WorldEngine>,
         images,
-        Credentials::Anonymous,
+        RegistryCredentials::default(),
         arch,
         "slipfork-tests/0.1".to_owned(),
     )
@@ -381,7 +382,7 @@ fn a_target_stage_never_reaches_a_later_failing_stage() {
     let puller = OciPuller::new(
         Arc::clone(&engine) as Arc<dyn WorldEngine>,
         images,
-        Credentials::Anonymous,
+        RegistryCredentials::default(),
         arch,
         "slipfork-tests/0.1".to_owned(),
     )
@@ -593,7 +594,7 @@ fn external_copy_from_image_lifecycle() {
     let loopback = OciPuller::new(
         Arc::clone(&engine) as Arc<dyn WorldEngine>,
         ImageLayout::new(store.images_root()),
-        Credentials::Anonymous,
+        RegistryCredentials::default(),
         arch,
         "slipfork-tests/0.1".to_owned(),
     )
@@ -783,7 +784,7 @@ fn external_copy_from_image_lifecycle() {
     let https = OciPuller::new(
         Arc::clone(&engine) as Arc<dyn WorldEngine>,
         ImageLayout::new(store.images_root()),
-        Credentials::Anonymous,
+        RegistryCredentials::default(),
         arch,
         "slipfork-tests/0.1".to_owned(),
     );
@@ -882,7 +883,7 @@ fn debian_root_build_installs_system_packages_and_switches_named_users() {
     let https = OciPuller::new(
         Arc::clone(&engine) as Arc<dyn WorldEngine>,
         ImageLayout::new(store.images_root()),
-        Credentials::Anonymous,
+        RegistryCredentials::default(),
         arch,
         "slipfork-tests/0.1".to_owned(),
     );

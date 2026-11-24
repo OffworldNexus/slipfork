@@ -242,3 +242,31 @@ With `dev` active Slipfork bind-mounts the live checkout at `/project`, so `uvic
 - **Ephemeral daemon:** auto-start warns once on stderr; distribution packages installed with
   `sudo` enable and start the per-user unit and the `:80` socket for the installing user, so the
   fallback appears only on tarball, headless, or rootless installs.
+
+## 8. Docker-compatible registry verbs
+
+`slipfork docker` is a Docker-shaped surface, never a daemon claim: no `dockerd`, no socket, and no
+second build pipeline. Every image path reuses the injected `OciPuller`/`NativeImageBuilder` and the
+sealed step cache that `up` already uses.
+
+| Command | Behaviour |
+| :--- | :--- |
+| `slipfork docker login [HOST] [--username USER] [--password-stdin]` | Default `docker.io`; verifies through the registry probe, then saves `0600` |
+| `slipfork docker logout [HOST]` | Removes the host from the Slipfork-owned store |
+| `slipfork docker list` | `HOST USERNAME` table with dynamic widths; never a secret |
+| `slipfork docker images` | Cached OCI references and digests from the store's `refs.json` |
+| `slipfork docker pull <REFERENCE>` | Pulls into the sealed cache and prints `sha256:<digest>` |
+| `slipfork docker build <COMPONENT> [--target STAGE]` | Builds one Forkfile image, streaming `[i/n] INSTRUCTION args`; prints the digest |
+
+`login` reads the password from one `--password-stdin` line or, on a real TTY, a no-echo prompt; it
+never accepts a secret in argv. A wrong password fails as one line plus one `next:` and writes
+nothing. The store is `<config>/slipfork/registries.json` (mode `0600`); Docker's
+`~/.docker/config.json` is a read-only per-host fallback and is never rewritten.
+
+`--json` emits `{"host","username","stored":true}` for login, arrays for `list`/`images`, and
+one object for `logout`. `docker pull --json` and `docker build --json` both stream NDJSON
+`step`/`log` frames and then one final object; `build`'s object is
+`{"component","target","image_id","cache_key","digest?","rootfs","cache_hits","cache_misses"}`.
+The printed `sha256:` value is the local image id recorded in `built.json`, and `digest` appears
+only for a pure pulled base (`cache_key` starts `base-sha256:`). No path boots a pod or contacts
+the daemon.

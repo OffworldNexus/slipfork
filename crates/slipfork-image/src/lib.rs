@@ -18,8 +18,8 @@
 //! use std::sync::Arc;
 //!
 //! use slipfork_image::{
-//!     Architecture, BuildArgs, BuildRequest, Credentials, ImageLayout, NativeImageBuilder,
-//!     OciPuller, StepHost, StepLayout, StepLog,
+//!     Architecture, BuildArgs, BuildRequest, ImageLayout, NativeImageBuilder, OciPuller,
+//!     RegistryCredentials, StepHost, StepLayout, StepLog,
 //! };
 //! use slipfork_world::{BtrfsEngine, StoreLayout, WorldEngine};
 //!
@@ -31,7 +31,7 @@
 //! let puller = OciPuller::new(
 //!     Arc::clone(&engine) as Arc<dyn WorldEngine>,
 //!     images.clone(),
-//!     Credentials::Anonymous,
+//!     RegistryCredentials::default(),
 //!     Architecture::X86_64,
 //!     "slipfork/0.1".to_owned(),
 //! );
@@ -60,6 +60,7 @@
 mod builder;
 mod context;
 mod copy;
+mod credentials;
 mod digest;
 mod dockerfile;
 mod error;
@@ -83,6 +84,7 @@ pub use builder::{
     StepTrace, external_references, stage_walk,
 };
 pub use context::{BuildContext, ContextEntry};
+pub use credentials::RegistryCredentials;
 pub use dockerfile::{
     BuildArgs, CacheMount, Command, CopySpec, DockerfileParser, ImageConfig, Instruction, Owner,
     ParsedInstruction, Port, Protocol, RunSpec, Stage, StageBase, Variables,
@@ -92,7 +94,7 @@ pub use ignore::Dockerignore;
 pub use layout::ImageLayout;
 pub use manifest::{Descriptor, ImageIndex, ImageManifest, Platform};
 pub use puller::{OciPuller, PulledImage};
-pub use reference::ImageReference;
+pub use reference::{ImageReference, canonical_host};
 pub use registry::{Credentials, RegistryClient, RegistryScheme};
 pub use runtime::{CrunStepRuntime, StepHost, Stream};
 pub use step_log::{BuildEvent, StepEvent, StepLog, StepPlace, StepState, exit_detail};

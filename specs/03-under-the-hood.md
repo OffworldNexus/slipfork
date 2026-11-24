@@ -150,6 +150,11 @@ Slipfork has **five explicit composition roots** and **zero** ambient OS/env pro
 
 The canonical port set is strictly `WorldEngine`, `BaseImageBuilder`, `SecretVault`, `OsppClient`, and `VcsWorkspace` — zero single-impl mock traits sit beside them.
 
+`OciPuller` receives one injected `RegistryCredentials` value resolved once by the composition root
+(`<config>/slipfork/registries.json` at mode `0600`, plus Docker's read-only per-host fallback), so
+`docker pull`, private `FROM`, and `COPY --from` all use the same store without re-reading the
+environment or argv.
+
 `COPY --from` accepts a stage index, a stage `AS` name, or an OCI image reference; the composition root pulls the latter into a sealed rootfs first, then hands every pulled rootfs to the network-free native builder.
 
 **Build identity: single-owner images.**

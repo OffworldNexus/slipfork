@@ -26,6 +26,7 @@ mod execute;
 pub(crate) mod frames;
 mod helpers;
 mod images;
+pub(crate) use images::pull_externals;
 mod ready;
 mod resources;
 mod rootfs;
@@ -111,6 +112,7 @@ impl WorldRuntime {
             plan.images.clone(),
             adopted,
             architecture,
+            env.registry_credentials.clone(),
             &agent,
             step_host,
             scheme,

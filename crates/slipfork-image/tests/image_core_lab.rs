@@ -8,9 +8,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use slipfork_image::{
-    Architecture, BuildArgs, BuildContext, BuildEvent, BuildRequest, Command, Credentials,
-    DockerfileParser, Dockerignore, ImageConfig, ImageLayout, ImageReference, Instruction,
-    LayerUnpacker, NativeImageBuilder, OciPuller, StepHost, StepLayout, StepLog, Variables,
+    Architecture, BuildArgs, BuildContext, BuildEvent, BuildRequest, Command, DockerfileParser,
+    Dockerignore, ImageConfig, ImageLayout, ImageReference, Instruction, LayerUnpacker,
+    NativeImageBuilder, OciPuller, RegistryCredentials, StepHost, StepLayout, StepLog, Variables,
     stage_walk,
 };
 use slipfork_world::{BtrfsEngine, StoreLayout, WorldEngine};
@@ -236,7 +236,7 @@ fn a_missing_crun_fails_typed_before_any_step_runs() {
     let puller = OciPuller::new(
         Arc::clone(&engine) as Arc<dyn WorldEngine>,
         ImageLayout::new(store.images_root()),
-        Credentials::Anonymous,
+        RegistryCredentials::default(),
         Architecture::X86_64,
         "slipfork-tests/0.1".to_owned(),
     );
@@ -375,7 +375,7 @@ fn an_absent_target_alias_fails_before_any_build_work() {
     let puller = OciPuller::new(
         Arc::clone(&engine) as Arc<dyn WorldEngine>,
         ImageLayout::new(store.images_root()),
-        Credentials::Anonymous,
+        RegistryCredentials::default(),
         Architecture::X86_64,
         "slipfork-tests/0.1".to_owned(),
     );

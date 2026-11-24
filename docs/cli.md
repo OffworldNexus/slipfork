@@ -1,7 +1,7 @@
 # CLI
 
-Every command talks to one per-user daemon, renders one domain tree, and fails with one `next:` line.
-Interactive terminals get colour and a fixed one-line bottom bar; pipes and `--json` get clean data.
+Every command renders one domain tree and fails with one `next:` line. World verbs talk to one
+per-user daemon; `docker` and `fmt`/`migrate` run in-process without contacting it.
 
 ```console
 $ slipfork up
@@ -53,6 +53,7 @@ flowchart LR
 | `slipfork env [component]` | Resolved runtime variables, secrets redacted |
 | `slipfork features [+mail\|-dev\|reset]` | Resolved features and persisted edits for the next boot |
 | `slipfork secret list\|set\|unset` | Manage local offline secrets; `set` reads stdin |
+| `slipfork docker login\|logout\|list\|images\|pull\|build` | Registry credentials, cached OCI refs, native pulls and builds; never a Docker daemon |
 | `slipfork open [service]` | Open the world or route URL in a browser |
 | `slipfork doctor` | Four plain-English rows: Storage, Containers, Daemon, Domains |
 | `slipfork fmt` | Format a Forkfile; `--check` reports only |
@@ -83,6 +84,36 @@ $ slipfork fork prod-check -F -dev
 `-F` also accepts comma lists and `+`/`-` edits (`-F mail,dev`, `-F +mail`, `-F -mail`), and
 `--no-default-features` starts from an empty base. `slipfork up` and `fork` persist the result in
 `.slipfork/features.json`; `slipfork env` evaluates without writing.
+
+## Docker-compatible registry verbs
+
+`slipfork docker` is a Docker-shaped CLI over the native OCI engine, not a Docker daemon: there is
+no `dockerd`, no socket, and no second build pipeline. Pulls and builds share the same sealed cache,
+step keys, and injected credentials that `up` uses.
+
+```console
+$ printf '%s\n' "$GH_TOKEN" | slipfork docker login ghcr.io --username octo --password-stdin
+✓ Logged in to ghcr.io as octo
+
+$ slipfork docker pull postgres:18
+[1/1] FROM postgres:18
+✓ Pulled postgres:18 sha256:… sealed
+
+$ slipfork docker build backend --target runtime
+[1/6] FROM python:3.13-slim
+[2/6] ENV PYTHONUNBUFFERED=1
+…
+✓ Built backend sha256:… (5 hits, 0 misses)
+```
+
+Credentials live in `~/.config/slipfork/registries.json` with mode `0600`; Docker's
+`~/.docker/config.json` is a read-only per-host fallback that is never rewritten. `login` verifies
+the password before storing it, `list` prints only `HOST USERNAME`, and every verb accepts
+`--json` with zero ANSI.
+
+`Built` prints a local image id, not a registry manifest digest; a real `sha256:` manifest digest
+appears only when the build is a pure pulled base. Both `docker pull --json` and `docker build
+--json` stream NDJSON step frames and finish with one object.
 
 ## Naming a world, fork or service
 
