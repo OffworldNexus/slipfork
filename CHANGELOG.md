@@ -3,6 +3,31 @@
 All notable, user-visible changes to Slipfork. The format follows Keep a Changelog, and versions
 follow Semantic Versioning while the `# forkfile: 0.1` format is pre-`1.0`.
 
+## [0.1.1] - 2026-11-24
+
+### Added
+
+- `ADD http(s)://…` in the native Dockerfile builder, fetched and hashed like local build context.
+- `make install` / `make uninstall` put a branch build in a user PATH prefix without touching
+  packaged binaries.
+
+### Changed
+
+- Package install now enables and starts the per-user daemon and the system `:80` ingress for the
+  installing user (linger, systemd units, AppArmor), so `slipfork daemon install` is gone.
+- `slipfork up` never adopts or rewrites your checkout; `fork` copies a plain checkout before
+  snapshotting it.
+- `up` verifies service health and refuses `✓ Ready` while a service is dead.
+- `slipfork fmt` defaults to 4-space indents, and the Zed extension manifest is fixed.
+- Logs come from one durable run catalog: failed runs survive, `slipfork logs <image>` reads an
+  image build, `-r <id>` selects a run, `--runs` lists them, and each failure ends with one `next:`
+  command. The store stays user-writable on a Btrfs-root host.
+
+### Fixed
+
+- `ps` no longer warns when `.forks` is absent.
+- The plugin e2e asserts the real drop refusal.
+
 ## [0.1.0] - 2026-11-23
 
 ### Added
