@@ -420,70 +420,45 @@ $ slipfork ps
     /  -> web  service  running
 ```
 
-### 7.1 Store choice: bundled `rusqlite` in WAL mode
+### 7.1 Store layer: `sea-orm` + `sea-orm-migration` on SQLite WAL
 
-Control-plane state moves into a single-file SQLite WAL database backed by `rusqlite` (`features = ["bundled"]`), chosen over `sea-orm` and `sqlx` on measured workspace fit.
+Control-plane state lives in `<state_dir>/state.db` (`0600`) via `sea-orm` (`default-features = false`, `features = ["sqlx-sqlite", "runtime-tokio", "macros"]`) and `sea-orm-migration` (`default-features = false`, `features = ["sqlx-sqlite", "runtime-tokio"]`).
 
-| Criterion | `rusqlite` (`bundled`) | `sea-orm` + `sea-orm-migration` / `sqlx` |
-| :--- | :--- | :--- |
-| Dependency & compile cost | `5` small crates + one cached `sqlite3.c` unit (`~8s` cold C build, `< 0.3s` incremental Rust, zero proc-macros). | `~100+` async, query-AST, and proc-macro crates (`+35–55s` cold workspace build). |
-| Sync vs async fit | Direct synchronous C calls (`~20–80 µs`) matching `UnixListener` + `thread::scope` in `__daemon`, sync `slipfork-world`, and sync CLI readers. | Async-only API wrapping synchronous C SQLite behind per-connection worker threads + channels, forcing `tokio::block_on` bridges across sync crates. |
-| Migrations | `40`-line sync runner over `PRAGMA user_version` + SQLite transactional DDL inside `BEGIN IMMEDIATE`. | Separate `sea-orm-migration` crate, trait boilerplate, and `seaql_migrations` table for two tables. |
-| WAL concurrency | Explicit `TransactionBehavior::Immediate` (`BEGIN IMMEDIATE`) avoids `DEFERRED` lock-upgrade `SQLITE_BUSY_SNAPSHOT`; CLI opens `SQLITE_OPEN_READ_ONLY`. | Pool defaults to `DEFERRED` transactions and spawns background connections unsuited to one-shot `< 1ms` CLI reads. |
-| Failure recovery | Identical C SQLite WAL redo/rollback semantics, with direct `wal_checkpoint(TRUNCATE)` control on daemon shutdown. | Identical C SQLite WAL recovery underneath, hidden behind pool lifecycle hooks. |
+The `sea-orm`/`sqlx` compile-time cost is accepted for typed `DeriveEntityModel` entities and checked `MigrationTrait` migrations; the schema is Rust code (`SchemaManager` / `sea_query`), never hand-written SQL.
+
+`StateDb` (`ledger/db.rs`) owns a private `current_thread` `tokio::runtime::Runtime` and exposes a **100% synchronous** API — each public method enters `block_on` once over private `&DatabaseTransaction` helpers, leaking zero `async` or `block_on` outside `db.rs`.
 
 SQLite owns **strictly** the world and fork ledger (`worlds`, `forks`). Snapshot records (`snapshots/<key>.json`, §6.2), world leases (`.slipfork-lease.json`, §6.3), and run logs (`runs/index.jsonl`, §1) stay in their file stores with zero duplicate copies.
 
-### 7.2 Schema, pragmas, single writer & crash recovery
+### 7.2 Entities, migrations, pragmas & crash recovery
 
-`StateDb` lives per user at `<state_dir>/state.db` (`0600`), paired 1:1 with the single `__daemon` holding `<runtime_dir>/slipfork-daemon.lock`.
+A second daemon is refused upfront by `flock(LOCK_EX|LOCK_NB)` on `<runtime_dir>/slipfork-daemon.lock` before `StateDb` opens.
 
-Convergence scopes strictly to root checkouts registered in that `state.db`, so isolated test daemons sharing `<mount>/.slipfork-store` never touch each other's worlds.
+Convergence scopes strictly to root checkouts registered in `state.db`, so isolated test daemons sharing `<mount>/.slipfork-store` never touch each other's worlds.
 
-`StateDb::open_writer` sets `journal_mode = WAL`, `synchronous = FULL`, `busy_timeout = 5000`, and `foreign_keys = ON`, migrating inside `BEGIN IMMEDIATE` up to `SCHEMA_VERSION = 1`.
+`StateDb::open_writer` pre-creates `state.db` (`0600`) and configures `SqliteConnectOptions` (`journal_mode(Wal)`, `synchronous(Full)`, `foreign_keys(true)`, `busy_timeout(5s)`).
 
-Offline CLI readers (`status` and `ps` when no daemon runs) call `StateDb::open_reader` (`SQLITE_OPEN_READ_ONLY`) and never mutate or converge; any `user_version > SCHEMA_VERSION` fails closed with `next: upgrade slipfork`.
+It builds a `max_connections(1)` pool via `SqlxSqliteConnector::from_sqlx_sqlite_pool` and runs `Migrator::up` once before `UnixListener::bind`.
 
-```sql
-CREATE TABLE worlds (
-    id             INTEGER PRIMARY KEY,
-    checkout_path  TEXT NOT NULL UNIQUE,
-    world_name     TEXT NOT NULL,
-    store_root     TEXT NOT NULL,
-    state          TEXT NOT NULL CHECK (state IN (
-                       'creating', 'booting', 'live', 'stopping', 'stopped', 'deleting', 'broken'
-                   )),
-    supervisor_pid INTEGER,
-    pods_dir       TEXT,
-    started_at_ms  INTEGER,
-    problem        TEXT,
-    updated_at_ms  INTEGER NOT NULL,
-    UNIQUE (store_root, world_name)
-) STRICT;
+Offline CLI readers (`status` and `ps` when no daemon runs) call sync `StateDb::open_reader` (`SqliteConnectOptions::read_only(true)`, `busy_timeout(5s)`, returning empty when `state.db` is absent) and never mutate or converge.
 
-CREATE UNIQUE INDEX idx_worlds_active_name ON worlds(world_name)
-    WHERE state IN ('creating', 'booting', 'live', 'stopping', 'deleting');
+Entities live in `ledger/entity/{mod,worlds,forks}.rs` (`WorldState` as `DeriveActiveEnum`) and migrations in `ledger/migrations/{mod,m0001_create_ledger}.rs`:
 
-CREATE TABLE forks (
-    world_id      INTEGER PRIMARY KEY REFERENCES worlds(id) ON DELETE CASCADE,
-    root_id       INTEGER NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
-    parent_id     INTEGER NOT NULL REFERENCES worlds(id) ON DELETE RESTRICT,
-    name          TEXT NOT NULL,
-    branch        TEXT NOT NULL DEFAULT '',
-    created_at_ms INTEGER NOT NULL,
-    UNIQUE (root_id, name)
-) STRICT;
-
-CREATE INDEX idx_forks_root   ON forks(root_id);
-CREATE INDEX idx_forks_parent ON forks(parent_id);
-```
+| Entity (`DeriveEntityModel`) | Typed Columns & `sea_query` Constraints (`m0001_create_ledger`) |
+| :--- | :--- |
+| `worlds::Model` (`table_name = "worlds"`) | `id: i64` PK, `checkout_path: String` `UNIQUE`, `world_name: String`, `store_root: String`, `state: WorldState` (`Creating \| Booting \| Live \| Stopping \| Stopped \| Deleting \| Broken`, guarded by `Table::check(is_in)`), `supervisor_pid: Option<i64>`, `pods_dir: Option<String>`, `started_at_ms: Option<i64>`, `problem: Option<String>`, `updated_at_ms: i64`; `UNIQUE(store_root, world_name)` + partial unique `idx_worlds_active_name` (`Index::and_where` on `Creating..=Deleting`). |
+| `forks::Model` (`table_name = "forks"`) | `world_id: i64` PK (`FK worlds.id ON DELETE CASCADE`), `root_id: i64` (`FK worlds.id ON DELETE CASCADE`, `idx_forks_root`), `parent_id: i64` (`FK worlds.id ON DELETE RESTRICT`, `idx_forks_parent`), `name: String`, `branch: String` (default `""`), `created_at_ms: i64`; `UNIQUE(root_id, name)`. |
 
 A root takes `<basename>` when free on `store_root`, else `<basename[..58]>-<4hex(sha256(checkout_path))>` (`world_name <= 63` bytes and `control.sock < 108` bytes enforced upfront); a duplicate active name fails closed with `next: slipfork down <world_name>`.
 
-Every deletion runs through `delete_world_row`, splicing child `forks.parent_id` rows to the deleted row's parent inside `BEGIN IMMEDIATE` before `DELETE FROM worlds`.
+Every deletion runs through `delete_world_row` inside one `TransactionTrait::begin` transaction on the single-connection writer pool, splicing child `forks.parent_id` rows to the deleted row's parent before deleting the `worlds` model.
 
-- **Process crash mid-transaction:** Every mutation uses `BEGIN IMMEDIATE` with zero locks held across Btrfs ioctls, `CHECKPOINT`, or `git`. Uncommitted `-wal` frames lack a commit marker and are ignored on the next open.
-- **Machine crash or power loss:** `WAL` + `synchronous = FULL` (`fdatasync` on commit, `~0.3–1.2ms`) + Btrfs CoW checksums ensure committed rows never vanish; startup convergence (§7.4) settles any pre-crash `creating` or `deleting` row.
+- **Forward-only `Migrator::up` (never auto-wipe):** `m0001_create_ledger` creates `worlds`/`forks` and later changes add numbered `MigrationTrait` files (`up` only; `down` migrations are not part of the shipped flow, and Slipfork **never** deletes `state.db` automatically).
+- **Downgrade & pending-migration refusal:** `StateDb` checks `seaql_migrations` against `Migrator::migrations()` before running; unknown newer versions fail closed with `next: upgrade slipfork`, and `open_reader` refuses pending migrations with `next: slipfork up`.
+- **Convergence vs DDL:** Data divergence (missing checkouts, leases, or untracked forks) is settled by `plan_converge` (§7.4), never by resetting schema; if a future migration cannot represent old rows, its `up` deletes only those rows and logs one stderr line.
+- **Manual recovery (last resort, never a code path):** Stop the daemon and run `rm "$XDG_STATE_HOME/slipfork/state.db"`; the next start creates a fresh schema via `Migrator::up` and re-derives stopped worlds from disk and snapshots.
+- **Process crash mid-transaction:** Mutations hold zero DB transactions across Btrfs ioctls, `CHECKPOINT`, or `git`, so uncommitted `-wal` frames lack a commit marker and are ignored on `SIGKILL`.
+- **Machine crash or power loss:** `WAL` + `synchronous(Full)` (`fdatasync` on commit, `~0.3–1.2ms`) + Btrfs CoW checksums preserve every committed row across power loss, and startup convergence settles `Creating`/`Deleting` rows.
 
 ### 7.3 `ForkLedger`, flat `<root>/.forks/<name>` storage & lineage
 
@@ -565,7 +540,7 @@ Every runtime question has **one** canonical owner after §6 slice 4 and §7 lan
 
 | # | Crate · files (`<= 500` LOC each) | Depends | Proof |
 | :--- | :--- | :--- | :--- |
-| 1 | `Cargo.toml` (`rusqlite` `bundled`) + `slipfork-world` `ledger/{mod,db,migrate,model,resolve}.rs` | §6.7 #4 | Real-disk `/var/tmp` WAL suite: `BEGIN IMMEDIATE` + concurrent read-only readers, rollback on drop, `user_version` refusal, `delete_world_row` parent splice, lineage & resolution. |
+| 1 | `Cargo.toml` (`sea-orm`, `sea-orm-migration`) + `slipfork-world` `ledger/{mod,db,resolve}.rs`, `ledger/entity/{mod,worlds,forks}.rs`, `ledger/migrations/{mod,m0001_create_ledger}.rs` | §6.7 #4 | Real-disk `/var/tmp` WAL suite: `Migrator::up`, concurrent read-only `open_reader`, unknown/pending migration fail-closed refusal, rollback on drop, `delete_world_row` splice, lineage & resolution. |
 | 2 | `slipfork-world` `ledger/converge.rs`, `engine.rs`, `layout.rs`: flat `<root>/.forks/<name>` + `<name>--<root>` (deleting nested id compounding), `.forks` checkout-free invariant, pure `plan_converge` | 1 | Unit: `plan_converge` state matrix. Real-Btrfs lab: 3-deep fork (`salut ← bonjour ← test1`) lands flat with zero `.forks` inside checkouts and length bounds enforced. |
 | 3 | `slipfork` `daemon/lifecycle/{converge,core,fork,down,ps,plan}.rs` + `daemon/mod.rs`: wire `ForkLedger` + `ConvergeExecutor`, `worlds.json` import + unlink, single-plan `drop`; delete `daemon/registry.rs`, `WorldState`, `PrepFrame::fixed`, `fork_checkouts`, `world_id_for_project` | 2 | Lab journey: `drop` emits one `plan` frame (`[1/N]..[N/N]`), `SIGKILL` mid-`fork` leaves zero ghosts on next `ps`, and `rm -rf .forks/<name>` reaps live pods immediately. |
 | 4 | `slipfork` `status/{tree,rows,model}.rs`, `world/target.rs`, `commands/mod.rs` + `specs/02-cli-ux.md` (§3 `ps`/`status` lineage samples, §7 `drop` `plan`-frame & `--json` stream) + `TESTING_PLAN.md`: `← parent ← root` column, offline `StateDb::open_reader`, unified `Targets` | 3 | Full live Btrfs VM journey below (`tools/do_vm.py test`), zero ghosts remaining. |
@@ -578,7 +553,7 @@ Live Btrfs VM acceptance journey (Slice 4):
 
 ### 7.6 Operational risks & latency budget
 
-- **Existing-store upgrades:** `StateDb::open_writer` imports legacy `worlds.json` inside `BEGIN IMMEDIATE` and unlinks it after `COMMIT`; first `converge` strips pre-upgrade `ino == 2` `.forks` stubs and legacy `<fork>--<parent>` leftovers on drop.
-- **SQLite WAL on Btrfs:** `state.db` sits in `<state_dir>` (outside snapshots) with normal Btrfs CoW kept on (`FS_NOCOW_FL` disables CRC32C checksums); `wal_autocheckpoint = 1000` plus `wal_checkpoint(TRUNCATE)` on shutdown bounds `-wal` below `2 MiB`.
-- **Daemon-vs-CLI binary skew:** `DaemonIdentity` replaces a stale daemon on upgrade before RPC dispatch, running `StateDb::migrate` once under `slipfork-daemon.lock`. Offline read-only CLIs fail closed on `user_version > SCHEMA_VERSION` with `next: upgrade slipfork`.
-- **`fork` latency (`< 2ms` ledger cost):** `fork` commits two tiny `WAL` + `synchronous = FULL` transactions (`creating` before `CHECKPOINT`, `live` on `ready`, `~0.5–2ms` total on SSD/NVMe), holding zero SQLite locks across Btrfs ioctls, `CHECKPOINT`, or `git`.
+- **Existing-store upgrades:** `StateDb::open_writer` runs `Migrator::up`, imports legacy `worlds.json` in one transaction, and unlinks `worlds.json` after commit; first `converge` strips pre-upgrade `ino == 2` `.forks` stubs and legacy `<fork>--<parent>` leftovers on drop.
+- **SQLite WAL on Btrfs:** `state.db` sits in `<state_dir>` (outside snapshots) with normal Btrfs CoW kept on (`FS_NOCOW_FL` disables CRC32C checksums); `wal_autocheckpoint = 1000` plus `PRAGMA wal_checkpoint(TRUNCATE)` on daemon shutdown bounds `-wal` below `2 MiB`.
+- **Daemon-vs-CLI binary skew:** `DaemonIdentity` replaces a stale daemon on upgrade before RPC dispatch, running `Migrator::up` once under `slipfork-daemon.lock`; downgraded binaries seeing unknown `seaql_migrations` fail closed with `next: upgrade slipfork`.
+- **`fork` latency (`< 2ms` ledger cost):** `fork` commits two tiny `WAL` + `synchronous(Full)` SeaORM transactions (`creating` before `CHECKPOINT`, `live` on `ready`, `~0.5–2ms` total on SSD/NVMe), holding zero DB locks across Btrfs ioctls, `CHECKPOINT`, or `git`.
