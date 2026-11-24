@@ -191,6 +191,40 @@ fn dockerfile_variables_keep_unknown_refs_and_bogus_instructions_error() {
     );
 }
 
+/// `COPY --chmod` parses both `755` and `0o755` to the same octal mode, renders without the `0o`
+/// prefix, and refuses a non-octal value with a line-decorated `Dockerfile` error.
+#[test]
+fn copy_chmod_parses_octal_and_renders_canonically() {
+    for source in [
+        "FROM base\nCOPY --chmod=755 src /dst\n",
+        "FROM base\nCOPY --chmod=0o755 src /dst\n",
+    ] {
+        let stages = DockerfileParser::parse(source).expect("a valid octal `--chmod`");
+        let parsed = &stages[0].instructions[0];
+        let Instruction::Copy(spec) = &parsed.instruction else {
+            panic!("expected COPY, saw {:?}", parsed.instruction);
+        };
+        assert_eq!(spec.mode, Some(0o755), "{source}");
+        assert_eq!(
+            parsed.instruction.render(),
+            "COPY --chmod=755 src /dst",
+            "render prints the bare octal mode"
+        );
+    }
+
+    let error = DockerfileParser::parse("FROM base\nCOPY --chmod=999 src /dst\n")
+        .expect_err("`999` is not octal");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("Dockerfile:2:"),
+        "the line is named: {rendered}"
+    );
+    assert!(
+        rendered.contains("--chmod=999"),
+        "the flag is named: {rendered}"
+    );
+}
+
 /// A missing `crun` is a typed failure before any build step touches a subvolume.
 #[test]
 fn a_missing_crun_fails_typed_before_any_step_runs() {

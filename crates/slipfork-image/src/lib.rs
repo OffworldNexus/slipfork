@@ -64,6 +64,7 @@ mod digest;
 mod dockerfile;
 mod error;
 mod fetch;
+mod identity;
 mod ignore;
 mod layout;
 mod manifest;

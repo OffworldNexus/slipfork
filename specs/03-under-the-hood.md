@@ -151,3 +151,34 @@ Slipfork has **five explicit composition roots** and **zero** ambient OS/env pro
 The canonical port set is strictly `WorldEngine`, `BaseImageBuilder`, `SecretVault`, `OsppClient`, and `VcsWorkspace` — zero single-impl mock traits sit beside them.
 
 `COPY --from` accepts a stage index, a stage `AS` name, or an OCI image reference; the composition root pulls the latter into a sealed rootfs first, then hands every pulled rootfs to the network-free native builder.
+
+**Build identity: single-owner images.**
+
+Every build `RUN` is its own `crun` container with exactly **one** uid/gid mapping (`size: 1`): the step's effective container identity maps to the invoking host uid/gid. Default steps run as container root (`0:0`), just like a Dockerfile stage without `USER` — root inside the user namespace holds no host-root power, and every file written into the build rootfs is owned by the invoking user on the host.
+
+`USER name` / `USER name:group` resolve against the image's own `/etc/passwd` and `/etc/group` (numeric ids accepted), and an undefined name fails the build closed instead of running as the wrong user. Earlier `RUN useradd …` steps stay visible because the image's real `/etc/passwd` is never shadowed by a synthetic one.
+
+Root steps get Docker's default capability sets inside the user namespace, non-root steps get none, and `noNewPrivileges` is always on. Seccomp turns `chown/fchown/lchown/fchownat` into successful no-ops, so `dpkg`'s `root:shadow` chowns never fail.
+
+`RUN` receives a read-only `APT_CONFIG` (`APT::Sandbox::User "root";`) so `apt-get` skips its sandbox user, which single mappings (forcing `setgroups=deny`) cannot support; it is never written into image metadata.
+
+`COPY`/`ADD --chown` accepts names or numbers resolved against the destination image (fail closed on unknown users), but every copied entry is written owned by the invoking uid; `--chmod` sets the mode. The build context is never mounted, so `RUN` writes only to the rootfs and explicit cache mounts.
+
+Runtime pods are unchanged: they keep the identity `$UID` baseline.
+
+!!! info "Why one mapping"
+    A single uid mapping keeps ownership deterministic and clone-cheap: the invoking host uid owns the whole rootfs, so `fork` snapshots copy ids verbatim and need no translation pass.
+
+```mermaid
+flowchart LR
+  R["Dockerfile RUN"] --> U["resolve USER from rootfs /etc/passwd"]
+  U --> C["crun userns: container uid -> host uid"]
+```
+
+| Known limit | Now |
+| :--- | :--- |
+| `chown` changes ownership | No-op (single mapping; files stay invoking-uid-owned). |
+| `ls -n` / `stat` inside a step | Every path shows the step's single uid. |
+| A `USER app` step | Sees image files as `app` (permissive, not Docker's per-file ownership). |
+| Supplementary groups | None. |
+| Subordinate uids / idmapped mounts | Not shipped: every build-store path is single-uid (invoking-uid) owned; a per-file ownership model is a later design. |

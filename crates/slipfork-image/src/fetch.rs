@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use percent_encoding::percent_decode_str;
 
-use crate::dockerfile::Owner;
+use crate::dockerfile::CopyOptions;
 use crate::error::{Error, Result};
 use crate::registry;
 
@@ -89,13 +89,14 @@ pub(crate) fn remote_name(url: &str) -> Result<String> {
 }
 
 /// Streams `url` into `target`, a path inside the writable step rootfs, then renames it into place
-/// with mode `0644` and the step `owner`. A temp file never survives a failed transfer.
-pub(crate) fn fetch(url: &str, target: &Path, owner: Owner) -> Result<()> {
-    fetch_with_limit(url, target, owner, MAX_URL_BYTES)
+/// with the step's owner and `--chmod` mode (default `0644`). A temp file never survives a failed
+/// transfer.
+pub(crate) fn fetch(url: &str, target: &Path, options: CopyOptions) -> Result<()> {
+    fetch_with_limit(url, target, options, MAX_URL_BYTES)
 }
 
 /// `fetch` with an injected cap, so a test can trip it with a handful of bytes.
-fn fetch_with_limit(url: &str, target: &Path, owner: Owner, max: u64) -> Result<()> {
+fn fetch_with_limit(url: &str, target: &Path, options: CopyOptions, max: u64) -> Result<()> {
     let parent = target.parent().unwrap_or(Path::new("/"));
     fs::create_dir_all(parent).map_err(|source| Error::io("create", parent, source))?;
     let temp = open_temp(parent, target)?;
@@ -107,8 +108,11 @@ fn fetch_with_limit(url: &str, target: &Path, owner: Owner, max: u64) -> Result<
         let _ = fs::remove_file(&temp);
         return Err(Error::io("rename", target, source));
     }
-    chown(target, Some(owner.uid), Some(owner.gid))
-        .map_err(|source| Error::io("chown", target, source))
+    chown(target, Some(options.owner.uid), Some(options.owner.gid))
+        .map_err(|source| Error::io("chown", target, source))?;
+    let mode = options.mode.unwrap_or(0o644) & 0o7777;
+    fs::set_permissions(target, fs::Permissions::from_mode(mode))
+        .map_err(|source| Error::io("chmod", target, source))
 }
 
 /// Creates a collision-safe hidden temp file beside `target`.
@@ -228,10 +232,10 @@ mod tests {
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use crate::dockerfile::Owner;
+    use crate::dockerfile::{CopyOptions, Owner};
     use crate::error::Error;
 
-    use super::{fetch_with_limit, remote_name, scheme};
+    use super::{fetch, fetch_with_limit, remote_name, scheme};
 
     fn lab(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -319,6 +323,52 @@ mod tests {
         }
     }
 
+    /// A downloaded file takes the step's `--chmod` mode and stays `0644` without one.
+    #[test]
+    fn a_downloaded_file_takes_the_step_mode_and_defaults_to_0644() {
+        const BODY: &[u8] = b"#!/bin/sh\necho mode\n";
+        let rootfs = lab("mode");
+        let owner = owner(&rootfs);
+
+        let (addr, server) = serve_once(200, BODY);
+        let script = rootfs.join("opt/bin/install.sh");
+        fetch(
+            &format!("http://{addr}/install.sh"),
+            &script,
+            CopyOptions::new(owner, Some(0o755)),
+        )
+        .expect("a 200 response lands the payload");
+        server.join().expect("the loopback server exits");
+        assert_eq!(
+            fs::metadata(&script)
+                .expect("stat the chmodded payload")
+                .mode()
+                & 0o777,
+            0o755,
+            "`ADD --chmod=755` reaches the downloaded file"
+        );
+
+        let (addr, server) = serve_once(200, BODY);
+        let plain = rootfs.join("opt/data/payload.bin");
+        fetch(
+            &format!("http://{addr}/payload.bin"),
+            &plain,
+            CopyOptions::new(owner, None),
+        )
+        .expect("a default fetch lands the payload");
+        server.join().expect("the loopback server exits");
+        assert_eq!(
+            fs::metadata(&plain)
+                .expect("stat the default payload")
+                .mode()
+                & 0o777,
+            0o644,
+            "without `--chmod` a download stays 0644"
+        );
+
+        let _ = fs::remove_dir_all(&rootfs);
+    }
+
     /// Nine served bytes against an eight-byte cap: one-line `StepFailed`, no temp or target file.
     #[test]
     fn a_body_over_the_cap_fails_closed_and_leaves_no_temp_file() {
@@ -327,8 +377,13 @@ mod tests {
         let owner = owner(&rootfs);
         let target = rootfs.join("opt/data/payload.bin");
 
-        let error = fetch_with_limit(&format!("http://{addr}/payload.bin"), &target, owner, 8)
-            .expect_err("9 bytes must trip an 8-byte cap");
+        let error = fetch_with_limit(
+            &format!("http://{addr}/payload.bin"),
+            &target,
+            CopyOptions::new(owner, None),
+            8,
+        )
+        .expect_err("9 bytes must trip an 8-byte cap");
         server.join().expect("the loopback server exits");
 
         let rendered = error.to_string();

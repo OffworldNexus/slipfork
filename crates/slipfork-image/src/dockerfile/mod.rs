@@ -9,6 +9,7 @@ mod parse;
 mod variables;
 
 pub use config::ImageConfig;
+pub(crate) use instruction::CopyOptions;
 pub use instruction::{
     CacheMount, Command, CopySpec, Instruction, Owner, ParsedInstruction, Port, Protocol, RunSpec,
     Stage, StageBase,

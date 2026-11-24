@@ -346,7 +346,8 @@ fn state_key(
 fn expand_spec(spec: &CopySpec, variables: &Variables) -> CopySpec {
     CopySpec {
         from: spec.from.clone(),
-        chown: spec.chown,
+        chown: spec.chown.clone(),
+        mode: spec.mode,
         sources: spec
             .sources
             .iter()
@@ -371,6 +372,15 @@ fn at_line(err: Error, line: usize, instruction: &Instruction) -> Error {
     let command = instruction.command_text();
     match err {
         Error::Dockerfile { .. } => err,
+        unknown @ Error::UnknownAccount { .. } => Error::StepFailed {
+            line,
+            phase,
+            instruction: command.into(),
+            message: unknown.cause(),
+            exit_code: None,
+            runtime: None,
+            next: unknown.remedy().unwrap_or_default(),
+        },
         Error::StepFailed {
             message,
             exit_code,

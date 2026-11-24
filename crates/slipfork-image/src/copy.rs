@@ -2,11 +2,11 @@
 
 use std::fs;
 use std::io::{self, Read};
-use std::os::unix::fs::{chown, lchown, symlink};
+use std::os::unix::fs::{PermissionsExt, chown, lchown, symlink};
 use std::path::{Path, PathBuf};
 
 use crate::context::{BuildContext, ContextEntry};
-use crate::dockerfile::Owner;
+use crate::dockerfile::CopyOptions;
 use crate::error::{Error, Result};
 use crate::fetch;
 use crate::ignore::SourcePattern;
@@ -60,7 +60,7 @@ pub(crate) fn copy_context(
     sources: &[String],
     dest: &str,
     destination: Destination<'_>,
-    owner: Owner,
+    options: CopyOptions,
 ) -> Result<()> {
     for source in sources {
         if let Some(scheme) = fetch::scheme(source) {
@@ -77,6 +77,7 @@ pub(crate) fn copy_context(
         is_dir(context.entries(), single) || single == "."
     };
 
+    let mut directories = Vec::new();
     for source in &sources {
         let matches = select(context.entries(), source)?;
         if matches.is_empty() {
@@ -98,8 +99,14 @@ pub(crate) fn copy_context(
                     .unwrap_or(&entry.relative);
                 dest_abs.join(stripped)
             };
-            copy_entry(&entry.absolute, &target, entry.is_dir, owner)?;
+            copy_entry(&entry.absolute, &target, entry.is_dir, options)?;
+            if entry.is_dir {
+                directories.push(target);
+            }
         }
+    }
+    for directory in directories.iter().rev() {
+        set_mode(directory, options.mode)?;
     }
     Ok(())
 }
@@ -110,7 +117,7 @@ pub(crate) fn copy_rootfs(
     sources: &[String],
     dest: &str,
     destination: Destination<'_>,
-    owner: Owner,
+    options: CopyOptions,
 ) -> Result<()> {
     let sources: Vec<String> = sources.iter().map(|source| normalize(source)).collect();
     let dest_abs = destination.resolve(dest)?;
@@ -118,6 +125,10 @@ pub(crate) fn copy_rootfs(
         let first = sources.first().map(String::as_str).unwrap_or("/");
         rooted(source_root, first).is_dir()
     };
+    let mut directories = Vec::new();
+    // An existing destination directory keeps its own mode; only directories this copy creates
+    // receive `--chmod`.
+    let dest_existed = dest_abs.exists();
     for source in &sources {
         let source_abs = rooted(source_root, source);
         let metadata = fs::symlink_metadata(&source_abs)
@@ -125,19 +136,29 @@ pub(crate) fn copy_rootfs(
         if metadata.is_dir() {
             let mut collected = Vec::new();
             walk(&source_abs, Path::new(""), &mut collected)?;
+            if !dest_existed {
+                directories.push(dest_abs.clone());
+            }
             for (relative, absolute, is_dir) in collected {
-                copy_entry(&absolute, &dest_abs.join(relative), is_dir, owner)?;
+                let target = dest_abs.join(&relative);
+                copy_entry(&absolute, &target, is_dir, options)?;
+                if is_dir {
+                    directories.push(target);
+                }
             }
         } else if dest_is_dir {
             copy_entry(
                 &source_abs,
                 &dest_abs.join(source_abs.file_name().unwrap_or_default()),
                 false,
-                owner,
+                options,
             )?;
         } else {
-            copy_entry(&source_abs, &dest_abs, false, owner)?;
+            copy_entry(&source_abs, &dest_abs, false, options)?;
         }
+    }
+    for directory in directories.iter().rev() {
+        set_mode(directory, options.mode)?;
     }
     Ok(())
 }
@@ -152,7 +173,7 @@ pub(crate) fn add_context(
     sources: &[String],
     dest: &str,
     destination: Destination<'_>,
-    owner: Owner,
+    options: CopyOptions,
 ) -> Result<()> {
     let mut plain = Vec::new();
     let mut urls = Vec::new();
@@ -175,14 +196,18 @@ pub(crate) fn add_context(
             && let Some(archive) = open_archive(&path)?
         {
             let dest_abs = destination.resolve(dest)?;
+            let created = !dest_abs.exists();
             fs::create_dir_all(&dest_abs)
                 .map_err(|source| Error::io("create", &dest_abs, source))?;
             let mut archive = tar::Archive::new(archive);
             archive
                 .unpack(&dest_abs)
                 .map_err(|source| Error::io("extract", &dest_abs, source))?;
-            chown(&dest_abs, Some(owner.uid), Some(owner.gid))
+            chown(&dest_abs, Some(options.owner.uid), Some(options.owner.gid))
                 .map_err(|source| Error::io("chown", &dest_abs, source))?;
+            // A destination directory that already existed keeps its mode; every entry the
+            // archive materialized still takes `--chmod`.
+            set_mode_tree(&dest_abs, options.mode, created)?;
         } else {
             plain.push(source.clone());
         }
@@ -196,7 +221,7 @@ pub(crate) fn add_context(
         } else {
             dest.to_owned()
         };
-        copy_context(context, &plain, &local_dest, destination, owner)?;
+        copy_context(context, &plain, &local_dest, destination, options)?;
     }
     if !urls.is_empty() {
         let dest_abs = destination.resolve(dest)?;
@@ -208,7 +233,7 @@ pub(crate) fn add_context(
             } else {
                 dest_abs.clone()
             };
-            fetch::fetch(url, &target, owner)?;
+            fetch::fetch(url, &target, options)?;
         }
     }
     Ok(())
@@ -240,7 +265,8 @@ fn is_dir(entries: &[ContextEntry], source: &str) -> bool {
         .any(|entry| entry.relative == Path::new(source) && entry.is_dir)
 }
 
-fn copy_entry(source: &Path, dest: &Path, is_dir: bool, owner: Owner) -> Result<()> {
+fn copy_entry(source: &Path, dest: &Path, is_dir: bool, options: CopyOptions) -> Result<()> {
+    let mut symlink_entry = false;
     if is_dir {
         fs::create_dir_all(dest).map_err(|source| Error::io("create", dest, source))?;
     } else {
@@ -254,16 +280,56 @@ fn copy_entry(source: &Path, dest: &Path, is_dir: bool, owner: Owner) -> Result<
                 .map_err(|source_err| Error::io("readlink", source, source_err))?;
             let _ = fs::remove_file(dest);
             symlink(&target, dest).map_err(|source_err| Error::io("symlink", dest, source_err))?;
+            symlink_entry = true;
         } else {
             fs::copy(source, dest).map_err(|source_err| Error::io("copy", dest, source_err))?;
         }
     }
+    let owner = options.owner;
     let result = if is_dir {
         chown(dest, Some(owner.uid), Some(owner.gid))
     } else {
         lchown(dest, Some(owner.uid), Some(owner.gid))
     };
-    result.map_err(|source| Error::io("chown", dest, source))
+    result.map_err(|source| Error::io("chown", dest, source))?;
+    if symlink_entry || is_dir {
+        // Directory modes are applied by the caller once their children are written, so a
+        // `--chmod=555` directory never blocks its own contents.
+        return Ok(());
+    }
+    set_mode(dest, options.mode)
+}
+
+/// Applies a `--chmod` mode to one written entry; `None` leaves the copied mode alone.
+fn set_mode(path: &Path, mode: Option<u32>) -> Result<()> {
+    if let Some(mode) = mode {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode & 0o7777))
+            .map_err(|source| Error::io("chmod", path, source))?;
+    }
+    Ok(())
+}
+
+/// Applies `--chmod` to every entry an archive extraction materialized, never through a symlink.
+///
+/// `root_is_new` is false when the destination directory predated the extraction, which keeps that
+/// directory's own mode; its extracted children still take `--chmod`.
+fn set_mode_tree(root: &Path, mode: Option<u32>, root_is_new: bool) -> Result<()> {
+    if mode.is_none() {
+        return Ok(());
+    }
+    if root_is_new {
+        set_mode(root, mode)?;
+    }
+    let mut collected = Vec::new();
+    walk(root, Path::new(""), &mut collected)?;
+    for (_, absolute, _) in collected {
+        let metadata = fs::symlink_metadata(&absolute)
+            .map_err(|source| Error::io("inspect", &absolute, source))?;
+        if !metadata.file_type().is_symlink() {
+            set_mode(&absolute, mode)?;
+        }
+    }
+    Ok(())
 }
 
 fn walk(root: &Path, relative: &Path, out: &mut Vec<(PathBuf, PathBuf, bool)>) -> Result<()> {
@@ -345,15 +411,17 @@ fn step_next(message: String, next: impl Into<String>) -> Error {
 mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
     use std::path::PathBuf;
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use crate::dockerfile::ImageConfig;
+    use crate::dockerfile::{CopyOptions, ImageConfig, Owner};
     use crate::error::Error;
 
-    use super::{BuildContext, Destination, Owner, add_context, copy_context, copy_rootfs, fs};
+    use super::{
+        BuildContext, Destination, add_context, copy_context, copy_rootfs, fs, set_mode_tree,
+    };
 
     fn lab(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -407,7 +475,7 @@ mod tests {
             &["package.json".to_owned()],
             "./",
             Destination::new(&rootfs, &config.workdir),
-            owner,
+            CopyOptions::new(owner, None),
         )
         .expect("COPY package.json ./");
         copy_context(
@@ -415,7 +483,7 @@ mod tests {
             &["src".to_owned()],
             "./src",
             Destination::new(&rootfs, &config.workdir),
-            owner,
+            CopyOptions::new(owner, None),
         )
         .expect("COPY src ./src");
         copy_context(
@@ -423,7 +491,7 @@ mod tests {
             &["README.md".to_owned()],
             "docs/",
             Destination::new(&rootfs, &config.workdir),
-            owner,
+            CopyOptions::new(owner, None),
         )
         .expect("a later COPY still uses /app");
         add_context(
@@ -431,7 +499,7 @@ mod tests {
             &["package.json".to_owned()],
             "added/",
             Destination::new(&rootfs, &config.workdir),
-            owner,
+            CopyOptions::new(owner, None),
         )
         .expect("ADD follows WORKDIR too");
 
@@ -482,7 +550,7 @@ mod tests {
             &["pkg.txt".to_owned()],
             "./",
             Destination::new(&rootfs, &config.workdir),
-            owner,
+            CopyOptions::new(owner, None),
         )
         .expect("COPY --from file");
         copy_rootfs(
@@ -490,7 +558,7 @@ mod tests {
             &["dir".to_owned()],
             "./vendor",
             Destination::new(&rootfs, &config.workdir),
-            owner,
+            CopyOptions::new(owner, None),
         )
         .expect("COPY --from directory");
 
@@ -521,7 +589,7 @@ mod tests {
             &["app.conf".to_owned()],
             "//etc//app/app.conf",
             Destination::new(&rootfs, &config.workdir),
-            owner,
+            CopyOptions::new(owner, None),
         )
         .expect("absolute COPY");
 
@@ -547,8 +615,14 @@ mod tests {
         let destination = Destination::new(&rootfs, "/app");
 
         for dest in ["../escape", "/etc/../escape", "./../../escape"] {
-            let error = copy_context(&context, &["app.conf".to_owned()], dest, destination, owner)
-                .expect_err("a `..` segment must fail closed");
+            let error = copy_context(
+                &context,
+                &["app.conf".to_owned()],
+                dest,
+                destination,
+                CopyOptions::new(owner, None),
+            )
+            .expect_err("a `..` segment must fail closed");
             assert!(
                 error.to_string().contains("escapes the image root"),
                 "{dest}: {error}"
@@ -558,6 +632,83 @@ mod tests {
 
         let _ = fs::remove_dir_all(&context_root);
         let _ = fs::remove_dir_all(&rootfs);
+    }
+
+    /// `--chmod` reaches every written entry — files and directories — and a read-only directory
+    /// still receives its children before the mode lands.
+    #[test]
+    fn copy_chmod_applies_to_every_written_entry() {
+        let (context_root, context) =
+            context(&[("bin/run.sh", "#!/bin/sh\n"), ("bin/nested/x.txt", "x\n")]);
+        let rootfs = lab("rootfs-chmod");
+        let options = CopyOptions::new(owner(&rootfs), Some(0o555));
+
+        copy_context(
+            &context,
+            &["bin".to_owned()],
+            "/opt/",
+            Destination::new(&rootfs, "/"),
+            options,
+        )
+        .expect("COPY --chmod=555 bin /opt/");
+
+        for relative in ["opt", "opt/nested", "opt/run.sh"] {
+            assert_eq!(
+                fs::metadata(rootfs.join(relative))
+                    .expect("stat a written entry")
+                    .mode()
+                    & 0o777,
+                0o555,
+                "`{relative}` carries `--chmod`"
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(rootfs.join("opt/nested/x.txt")).expect("the nested file landed"),
+            "x\n"
+        );
+
+        let _ = fs::remove_dir_all(&context_root);
+        let _ = fs::remove_dir_all(&rootfs);
+    }
+
+    /// An extracted tree takes `--chmod` on its root and children, but a symlink is never followed.
+    #[test]
+    fn archive_chmod_tree_applies_to_entries_and_never_follows_a_symlink() {
+        let root = lab("rootfs-chmod-tree");
+        let tree = root.join("extracted");
+        fs::create_dir_all(tree.join("nested")).expect("create the extracted tree");
+        fs::write(tree.join("run.sh"), "#!/bin/sh\n").expect("write an extracted file");
+        fs::write(tree.join("nested/x.txt"), "x\n").expect("write a nested extracted file");
+        let outside = root.join("outside.txt");
+        fs::write(&outside, "keep\n").expect("write the symlink target");
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o600))
+            .expect("set the symlink target mode");
+        symlink(&outside, tree.join("link")).expect("plant a symlink inside the tree");
+
+        set_mode_tree(&tree, Some(0o750), true).expect("apply --chmod to the extracted tree");
+
+        for relative in ["", "nested", "run.sh", "nested/x.txt"] {
+            assert_eq!(
+                fs::metadata(tree.join(relative))
+                    .expect("stat an extracted entry")
+                    .mode()
+                    & 0o7777,
+                0o750,
+                "`{relative}` carries `--chmod`"
+            );
+        }
+        let link = fs::symlink_metadata(tree.join("link")).expect("stat the symlink");
+        assert!(link.file_type().is_symlink(), "the symlink stays a symlink");
+        assert_eq!(
+            fs::metadata(&outside)
+                .expect("stat the symlink target")
+                .mode()
+                & 0o777,
+            0o600,
+            "`--chmod` must never follow a symlink out of the tree"
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// Serves exactly one HTTP/1.1 response on a loopback ephemeral port, then closes the socket.
@@ -606,7 +757,7 @@ mod tests {
             &[format!("http://{addr}/install.sh")],
             "/opt/data/",
             Destination::new(&rootfs, "/"),
-            owner,
+            CopyOptions::new(owner, None),
         )
         .expect("ADD http://127.0.0.1/install.sh /opt/data/");
         server.join().expect("the loopback server exits");
@@ -637,7 +788,7 @@ mod tests {
             &[format!("http://{addr}/download?raw=1")],
             "/usr/local/bin/install.sh",
             Destination::new(&rootfs, "/"),
-            owner,
+            CopyOptions::new(owner, None),
         )
         .expect("ADD url to an exact file path");
         server.join().expect("the loopback server exits");
@@ -670,7 +821,7 @@ mod tests {
             &[format!("http://{addr}/install.sh")],
             "/opt/data/",
             Destination::new(&rootfs, "/"),
-            owner,
+            CopyOptions::new(owner, None),
         )
         .expect_err("a 404 must fail closed");
         server.join().expect("the loopback server exits");
@@ -701,7 +852,7 @@ mod tests {
             &["http://127.0.0.1:9/x".to_owned()],
             "/opt/",
             destination,
-            owner,
+            CopyOptions::new(owner, None),
         )
         .expect_err("COPY must never fetch a URL");
         assert!(
@@ -714,7 +865,7 @@ mod tests {
             &["ftp://127.0.0.1:9/x".to_owned()],
             "/opt/",
             destination,
-            owner,
+            CopyOptions::new(owner, None),
         )
         .expect_err("only http(s) is fetchable");
         let rendered = add_error.to_string();
@@ -743,7 +894,7 @@ mod tests {
             &["note.txt".to_owned(), format!("http://{addr}/install.sh")],
             "/opt",
             Destination::new(&rootfs, "/"),
-            owner,
+            CopyOptions::new(owner, None),
         )
         .expect("ADD a context file and a URL into one directory");
         server.join().expect("the loopback server exits");
@@ -778,7 +929,7 @@ mod tests {
             &[format!("http://{addr}/bundle.tar.gz")],
             "/opt/data/",
             Destination::new(&rootfs, "/"),
-            owner,
+            CopyOptions::new(owner, None),
         )
         .expect("ADD a gzipped url payload");
         server.join().expect("the loopback server exits");

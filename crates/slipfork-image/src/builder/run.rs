@@ -10,8 +10,11 @@ use super::{
 };
 use crate::context::BuildContext;
 use crate::copy;
-use crate::dockerfile::{CopySpec, Instruction, ParsedInstruction, RunSpec, Variables};
+use crate::dockerfile::{
+    CopyOptions, CopySpec, Instruction, ParsedInstruction, RunSpec, Variables,
+};
 use crate::error::{Error, Result};
+use crate::identity::Identity;
 use crate::runtime::{CrunStepRuntime, StepLog};
 use crate::step_log::StepPlace;
 
@@ -235,13 +238,19 @@ impl<'a, 's, 'l> BuildRun<'a, 's, 'l> {
         parsed: &ParsedInstruction,
         spec: &CopySpec,
     ) -> Result<bool> {
-        let (expanded, is_add, owner) = {
+        let (expanded, is_add) = {
             let variables = Variables::new(&self.request.args, &state.config.env);
             let expanded = expand_spec(spec, &variables);
-            let owner = expanded.chown.unwrap_or_else(|| self.builder.host.owner());
             let is_add = matches!(&parsed.instruction, Instruction::Add(_));
-            (expanded, is_add, owner)
+            (expanded, is_add)
         };
+        // `--chown` names resolve against the destination stage's own rootfs, exactly as Docker
+        // resolves them. A single-mapping build can only represent the invoking uid, so the write
+        // is always host-owned and only an unknown account can fail the step.
+        if let Some(account) = expanded.chown.as_deref() {
+            Identity::resolve(&state.rootfs, Some(account))?;
+        }
+        let options = CopyOptions::new(self.builder.host.owner(), expanded.mode);
         let instruction = if is_add {
             Instruction::Add(expanded.clone())
         } else {
@@ -282,21 +291,21 @@ impl<'a, 's, 'l> BuildRun<'a, 's, 'l> {
                         &expanded.sources,
                         &expanded.dest,
                         destination,
-                        owner,
+                        options,
                     ),
                     None if is_add => copy::add_context(
                         context,
                         &expanded.sources,
                         &expanded.dest,
                         destination,
-                        owner,
+                        options,
                     ),
                     None => copy::copy_context(
                         context,
                         &expanded.sources,
                         &expanded.dest,
                         destination,
-                        owner,
+                        options,
                     ),
                 }
             },

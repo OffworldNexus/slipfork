@@ -80,6 +80,13 @@ pub enum Error {
     },
     /// A `--from` stage or `stage <name>` target does not exist.
     UnknownStage { name: String },
+    /// A `USER`/`COPY --chown` named an account the step's rootfs never created.
+    UnknownAccount {
+        /// The account name exactly as the `Dockerfile` wrote it.
+        account: String,
+        /// The image file the lookup searched (`passwd` or `group`).
+        file: &'static str,
+    },
     /// A `COPY --from=<image>` reference has no pulled rootfs to read.
     ExternalImageMissing { reference: String },
     /// `crun` is not installed, so no `RUN` instruction can execute.
@@ -166,6 +173,9 @@ impl Error {
             Self::Dockerfile { line, message, .. } => format!("Dockerfile:{line}: {message}"),
             Self::StepFailed { message, .. } => message.clone(),
             Self::UnknownStage { name } => format!("no build stage named `{name}`"),
+            Self::UnknownAccount { account, file } => {
+                format!("the image has no account `{account}` in `/etc/{file}`")
+            }
             Self::ExternalImageMissing { reference } => {
                 format!("no rootfs was pulled for `--from={reference}`")
             }
@@ -200,6 +210,7 @@ impl Error {
             Self::UnknownStage { name } => format!(
                 "add `FROM <image> AS {name}` above this stage or fix the `--from=` argument"
             ),
+            Self::UnknownAccount { .. } => "create it in an earlier `RUN` (e.g. `useradd`) or use a numeric uid:gid".to_owned(),
             Self::ExternalImageMissing { .. } => "declare the stage with `FROM <image> AS <name>` above this `COPY`, or fix the `--from=` reference".to_owned(),
             Self::CrunMissing { .. } => "install crun from your distribution (`apt install crun`, `dnf install crun`, `pacman -S crun`) and retry".to_owned(),
             Self::Interrupted { .. } => "retry `slipfork up`".to_owned(),

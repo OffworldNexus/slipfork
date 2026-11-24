@@ -10,10 +10,45 @@ use std::thread;
 
 use crate::dockerfile::{CacheMount, Command as StepCommand, ImageConfig, Owner, RunSpec};
 use crate::error::{Error, Result};
+use crate::identity::Identity;
 pub(crate) use crate::step_log::StepLog;
 use crate::step_log::exit_detail;
 
 const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+/// `apt` refuses to drop privileges it never had inside a single-mapping user namespace.
+const APT_CONF: &str = "APT::Sandbox::User \"root\";\n";
+
+/// Where the per-step `apt.conf` is bound: a tmpfs-only path, never the image's own `/dev`.
+const APT_CONF_TARGET: &str = "/dev/slipfork-apt.conf";
+
+/// Device nodes a rootless `mknod` cannot create; the host's own are bound read-only instead.
+const DEVICES: [&str; 6] = [
+    "/dev/null",
+    "/dev/zero",
+    "/dev/full",
+    "/dev/random",
+    "/dev/urandom",
+    "/dev/tty",
+];
+
+/// Docker's default capability set for a step that runs as container root.
+const ROOT_CAPABILITIES: [&str; 14] = [
+    "CAP_CHOWN",
+    "CAP_DAC_OVERRIDE",
+    "CAP_FOWNER",
+    "CAP_FSETID",
+    "CAP_KILL",
+    "CAP_SETGID",
+    "CAP_SETUID",
+    "CAP_SETPCAP",
+    "CAP_NET_BIND_SERVICE",
+    "CAP_NET_RAW",
+    "CAP_SYS_CHROOT",
+    "CAP_MKNOD",
+    "CAP_AUDIT_WRITE",
+    "CAP_SETFCAP",
+];
 
 /// Which child stream one step-log line came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,9 +68,9 @@ pub struct StepHost {
     pub resolv_conf: PathBuf,
     /// Disk-backed scratch root for OCI bundles.
     pub scratch_root: PathBuf,
-    /// Invoking uid, mapped identically inside the user namespace.
+    /// Invoking uid, mapped to container root (and to every `USER` the step names).
     pub uid: u32,
-    /// Invoking gid, mapped identically inside the user namespace.
+    /// Invoking gid, mapped to container root (and to every `USER` the step names).
     pub gid: u32,
 }
 
@@ -58,21 +93,13 @@ impl StepHost {
         }
     }
 
-    /// Default numeric owner for files written by `COPY`/`ADD`.
+    /// Numeric owner for files written by `COPY`/`ADD`; the only id a single mapping represents.
     #[must_use]
     pub const fn owner(&self) -> Owner {
         Owner {
             uid: self.uid,
             gid: self.gid,
         }
-    }
-
-    /// A `/etc/passwd` that contains the invoking uid, so images never need a real one.
-    fn passwd(&self) -> String {
-        format!(
-            "root:x:0:0:root:/root:/sbin/nologin\nslipfork:x:{}:{}:slipfork:/:/bin/sh\n",
-            self.uid, self.gid
-        )
     }
 }
 
@@ -107,6 +134,9 @@ impl CrunStepRuntime {
     }
 
     /// Executes `run` inside `rootfs`, streaming every child line to `log`.
+    ///
+    /// The step's identity is resolved from the rootfs it was handed: `USER app` runs as the
+    /// account the image itself defines, mapped one-to-one onto the invoking host uid/gid.
     #[allow(clippy::too_many_arguments)]
     pub fn run(
         &self,
@@ -119,15 +149,15 @@ impl CrunStepRuntime {
         log: &mut StepLog<'_>,
     ) -> Result<()> {
         self.ensure_crun()?;
+        let identity = Identity::resolve(rootfs, config.user.as_deref())?;
         fs::create_dir_all(&self.host.scratch_root)
             .map_err(|source| Error::io("create", &self.host.scratch_root, source))?;
         let bundle = self.host.scratch_root.join(id);
         let _ = fs::remove_dir_all(&bundle);
         fs::create_dir_all(&bundle).map_err(|source| Error::io("create", &bundle, source))?;
 
-        let passwd = bundle.join("passwd");
-        fs::write(&passwd, self.host.passwd())
-            .map_err(|source| Error::io("write", &passwd, source))?;
+        let apt_conf = bundle.join("apt.conf");
+        fs::write(&apt_conf, APT_CONF).map_err(|source| Error::io("write", &apt_conf, source))?;
 
         for mount in &run.mounts {
             let target = rooted(rootfs, &mount.target);
@@ -138,7 +168,16 @@ impl CrunStepRuntime {
             fs::create_dir_all(&path).map_err(|source| Error::io("create", &path, source))?;
         }
 
-        let config_json = self.oci_config(rootfs, config, run, cache, &passwd);
+        let spec = StepBundle {
+            host: &self.host,
+            rootfs,
+            apt_conf: &apt_conf,
+            identity,
+            config,
+            run,
+            cache,
+        };
+        let config_json = spec.oci_spec();
         let config_path = bundle.join("config.json");
         let bytes = serde_json::to_vec_pretty(&config_json).map_err(|source| Error::Json {
             url: config_path.display().to_string(),
@@ -237,25 +276,47 @@ impl CrunStepRuntime {
         self.delete_container(id);
         let _ = fs::remove_dir_all(bundle);
     }
+}
 
-    fn oci_config(
-        &self,
-        rootfs: &Path,
-        config: &ImageConfig,
-        run: &RunSpec,
-        cache: &[(CacheMount, PathBuf)],
-        passwd: &Path,
-    ) -> serde_json::Value {
-        let args = match &run.command {
+/// Everything one `RUN` step needs to render its OCI spec, resolved once in
+/// [`CrunStepRuntime::run`].
+struct StepBundle<'a> {
+    /// Injected host facts (resolv.conf and the single uid/gid mapping).
+    host: &'a StepHost,
+    /// The writable step rootfs that becomes the container root.
+    rootfs: &'a Path,
+    /// The per-step `apt.conf` bound read-only at [`APT_CONF_TARGET`].
+    apt_conf: &'a Path,
+    /// Container identity the step runs as.
+    identity: Identity,
+    /// Image metadata (`env`, `workdir`, `user`) applied to the process.
+    config: &'a ImageConfig,
+    /// The command to execute and any declared cache mounts.
+    run: &'a RunSpec,
+    /// Resolved host directories for `RUN --mount=type=cache`.
+    cache: &'a [(CacheMount, PathBuf)],
+}
+
+impl StepBundle<'_> {
+    /// Builds the OCI runtime spec for this step: single-mapping identity, Docker default
+    /// capabilities for root, no new privileges, a tmpfs `/dev` with host devices, and a seccomp
+    /// profile that turns the `chown` family into a success no-op.
+    fn oci_spec(&self) -> serde_json::Value {
+        let args = match &self.run.command {
             StepCommand::Shell(script) => {
                 vec!["/bin/sh".to_owned(), "-c".to_owned(), script.clone()]
             }
             StepCommand::Exec(argv) => argv.clone(),
         };
         let mut env = vec![format!("PATH={DEFAULT_PATH}")];
-        for (key, value) in &config.env {
+        for (key, value) in &self.config.env {
             env.push(format!("{key}={value}"));
         }
+        // glibc's `getenv` returns the first match, so drop any image `ENV APT_CONFIG=...` before
+        // appending the per-step config; the last entry alone would never win.
+        env.retain(|entry| !entry.starts_with("APT_CONFIG="));
+        env.push(format!("APT_CONFIG={APT_CONF_TARGET}"));
+
         let mut mounts = vec![
             serde_json::json!({"destination": "/proc", "type": "proc", "source": "proc"}),
             serde_json::json!({
@@ -264,20 +325,30 @@ impl CrunStepRuntime {
                 "source": "tmpfs",
                 "options": ["nosuid", "strictatime", "mode=755", "size=65536k"]
             }),
-            serde_json::json!({
-                "destination": "/etc/resolv.conf",
-                "type": "bind",
-                "source": self.host.resolv_conf,
-                "options": ["ro", "rbind"]
-            }),
-            serde_json::json!({
-                "destination": "/etc/passwd",
-                "type": "bind",
-                "source": passwd,
-                "options": ["ro", "rbind"]
-            }),
         ];
-        for (mount, host_dir) in cache {
+        // Bound after the `/dev` tmpfs, so these mountpoints exist only in the tmpfs and never in
+        // the image rootfs; a rootless build cannot `mknod` them itself.
+        for device in DEVICES {
+            mounts.push(serde_json::json!({
+                "destination": device,
+                "type": "bind",
+                "source": device,
+                "options": ["ro", "rbind"]
+            }));
+        }
+        mounts.push(serde_json::json!({
+            "destination": APT_CONF_TARGET,
+            "type": "bind",
+            "source": self.apt_conf,
+            "options": ["ro", "rbind"]
+        }));
+        mounts.push(serde_json::json!({
+            "destination": "/etc/resolv.conf",
+            "type": "bind",
+            "source": self.host.resolv_conf,
+            "options": ["ro", "rbind"]
+        }));
+        for (mount, host_dir) in self.cache {
             let mut options = vec!["rbind"];
             if mount.readonly {
                 options.push("ro");
@@ -289,17 +360,31 @@ impl CrunStepRuntime {
                 "options": options
             }));
         }
+
+        let identity = self.identity;
+        let capabilities: Vec<&str> = if identity.uid == 0 {
+            ROOT_CAPABILITIES.to_vec()
+        } else {
+            Vec::new()
+        };
         serde_json::json!({
             "ociVersion": "1.0.2",
             "process": {
                 "terminal": false,
-                "user": {"uid": self.host.uid, "gid": self.host.gid},
+                "user": {"uid": identity.uid, "gid": identity.gid},
                 "args": args,
                 "env": env,
-                "cwd": config.workdir,
-                "noNewPrivileges": false
+                "cwd": self.config.workdir,
+                "capabilities": {
+                    "bounding": &capabilities,
+                    "effective": &capabilities,
+                    "permitted": &capabilities,
+                    "inheritable": [],
+                    "ambient": []
+                },
+                "noNewPrivileges": true
             },
-            "root": {"path": rootfs, "readonly": false},
+            "root": {"path": self.rootfs, "readonly": false},
             "hostname": "slipfork-build",
             "mounts": mounts,
             "linux": {
@@ -310,10 +395,20 @@ impl CrunStepRuntime {
                     {"type": "ipc"},
                     {"type": "uts"}
                 ],
-                "uidMappings": [{"containerID": self.host.uid, "hostID": self.host.uid, "size": 1}],
-                "gidMappings": [{"containerID": self.host.gid, "hostID": self.host.gid, "size": 1}],
+                "uidMappings": [{"containerID": identity.uid, "hostID": self.host.uid, "size": 1}],
+                "gidMappings": [{"containerID": identity.gid, "hostID": self.host.gid, "size": 1}],
                 "maskedPaths": [],
-                "readonlyPaths": []
+                "readonlyPaths": [],
+                // Charliecloud precedent: dpkg chowns to unmapped ids (`root:shadow`), so the
+                // whole `chown` family reports success instead of failing the package install.
+                "seccomp": {
+                    "defaultAction": "SCMP_ACT_ALLOW",
+                    "syscalls": [{
+                        "names": ["chown", "fchown", "lchown", "fchownat"],
+                        "action": "SCMP_ACT_ERRNO",
+                        "errnoRet": 0
+                    }]
+                }
             },
             "annotations": {"slipfork.builder": "native"}
         })

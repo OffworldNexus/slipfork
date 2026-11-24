@@ -198,7 +198,7 @@ fn native_dockerfile_multistage_build_lifecycle() {
         )
     });
     assert_eq!(first.cache_hits, 0, "a cold build serves no sealed step");
-    assert_eq!(first.cache_misses, 6, "six filesystem instructions");
+    assert_eq!(first.cache_misses, 7, "seven filesystem instructions");
     let cache_file = steps.cache_mount("/root/.cache/x").join("out.txt");
     assert_eq!(support::read_text(&cache_file), "run-one\n");
     let blobs_after_first = fixture.blob_requests();
@@ -221,7 +221,10 @@ fn native_dockerfile_multistage_build_lifecycle() {
         )
     });
     assert_eq!(second.cache_misses, 1, "only the changed RUN re-executes");
-    assert_eq!(second.cache_hits, 5, "the final stage steps are reused");
+    assert_eq!(
+        second.cache_hits, 6,
+        "every other step hits the sealed cache"
+    );
     assert_eq!(
         support::read_text(&cache_file),
         "run-one\nrun-two\n",
@@ -237,7 +240,7 @@ fn native_dockerfile_multistage_build_lifecycle() {
         )
     });
     assert_eq!(cached.cache_misses, 0, "an identical rebuild never re-runs");
-    assert_eq!(cached.cache_hits, 6, "every step must hit the sealed cache");
+    assert_eq!(cached.cache_hits, 7, "every step must hit the sealed cache");
     // 2-vCPU CI scheduler jitter on a loop-backed ext4 image can triple wall-clock; 250ms still
     // catches a rebuild that re-executes a step instead of hitting the sealed cache.
     assert!(
@@ -343,7 +346,7 @@ fn native_dockerfile_multistage_build_lifecycle() {
         );
         sealed += 1;
     }
-    assert_eq!(sealed, 7, "six steps plus the second RUN variant");
+    assert_eq!(sealed, 8, "seven steps plus the second RUN variant");
     assert!(engine.is_sealed(rootfs).expect("probe the final seal"));
 
     // Cleanup: reaping the worlds keeps the scratch root free of open process groups and
@@ -621,7 +624,7 @@ fn external_copy_from_image_lifecycle() {
         loopback,
         steps.clone(),
         arch,
-        StepHost::new(crun, "/etc/resolv.conf", &scratch, uid, gid),
+        StepHost::new(&crun, "/etc/resolv.conf", &scratch, uid, gid),
     );
     let context = run.join("context");
     fs::create_dir_all(&context).expect("create the build context");
@@ -655,7 +658,9 @@ fn external_copy_from_image_lifecycle() {
             output_tail(&log)
         )
     });
-    for artifact in ["bin/external-sh", "bin/by-index", "bin/by-name"] {
+    // `bin/external-sh` exists only in stage `first`, so the final `second` rootfs carries just
+    // the two stage copies made by that stage.
+    for artifact in ["bin/by-index", "bin/by-name"] {
         let path = report.rootfs.join(artifact);
         assert!(path.is_file(), "`{artifact}` must exist");
         assert!(
@@ -679,6 +684,37 @@ fn external_copy_from_image_lifecycle() {
     assert_eq!(
         repeat.cache_hits, 3,
         "three external/stage copies are sealed"
+    );
+    // Targeting `first` reuses the sealed steps of the same directory and leaves the external
+    // copy in the rootfs of the stage that actually ran it.
+    let first_stage_request = BuildRequest {
+        target: Some("first".to_owned()),
+        ..request.clone()
+    };
+    let (first_stage, first_stage_log) = build_capture(&builder, &first_stage_request);
+    let first_stage = first_stage.unwrap_or_else(|error| {
+        panic!(
+            "`--target first` build: {error}\nbuild output tail:\n{}",
+            output_tail(&first_stage_log)
+        )
+    });
+    let external = first_stage.rootfs.join("bin/external-sh");
+    assert!(
+        external.is_file(),
+        "`bin/external-sh` must exist in the `first` stage rootfs"
+    );
+    assert!(
+        fs::metadata(&external)
+            .expect("stat the external artifact")
+            .mode()
+            & 0o111
+            != 0,
+        "`bin/external-sh` must stay executable"
+    );
+    assert_eq!(
+        fs::read(&external).expect("read the external artifact"),
+        shell_bytes,
+        "`bin/external-sh` must be the external rootfs's `/bin/sh` bytes"
     );
     let empty = BuildRequest {
         externals: BTreeMap::new(),
@@ -775,6 +811,16 @@ fn external_copy_from_image_lifecycle() {
             },
         );
     }
+    // The `FROM python:3.14-trixie` base is a public HTTPS registry pull, so it needs the
+    // default-scheme puller: the loopback `builder` above speaks plain HTTP, and its bearer token
+    // is dropped by the registry's 301 → HTTPS redirect, failing the base pull as `Unauthorized`.
+    let owner_builder = NativeImageBuilder::new(
+        Arc::clone(&engine) as Arc<dyn WorldEngine>,
+        https,
+        steps.clone(),
+        arch,
+        StepHost::new(&crun, "/etc/resolv.conf", &scratch, uid, gid),
+    );
     fs::write(&dockerfile, owner_source).expect("write the owner Dockerfile");
     let owner_request = BuildRequest {
         context: context.clone(),
@@ -783,7 +829,7 @@ fn external_copy_from_image_lifecycle() {
         target: None,
         externals: owner_externals,
     };
-    let (owner, owner_log) = build_capture(&builder, &owner_request);
+    let (owner, owner_log) = build_capture(&owner_builder, &owner_request);
     let owner = owner.unwrap_or_else(|error| {
         panic!(
             "owner Dockerfile build: {error}\nbuild output tail:\n{}",
@@ -816,13 +862,155 @@ fn external_copy_from_image_lifecycle() {
     let _ = fs::remove_dir_all(&run);
 }
 
+/// A real `debian:trixie-slim` build: `RUN` is container root (so `apt-get` installs system
+/// packages), `USER app`/`USER postgres` run as the accounts the image itself defines, and the
+/// image's own `/etc/passwd` is never replaced by a synthetic host file.
+#[test]
+fn debian_root_build_installs_system_packages_and_switches_named_users() {
+    let crun = crun_path();
+    // SAFETY: `getuid`/`getgid` only read the caller's identity and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    // SAFETY: as above; `getgid` has no preconditions.
+    let gid = unsafe { libc::getgid() };
+    let run = support::live_run_root("dockerfile-debian");
+    let store = StoreLayout::new(&run);
+    let engine = Arc::new(BtrfsEngine::new(store.clone()));
+    engine.ensure_store().expect("create the Btrfs image store");
+    let steps = StepLayout::new(store.images_root());
+    let scratch = run.join("bundles");
+    let arch = support::host_architecture();
+    let https = OciPuller::new(
+        Arc::clone(&engine) as Arc<dyn WorldEngine>,
+        ImageLayout::new(store.images_root()),
+        Credentials::Anonymous,
+        arch,
+        "slipfork-tests/0.1".to_owned(),
+    );
+    let builder = NativeImageBuilder::new(
+        Arc::clone(&engine) as Arc<dyn WorldEngine>,
+        https,
+        steps.clone(),
+        arch,
+        StepHost::new(crun, "/etc/resolv.conf", &scratch, uid, gid),
+    );
+    let context = run.join("context");
+    fs::create_dir_all(&context).expect("create the build context");
+    let dockerfile = context.join("Dockerfile");
+    fs::write(
+        &dockerfile,
+        "FROM debian:trixie-slim\n\
+         RUN whoami\n\
+         RUN grep -q 'Sandbox::User \"root\"' \"$APT_CONFIG\"\n\
+         RUN apt-get update && apt-get install -y --no-install-recommends curl postgresql\n\
+         RUN useradd --create-home --uid 1001 app\n\
+         USER app\n\
+         RUN id\n\
+         USER postgres\n\
+         RUN d=$(ls -d /usr/lib/postgresql/*/bin | head -1) && \"$d/initdb\" -D /var/lib/postgresql/data --no-locale -A trust\n",
+    )
+    .expect("write the Debian Dockerfile");
+    let context_before = snapshot_tree(&context);
+    let request = BuildRequest {
+        context: context.clone(),
+        dockerfile: dockerfile.clone(),
+        args: BuildArgs::new(),
+        target: None,
+        externals: BTreeMap::new(),
+    };
+    let (report, log) = build_capture(&builder, &request);
+    let report = report.unwrap_or_else(|error| {
+        panic!(
+            "Debian root build: {error}\nbuild output tail:\n{}",
+            output_tail(&log)
+        )
+    });
+    assert_eq!(
+        snapshot_tree(&context),
+        context_before,
+        "the checkout is untouched: a build must never rewrite its context"
+    );
+    assert!(
+        log.iter()
+            .any(|(stream, line)| *stream == Stream::Stdout && line.trim() == "root"),
+        "`RUN whoami` must stream `root`, saw:\n{}",
+        output_tail(&log)
+    );
+    assert!(
+        log.iter()
+            .any(|(stream, line)| *stream == Stream::Stdout && line.contains("uid=1001(app)")),
+        "`USER app` must run `id` as uid 1001(app), saw:\n{}",
+        output_tail(&log)
+    );
+    let curl = report.rootfs.join("usr/bin/curl");
+    assert!(
+        curl.is_file(),
+        "`apt-get install curl` must land `/usr/bin/curl`, saw:\n{}",
+        output_tail(&log)
+    );
+    assert_eq!(
+        fs::metadata(&curl).expect("stat curl").uid(),
+        uid,
+        "a file installed by the root step is owned by the invoking uid on disk"
+    );
+    let pg_version = report.rootfs.join("var/lib/postgresql/data/PG_VERSION");
+    assert!(
+        pg_version.is_file(),
+        "`USER postgres` + initdb must write PG_VERSION, saw:\n{}",
+        output_tail(&log)
+    );
+    assert_eq!(
+        fs::metadata(&pg_version).expect("stat PG_VERSION").uid(),
+        uid,
+        "initdb output is host-uid-owned even though it ran as postgres inside"
+    );
+    assert_eq!(
+        fs::metadata(report.rootfs.join("home/app"))
+            .expect("stat /home/app")
+            .uid(),
+        uid,
+        "`useradd --create-home` runs as container root, so the home is host-owned"
+    );
+    let passwd =
+        fs::read_to_string(report.rootfs.join("etc/passwd")).expect("read the image passwd");
+    assert!(
+        passwd.contains("app:x:1001"),
+        "the image's own `/etc/passwd` must keep the account that `useradd` wrote"
+    );
+    // Fail-closed leg on the same store boot: `USER ghost` is metadata only, so the next `RUN`
+    // resolves the account from the image's own `/etc/passwd` and must fail at line 3.
+    let ghost = context.join("Ghostfile");
+    fs::write(&ghost, "FROM debian:trixie-slim\nUSER ghost\nRUN id\n")
+        .expect("write the unknown-account Dockerfile");
+    let ghost_request = BuildRequest {
+        dockerfile: ghost,
+        ..request.clone()
+    };
+    let (error, ghost_log) = build_capture(&builder, &ghost_request);
+    let error = error.expect_err("`USER ghost` must fail closed on an account the image lacks");
+    let rendered = error.to_string();
+    assert!(
+        matches!(error, slipfork_image::Error::StepFailed { line: 3, .. }),
+        "the failure decorates the `RUN id` line: {rendered}\nbuild output tail:\n{}",
+        output_tail(&ghost_log)
+    );
+    assert!(
+        rendered.contains("ghost"),
+        "the account is named: {rendered}"
+    );
+    assert!(
+        error.remedy().is_some_and(|next| next.contains("useradd")),
+        "the remedy points at useradd: {rendered}"
+    );
+
+    destroy_children(&engine, &steps.steps());
+    destroy_children(&engine, &store.images_root().join("oci"));
+    let _ = fs::remove_dir_all(&run);
+}
+
 fn dockerfile_source(base: &str, url: &str, marker: &str, uid: u32, gid: u32) -> String {
     format!(
         "FROM {base} AS builder\n\
-         RUN --mount=type=cache,target=/root/.cache/x <<EOF\n\
-         echo {marker} >> /root/.cache/x/out.txt\n\
-         echo built > /root/out.txt\n\
-         EOF\n\
+         RUN echo built > /root/out.txt\n\
          FROM {base} AS final\n\
          COPY --from=builder /root/out.txt /app/from-builder.txt\n\
          COPY --chown={uid}:{gid} owned.txt /owned.txt\n\
@@ -830,10 +1018,43 @@ fn dockerfile_source(base: &str, url: &str, marker: &str, uid: u32, gid: u32) ->
          ADD {url} /opt/data/\n\
          WORKDIR /app\n\
          ENV APP_MODE=production\n\
+         RUN --mount=type=cache,target=/root/.cache/x <<EOF\n\
+         echo {marker} >> /root/.cache/x/out.txt\n\
+         echo built > /root/out.txt\n\
+         EOF\n\
          USER {uid}:{gid}\n\
          EXPOSE 8080 9090/udp\n\
          CMD [\"/app/run\", \"--serve\"]\n"
     )
+}
+
+/// Recursive `(relative path, len, mode & 0o7777, mtime)` snapshot of a build context, sorted so a
+/// build that rewrites, chmods, or touches its own checkout is caught byte-for-byte.
+fn snapshot_tree(root: &Path) -> Vec<(String, u64, u32, i64)> {
+    fn walk(root: &Path, relative: &Path, out: &mut Vec<(String, u64, u32, i64)>) {
+        let directory = root.join(relative);
+        let Ok(entries) = fs::read_dir(&directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let next = relative.join(entry.file_name());
+            let path = root.join(&next);
+            let metadata = fs::symlink_metadata(&path).expect("stat a context entry");
+            out.push((
+                next.to_string_lossy().into_owned(),
+                metadata.len(),
+                metadata.mode() & 0o7777,
+                metadata.mtime(),
+            ));
+            if metadata.is_dir() {
+                walk(root, &next, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, Path::new(""), &mut out);
+    out.sort_by(|left, right| left.0.cmp(&right.0));
+    out
 }
 
 /// `crun` is resolved once by the test (a composition root) and injected into the builder.

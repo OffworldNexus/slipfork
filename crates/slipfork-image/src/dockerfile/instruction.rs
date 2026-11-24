@@ -16,8 +16,11 @@ pub enum StageBase {
 pub struct CopySpec {
     /// `--from=<stage>`; copies from that stage's sealed rootfs instead of the build context.
     pub from: Option<String>,
-    /// `--chown=<uid>:<gid>` (numeric only; builds never read the image's `/etc/passwd`).
-    pub chown: Option<Owner>,
+    /// Raw `--chown` spec (`name`, `name:group`, `uid`, `uid:gid`), resolved against the
+    /// destination stage's rootfs when the copy is applied.
+    pub chown: Option<String>,
+    /// `--chmod` mode, parsed as octal and masked to `0o7777`.
+    pub mode: Option<u32>,
     /// Expanded source paths relative to the context or the source stage rootfs.
     pub sources: Vec<String>,
     /// Destination path inside the rootfs.
@@ -31,6 +34,22 @@ pub struct Owner {
     pub uid: u32,
     /// Container gid.
     pub gid: u32,
+}
+
+/// Ownership and mode a `COPY`/`ADD` applies to every entry it writes.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CopyOptions {
+    /// Host owner: a single-mapping build can only represent the invoking uid/gid.
+    pub(crate) owner: Owner,
+    /// `--chmod` mode, masked to `0o7777`.
+    pub(crate) mode: Option<u32>,
+}
+
+impl CopyOptions {
+    /// Bundles the host owner with an optional `--chmod` mode.
+    pub(crate) const fn new(owner: Owner, mode: Option<u32>) -> Self {
+        Self { owner, mode }
+    }
 }
 
 /// One `RUN --mount=type=cache` mount.
@@ -275,8 +294,11 @@ fn render_copy(op: &str, spec: &CopySpec) -> String {
     if let Some(from) = &spec.from {
         head.push_str(&format!(" --from={from}"));
     }
-    if let Some(owner) = spec.chown {
-        head.push_str(&format!(" --chown={}:{}", owner.uid, owner.gid));
+    if let Some(chown) = &spec.chown {
+        head.push_str(&format!(" --chown={chown}"));
+    }
+    if let Some(mode) = spec.mode {
+        head.push_str(&format!(" --chmod={mode:o}"));
     }
     let mut parts = vec![head];
     parts.extend(spec.sources.iter().cloned());
