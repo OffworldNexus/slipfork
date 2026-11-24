@@ -131,7 +131,7 @@ flowchart LR
 ## 5. Composition Roots, Crate Map & Canonical Ports
 
 Slipfork has **five explicit composition roots** and **zero** ambient OS/env probes in library crates:
-1. `crates/slipfork/src/main.rs` (CLI, `__daemon`, `__ingress`) — parses `Cli`, builds `UiMode`, `BootTui` (`ScrollRegionGuard` / `AsciiLine`), `RawModeGuard`, `DaemonClient`, and `DaemonServer`. `__daemon` also constructs one `BtrfsEngine` and injects it into the store's one `SnapshotStore`, `OciPuller`, `NativeImageBuilder`, and `Reconciler` (§6).
+1. `crates/slipfork/src/main.rs` (CLI, `__daemon`, `__ingress`) — parses `Cli`, builds `UiMode`, `BootTui` (`ScrollRegionGuard` / `AsciiLine`), `RawModeGuard`, `DaemonClient`, and `DaemonServer`. `__daemon` opens one `StateDb` + `ForkLedger` (§7) and constructs `BtrfsEngine`, `SnapshotStore`, `OciPuller`, `NativeImageBuilder`, and `Reconciler` per `store_root` (§6).
 2. Detached `__supervise` (`crates/slipfork/src/main.rs` child mode) — owns the single boot `tokio::Runtime` and constructs `BootScheduler` (injecting `tokio::runtime::Handle`), `PostgresLauncher`, `RedisLauncher`, `BtrfsEngine`, `FileSecretVault`, and `S3WorldConfig`; it receives sealed `WorldHeads` from the daemon, never builds, and writes the world's `Lease`.
 3. `crates/slipfork-world/src/bin/world_init/main.rs` (world PID 1) — binds `0600` `control.sock`, serves `ConfigureS3`/`Dial`/`List`/`Shutdown`/`ExecPty`/`Exec`/`Logs`, and hosts `S3Server` on `:8333`.
 4. `crates/slipfork-lsp/src/main.rs` — standalone cross-platform stdio language server.
@@ -139,9 +139,9 @@ Slipfork has **five explicit composition roots** and **zero** ambient OS/env pro
 
 | Crate | Canonical Cohesive Structs / Modules (`<= 500` LOC each) | Port → Adapter |
 | :--- | :--- | :--- |
-| `slipfork` | `Cli` (`clap` 4.6 + `clap_complete` + `clap_mangen`), `UiMode`, `BootTui` (`ScrollRegionGuard` `DECSTBM` + `AsciiLine`), `RawModeGuard`, `TableLayout`, `Reconciler` (`daemon/reconcile/`), `DaemonClient`, `DaemonServer` | — |
+| `slipfork` | `Cli` (`clap` 4.6 + `clap_complete` + `clap_mangen`), `UiMode`, `BootTui` (`ScrollRegionGuard` `DECSTBM` + `AsciiLine`), `RawModeGuard`, `TableLayout`, `Reconciler` (`daemon/reconcile/`), `ConvergeExecutor` (`daemon/lifecycle/converge.rs`), `DaemonClient`, `DaemonServer` | — |
 | `slipfork-forkfile` | `ForkfileCompiler`, `SecretValue` (redacted `Debug`, zeroize-on-drop), `BucketPolicy`, `DnsLabel`, `Formatter`, `SnowMigrator` | — |
-| `slipfork-world` | `BtrfsEngine`, `BuildGraph` + `NodeKey` + `SnapshotStore` + `Lease` (`snapshot/`), `BootScheduler` (`Handle` + `spawn_blocking`), `PostgresLauncher`, `RedisLauncher`, `resources/s3/{server.rs,object_ops.rs,listing.rs,policy.rs}`, `WorldSupervisor` | `WorldEngine` → `BtrfsEngine` |
+| `slipfork-world` | `BtrfsEngine`, `StateDb` + `ForkLedger` (`ledger/`), `BuildGraph` + `NodeKey` + `SnapshotStore` + `Lease` (`snapshot/`), `BootScheduler` (`Handle` + `spawn_blocking`), `PostgresLauncher`, `RedisLauncher`, `resources/s3/{server.rs,object_ops.rs,listing.rs,policy.rs}`, `WorldSupervisor` | `WorldEngine` → `BtrfsEngine` |
 | `slipfork-image` | `NativeImageBuilder`, `BuildPlanner`, `OciPuller`, `DockerfileExecutor` | `BaseImageBuilder` → `NativeImageBuilder` |
 | `slipfork-ingress` | `IngressRouter`, `HttpRelay` (`httparse` raw byte/WS proxy) | — |
 | `slipfork-ospp` | `WsOsppClient`, `FileSecretVault`, `DeviceIdentity`, `DumpReader` | `OsppClient` → `WsOsppClient`, `SecretVault` → `FileSecretVault` |
@@ -376,3 +376,209 @@ sequenceDiagram
 | 2 | `slipfork-image` `plan/{refs,planner,sources}.rs`, `builder/materialize.rs`, `OciPuller` slot unpack + re-read credentials; switch `ImageCache` and CLI `docker build` call sites to plan + `reconcile` in the same slice; delete `steps.rs` | 1 | Unit: per-`COPY` source Merkle honours `.dockerignore`. Lab: `critical_dockerfile_live` rebuilds only the edited suffix. |
 | 3 | `slipfork` `daemon/reconcile/{mod,progress}.rs`; `up`/`restart`/`docker build`/`docker pull` reconcile in `__daemon`; supervise takes `WorldHeads`; delete `ImageCache` | 2 | Up journey: failed `RUN` keeps the old world serving; `docker build` then `up` is all `cached`. |
 | 4 | `slipfork-world` `boot/` (split `schedule.rs` into `schedule/{waves,gate}.rs`) + `slipfork` `up_plan` (split `up.rs` into `up/{plan,heal}.rs`) and `fork`: `Lease` replaces stamps; `BootStep` keys; Idle by head; fork re-keys world nodes; gc after reconcile; `--no-cache`; delete fingerprints; `specs/02` (§4 Idle rule, `--no-cache`) + `TESTING_PLAN.md` | 3 | Journey: Dockerfile/context edit leaves Idle; fork boots with zero materialization and its next `up` is Idle; `drop` + gc frees unique nodes. |
+
+---
+
+## 7. Transactional Fork Ledger, Flat Lineage & Convergence
+
+Branch any live or stopped environment — root or fork — into a flat checkout at `<root>/.forks/<name>`. `slipfork ps` and `slipfork status` share one lineage renderer, and `slipfork drop` cleans up in one planned pass without stranding pods or snapshots.
+
+<!-- sample output -->
+```console
+$ cd ~/slproj/test1/.forks/bonjour && slipfork fork salut
+✓ fork      snapshot      184ms
+✓ git       branch salut   19ms
+• image     web          cached
+✓ service   web           312ms
+✓ salut (0.6s) -> http://salut--test1.localhost
+
+$ cd ~/slproj/test1 && slipfork ps
+● test1    ~/slproj/test1
+  http://test1.localhost
+    /  -> web  service  running
+
+● bonjour  ~/slproj/test1/.forks/bonjour  ← test1
+  http://bonjour--test1.localhost
+    /  -> web  service  running
+
+● salut    ~/slproj/test1/.forks/salut    ← bonjour ← test1
+  http://salut--test1.localhost
+    /  -> web  service  running
+
+$ slipfork drop bonjour -f
+✓ pod   web                stopped               41ms
+✓ fork  snapshots bonjour  project + world data  51ms
+✓ Dropped bonjour (92ms)
+
+$ slipfork ps
+● test1  ~/slproj/test1
+  http://test1.localhost
+    /  -> web  service  running
+
+● salut  ~/slproj/test1/.forks/salut  ← test1
+  http://salut--test1.localhost
+    /  -> web  service  running
+```
+
+### 7.1 Store choice: bundled `rusqlite` in WAL mode
+
+Control-plane state moves into a single-file SQLite WAL database backed by `rusqlite` (`features = ["bundled"]`), chosen over `sea-orm` and `sqlx` on measured workspace fit.
+
+| Criterion | `rusqlite` (`bundled`) | `sea-orm` + `sea-orm-migration` / `sqlx` |
+| :--- | :--- | :--- |
+| Dependency & compile cost | `5` small crates + one cached `sqlite3.c` unit (`~8s` cold C build, `< 0.3s` incremental Rust, zero proc-macros). | `~100+` async, query-AST, and proc-macro crates (`+35–55s` cold workspace build). |
+| Sync vs async fit | Direct synchronous C calls (`~20–80 µs`) matching `UnixListener` + `thread::scope` in `__daemon`, sync `slipfork-world`, and sync CLI readers. | Async-only API wrapping synchronous C SQLite behind per-connection worker threads + channels, forcing `tokio::block_on` bridges across sync crates. |
+| Migrations | `40`-line sync runner over `PRAGMA user_version` + SQLite transactional DDL inside `BEGIN IMMEDIATE`. | Separate `sea-orm-migration` crate, trait boilerplate, and `seaql_migrations` table for two tables. |
+| WAL concurrency | Explicit `TransactionBehavior::Immediate` (`BEGIN IMMEDIATE`) avoids `DEFERRED` lock-upgrade `SQLITE_BUSY_SNAPSHOT`; CLI opens `SQLITE_OPEN_READ_ONLY`. | Pool defaults to `DEFERRED` transactions and spawns background connections unsuited to one-shot `< 1ms` CLI reads. |
+| Failure recovery | Identical C SQLite WAL redo/rollback semantics, with direct `wal_checkpoint(TRUNCATE)` control on daemon shutdown. | Identical C SQLite WAL recovery underneath, hidden behind pool lifecycle hooks. |
+
+SQLite owns **strictly** the world and fork ledger (`worlds`, `forks`). Snapshot records (`snapshots/<key>.json`, §6.2), world leases (`.slipfork-lease.json`, §6.3), and run logs (`runs/index.jsonl`, §1) stay in their file stores with zero duplicate copies.
+
+### 7.2 Schema, pragmas, single writer & crash recovery
+
+`StateDb` lives per user at `<state_dir>/state.db` (`0600`), paired 1:1 with the single `__daemon` holding `<runtime_dir>/slipfork-daemon.lock`.
+
+Convergence scopes strictly to root checkouts registered in that `state.db`, so isolated test daemons sharing `<mount>/.slipfork-store` never touch each other's worlds.
+
+`StateDb::open_writer` sets `journal_mode = WAL`, `synchronous = FULL`, `busy_timeout = 5000`, and `foreign_keys = ON`, migrating inside `BEGIN IMMEDIATE` up to `SCHEMA_VERSION = 1`.
+
+Offline CLI readers (`status` and `ps` when no daemon runs) call `StateDb::open_reader` (`SQLITE_OPEN_READ_ONLY`) and never mutate or converge; any `user_version > SCHEMA_VERSION` fails closed with `next: upgrade slipfork`.
+
+```sql
+CREATE TABLE worlds (
+    id             INTEGER PRIMARY KEY,
+    checkout_path  TEXT NOT NULL UNIQUE,
+    world_name     TEXT NOT NULL,
+    store_root     TEXT NOT NULL,
+    state          TEXT NOT NULL CHECK (state IN (
+                       'creating', 'booting', 'live', 'stopping', 'stopped', 'deleting', 'broken'
+                   )),
+    supervisor_pid INTEGER,
+    pods_dir       TEXT,
+    started_at_ms  INTEGER,
+    problem        TEXT,
+    updated_at_ms  INTEGER NOT NULL,
+    UNIQUE (store_root, world_name)
+) STRICT;
+
+CREATE UNIQUE INDEX idx_worlds_active_name ON worlds(world_name)
+    WHERE state IN ('creating', 'booting', 'live', 'stopping', 'deleting');
+
+CREATE TABLE forks (
+    world_id      INTEGER PRIMARY KEY REFERENCES worlds(id) ON DELETE CASCADE,
+    root_id       INTEGER NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
+    parent_id     INTEGER NOT NULL REFERENCES worlds(id) ON DELETE RESTRICT,
+    name          TEXT NOT NULL,
+    branch        TEXT NOT NULL DEFAULT '',
+    created_at_ms INTEGER NOT NULL,
+    UNIQUE (root_id, name)
+) STRICT;
+
+CREATE INDEX idx_forks_root   ON forks(root_id);
+CREATE INDEX idx_forks_parent ON forks(parent_id);
+```
+
+A root takes `<basename>` when free on `store_root`, else `<basename[..58]>-<4hex(sha256(checkout_path))>` (`world_name <= 63` bytes and `control.sock < 108` bytes enforced upfront); a duplicate active name fails closed with `next: slipfork down <world_name>`.
+
+Every deletion runs through `delete_world_row`, splicing child `forks.parent_id` rows to the deleted row's parent inside `BEGIN IMMEDIATE` before `DELETE FROM worlds`.
+
+- **Process crash mid-transaction:** Every mutation uses `BEGIN IMMEDIATE` with zero locks held across Btrfs ioctls, `CHECKPOINT`, or `git`. Uncommitted `-wal` frames lack a commit marker and are ignored on the next open.
+- **Machine crash or power loss:** `WAL` + `synchronous = FULL` (`fdatasync` on commit, `~0.3–1.2ms`) + Btrfs CoW checksums ensure committed rows never vanish; startup convergence (§7.4) settles any pre-crash `creating` or `deleting` row.
+
+### 7.3 `ForkLedger`, flat `<root>/.forks/<name>` storage & lineage
+
+`ForkLedger` (`slipfork-world/src/ledger/`) is a pure `StateDb` owner (`begin_fork(branch, ...)`, `publish_live`, `mark_stopping`, `mark_stopped`, `mark_deleting`, `delete_world_row`, `list`, `resolve`, `plan_converge`); `__daemon` resolves `BtrfsEngine` per row `store_root`.
+
+`slipfork fork` branches the root **or any existing fork** with **no depth limit** into flat `<root>/.forks/<name>` under `<name>--<root>` (deleting nested `<fork>--<parent>` compounding). `begin_fork` checks `<name>--<root> <= 63` bytes and `control.sock < 108` bytes upfront.
+
+```mermaid
+flowchart LR
+  Root["test1 (root)\n~/slproj/test1\nworlds/test1"] ==>|"fork bonjour"| B["bonjour--test1\n~/slproj/test1/.forks/bonjour\nparent = test1"]
+  B ==>|"fork salut (from bonjour)"| S["salut--test1\n~/slproj/test1/.forks/salut\nparent = bonjour--test1"]
+  B -.->|"drop bonjour (reparents salut)"| S2["salut--test1\nparent = test1 (extents intact)"]
+```
+
+!!! warning "Engine checkout invariant & ledger enumeration rule"
+    A fork checkout **never** contains `.forks` or `.slipfork-store`: `BtrfsEngine` enforces this on both creation paths (unlinking non-recursive `ino == 2` `.forks` stubs immediately on subvolume snapshot, and skipping `.forks`/`.slipfork-store` on plain copy).
+
+    `ForkLedger` rows — never directory walks — are the sole source of truth for `ps`, `status`, `drop`, and target resolution; shallow `read_dir("<root>/.forks")` runs strictly inside `converge` to detect disk-vs-ledger divergence.
+
+- **CoW pyramid:** Btrfs snapshots are peer `FS_TREE` roots over refcounted extents, with zero backing-chain read penalty and zero clone-locks-parent restriction.
+- **Image & GC reuse:** With `.git` out of build contexts, branch switches preserve `COPY` Merkles; `salut` clones `worlds/bonjour--test1` (`Lease.origin = "bonjour--test1"`), boots `bonjour`'s leased images (`cached ~1ms`), and marks its own lease for `gc`.
+- **Single-node `drop`:** Dropping `bonjour` in `salut ← bonjour ← test1` splices `salut.parent_id = bonjour.parent_id` via `delete_world_row` and destroys only `bonjour`'s subvolumes, keeping `-f` strictly "discard dirty work in `bonjour`" without cascade data loss.
+- **Single `plan` frame on `drop`:** `drop` announces one upfront `plan` frame (`pod <id>` rows when live + `fork snapshots <name>`, deleting `PrepFrame::fixed`), advancing `[1/N]..[N/N]` instead of `[1/1]..[4/4]`.
+- **Target resolution:** Inside `<root>` or `<root>/.forks/*`, bare `<name>` resolves within that family (`UNIQUE(root_id, name)`, `name != root_world`); outside, bare `<name>` resolves if unique or fails closed (for example `next: slipfork drop salut--test1`).
+- **Honest `ps` & `status` rows:** Both render root first, live forks in `(depth, name)` order with dim `← parent ← root` (`lineage: [...]` in `--json`), trailing dim `○` stopped forks, `✗`/`!` broken rows with zero sub-rows, and dim `stale` on offline daemonless `live` rows.
+
+### 7.4 Deterministic convergence (`plan_converge` + `ConvergeExecutor`)
+
+`ForkLedger::plan_converge` (`slipfork-world`) builds a pure `Vec<ConvergeAction>` from ledger rows and observed disk/liveness facts.
+
+`ConvergeExecutor` (`slipfork/src/daemon/lifecycle/converge.rs`) runs inside `__daemon` on start and before `up`, `fork`, `drop`, `ps`, and `status`, scoped strictly to roots in `state.db`.
+
+```mermaid
+stateDiagram-v2
+  [*] --> creating: begin_fork (before ioctl)
+  creating --> live: supervisor ready + Lease written
+  creating --> [*]: crash / rollback -> reap & delete snapshots + row
+  live --> stopping: down
+  stopping --> stopped: pods reaped
+  stopped --> booting: up
+  booting --> live: supervisor ready + Lease written
+  booting --> stopped: crash -> reap pods, keep data
+  live --> broken: checkout missing -> reap pods immediately
+  stopped --> broken: fork checkout missing
+  broken --> stopped: checkout restored, or `down` on missing root (unlink lease)
+  broken --> deleting: mark_deleting (slipfork drop <fork>)
+  stopped --> deleting: mark_deleting (slipfork drop <fork>, dirty check passed)
+  deleting --> [*]: fork snapshots unlinked + delete_world_row
+```
+
+`creating`, `deleting`, and `delete_world_row` apply strictly to `forks` rows; root rows are never deleted and Slipfork **never** unlinks a root's `checkout_path` or `worlds/<root>`.
+
+On a `broken` root, `slipfork down <root>` unlinks `worlds/<root>/.slipfork-lease.json` (freeing `gc`) and settles the row at `stopped`, keeping `UNIQUE(store_root, world_name)` intact so no other checkout can claim its `PGDATA`.
+
+| Observed Divergence (within a registered `<root>` family) | Action (`ConvergeExecutor`) | End State & `next:` (when user action needed) |
+| :--- | :--- | :--- |
+| Fork row in `creating` (never reached `ready`) or `deleting` (`drop` interrupted) | Reap `supervisor_pid` + `-pgid` tree, sweep pod dirs, destroy `worlds/<fork>--<root>*` + `<root>/.forks/<name>` + `.partial-*`, `delete_world_row` (splicing children). | **Deleted** (atomic fork rollback across crashes; root `checkout_path` is never touched). |
+| Row in `booting` or `stopping`, or `live` whose `supervisor_pid` / `control.sock` is dead | Reap surviving `-pgid` / `world_init` / `slirp4netns` tree (`reap_world_tree`), sweep `<runtime_dir>/pods/<world>` + `<store>/pods/<world>`, clear `supervisor_pid`. | **`stopped`** (checkout and `worlds/<world>` data preserved). |
+| `live` row (root or fork) or `stopped` fork row + checkout missing on disk | Reap supervisor + pods immediately so **no service stays `running`**; if `worlds/<world>` is also gone on a fork, `delete_world_row`; else keep `worlds/<world>` data and mark `broken`. | **`broken`** (or **Deleted** when fork data is gone); fork: `next: slipfork drop <fork>`, root: `next: restore <path> or run slipfork down <world>`. |
+| Row in `broken` + checkout restored on disk | Clear `problem` and preserve `worlds/<world>` + `.slipfork-lease.json`. | **`stopped`** (ready for warm `slipfork up`). |
+| World `live` + `.slipfork-lease.json` missing or corrupt | Reap supervisor + pods, sweep pod dirs, unlink unreadable `.slipfork-lease.json` so `gc` is unblocked, preserve `worlds/<world>` + `PGDATA`. | **`stopped`** (next `slipfork up` reconciles and writes a fresh `Lease`). |
+| Pods alive in `<runtime_dir>/pods/<world>` or `<store>/pods/<world>` for this family with no `live` row | Send `Request::Shutdown` if `control.sock` answers, `reap_world_tree`, remove both pod directories. | **Deleted** (ephemeral pods without a `live` row are never adopted). |
+| Checkout `<root>/.forks/<name>` on disk with no `forks` row | Delete `.partial-*` stages and empty `ino == 2` Btrfs stubs (no `Forkfile`); if `<name>/Forkfile` exists, insert `stopped` row (`branch = ''` filled on next `up`, immediate parent recovered from `Lease.origin` when present in `state.db` else `root`). | **Deleted** (stubs/stages) or **Adopted as `stopped`** (real checkouts). |
+| Subvolume `worlds/<fork>--<root>*` on disk with no `forks` row and no `<root>/.forks/<fork>` checkout | Sweep `<store>/pods/<fork>--<root>` and destroy `worlds/<fork>--<root>` + `.<kind>.<pod>` clones for this `<root>`. | **Deleted** (frees mid-snapshot orphans so `slipfork fork <fork>` succeeds). |
+| Snapshot in `<store>/snapshots/` with no lease | `SnapshotStore::gc` (§6.3) destroys `.tmp-*` slots immediately and unmarked `<key>/` + `<key>.json` past `24h`. | **Swept by `gc`** under `LOCK_EX\|LOCK_NB`. |
+
+### 7.5 Ownership boundary with Snapshot Graph (§6) & refactor slices
+
+Every runtime question has **one** canonical owner after §6 slice 4 and §7 land:
+
+| Question | Sole Owner | Backing Store | Deleted Legacy Files / Types |
+| :--- | :--- | :--- | :--- |
+| Which worlds & forks exist, their parent lineage, checkout path, branch, and state? | `ForkLedger` (`StateDb`) | `<state_dir>/state.db` (`worlds`, `forks`) | `<state_dir>/worlds.json`, `RegistryEntry`, `daemon/registry.rs`, `.slipfork/world.json`, `WorldState`, `PrepFrame::fixed`, `fork_checkouts`, `world_id_for_project` |
+| Which sealed image/seed nodes exist and what are their parent edges & OCI facts? | `SnapshotStore` (§6.2) | `<store>/snapshots/<key>/` + `<key>.json`, `images/refs` | `StepCache`, `ImageCache`, `StepRecord`, `images/oci/<digest>` rootfses (§6.6) |
+| What `head`, images, and hook effects did a world commit, and is `PGDATA` paired? | `Lease` + `PgStamp` (§6.3) | `worlds/<world>/.slipfork-lease.json` + `.slipfork-pg-stamp.json` | `WorldStamp`, `ImageStamp`, `WorldStampStore`, `.slipfork-world-stamp.json`, `.slipfork/setup-*.stamp`, `worlds-fingerprints.json`, `Fingerprint` |
+| Is snapshot `<key>` alive or eligible for GC? | `SnapshotStore::gc` (§6.3) | `worlds/*/.slipfork-lease.json` + in-memory `Pin` closure | — |
+| Is world `<world>` healthy right now? | `Daemon` live probe (`ConvergeExecutor`) | `ForkLedger` `live` row + `/proc/<supervisor_pid>` + `control.sock` `List` | Stale `worlds.json` entries posing as live |
+| Which step runs executed and where is their output? | `LogStore` + `RunCapture` (§1) | `<store>/logs/<world>/runs/index.jsonl` + `<run_id>.{log,idx}` | — |
+
+| # | Crate · files (`<= 500` LOC each) | Depends | Proof |
+| :--- | :--- | :--- | :--- |
+| 1 | `Cargo.toml` (`rusqlite` `bundled`) + `slipfork-world` `ledger/{mod,db,migrate,model,resolve}.rs` | §6.7 #4 | Real-disk `/var/tmp` WAL suite: `BEGIN IMMEDIATE` + concurrent read-only readers, rollback on drop, `user_version` refusal, `delete_world_row` parent splice, lineage & resolution. |
+| 2 | `slipfork-world` `ledger/converge.rs`, `engine.rs`, `layout.rs`: flat `<root>/.forks/<name>` + `<name>--<root>` (deleting nested id compounding), `.forks` checkout-free invariant, pure `plan_converge` | 1 | Unit: `plan_converge` state matrix. Real-Btrfs lab: 3-deep fork (`salut ← bonjour ← test1`) lands flat with zero `.forks` inside checkouts and length bounds enforced. |
+| 3 | `slipfork` `daemon/lifecycle/{converge,core,fork,down,ps,plan}.rs` + `daemon/mod.rs`: wire `ForkLedger` + `ConvergeExecutor`, `worlds.json` import + unlink, single-plan `drop`; delete `daemon/registry.rs`, `WorldState`, `PrepFrame::fixed`, `fork_checkouts`, `world_id_for_project` | 2 | Lab journey: `drop` emits one `plan` frame (`[1/N]..[N/N]`), `SIGKILL` mid-`fork` leaves zero ghosts on next `ps`, and `rm -rf .forks/<name>` reaps live pods immediately. |
+| 4 | `slipfork` `status/{tree,rows,model}.rs`, `world/target.rs`, `commands/mod.rs` + `specs/02-cli-ux.md` (§3 `ps`/`status` lineage samples, §7 `drop` `plan`-frame & `--json` stream) + `TESTING_PLAN.md`: `← parent ← root` column, offline `StateDb::open_reader`, unified `Targets` | 3 | Full live Btrfs VM journey below (`tools/do_vm.py test`), zero ghosts remaining. |
+
+Live Btrfs VM acceptance journey (Slice 4):
+- Boot `test1`, fork `bonjour`, `cd .forks/bonjour && slipfork fork salut`, `cd ../salut && slipfork fork merci`: assert flat `test1/.forks/{bonjour,salut,merci}`, zero nested `.forks`, `ps` shows `merci ← salut ← bonjour ← test1`, and `snapshot_ms < 500ms`.
+- Run `slipfork drop bonjour -f`: assert monotonic `[1/N]..[N/N]` plan frames, `bonjour` subvolumes removed, and `salut` (`← test1`) + `merci` (`← salut ← test1`) still answering `200 OK`.
+- Remove `test1/.forks/merci` while `merci` is running, then run `slipfork ps`: assert `merci` pods are reaped (`0` `running` rows under `! checkout missing`) and `slipfork drop merci` clears all remaining subvolumes.
+- Plant an untracked `worlds/ghost--test1` subvolume and a `creating` row, restart `__daemon`, and assert `ps` is clean and `slipfork fork ghost` succeeds.
+
+### 7.6 Operational risks & latency budget
+
+- **Existing-store upgrades:** `StateDb::open_writer` imports legacy `worlds.json` inside `BEGIN IMMEDIATE` and unlinks it after `COMMIT`; first `converge` strips pre-upgrade `ino == 2` `.forks` stubs and legacy `<fork>--<parent>` leftovers on drop.
+- **SQLite WAL on Btrfs:** `state.db` sits in `<state_dir>` (outside snapshots) with normal Btrfs CoW kept on (`FS_NOCOW_FL` disables CRC32C checksums); `wal_autocheckpoint = 1000` plus `wal_checkpoint(TRUNCATE)` on shutdown bounds `-wal` below `2 MiB`.
+- **Daemon-vs-CLI binary skew:** `DaemonIdentity` replaces a stale daemon on upgrade before RPC dispatch, running `StateDb::migrate` once under `slipfork-daemon.lock`. Offline read-only CLIs fail closed on `user_version > SCHEMA_VERSION` with `next: upgrade slipfork`.
+- **`fork` latency (`< 2ms` ledger cost):** `fork` commits two tiny `WAL` + `synchronous = FULL` transactions (`creating` before `CHECKPOINT`, `live` on `ready`, `~0.5–2ms` total on SSD/NVMe), holding zero SQLite locks across Btrfs ioctls, `CHECKPOINT`, or `git`.
