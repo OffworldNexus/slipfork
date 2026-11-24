@@ -2,16 +2,16 @@
 id: M3.130
 title: "critical_status_live multi-step build fixtures need WORKDIR after M3.118"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: []
 paths: [crates/slipfork/tests/critical_status_live.rs]
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-24T21:11"
-updated: "2026-11-24T21:11"
+updated: "2026-11-24T21:27"
 ---
 
 # Problem

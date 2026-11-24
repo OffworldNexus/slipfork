@@ -1179,7 +1179,7 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     fs::write(
         project.join("Dockerfile"),
         format!(
-            "FROM python:3.13-slim\nCOPY . /app\n\
+            "FROM python:3.13-slim\nCOPY . /app\nWORKDIR /app\n\
              RUN sh -c 's={stamp}; echo a-$s; sleep 1; echo b-$s >&2'\n\
              RUN sh -c 'echo out-{stamp}; echo err-{stamp} >&2; exit 3'\n"
         ),
@@ -1289,7 +1289,7 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
             .iter()
             .map(|frame| frame["instruction"].as_str().unwrap_or_default())
             .collect::<Vec<_>>(),
-        ["FROM", "COPY", "RUN", "RUN"],
+        ["FROM", "COPY", "WORKDIR", "RUN", "RUN"],
         "one `started` row per instruction, in order: {stdout}\n{detail}"
     );
     assert!(
@@ -1356,11 +1356,11 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         "the `a` and `b` lines must reach the client a second apart, saw {live_gap:?}: {stdout}"
     );
     assert!(
-        position(3, "started") < a && a < b && b < position(3, "done"),
-        "step 3 must be live while its output streams: {stdout}"
+        position(4, "started") < a && a < b && b < position(4, "done"),
+        "step 4 must be live while its output streams: {stdout}"
     );
     assert_eq!(
-        frames[position(4, "failed")]["exit_code"],
+        frames[position(5, "failed")]["exit_code"],
         3,
         "the exit-3 `RUN` row keeps its code: {stdout}"
     );
@@ -1371,7 +1371,7 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         .unwrap_or_else(|| panic!("no `failed` boot frame: {stdout}\n{detail}"));
     assert_eq!(failed["phase"], "run", "{failed}");
     assert_eq!(failed["exit_code"], 3, "{failed}");
-    assert_eq!(failed["source"], "Dockerfile:4", "{failed}");
+    assert_eq!(failed["source"], "Dockerfile:5", "{failed}");
     assert!(
         failed["instruction"]
             .as_str()
@@ -1410,12 +1410,12 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     // 7. The owner-visible two-level narrative under a real colour PTY: outer `→ [1/2] image web`,
     //    indented `n/N` spinner phase row with indent-4 live gutter output + level-2 bar label
     //    while the child sleeps, collapsed settled inner rows, one expanded failure, and a single
-    //    verdict + remedy. Fresh stamp so step 3 executes live rather than hitting step cache.
+    //    verdict + remedy. Fresh stamp so step 4 executes live rather than hitting step cache.
     let pty_stamp = unique_suffix();
     fs::write(
         project.join("Dockerfile"),
         format!(
-            "FROM python:3.13-slim\nCOPY . /app\n\
+            "FROM python:3.13-slim\nCOPY . /app\nWORKDIR /app\n\
              RUN sh -c 's={pty_stamp}; echo a-$s; sleep 1; echo b-$s >&2'\n\
              RUN sh -c 'echo out-{pty_stamp}; echo err-{pty_stamp} >&2; exit 3'\n"
         ),
@@ -1430,37 +1430,42 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     let repaints: Vec<String> = narrative.output.split("\u{1b}7").map(plain).collect();
     assert!(
         repaints.iter().any(|frame| {
-            frame.contains("3/4 run")
-                && !frame.contains("[3/4]")
+            frame.contains("4/5 run")
+                && !frame.contains("[4/5]")
                 && frame.chars().any(|glyph| BRAILLE.contains(glyph))
                 && frame.contains(&format!("    │ a-{pty_stamp}"))
                 && !frame.contains(&format!("b-{pty_stamp}"))
-                && frame.contains("0/2  25% · [1/2] image web · step 3/4 RUN")
+                && frame.contains("0/2  30% · [1/2] image web · step 4/5 RUN")
         }),
-        "at least one repaint during `sleep 1` must paint indented `3/4 run` + spinner + indent-4 `│ a-{pty_stamp}` + `0/2  25% · [1/2] image web · step 3/4 RUN` before `b-{pty_stamp}` exists:\n{repaints:#?}"
+        "at least one repaint during `sleep 1` must paint indented `4/5 run` + spinner + indent-4 `│ a-{pty_stamp}` + `0/2  30% · [1/2] image web · step 4/5 RUN` before `b-{pty_stamp}` exists:\n{repaints:#?}"
     );
     let shown = plain(&narrative.output);
     assert!(
-        !shown.contains("2/8"),
-        "internal `outer_total * inner_total` counter `2/8` must never leak into the bar: {shown}"
+        !shown.contains("3/10"),
+        "internal `outer_total * inner_total` counter `3/10` must never leak into the bar: {shown}"
     );
     assert!(
         shown.contains("→ [1/2] image  web"),
         "a fresh build must open with `→ [1/2] image  web`: {shown}"
     );
     assert!(
-        shown.contains("  ✓ 1/4 from")
+        shown.contains("  ✓ 1/5 from")
             && shown.contains("python:3.13-slim")
             && !shown.contains("registry-1.docker.io"),
         "`from` row must carry `python:3.13-slim` as written: {shown}"
     );
-    for settled in ["  ✓ 1/4 from", "  ✓ 2/4 copy", "  ✓ 3/4 run"] {
+    for settled in [
+        "  ✓ 1/5 from",
+        "  ✓ 2/5 copy",
+        "  ✓ 3/5 workdir",
+        "  ✓ 4/5 run",
+    ] {
         assert!(
             shown.contains(settled),
             "a settled inner step must collapse to one indented `{settled}` row: {shown}"
         );
     }
-    for bracketed in ["[1/4]", "[2/4]", "[3/4]", "[4/4]"] {
+    for bracketed in ["[1/5]", "[2/5]", "[3/5]", "[4/5]", "[5/5]"] {
         assert!(
             !shown.contains(bracketed),
             "inner Dockerfile rows must never carry `{bracketed}` brackets: {shown}"
@@ -1473,7 +1478,7 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     assert!(shown.contains(&format!("    │ out-{pty_stamp}")), "{shown}");
     assert!(shown.contains(&format!("    ┃ err-{pty_stamp}")), "{shown}");
     assert!(
-        shown.contains("  ✗ 4/4 run"),
+        shown.contains("  ✗ 5/5 run"),
         "the failing inner step stays expanded at indent 2: {shown}"
     );
     assert_eq!(
@@ -1524,7 +1529,7 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     fs::write(
         project.join("Dockerfile"),
         format!(
-            "FROM python:3.13-slim\nCOPY . /app\n\
+            "FROM python:3.13-slim\nCOPY . /app\nWORKDIR /app\n\
              RUN sh -c 's={pipe_stamp}; echo a-$s; echo b-$s >&2'\n\
              RUN sh -c 'echo out-{pipe_stamp}; echo err-{pipe_stamp} >&2; exit 3'\n"
         ),
@@ -1542,10 +1547,10 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         "no spinner frames: {piped_all}"
     );
     assert!(piped_out.contains("→ [1/2] image  web"), "{piped_out}");
-    assert!(piped_out.contains("  ✓ 1/4 from"), "{piped_out}");
+    assert!(piped_out.contains("  ✓ 1/5 from"), "{piped_out}");
     assert!(piped_out.contains("python:3.13-slim"), "{piped_out}");
-    assert!(piped_out.contains("  → 3/4 run"), "{piped_out}");
-    for bracketed in ["[1/4]", "[2/4]", "[3/4]", "[4/4]"] {
+    assert!(piped_out.contains("  → 4/5 run"), "{piped_out}");
+    for bracketed in ["[1/5]", "[2/5]", "[3/5]", "[4/5]", "[5/5]"] {
         assert!(
             !piped_all.contains(bracketed),
             "append-only inner rows must never carry `{bracketed}`: {piped_all}"
