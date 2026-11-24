@@ -134,6 +134,19 @@ impl Core {
                 "no world is running in this directory",
             ));
         }
+        // Refuse a duplicate name before the first progress row: an existing checkout, world
+        // snapshot, or leftover clone would otherwise fail the snapshot mid-stream with a raw
+        // `File exists (os error 17)`.
+        if self.fork_artifacts_exist(&target, &fork) {
+            return Err(Failure::new(
+                "fork-exists",
+                format!(
+                    "fork \"{}\" already exists\nnext: slipfork drop {} -f",
+                    fork.as_str(),
+                    fork.as_str()
+                ),
+            ));
+        }
         if let Some(request) = &target.features {
             Self::validate_features(&target.project, request)?;
         }
@@ -173,6 +186,32 @@ impl Core {
                 Err(failure)
             }
         }
+    }
+
+    /// Whether any artifact of `fork` already exists: a registry entry, the `.forks/<name>`
+    /// checkout, the fork world snapshot, or a leftover resource clone from an earlier fork.
+    ///
+    /// `fork` snapshots into those exact paths, so a duplicate name must be refused before any
+    /// work starts; the remedy is the one verb that removes all four (`slipfork drop <name> -f`,
+    /// because a live fork's checkout carries its own run state and is never VCS-clean).
+    fn fork_artifacts_exist(&self, target: &ForkTarget, fork: &ForkName) -> bool {
+        let checkout = StoreLayout::project_fork(&target.project, fork);
+        if self.worlds.contains_key(&key_of(&checkout)) || checkout.exists() {
+            return true;
+        }
+        let layout = StoreLayout::at(target.store_root.clone());
+        if layout.fork_world(&target.world, fork).exists() {
+            return true;
+        }
+        let fork_world = StoreLayout::fork_world_name(&target.world, fork);
+        std::fs::read_dir(layout.worlds_root())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|entry| {
+                StoreLayout::parse_world_clone(&entry.file_name())
+                    .is_some_and(|(world, _, _)| world == fork_world)
+            })
     }
 
     /// Builds the complete announced row list for one fork, inserting the reuse-declined row

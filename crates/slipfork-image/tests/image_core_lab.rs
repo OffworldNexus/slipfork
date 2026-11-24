@@ -215,6 +215,80 @@ fn build_inputs_digest_tracks_the_dockerfile_and_copied_context_only() {
     let _ = fs::remove_dir_all(&root);
 }
 
+/// M3.129: VCS metadata is never a build input. A `fork` branch switch rewrites `.git/HEAD`,
+/// `.git/index`, and `.git/logs`, so a root-context image (`COPY . .`) must keep its digest and
+/// `.git` must never reach the `COPY` payload (a root `.git` directory, a linked worktree's
+/// `.git` file, and a nested repository alike). A real copied-file edit still moves the digest.
+#[test]
+fn a_git_only_change_never_moves_the_build_input_digest_or_reaches_copy() {
+    let root = lab("git-context");
+    fs::create_dir_all(root.join("src")).expect("create the context");
+    fs::write(root.join("src/app.txt"), "one").expect("write source");
+    fs::create_dir_all(root.join(".git/logs")).expect("create the checkout metadata");
+    fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
+    fs::write(root.join(".git/index"), "index-main").expect("write the index");
+    fs::write(root.join(".git/logs/HEAD"), "main\n").expect("write the reflog");
+    fs::create_dir_all(root.join("vendor/dep/.git")).expect("create a nested repository");
+    fs::write(root.join("vendor/dep/.git/HEAD"), "nested\n").expect("write the nested HEAD");
+    fs::create_dir_all(root.join("vendor/wt")).expect("create a linked worktree");
+    fs::write(
+        root.join("vendor/wt/.git"),
+        "gitdir: ../../.git/worktrees/wt\n",
+    )
+    .expect("write a worktree `.git` file");
+    fs::write(root.join("vendor/wt/real.txt"), "real\n").expect("write a real worktree file");
+    let dockerfile = root.join("Dockerfile");
+    fs::write(&dockerfile, "FROM alpine:3.20\nCOPY . /code\n").expect("write the Dockerfile");
+
+    let first = build_inputs_digest(&root, &dockerfile, None).expect("digest");
+    let paths: Vec<String> = BuildContext::load(&root)
+        .expect("load the real build context")
+        .entries()
+        .iter()
+        .map(|entry| entry.relative.to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        !paths
+            .iter()
+            .any(|path| path.split('/').any(|part| part == ".git")),
+        "VCS metadata must never reach `COPY`: {paths:?}"
+    );
+    assert!(paths.contains(&"src/app.txt".to_owned()), "{paths:?}");
+    assert!(
+        paths.contains(&"vendor/wt/real.txt".to_owned()),
+        "a worktree's real files still ship: {paths:?}"
+    );
+
+    // Exactly what `VcsWorkspace::switch` rewrites when the fork checks out another branch.
+    fs::write(root.join(".git/HEAD"), "ref: refs/heads/feat\n").expect("switch HEAD");
+    fs::write(root.join(".git/index"), "index-feat").expect("rewrite the index");
+    fs::write(root.join(".git/logs/HEAD"), "main\nfeat\n").expect("append the reflog");
+    fs::write(root.join("vendor/dep/.git/HEAD"), "nested-feat\n").expect("switch the submodule");
+    fs::write(
+        root.join("vendor/wt/.git"),
+        "gitdir: ../../.git/worktrees/wt2\n",
+    )
+    .expect("switch the worktree");
+    assert_eq!(
+        first,
+        build_inputs_digest(&root, &dockerfile, None).expect("branch-switch digest"),
+        "a branch switch must not change a root-context image's inputs"
+    );
+
+    // A real copied source edit and the Dockerfile still move the digest.
+    fs::write(root.join("src/app.txt"), "two").expect("edit the copied source");
+    let edited = build_inputs_digest(&root, &dockerfile, None).expect("edited digest");
+    assert_ne!(first, edited, "a copied file edit must rebuild");
+    fs::write(&dockerfile, "FROM alpine:3.20\nCOPY . /code\nRUN true\n")
+        .expect("edit the Dockerfile");
+    assert_ne!(
+        edited,
+        build_inputs_digest(&root, &dockerfile, None).expect("Dockerfile digest"),
+        "a Dockerfile edit must rebuild"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn dockerfile_variables_keep_unknown_refs_and_bogus_instructions_error() {
     let mut args = BuildArgs::new();
