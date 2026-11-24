@@ -28,12 +28,15 @@ impl<'a> BuildLog<'a> {
         }
     }
 
-    /// Writes one cleaned line to the live sink and the `slipfork logs` capture.
+    /// Writes one cleaned, newline-terminated line to the live sink and the `slipfork logs`
+    /// capture. The sink (`EventLog`) is line-buffered: without `\n` it would hold every build
+    /// line — including the failure cause — until an unrelated flush, so the run capture stays empty.
     fn emit(&mut self, line: &[u8]) -> io::Result<()> {
         let Some(text) = clean_line(line) else {
             return Ok(());
         };
         self.sink.write_all(text.as_bytes())?;
+        self.sink.write_all(b"\n")?;
         let _ = pod_log::append(&self.dir, &self.id, text.as_bytes());
         Ok(())
     }
@@ -44,11 +47,15 @@ impl<'a> BuildLog<'a> {
         let _ = self.emit(&pending);
     }
 
-    /// Flushes the buffered tail and appends every line of a failed build's error, so
-    /// `<store>/logs/<world>/<image>.log` is never empty after a failure.
+    /// Flushes the buffered tail and appends every line of a failed build's error, so the run
+    /// capture is never empty after a failure. A `next:` remedy is not captured output: skipping it
+    /// keeps `logs <image>` from printing a second, circular hint.
     pub(super) fn fail(&mut self, error: &str) {
         self.finish();
         for line in error.lines() {
+            if line.trim_start().starts_with("next:") {
+                continue;
+            }
             let _ = self.emit(line.as_bytes());
         }
     }
@@ -110,7 +117,9 @@ mod tests {
         let mut tee = BuildLog::new(&mut mirror, &store, "frontend");
         tee.write_all(b"step 1/2 npm ci\nstep 2/2 npm run build\nnpm ERR! missing script: build")
             .expect("stream the failing RUN output");
-        tee.fail("build `frontend` failed: Dockerfile:12: `RUN npm run build` failed: `crun` exited with code 1");
+        tee.fail(
+            "build `frontend` failed: Dockerfile:12: `RUN npm run build` failed: `crun` exited with code 1\nnext: fix the command above; then rerun `slipfork up`",
+        );
 
         drop(tee);
 
@@ -138,12 +147,21 @@ mod tests {
 
         let mirror = String::from_utf8(mirror).expect("the live sink mirrors UTF-8 output");
         assert!(
-            mirror.contains("npm ERR! missing script: build"),
-            "{mirror}"
+            mirror.contains("npm ERR! missing script: build\n"),
+            "the sink receives a newline-terminated line: {mirror:?}"
         );
         assert!(
-            mirror.contains("Dockerfile:12: `RUN npm run build` failed"),
-            "{mirror}"
+            mirror
+                .contains("Dockerfile:12: `RUN npm run build` failed: `crun` exited with code 1\n"),
+            "the failure cause reaches the sink once, framed: {mirror:?}"
+        );
+        assert!(
+            !mirror.contains("next:"),
+            "a remedy never reaches the sink: {mirror:?}"
+        );
+        assert!(
+            !captured.trim().is_empty(),
+            "the capture is never empty after a failure"
         );
     }
 }

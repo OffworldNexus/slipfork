@@ -510,8 +510,8 @@ mod tests {
         );
         assert_eq!(
             captured.matches("next:").count(),
-            1,
-            "the failure carries exactly one remedy:\n{captured}"
+            0,
+            "a remedy is not captured output:\n{captured}"
         );
     }
 }
