@@ -196,6 +196,32 @@ $ make uninstall PREFIX="$HOME/.local/opt/slipfork"
 Both targets refuse any `BINDIR` under `/usr`, `/bin`, or `/sbin`; keep the prefix ahead of
 `/usr/bin` in `PATH` so the branch build wins.
 
+### Let the dev CLI own the daemon
+
+A release daemon keeps answering your socket: a packaged `slipfork.service` runs
+`/usr/bin/slipfork __daemon`, so the branch CLI talks to release code even when it wins in `PATH`.
+When that unit is active and its `ExecStart` is a different binary, `make install` stops it — the
+next `slipfork up` starts the dev daemon from your tree.
+
+`make uninstall` removes only its own binaries and receipt, then starts `slipfork.service` again if
+the packaged unit still exists and is not already running. Nothing under `/usr` and no unit file is
+ever rewritten; a host without a systemd user session just gets the binaries and no extra output.
+
+If the running executable cannot be identified, or the stop fails, `make install` prints a one-line
+remedy on stderr instead of claiming success. The packaged unit is not disabled, so an enabled
+`slipfork.service` returns on your next login or boot — rerun `make install` (or
+`systemctl --user stop slipfork`) after a relogin.
+
+```console
+$ make install PREFIX="$HOME/.local/opt/slipfork"
+installed slipfork slipfork-lsp slipfork-world-init -> /home/you/.local/opt/slipfork/bin; next: put /home/you/.local/opt/slipfork/bin before /usr/bin in PATH, then run hash -r
+✓ stopped the packaged slipfork.service — the dev CLI will start the dev daemon
+$ export PATH="$HOME/.local/opt/slipfork/bin:$PATH" && hash -r && slipfork up   # dev daemon, branch code
+$ make uninstall PREFIX="$HOME/.local/opt/slipfork"
+removed slipfork slipfork-lsp slipfork-world-init from /home/you/.local/opt/slipfork/bin
+✓ restarted the packaged slipfork.service
+```
+
 ## On ext4 or XFS? Mount a Btrfs Workspace Image in Your Home Folder
 
 You do not have to repartition your disk. A sparse Btrfs image, mounted by a systemd `.mount` unit,

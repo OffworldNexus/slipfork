@@ -168,7 +168,33 @@ install:
 	install -d -m 0755 "$(BINDIR)"; \
 	for bin in $(DEV_BINS); do install -m 0755 "$(TARGET_DIR)/release/$$bin" "$(BINDIR)/$$bin"; done; \
 	( cd "$(BINDIR)" && sha256sum $(DEV_BINS) > "$(RECEIPT)" ); \
-	echo "installed $(DEV_BINS) -> $(BINDIR); next: put $(BINDIR) before /usr/bin in PATH, then run hash -r"
+	echo "installed $(DEV_BINS) -> $(BINDIR); next: put $(BINDIR) before /usr/bin in PATH, then run hash -r"; \
+	dev_exe="$(BINDIR)/slipfork"; \
+	unit_state=""; \
+	if command -v systemctl >/dev/null 2>&1; then \
+	  unit_state=$$(systemctl --user show -p LoadState --value slipfork 2>/dev/null || true); \
+	fi; \
+	if [ "$$unit_state" = loaded ] && systemctl --user is-active --quiet slipfork 2>/dev/null; then \
+	  running=$$(systemctl --user show -p ExecStart --value slipfork 2>/dev/null | grep -o 'path=[^ ;]*' | head -n 1 | cut -d= -f2); \
+	  if [ -z "$$running" ]; then \
+	    pid=$$(systemctl --user show -p MainPID --value slipfork 2>/dev/null || true); \
+	    case "$$pid" in ''|0) pid="" ;; esac; \
+	    [ -z "$$pid" ] || running=$$(readlink -f "/proc/$$pid/exe" 2>/dev/null || true); \
+	  fi; \
+	  same=""; \
+	  if [ -n "$$running" ]; then \
+	    [ "$$(readlink -f "$$running" 2>/dev/null || echo "$$running")" != "$$(readlink -f "$$dev_exe" 2>/dev/null || echo "$$dev_exe")" ] || same=1; \
+	  fi; \
+	  if [ -z "$$running" ]; then \
+	    echo "slipfork: packaged slipfork.service is still active; next: systemctl --user stop slipfork" >&2; \
+	  elif [ -z "$$same" ]; then \
+	    if systemctl --user stop slipfork >/dev/null 2>&1; then \
+	      echo "✓ stopped the packaged slipfork.service — the dev CLI will start the dev daemon"; \
+	    else \
+	      echo "slipfork: packaged slipfork.service is still active; next: systemctl --user stop slipfork" >&2; \
+	    fi; \
+	  fi; \
+	fi
 
 # Removes exactly the three binaries it installed, proven by the receipt; never systemd units,
 # the store, or a binary from the package / `install.sh`.
@@ -182,7 +208,15 @@ uninstall:
 	( cd "$(BINDIR)" && sha256sum -c --quiet "$(RECEIPT)" >/dev/null 2>&1 ) || { echo "uninstall: $(BINDIR) no longer holds the make-installed binaries; next: remove them yourself, or use the installer's --uninstall" >&2; exit 2; }; \
 	for bin in $(DEV_BINS); do rm -f "$(BINDIR)/$$bin"; done; \
 	rm -f "$$receipt"; \
-	echo "removed $(DEV_BINS) from $(BINDIR)"
+	echo "removed $(DEV_BINS) from $(BINDIR)"; \
+	unit_state=""; \
+	if command -v systemctl >/dev/null 2>&1; then \
+	  unit_state=$$(systemctl --user show -p LoadState --value slipfork 2>/dev/null || true); \
+	fi; \
+	if [ "$$unit_state" = loaded ] && ! systemctl --user is-active --quiet slipfork 2>/dev/null \
+	  && systemctl --user start slipfork >/dev/null 2>&1; then \
+	  echo "✓ restarted the packaged slipfork.service"; \
+	fi
 
 # ---------------------------------------------------------------------------
 # Distribution artifacts (specs/06-distribution-and-docs.md §1-§8).
