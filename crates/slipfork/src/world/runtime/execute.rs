@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use slipfork_world::run_log::RunNote;
 use slipfork_world::{BootFailure, BootKind, BootState, BootStep, StepOutcome};
 
 use crate::world::supervise::BootSink;
@@ -26,6 +27,9 @@ impl WorldRuntime {
         index: usize,
         step: &BootStep,
     ) -> Result<StepOutcome, BootFailure> {
+        // Captured before the launch so a crash line written inside the first milliseconds is not
+        // filtered out of the service's run capture by its own `since_ms` window.
+        let started_ms = slipfork_world::pod_log::now_ms();
         let mut log = BootSink::for_step(
             Arc::clone(&self.emitter),
             index + 1,
@@ -64,8 +68,8 @@ impl WorldRuntime {
             }
         };
         log.flush();
-        staged.attach_progress(log.clone());
-        let outcome = staged.await_ready();
+        staged.attach_progress(log.clone(), self.layout.world_logs(&self.world), started_ms);
+        let outcome = staged.await_ready(&self.pods_dir);
         let duration = elapsed_ms(started);
         let mut record_error = None;
         let run_id = match &outcome {
@@ -86,7 +90,22 @@ impl WorldRuntime {
             }
             Err(error) => {
                 let run_id = log.finish_run("failed", duration);
-                if let Err(annotate) = notes.failed(run_id.as_deref(), None, error.exit_code) {
+                // A readiness failure names its one-line cause and the child code when the wait
+                // learned them, so the catalog record explains the failure without a rerun.
+                let reason = error
+                    .message
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .map(str::to_owned);
+                let note = reason.map(|reason| RunNote {
+                    reason: Some(reason),
+                    exit_code: error.exit_code,
+                    ..Default::default()
+                });
+                if let Err(annotate) =
+                    notes.failed(run_id.as_deref(), note.as_ref(), error.exit_code)
+                {
                     record_error = Some(annotate);
                 }
                 run_id

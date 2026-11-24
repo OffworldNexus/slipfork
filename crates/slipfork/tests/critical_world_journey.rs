@@ -109,6 +109,24 @@ image app . {
 }
 "#;
 
+// A service whose own stderr marker must survive into `logs -r`, and whose exit code must name
+// the verdict, without waiting out the 10s readiness window.
+const CRASH_FORKFILE: &str = r#"# forkfile: 0.1
+image app . {
+  dockerfile Dockerfile
+  service web {
+    port 8000
+    route /
+    run: @uv run python crash.py
+  }
+}
+"#;
+
+const CRASH_PY: &str = r#"import sys
+print("crash-marker", file=sys.stderr, flush=True)
+raise SystemExit(1)
+"#;
+
 // The run-catalog journey: one image whose `RUN` fails before any pod can start.
 const FAIL_BUILD_DOCKERFILE: &str = "\
 FROM python:3.13-slim
@@ -131,7 +149,7 @@ image app . {
 // Engine-executed instruction failures: the instruction and its one-line cause must survive.
 const MISSING_STAGE_DOCKERFILE: &str = "\
 FROM python:3.13-slim
-COPY --from=missing-stage /x /y
+COPY --from=Missing-Stage /x /y
 ";
 
 // A `FROM` the engine cannot pull: the pull, not a child process, is the failing command.
@@ -357,6 +375,7 @@ impl Journey {
             "fromfail",
             "parsefail",
             "badfrom",
+            "crash",
         ] {
             if let Ok(world) = WorldName::parse(world) {
                 let _ = engine.drop_world(&world);
@@ -388,6 +407,7 @@ impl Journey {
         fs::write(dir.join(".dockerignore"), ".venv/\n__pycache__/\n")
             .expect("write .dockerignore");
         fs::write(dir.join("app.py"), APP_PY).expect("write app.py");
+        fs::write(dir.join("crash.py"), CRASH_PY).expect("write crash.py");
         fs::write(dir.join("worker.py"), WORKER_PY).expect("write worker.py");
         self.projects.borrow_mut().push(dir.clone());
         dir
@@ -731,6 +751,7 @@ impl Drop for Journey {
             "fromfail",
             "parsefail",
             "badfrom",
+            "crash",
         ] {
             if let Ok(world) = WorldName::parse(world) {
                 let _ = store_engine.drop_world(&world);
@@ -1757,6 +1778,121 @@ fn world_up_restart_down_journey() {
         stdout(&catalog)
     );
 
+    // 3a2. A service that dies while starting must fail fast (never poll the full 10s), record the
+    // child exit on the run, and tee the service's own stderr into `logs -r` with its gutter.
+    let crash = journey.project("crash", CRASH_FORKFILE);
+    let crash_started = Instant::now();
+    let crashed = journey.slipfork(&crash, &["up"]);
+    let crash_elapsed = crash_started.elapsed();
+    assert_eq!(
+        crashed.status.code(),
+        Some(1),
+        "{}",
+        up_failure("a crashing service must fail `up`", &crash, &crashed)
+    );
+    assert!(
+        crash_elapsed < Duration::from_secs(10),
+        "a crash during start must fail fast, not wait out the 10s readiness window (took {crash_elapsed:?}):\n{}",
+        up_failure("the crashing service was slow to fail", &crash, &crashed)
+    );
+    let crash_err = stderr(&crashed);
+    assert!(
+        !crash_err.contains("never opened :8000 within 10s"),
+        "a crash is detected as an exit, never a readiness timeout:\n{crash_err}"
+    );
+    let crash_lines: Vec<&str> = crash_err
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    assert_eq!(
+        crash_lines.len(),
+        2,
+        "a crash prints one verdict and one remedy on stderr:\nstdout={}\nstderr={crash_err}",
+        stdout(&crashed)
+    );
+    assert_eq!(
+        crash_lines[0], "✗ start web failed (exit 1)",
+        "the verdict carries the service's own exit code:\nstderr={crash_err}"
+    );
+    assert_eq!(
+        crash_err.matches("next:").count(),
+        1,
+        "a crash prints exactly one remedy:\nstderr={crash_err}"
+    );
+    let crash_run = crash_lines[1]
+        .strip_prefix("next: slipfork logs -r ")
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| panic!("the crash must name one `-r` run remedy:\nstderr={crash_err}"))
+        .to_owned();
+    let crash_replay = journey.slipfork(&crash, &["logs", "-r", &crash_run]);
+    assert!(
+        crash_replay.status.success(),
+        "`logs -r {crash_run}`: {}",
+        stderr(&crash_replay)
+    );
+    let crash_text = stdout(&crash_replay);
+    assert!(
+        crash_text.contains("crash-marker"),
+        "the service's own stderr must reach the run capture:\n{crash_text}"
+    );
+    assert!(
+        crash_text.contains('┃'),
+        "the captured service line must keep its gutter:\n{crash_text}"
+    );
+    assert!(
+        !crash_text.contains('\u{1b}'),
+        "NO_COLOR keeps the crash replay escape-free:\n{crash_text}"
+    );
+    assert!(
+        crash_text.contains("(exit 1)"),
+        "the replay verdict carries the child's exit code:\n{crash_text}"
+    );
+    let crash_store = LogStore::at(
+        journey.store_root.clone(),
+        WorldName::parse("crash").expect("world"),
+    );
+    let crash_record = crash_store
+        .records()
+        .expect("read the crash catalog")
+        .records
+        .into_iter()
+        .find(|record| record.run_id == crash_run)
+        .unwrap_or_else(|| panic!("the crash must leave a catalog record for {crash_run}"));
+    assert_eq!(
+        crash_record.exit_code,
+        Some(1),
+        "the catalog records the child exit: {crash_record:?}"
+    );
+    assert!(
+        crash_record
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("exited (exit 1)")),
+        "the catalog reason names the exit: {crash_record:?}"
+    );
+    assert!(
+        crash_record.duration_ms < 10_000,
+        "fail-fast must beat the 10s readiness window: {crash_record:?}"
+    );
+    let crash_target = journey.slipfork(&crash, &["logs", "web"]);
+    assert!(
+        crash_target.status.success() && stdout(&crash_target).contains("crash-marker"),
+        "`logs web` must still read the pod capture: {}",
+        stderr(&crash_target)
+    );
+    let crash_down = journey.slipfork(&crash, &["down"]);
+    assert!(
+        crash_down.status.success(),
+        "crash down: {}",
+        stderr(&crash_down)
+    );
+    assert!(
+        !crash.join(".slipfork/world.json").is_file(),
+        "`down` must remove the crashed world marker"
+    );
+
     // 3b. A failing image `RUN` is a durable catalog run: `logs <image>` and `logs -r <id>` replay
     // the build output, `--runs` lists it, and a later successful boot plus `down` keeps all three.
     let buildfail = journey.project("buildfail", CATALOG_FORKFILE);
@@ -2148,7 +2284,7 @@ fn world_up_restart_down_journey() {
     assert!(
         stage_block
             .lines()
-            .any(|line| line.contains("┃ no build stage named `missing-stage`")),
+            .any(|line| line.contains("┃ no build stage named `Missing-Stage`")),
         "`up` streams the failing step's `┃` reason line:\n{stage_block}"
     );
     let stage_run = stage_block
@@ -2174,13 +2310,13 @@ fn world_up_restart_down_journey() {
         stage_fields.len() >= 5
             && stage_fields[1] == "COPY"
             && stage_fields[2] == "app"
-            && stage_fields[3].contains("--from=missing-stage")
+            && stage_fields[3].contains("--from=Missing-Stage")
             && stage_fields[3].contains("/x /y"),
         "the replay header names the instruction that ran:\n{stage_header:?}"
     );
     assert_eq!(
         stage_text
-            .matches("┃ no build stage named `missing-stage`")
+            .matches("┃ no build stage named `Missing-Stage`")
             .count(),
         1,
         "the engine's reason is written exactly once:\n{stage_text}"
@@ -2224,14 +2360,14 @@ fn world_up_restart_down_journey() {
     assert!(
         stage_record["instruction"]
             .as_str()
-            .is_some_and(|text| text.contains("--from=missing-stage")),
+            .is_some_and(|text| text.contains("--from=Missing-Stage")),
         "{stage_record}"
     );
     assert_eq!(stage_record["source"], "Dockerfile:2", "{stage_record}");
     assert!(
         stage_record["reason"]
             .as_str()
-            .is_some_and(|reason| reason.contains("no build stage named `missing-stage`")),
+            .is_some_and(|reason| reason.contains("no build stage named `Missing-Stage`")),
         "{stage_record}"
     );
     assert_eq!(stage_record["state"], "failed", "{stage_record}");
