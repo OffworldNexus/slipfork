@@ -38,3 +38,4 @@ Every call to an expensive-tier agent (`strategist`, `architect`, `expert`) is r
 | 2026-11-22T00:35 | M3.45.2 | expert | lead | fork 1.9-5.1s vs <1s: global WorldRuntime mutex serializes DAG nodes; before_start/pre_deploy hook digests never recorded in world stamp so hooks re-run; drop leaks world subvolumes |
 | 2026-11-22T12:11 | M3.49 | architect | lead | spec/ARCHITECTURE lock-in: unified PTY shell, DECSTBM bottom bar, <1s fork |
 | 2026-11-23T14:21 | M3.70.2 | expert | lead | prod-shape runtime defects: image ENV not applied to pods (venv symlink resolution), suspected fork feature/stamp leak, stale crun container |
+| 2026-11-24T02:18 | M3.100 | expert | conductor | leaked slipfork-world-init after a healed/restarted service; needs process-group/namespace tracing |

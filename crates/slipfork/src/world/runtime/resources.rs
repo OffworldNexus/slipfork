@@ -70,6 +70,7 @@ pub(super) fn start_resource(
             buckets,
         };
         control::configure_s3(runtime.pods_dir(), config).map_err(|error| error.to_string())?;
+        runtime.mark_live_world();
         return Ok(Staged {
             state: BootState::Ready,
             detail: "started".to_owned(),

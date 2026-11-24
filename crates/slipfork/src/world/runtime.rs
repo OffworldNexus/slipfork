@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -52,6 +52,7 @@ pub(super) struct WorldRuntime {
     services: Vec<ServiceNode>,
     resources: Vec<ResourceNode>,
     clones: Mutex<Vec<PathBuf>>,
+    live_world: AtomicBool,
     counter: AtomicUsize,
     total_steps: usize,
     emitter: Arc<Mutex<Emitter>>,
@@ -217,6 +218,7 @@ impl WorldRuntime {
             services: plan.services.clone(),
             resources: plan.resources.clone(),
             clones: Mutex::new(initial_clones),
+            live_world: AtomicBool::new(false),
             counter: AtomicUsize::new(0),
             total_steps: plan.steps.len(),
             emitter,
@@ -335,13 +337,26 @@ impl WorldRuntime {
         self.engine.flush_store().map_err(|error| error.to_string())
     }
 
+    /// Records that at least one long-lived pod or native S3 endpoint entered the world.
+    pub(super) fn mark_live_world(&self) {
+        self.live_world.store(true, Ordering::Release);
+    }
+
+    /// Whether any resource or service entered the world; a cold build/hook failure with `false`
+    /// tears the empty world down immediately instead of orphaning `slipfork-world-init`.
+    pub(super) fn has_live_world(&self) -> bool {
+        self.live_world.load(Ordering::Acquire)
+    }
+
     /// Writes `<pods>/<id>/config.json` and launches the detached container concurrently over
     /// `<pods>/control.sock`, with zero supervisor lock held.
     pub(super) fn launch_pod(&self, spec: &PodSpec) -> Result<u32, String> {
         write_bundle(spec, &self.pod_host, &self.pods_dir.join(&spec.id))
             .map_err(|error| error.to_string())?;
-        control::launch_pod(&self.pods_dir, spec, self.boot_timeout)
-            .map_err(|error| error.to_string())
+        let pid = control::launch_pod(&self.pods_dir, spec, self.boot_timeout)
+            .map_err(|error| error.to_string())?;
+        self.mark_live_world();
+        Ok(pid)
     }
 
     /// Runs one setup/hook/`initdb` pod over `<pods>/control.sock` with zero supervisor lock held.
@@ -536,6 +551,18 @@ impl WorldRuntime {
         self.images.stamps()
     }
 
+    /// Stops an empty world immediately and sweeps ephemeral pod rootfs clones.
+    pub(super) fn stop_and_cleanup(&self) -> Result<(), String> {
+        let stopped = self
+            .supervisor
+            .lock()
+            .map_err(|_| "world supervisor lock poisoned".to_owned())?
+            .stop()
+            .map_err(|error| error.to_string());
+        self.sweep_clones();
+        stopped
+    }
+
     /// Blocks until the world init exits, then sweeps ephemeral pod rootfs clones.
     pub(super) fn await_exit_and_cleanup(&self) -> Result<(), String> {
         let awaited = self
@@ -544,6 +571,11 @@ impl WorldRuntime {
             .map_err(|_| "world supervisor lock poisoned".to_owned())?
             .await_exit()
             .map_err(|error| error.to_string());
+        self.sweep_clones();
+        awaited
+    }
+
+    fn sweep_clones(&self) {
         let clones = self
             .clones
             .lock()
@@ -554,7 +586,6 @@ impl WorldRuntime {
         }
         let _ = fs::remove_dir(self.layout.world_pods(&self.world));
         let _ = fs::remove_dir(self.layout.pods_root());
-        awaited
     }
 }
 

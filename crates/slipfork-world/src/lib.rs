@@ -85,7 +85,7 @@ pub use pod::{
 };
 pub use pod_log::{CHUNK, DIVIDER_CLOSE, DIVIDER_OPEN, LogKind, LogLine, LogReader, LogSink};
 pub use port::{Dirtiness, ForkPaths, WorldEngine};
-pub use reap::kill_group;
+pub use reap::{kill_group, reap_world_tree};
 pub use resources::{
     DatabaseBootstrap, DatabaseFault, DatabaseName, ImageFacts, PostgresClone, PostgresLauncher,
     PostgresTemplate, RedisLauncher, ResourceKind, S3Bucket, S3Credentials, S3Server,

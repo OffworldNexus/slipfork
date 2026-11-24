@@ -3,18 +3,18 @@
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::Child;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use slipfork_world::control::{PROTOCOL_VERSION, Request};
 
 use super::registry::RegistryEntry;
+use super::rpc::{world_answers, world_call_within};
 use super::{Daemon, Failure};
 
-fn kill_and_wait(child: &mut Child) {
-    if let Ok(pid) = i32::try_from(child.id()) {
-        slipfork_world::kill_group(pid);
-    }
-    let _ = child.wait();
-}
+const ABORT_CALL: Duration = Duration::from_secs(5);
+const ABORT_EXIT: Duration = Duration::from_secs(2);
+const REAP_BUDGET: Duration = Duration::from_secs(5);
 
 /// One in-flight boot, from the reserved registry key to the published live world.
 #[derive(Debug)]
@@ -23,26 +23,42 @@ pub(super) struct BootSession {
     key: String,
     /// `supervisor.log` the child's stderr is appended to.
     log: PathBuf,
-    /// Supervised child; `None` once the live registry entry owns it.
+    /// Supervised child; `None` once published or stopped.
     child: Option<Child>,
+    /// Supervisor pid retained after `child` is taken so rollback can still reap its session.
+    supervisor_pid: u32,
+    /// Canonical `<runtime_dir>/slipfork/pods/<world>` tmpfs root for this boot.
+    pods_dir: PathBuf,
     /// Project directory the world boots from.
     project: PathBuf,
     /// Fork name when this boot is a fork world.
     fork: Option<String>,
     /// The daemon already streamed a merged `plan` frame (a fork's prep rows plus world steps).
     plan_announced: bool,
+    /// Idempotence guard so repeated `stop()` calls on fork rollback do not double-poll.
+    stopped: bool,
 }
 
 impl BootSession {
     /// Builds the session around one already-spawned supervisor.
-    pub(super) fn new(key: String, log: PathBuf, child: Child, project: PathBuf) -> Self {
+    pub(super) fn new(
+        key: String,
+        log: PathBuf,
+        child: Child,
+        pods_dir: PathBuf,
+        project: PathBuf,
+    ) -> Self {
+        let supervisor_pid = child.id();
         Self {
             key,
             log,
             child: Some(child),
+            supervisor_pid,
+            pods_dir,
             project,
             fork: None,
             plan_announced: false,
+            stopped: false,
         }
     }
 
@@ -129,7 +145,7 @@ impl BootSession {
                         world: world.clone(),
                         fork: self.fork.clone(),
                         pods_dir,
-                        supervisor_pid: self.child.as_ref().map_or(0, Child::id),
+                        supervisor_pid: self.supervisor_pid,
                         started_at_ms: std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map_or(0, |since| since.as_millis() as u64),
@@ -151,6 +167,9 @@ impl BootSession {
                         .as_str()
                         .unwrap_or("the world failed to boot")
                         .to_owned();
+                    if let Some(reported) = event["pods_dir"].as_str() {
+                        self.pods_dir = PathBuf::from(reported);
+                    }
                     if self.fork.is_none()
                         && let (Some(pods_dir), Some(world), Some(child)) = (
                             event["pods_dir"].as_str().map(PathBuf::from),
@@ -163,7 +182,7 @@ impl BootSession {
                             world: world.to_owned(),
                             fork: None,
                             pods_dir,
-                            supervisor_pid: child.id(),
+                            supervisor_pid: self.supervisor_pid,
                             started_at_ms: std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .map_or(0, |since| since.as_millis() as u64),
@@ -180,11 +199,35 @@ impl BootSession {
         }
     }
 
-    /// Kills the supervisor's whole process group and reaps it, so no pipe outlives the boot.
+    /// Shuts down any live `slipfork-world-init`, reaps `__supervise` plus escaped world groups,
+    /// and cleans `.slipfork/world.json` so no half-booted world or pipe outlives the session.
     pub(super) fn stop(&mut self) {
-        if let Some(child) = self.child.as_mut() {
-            kill_and_wait(child);
+        if self.stopped {
+            return;
         }
+        self.stopped = true;
+        if world_answers(&self.pods_dir) {
+            let shutdown = Request::Shutdown {
+                v: PROTOCOL_VERSION,
+                id: "daemon-boot-abort".to_owned(),
+            };
+            let _ = world_call_within(&self.pods_dir, &shutdown, ABORT_CALL);
+        }
+        if let Some(mut child) = self.child.take() {
+            let deadline = Instant::now() + ABORT_EXIT;
+            while Instant::now() < deadline {
+                if matches!(child.try_wait(), Ok(Some(_)) | Err(_)) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(15));
+            }
+            if let Ok(pid) = i32::try_from(self.supervisor_pid) {
+                slipfork_world::kill_group(pid);
+            }
+            let _ = child.wait();
+        }
+        slipfork_world::reap_world_tree(self.supervisor_pid, Some(&self.pods_dir), REAP_BUDGET);
+        let _ = std::fs::remove_file(self.project.join(".slipfork/world.json"));
     }
 
     /// Stops an unusable half-boot and drops its placeholder before the failure is reported.

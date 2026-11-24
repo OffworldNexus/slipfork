@@ -2,14 +2,13 @@
 
 use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use slipfork_world::control::{PROTOCOL_VERSION, Request, decode_init_frame, encode};
+use slipfork_world::RuntimePods;
+use slipfork_world::control::{PROTOCOL_VERSION, Request};
 
 use super::core::{Core, World};
 use crate::daemon::Failure;
@@ -23,6 +22,7 @@ use crate::world::features::WorldFeatures;
 const RECONCILE_CALL: Duration = Duration::from_secs(10);
 /// Longest the old supervisor gets to exit after `Shutdown` before its group is killed.
 const RECONCILE_EXIT: Duration = Duration::from_secs(10);
+const REAP_BUDGET: Duration = Duration::from_secs(5);
 const HEAL_INSPECT: Duration = Duration::from_secs(2);
 const HEAL_RESTART: Duration = Duration::from_secs(30);
 const HEAL_SETTLE: Duration = Duration::from_millis(250);
@@ -91,8 +91,9 @@ impl Core {
             }
             _ => false,
         };
-        if unchanged {
-            // The socket answers, but only the canonical `ps` rows prove health: heal outside the lock.
+        // Only heal when every declared service already wrote its bundle; a half-booted world
+        // whose hook failed before bundling a service must reconcile to run the full DAG.
+        if unchanged && services_bundled(&project, &entry.pods_dir) {
             return Ok(UpAction::Heal(Box::new(Heal {
                 world: entry.world,
                 project: entry.project,
@@ -207,31 +208,52 @@ fn world_failure(world: &str, error: &str) -> Failure {
 pub(crate) fn reconcile(plan: Reconcile) {
     let declared = declared_ids(&plan.project);
     if let Some(declared) = &declared
-        && let Some(pods) = call_world(
+        && let Ok(pods) = world_call_within(
             &plan.pods_dir,
             &Request::List {
                 v: PROTOCOL_VERSION,
                 id: "daemon-reconcile-list".to_owned(),
             },
+            RECONCILE_CALL,
         )
     {
         for pod in slipfork_world::pod_statuses(&pods).unwrap_or_default() {
             if !pod.running || declared.iter().any(|id| id == &pod.id) {
                 continue;
             }
-            let _ = call_world(
+            let _ = world_call_within(
                 &plan.pods_dir,
                 &Request::Stop {
                     v: PROTOCOL_VERSION,
                     id: format!("daemon-stop-{}", pod.id),
                     pod: pod.id,
                 },
+                RECONCILE_CALL,
             );
         }
     }
-    let _ = shut_down(&plan.pods_dir);
-    wait_or_kill(plan.supervisor_pid, plan.child, RECONCILE_EXIT);
+    let _ = world_call_within(
+        &plan.pods_dir,
+        &Request::Shutdown {
+            v: PROTOCOL_VERSION,
+            id: "daemon-reconcile-down".to_owned(),
+        },
+        RECONCILE_CALL,
+    );
+    wait_or_kill(
+        plan.supervisor_pid,
+        &plan.pods_dir,
+        plan.child,
+        RECONCILE_EXIT,
+    );
     let _ = fs::remove_file(plan.project.join(".slipfork/world.json"));
+}
+
+fn services_bundled(project: &Path, pods_dir: &Path) -> bool {
+    declared_ids(project).is_some_and(|ids| {
+        ids.iter()
+            .all(|id| pods_dir.join(id).join("config.json").is_file())
+    })
 }
 
 /// The ids the current `Forkfile` declares; `None` when it does not compile.
@@ -250,55 +272,17 @@ fn declared_ids(project: &Path) -> Option<Vec<String>> {
     )
 }
 
-/// One typed control call with a bounded read; `None` on any transport or reply failure.
-fn call_world(pods_dir: &Path, request: &Request) -> Option<Value> {
-    let path = slipfork_world::control::control_socket_path(pods_dir).ok()?;
-    let mut stream = UnixStream::connect(&path).ok()?;
-    stream.set_read_timeout(Some(RECONCILE_CALL)).ok()?;
-    stream.write_all(&encode(request).ok()?).ok()?;
-    stream.flush().ok()?;
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    reader.read_line(&mut line).ok()?;
-    match decode_init_frame(line.trim()).ok()? {
-        slipfork_world::control::InitFrame::Reply { ok, error, .. } => match (error, ok) {
-            (None, Some(value)) => Some(value),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Sends `Shutdown` and tolerates the init's `Stopped` reply.
-fn shut_down(pods_dir: &Path) -> std::io::Result<()> {
-    let path = slipfork_world::control::control_socket_path(pods_dir)
-        .map_err(|error| std::io::Error::other(error.to_string()))?;
-    let mut stream = UnixStream::connect(&path)?;
-    stream.set_read_timeout(Some(RECONCILE_CALL))?;
-    let request = Request::Shutdown {
-        v: PROTOCOL_VERSION,
-        id: "daemon-reconcile-down".to_owned(),
-    };
-    stream
-        .write_all(&encode(&request).map_err(|error| std::io::Error::other(error.to_string()))?)?;
-    stream.flush()?;
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    let _ = reader.read_line(&mut line);
-    Ok(())
-}
-
-/// Waits `budget` for the supervisor to exit, then kills its `-pgid` and reaps it.
-fn wait_or_kill(pid: u32, mut child: Option<Child>, budget: Duration) {
+/// Waits `budget` for the supervisor to exit, then kills and reaps its full world process tree.
+fn wait_or_kill(pid: u32, pods_dir: &Path, mut child: Option<Child>, budget: Duration) {
     let deadline = Instant::now() + budget;
     loop {
         if let Some(handle) = child.as_mut() {
             match handle.try_wait() {
-                Ok(Some(_)) | Err(_) => return,
+                Ok(Some(_)) | Err(_) => break,
                 Ok(None) => {}
             }
         } else if !pid_alive(pid) {
-            return;
+            break;
         }
         if Instant::now() >= deadline {
             break;
@@ -309,9 +293,7 @@ fn wait_or_kill(pid: u32, mut child: Option<Child>, budget: Duration) {
         let _ = handle.kill();
         let _ = handle.wait();
     }
-    if let Ok(pid) = i32::try_from(pid) {
-        slipfork_world::kill_group(pid);
-    }
+    slipfork_world::reap_world_tree(pid, Some(pods_dir), REAP_BUDGET);
 }
 
 impl Core {
@@ -357,6 +339,7 @@ impl Core {
         let requested = params.get("world").and_then(Value::as_str);
         let world = crate::world::world_name(&project, requested)
             .map_err(|message| Failure::new("invalid-world", message))?;
+        let pods_dir = RuntimePods::world_root(&self.host.runtime_dir, &world);
         let log_dir = project.join(".slipfork");
         fs::create_dir_all(&log_dir).map_err(|error| {
             Failure::new(
@@ -397,10 +380,11 @@ impl Core {
             World::Booting {
                 project: project.clone(),
                 world: world.as_str().to_owned(),
+                pods_dir: pods_dir.clone(),
                 supervisor_pid: child.id(),
             },
         );
-        let mut session = BootSession::new(key, log_path, child, project.clone());
+        let mut session = BootSession::new(key, log_path, child, pods_dir, project.clone());
         if let Some(fork) = layout_fork(&project) {
             session.reserve_fork(fork);
         }

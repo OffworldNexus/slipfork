@@ -62,6 +62,7 @@ impl InitWorld {
                 continue;
             };
             kill_group(pid);
+            let _ = reap_pod(pid, Instant::now() + STOP_BUDGET);
             crun_delete(&self.shared, id);
             {
                 let mut guard = sink
@@ -76,6 +77,7 @@ impl InitWorld {
                 })?;
             }
             let pid = crun_run(&self.shared, &info.bundle, id, Arc::clone(&sink))?;
+            let _ = self.shared.take_status(pid);
             if let Ok(mut pids) = self.shared.pids.lock() {
                 pids.insert(id.clone(), pid);
             }

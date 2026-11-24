@@ -28,6 +28,7 @@ impl Core {
                     project,
                     world,
                     supervisor_pid,
+                    ..
                 } => rows.push((
                     None,
                     WorldView::new(project, world, None, 0, *supervisor_pid, true, true, &[])

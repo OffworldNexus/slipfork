@@ -13,7 +13,7 @@ use slipfork_world::control::{PROTOCOL_VERSION, Request};
 use super::core::{Core, World};
 use super::plan;
 use crate::daemon::Failure;
-use crate::daemon::rpc::{key_of, pid_alive, world_call};
+use crate::daemon::rpc::{key_of, pid_alive, world_answers, world_call};
 
 impl Core {
     pub(crate) fn down(
@@ -116,12 +116,19 @@ impl Core {
             World::Booting {
                 project,
                 world,
+                pods_dir,
                 supervisor_pid,
-            } => (project.clone(), world.clone(), None, *supervisor_pid, None),
+            } => (
+                project.clone(),
+                world.clone(),
+                pods_dir.clone(),
+                *supervisor_pid,
+                None,
+            ),
             World::Live { entry, child } => (
                 entry.project.clone(),
                 entry.world.clone(),
-                Some(entry.pods_dir.clone()),
+                entry.pods_dir.clone(),
                 entry.supervisor_pid,
                 child.take(),
             ),
@@ -131,12 +138,12 @@ impl Core {
         // Pods that already exited answer at `t = 0`, before the shutdown request is sent.
         roster.report_exited(on_pod);
         let sweep_started = Instant::now();
-        if let Some(pods_dir) = &pods_dir {
+        if world_answers(&pods_dir) {
             let shutdown = Request::Shutdown {
                 v: PROTOCOL_VERSION,
                 id: "daemon-down".to_owned(),
             };
-            let _ = world_call(pods_dir, &shutdown);
+            let _ = world_call(&pods_dir, &shutdown);
         }
         let pod_ms = millis(pod_started);
         roster.report_live(on_pod, pod_ms);
@@ -149,9 +156,12 @@ impl Core {
         if let Some(child) = child.as_mut() {
             let _ = child.wait();
         }
+        // Reap any `unshare`/`slipfork-world-init`/`slirp4netns` groups that escaped
+        // `__supervise`'s pgid via `.process_group(0)` and wait until `/proc` proves none survive.
+        slipfork_world::reap_world_tree(pid, Some(&pods_dir), Duration::from_secs(5));
         // The init removes its own tmpfs root on a clean exit; a killed supervisor can leave
         // bundles and ephemeral subvolume mounts behind, so `down` sweeps the run root too.
-        let swept = sweep_run_root(pods_dir.as_deref());
+        let swept = sweep_run_root(Some(&pods_dir));
         let sweep_ms = millis(sweep_started);
         // A stopped world keeps its newest successes and every failed run, so `logs -r failed`
         // still works after `down`.

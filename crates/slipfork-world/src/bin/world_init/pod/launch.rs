@@ -72,6 +72,7 @@ pub(crate) fn launch_on_shared(shared: &WorldShared, pod: &PodSpec) -> Result<i3
             .map_err(|source| Fault::cause(action, REMEDY_RUNTIME, source))?;
     }
     let pid = crun_run(shared, &bundle, &pod.id, Arc::clone(&sink))?;
+    let _ = shared.take_status(pid);
     shared.set_logs_root(logs_dir);
     if let Ok(mut logs) = shared.logs.lock() {
         logs.insert(pod.id.clone(), sink);

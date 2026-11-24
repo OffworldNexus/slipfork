@@ -91,16 +91,20 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
     // instead of re-running `pg` -> `pre-deploy` -> `api` serially.
     let stamps = stamps_for(project, &stamp_store, trusted);
 
+    let failed_frame: Arc<Mutex<Option<(usize, Value)>>> = Arc::new(Mutex::new(None));
     let sink_emitter = Arc::clone(&emitter);
-    let sink_world = world.as_str().to_owned();
-    let sink_pods = pods_dir.display().to_string();
+    let sink_failed = Arc::clone(&failed_frame);
     let sink: Arc<slipfork_world::EventSink> = Arc::new(move |event: BootEvent| {
-        if let Ok(mut emitter) = sink_emitter.lock() {
-            let mut frame = boot_event_json(&event);
-            if matches!(event, BootEvent::Failed { .. }) {
-                frame["world"] = json!(sink_world);
-                frame["pods_dir"] = json!(sink_pods);
+        let frame = boot_event_json(&event);
+        if let BootEvent::Failed { step, .. } = event {
+            if let Ok(mut slot) = sink_failed.lock()
+                && slot.as_ref().is_none_or(|(existing, _)| step < *existing)
+            {
+                *slot = Some((step, frame));
             }
+            return;
+        }
+        if let Ok(mut emitter) = sink_emitter.lock() {
             emitter.send(frame);
         }
     });
@@ -156,19 +160,33 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
             }
         }
         Err(error) => {
-            // The scheduler already emitted `BootEvent::Failed` for a boot failure; plan-level
-            // failures (cycles, poisoned runtime) still need one failure frame.
-            if !matches!(error, slipfork_world::Error::Boot { .. })
-                && let Ok(mut emitter) = emitter.lock()
-            {
-                emitter.send(json!({
-                    "event": "failed",
-                    "label": error.to_string().lines().next().unwrap_or("boot failed"),
-                    "line": 0,
-                    "message": error.to_string().lines().next().unwrap_or_default(),
-                    "world": world.as_str(),
-                    "pods_dir": pods_dir.display().to_string(),
-                }));
+            let mut frame = failed_frame
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.take().map(|(_, frame)| frame))
+                .unwrap_or_else(|| {
+                    json!({
+                        "event": "failed",
+                        "label": error.to_string().lines().next().unwrap_or("boot failed"),
+                        "line": 0,
+                        "message": error.to_string().lines().next().unwrap_or_default(),
+                    })
+                });
+            if !runtime.has_live_world() {
+                // Zero resources or services entered the world (a cold image `RUN` or pre-pod
+                // setup/hook failed): reap `unshare`/`slipfork-world-init`/`slirp4netns` and drop
+                // `.slipfork/world.json` before announcing failure so no orphan world survives.
+                let stopped = runtime.stop_and_cleanup();
+                let _ = fs::remove_file(state_path(project));
+                if let Ok(mut emitter) = emitter.lock() {
+                    emitter.send(frame);
+                }
+                return stopped;
+            }
+            frame["world"] = json!(world.as_str());
+            frame["pods_dir"] = json!(pods_dir.display().to_string());
+            if let Ok(mut emitter) = emitter.lock() {
+                emitter.send(frame);
             }
         }
     }

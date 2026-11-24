@@ -1588,6 +1588,21 @@ fn world_up_restart_down_journey() {
         }),
         "the failed service row must render `broken` with `failed` as its last column:\n{listed_text}"
     );
+    // Re-running `up` on the live failed world takes `Heal` (`Request::Restart`), refuses `Ready`
+    // when `broken` exits again, and leaves `down` able to reap the restarted pod cleanly.
+    let heal_failed = journey.slipfork(&broken, &["up"]);
+    assert!(
+        !heal_failed.status.success(),
+        "heal of a permanently broken service must fail:\n{}",
+        up_failure("second `up` on broken succeeded", &broken, &heal_failed)
+    );
+    assert!(
+        !stdout(&heal_failed).contains("✓ Ready")
+            && stderr(&heal_failed).contains("next: slipfork logs broken"),
+        "heal failure must name `next: slipfork logs broken`:\nstdout={}\nstderr={}",
+        stdout(&heal_failed),
+        stderr(&heal_failed)
+    );
     let down = journey.slipfork(&broken, &["down"]);
     assert!(
         down.status.success(),
@@ -1661,6 +1676,10 @@ fn world_up_restart_down_journey() {
         image_log.is_file(),
         "the failed build must leave `{}`",
         image_log.display()
+    );
+    assert!(
+        !buildfail.join(".slipfork/world.json").exists(),
+        "a cold image build failure with zero pods must tear its empty world down immediately"
     );
     let by_image = journey.slipfork(&buildfail, &["logs", "app"]);
     assert!(

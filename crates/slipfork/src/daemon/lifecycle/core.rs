@@ -27,6 +27,8 @@ pub(crate) enum World {
         project: PathBuf,
         /// Validated world id.
         world: String,
+        /// Canonical tmpfs pod root (`<runtime_dir>/slipfork/pods/<world>`).
+        pods_dir: PathBuf,
         /// Supervisor process id.
         supervisor_pid: u32,
     },
