@@ -38,7 +38,7 @@ pub(crate) fn respond(
                         false,
                     ),
                     Err(fault) => {
-                        eprintln!("slipfork-world-init: {fault}");
+                        eprintln!("world init: {fault}");
                         (failure_frame(id, "launch-failed", &fault), false)
                     }
                 }
@@ -55,7 +55,7 @@ pub(crate) fn respond(
                 false,
             ),
             Err(fault) => {
-                eprintln!("slipfork-world-init: {fault}");
+                eprintln!("world init: {fault}");
                 (failure_frame(id, "stop-failed", &fault), false)
             }
         },
@@ -97,7 +97,7 @@ pub(crate) fn respond(
                     false,
                 ),
                 Err(fault) => {
-                    eprintln!("slipfork-world-init: {fault}");
+                    eprintln!("world init: {fault}");
                     let code = if fault.is_timeout() {
                         "run-timeout"
                     } else {
@@ -132,7 +132,7 @@ pub(crate) fn respond(
                 false,
             ),
             Err(fault) => {
-                eprintln!("slipfork-world-init: {fault}");
+                eprintln!("world init: {fault}");
                 (failure_frame(id, "s3-configure-failed", &fault), false)
             }
         },
@@ -156,7 +156,7 @@ pub(crate) fn respond(
                 false,
             ),
             Err(fault) => {
-                eprintln!("slipfork-world-init: {fault}");
+                eprintln!("world init: {fault}");
                 (failure_frame(id, "restart-failed", &fault), false)
             }
         },
@@ -185,7 +185,7 @@ pub(crate) fn respond(
                 false,
             ),
             Err(fault) => {
-                eprintln!("slipfork-world-init: {fault}");
+                eprintln!("world init: {fault}");
                 (failure_frame(id, "wait-failed", &fault), false)
             }
         },

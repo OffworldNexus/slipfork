@@ -140,7 +140,7 @@ pub(crate) fn serve_logs(
         )?;
     }
     if let Some(fault) = failure {
-        eprintln!("slipfork-world-init: {fault}");
+        eprintln!("world init: {fault}");
         // Report the typed failure before EOF so the client renders a remedy, not an empty replay.
         return refuse(&mut stream, &request_id, "replay-failed", fault.to_string());
     }

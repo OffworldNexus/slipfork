@@ -35,6 +35,9 @@ use crate::pod::PodSpec;
 /// Socket name inside the world's tmpfs pod directory.
 pub const CONTROL_SOCKET: &str = "control.sock";
 
+/// User remedy for a violated or version-skewed NDJSON control frame.
+pub const REMEDY_PROTOCOL: &str = "run `slipfork down` then `slipfork up`, or restart the daemon with `systemctl --user restart slipfork`";
+
 /// `<pods>/control.sock`, refused before `bind(2)` when `sun_path` would overflow.
 pub fn control_socket_path(pods_root: &Path) -> Result<PathBuf> {
     unix_path(pods_root.join(CONTROL_SOCKET), "control socket")

@@ -264,6 +264,6 @@ fn exchange(
     live.stdin
         .write_all(&bytes)
         .and_then(|()| live.stdin.flush())
-        .map_err(|source| Error::io("write", Path::new("slipfork-world-init stdin"), source))?;
+        .map_err(|source| Error::io("write", Path::new("world init stdin"), source))?;
     boot::await_reply(live, request.id(), timeout)
 }

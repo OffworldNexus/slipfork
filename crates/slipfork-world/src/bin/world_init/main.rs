@@ -41,7 +41,7 @@ const TICK: Duration = Duration::from_millis(200);
 
 fn main() {
     if let Err(fault) = run() {
-        eprintln!("slipfork-world-init: {fault}");
+        eprintln!("world init: {fault}");
         std::process::exit(1);
     }
 }

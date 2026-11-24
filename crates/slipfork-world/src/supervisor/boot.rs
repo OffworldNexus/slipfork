@@ -23,7 +23,7 @@ pub(super) fn boot(host: WorldHost, world: &WorldName) -> Result<WorldSupervisor
         ("crun", &host.tools.crun),
         ("unshare", &host.tools.unshare),
         ("slirp4netns", &host.tools.slirp4netns),
-        ("slipfork-world-init", &host.tools.world_init),
+        ("world init", &host.tools.world_init),
     ] {
         if !path.is_file() {
             return Err(Error::MissingTool {
@@ -132,7 +132,7 @@ fn await_ready(live: &mut LiveWorld, timeout: Duration) -> Result<(u32, Namespac
     let deadline = Instant::now() + timeout;
     loop {
         let line = read_line(&mut live.stdout, deadline)?.ok_or_else(|| Error::Init {
-            message: "slipfork-world-init exited before its ready handshake".to_owned(),
+            message: "the init process exited before its ready handshake".to_owned(),
         })?;
         match control::decode_init_frame(line.trim())? {
             InitFrame::Ready { namespaces, .. } => {
@@ -219,7 +219,7 @@ fn read_line(
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Err(Error::Timeout {
-                action: "wait for slipfork-world-init",
+                action: "wait for world init",
             });
         }
         if !poll_readable(reader.get_ref().as_raw_fd(), remaining)? {
@@ -228,7 +228,7 @@ fn read_line(
         let mut line = String::new();
         let read = reader
             .read_line(&mut line)
-            .map_err(|source| Error::io("read", Path::new("slipfork-world-init stdout"), source))?;
+            .map_err(|source| Error::io("read", Path::new("world init stdout"), source))?;
         if read == 0 {
             return Ok(None);
         }
@@ -250,11 +250,7 @@ fn poll_readable(fd: RawFd, timeout: Duration) -> Result<bool> {
         if error.kind() == std::io::ErrorKind::Interrupted {
             return Ok(false);
         }
-        return Err(Error::io(
-            "poll",
-            Path::new("slipfork-world-init stdout"),
-            error,
-        ));
+        return Err(Error::io("poll", Path::new("world init stdout"), error));
     }
     Ok(ret > 0)
 }

@@ -51,7 +51,7 @@ pub(crate) fn serve_exec(
     let spec_file = match TempProcessSpec::write(&info, shared.next_exec_seq(), &argv) {
         Ok(file) => file,
         Err(fault) => {
-            eprintln!("slipfork-world-init: {fault}");
+            eprintln!("world init: {fault}");
             return refuse(&mut stream, &request_id, "exec-failed", fault.summary());
         }
     };
@@ -72,7 +72,7 @@ pub(crate) fn serve_exec(
                 REMEDY_CRUN,
                 source,
             );
-            eprintln!("slipfork-world-init: {fault}");
+            eprintln!("world init: {fault}");
             return refuse(&mut stream, &request_id, "exec-failed", fault.summary());
         }
     };

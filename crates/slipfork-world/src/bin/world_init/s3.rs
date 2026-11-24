@@ -52,7 +52,7 @@ impl S3Host {
                 })
                 .await
             {
-                eprintln!("slipfork-world-init: native S3 accept loop: {error}");
+                eprintln!("world init: native S3 accept loop: {error}");
             }
         });
         Ok(Self {

@@ -211,7 +211,7 @@ impl StreamInput {
         };
         let bytes = encode(&request)?;
         write_stream(&mut self.socket, &bytes)
-            .map_err(|source| Error::io("write", Path::new("slipfork-world-init stdin"), source))
+            .map_err(|source| Error::io("write", Path::new("world init stdin"), source))
     }
 
     /// Shuts the write side down (the world sees EOF on its input pump).
