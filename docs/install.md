@@ -105,9 +105,9 @@ Use `/nightly/$arch` in the `Server` line to follow nightlies.
 Every package declares `crun`, `btrfs-progs`, and `slirp4netns`. The last one is the user-mode NAT
 that gives a world outbound network, so `@uv`, `@pnpm`, and HTTPS reach the internet.
 
-Systemd packages ship both units and enable them for the installing user: the install hook reads
-`SUDO_USER` from a normal `sudo` install, turns on lingering, starts `slipfork.service`, and enables
-`slipfork-ingress.socket`. There is no separate ingress command.
+The `.deb`, `.rpm`, and pacman packages ship both systemd units and enable them for the installing
+user: the install hook reads `SUDO_USER` from a normal `sudo` install, turns on lingering, starts
+`slipfork.service`, and enables `slipfork-ingress.socket`. There is no separate ingress command.
 
 ```console
 $ slipfork --version
@@ -115,11 +115,20 @@ $ slipfork doctor
 ✓ Ready
 ```
 
-!!! note "Alpine runs OpenRC"
+!!! note "Alpine: set the ingress user yourself"
 
-    On Alpine the `:80` ingress is the `slipfork-ingress` OpenRC service, not a systemd socket.
-    The install hook writes `/etc/conf.d/slipfork-ingress` with the installing user and runs
-    `rc-update`/`rc-service` for the ingress only; `slipfork up` starts the daemon.
+    `apk` runs install hooks with a PATH-only environment, so the hook cannot see `SUDO_USER` and
+    leaves `/etc/conf.d/slipfork-ingress` empty. Point the OpenRC ingress at your user yourself:
+
+    ```console
+    $ printf 'SLIPFORK_INGRESS_USER=%s\n' "$(id -un)" | sudo tee /etc/conf.d/slipfork-ingress
+    $ sudo rc-update add slipfork-ingress default
+    $ sudo rc-service slipfork-ingress start
+    ```
+
+    `slipfork up` starts the daemon; the three lines above are the whole ingress setup. On systemd
+    hosts, `docs/install.sh` does the equivalent socket setup automatically when run as root with
+    `SUDO_USER`.
 
 !!! note "Tarballs and headless hosts"
 
