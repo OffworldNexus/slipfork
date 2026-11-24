@@ -3,6 +3,7 @@
 use super::{Columns, LiveKey, Phase};
 
 mod layout;
+mod order;
 mod roles;
 
 /// The shared `RUN api` phase at `[2/4]`, used by both test modules.

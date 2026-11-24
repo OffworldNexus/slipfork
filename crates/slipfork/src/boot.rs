@@ -429,13 +429,12 @@ impl BootTui {
             }
             self.widths = text::boot_widths(&self.plan);
         }
-        if let Some(action) = self.narrative.finished(event, palette) {
-            self.sync_pane(false);
-            self.apply(vec![action], palette);
-            return;
-        }
-        if self.narrative.streamed_image(node.name) {
-            self.sync_pane(true);
+        if let Some(actions) = self
+            .narrative
+            .finish_node(node.kind, node.name, event, palette)
+        {
+            self.sync_pane(actions.is_empty());
+            self.apply(actions, palette);
             return;
         }
         let row = completed_row(&node, &self.widths, self.mode.color());

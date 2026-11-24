@@ -6,6 +6,7 @@
 //! [`Action`] to the anchored region (a colour TTY) or straight to stdout/stderr (a pipe /
 //! `NO_COLOR`), so both shapes tell the same story and `--json` never reaches here at all.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
@@ -35,12 +36,51 @@ pub(super) enum Action {
 }
 
 /// One image's running totals, so the build-end row can count steps and sum wall time.
+///
+/// Finished rows are buffered by instruction index and released strictly from `next` upward, so
+/// rows print once, in instruction order; a provisional external-pull row is superseded when the
+/// real instruction at that index starts.
 #[derive(Debug, Clone)]
 struct ImageTally {
     image: String,
     total: usize,
-    settled: usize,
     millis: u64,
+    buffer: BTreeMap<usize, String>,
+    next: usize,
+}
+
+impl ImageTally {
+    fn new(image: &str) -> Self {
+        Self {
+            image: image.to_owned(),
+            total: 0,
+            millis: 0,
+            buffer: BTreeMap::new(),
+            next: 1,
+        }
+    }
+
+    /// Releases every buffered row contiguous from `next` upward; a hole stops the release.
+    fn release(&mut self) -> Vec<String> {
+        let mut rows = Vec::new();
+        while let Some(row) = self.buffer.remove(&self.next) {
+            rows.push(row);
+            self.next += 1;
+        }
+        rows
+    }
+
+    /// Drains the contiguous rows, any residual rows, and the instruction count and wall time.
+    fn settle(&mut self) -> (Vec<String>, usize, u64) {
+        let mut rows = self.release();
+        rows.extend(std::mem::take(&mut self.buffer).into_values());
+        let steps = if self.total > 0 {
+            self.total
+        } else {
+            rows.len()
+        };
+        (rows, steps, self.millis)
+    }
 }
 
 /// The one boot narrative: shares [`LiveSteps`] with [`super::pane::Pane`] and tracks image totals.
@@ -130,7 +170,17 @@ impl Narrative {
         };
         match event["state"].as_str().unwrap_or_default() {
             "started" => {
-                self.tally(image).total = total;
+                let mut actions = {
+                    let tally = self.tally(image);
+                    tally.total = total;
+                    // A real instruction re-announcing a provisional external-pull index wins.
+                    tally.buffer.remove(&index);
+                    tally
+                        .release()
+                        .into_iter()
+                        .map(Action::Settle)
+                        .collect::<Vec<_>>()
+                };
                 self.columns.observe(instruction, image);
                 let phase = Phase::new(
                     key.clone(),
@@ -145,7 +195,8 @@ impl Narrative {
                 }
                 self.active = Some(key.clone());
                 self.last_printed = Some(key);
-                vec![Action::Begin(phase)]
+                actions.push(Action::Begin(phase));
+                actions
             }
             "done" => {
                 let phase = self
@@ -164,30 +215,15 @@ impl Narrative {
                         )
                     });
                 let settled = phase.settled_row(elapsed, palette);
-                let (finished, count, millis_total) = {
+                {
                     let tally = self.tally(image);
-                    tally.settled += 1;
+                    tally.total = tally.total.max(total);
+                    tally.buffer.insert(index, settled);
                     tally.millis += elapsed;
-                    let done = tally.total.max(total);
-                    (
-                        done > 0 && tally.settled >= done,
-                        tally.settled,
-                        tally.millis,
-                    )
-                };
-                self.retire_key(&key);
-                let mut actions = vec![Action::Settle(settled)];
-                if finished {
-                    actions.push(Action::Print(image_done_row(
-                        image,
-                        count,
-                        millis_total,
-                        palette,
-                    )));
-                    self.images.retain(|item| item.image != image);
-                    self.streamed.push(image.to_owned());
                 }
-                actions
+                self.retire_key(&key);
+                // Rows are released later, in index order, at the next start or `finish_node`.
+                Vec::new()
             }
             // The boot `failed` frame that follows carries the remedy; the output must survive
             // until then, so a failed step is never collapsed.
@@ -258,6 +294,40 @@ impl Narrative {
         self.streamed.iter().any(|done| done == image)
     }
 
+    /// Releases an image's remaining step rows in index order, then its build-end row.
+    fn settle_image(&mut self, image: &str, palette: Palette) -> Vec<Action> {
+        let Some(position) = self.images.iter().position(|tally| tally.image == image) else {
+            return Vec::new();
+        };
+        let mut tally = self.images.remove(position);
+        let (rows, steps, millis) = tally.settle();
+        let mut actions: Vec<Action> = rows.into_iter().map(Action::Settle).collect();
+        actions.push(Action::Print(image_done_row(image, steps, millis, palette)));
+        self.streamed.push(image.to_owned());
+        actions
+    }
+
+    /// One `finished`/`up-to-date` frame: images settle their buffered rows before `take_boot`'s
+    /// `target == name` fallback can steal an in-flight image step and drop those rows.
+    pub(super) fn finish_node(
+        &mut self,
+        kind: &str,
+        name: &str,
+        event: &Value,
+        palette: Palette,
+    ) -> Option<Vec<Action>> {
+        if kind == "image" {
+            let actions = self.settle_image(name, palette);
+            if !actions.is_empty() {
+                return Some(actions);
+            }
+            if self.streamed_image(name) {
+                return Some(Vec::new());
+            }
+        }
+        self.finished(event, palette).map(|row| vec![row])
+    }
+
     /// The failure block: on an anchored TTY, expands the failing phase row and its FULL output
     /// into scrollback; on an append-only stream, lines already printed live are never repeated.
     pub(super) fn failed(
@@ -293,6 +363,8 @@ impl Narrative {
         }
         self.active = None;
         self.last_printed = None;
+        // No tally may survive a verdict, so no provisional row can print afterwards.
+        self.images.clear();
         actions
     }
 
@@ -309,12 +381,7 @@ impl Narrative {
         if let Some(position) = self.images.iter().position(|tally| tally.image == image) {
             return &mut self.images[position];
         }
-        self.images.push(ImageTally {
-            image: image.to_owned(),
-            total: 0,
-            settled: 0,
-            millis: 0,
-        });
+        self.images.push(ImageTally::new(image));
         self.images.last_mut().expect("just pushed")
     }
 }
