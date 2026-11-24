@@ -6,19 +6,12 @@ status: active
 owner: implementer
 priority: 3
 depends_on: [M3.117, M3.115, M3.118, M3.114, M3.111]
-paths:
-  - "crates/slipfork-world/**"
-  - "crates/slipfork-image/**"
-  - "crates/slipfork/src/daemon/**"
-  - "crates/slipfork/src/boot/**"
-  - "crates/slipfork/src/world/**"
-  - "specs/02-cli-ux.md"
-  - TESTING_PLAN.md
-attempts: 1
+paths: ["crates/slipfork-world/**", "crates/slipfork-image/**", "specs/02-cli-ux.md", TESTING_PLAN.md]
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-24T17:09"
-updated: "2026-11-24T21:13"
+updated: "2026-11-24T22:06"
 ---
 
 # Goal

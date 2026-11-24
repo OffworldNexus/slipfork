@@ -2,6 +2,7 @@
 
 mod lock;
 mod reconcile;
+mod reconcile_serial;
 mod record;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,6 +13,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 pub(crate) use lock::LOCK_FILE;
+pub use reconcile_serial::Observed;
 pub use record::{Facts, NodeRecord, RECORD_VERSION};
 
 use super::{NodeKey, SnapshotError, SnapshotResult};
@@ -91,6 +93,10 @@ pub struct Reconciled {
     pub pruned: usize,
     /// The pin the daemon keeps until the supervisor wrote the lease.
     pub pin: Pin,
+    /// Sealed keys built by this call, in build order.
+    pub built_keys: Vec<NodeKey>,
+    /// Sealed keys reused by this call, in wave order.
+    pub reused_keys: Vec<NodeKey>,
 }
 
 /// The first error of a reconcile, after siblings finished and own slots were destroyed.

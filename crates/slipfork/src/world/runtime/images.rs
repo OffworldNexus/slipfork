@@ -6,13 +6,13 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use slipfork_forkfile::FeatureSet;
 use slipfork_forkfile::ast::Forkfile;
 use slipfork_image::{
-    Architecture, BuildArgs, BuildRequest, CacheMode, ImageLayout, ImageReference,
-    NativeImageBuilder, OciPuller, PulledImage, RegistryCredentials, StepHost, StepLayout,
-    StepTrace,
+    Architecture, BuildArgs, BuildRequest, Cache, ImageLayout, ImageReference, NativeImageBuilder,
+    OciPuller, PulledImage, RegistryCredentials, StepHost, StepTrace,
 };
 use slipfork_world::run_log::RunNote;
 use slipfork_world::{
@@ -125,18 +125,9 @@ impl ImageCache {
             agent.to_owned(),
         )
         .sharing_flights(&puller);
-        let builder = NativeImageBuilder::new(
-            engine,
-            build_puller,
-            StepLayout::new(images_root),
-            architecture,
-            host,
-        )
-        .with_cache_mode(if no_cache {
-            CacheMode::Cold
-        } else {
-            CacheMode::Warm
-        });
+        let builder =
+            NativeImageBuilder::new(engine, build_puller, layout.clone(), architecture, host)
+                .with_cache(if no_cache { Cache::Cold } else { Cache::Warm });
         let store = LogStore::at(layout.store_root(), world.clone());
         Self {
             world,
@@ -301,7 +292,7 @@ impl ImageCache {
                     externals,
                     ..request.clone()
                 };
-                self.builder.build(&request, step_log)
+                self.builder.build(&request, step_log, now_ms())
             });
             if let Err(error) = &progress.outcome {
                 // The engine writes its own one-line cause only when a step started and captured no
@@ -399,6 +390,15 @@ fn plain_failure(message: String) -> BuildFailure {
         note: Box::new(RunNote::default()),
         runtime: None,
     }
+}
+
+/// Wall clock for snapshot records; this module is the composition root that owns it.
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 #[cfg(test)]

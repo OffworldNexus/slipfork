@@ -198,6 +198,92 @@ impl OciPuller {
         }
     }
 
+    /// Resolves `reference` once and returns its manifest digest plus OCI config facts.
+    ///
+    /// The digest is remembered in `images/refs.json`, so a later warm [`RefResolver`] resolves it
+    /// with no registry request. The config document is cached beside the digest.
+    ///
+    /// [`RefResolver`]: crate::plan::RefResolver
+    pub fn resolve_image(&self, reference: &ImageReference) -> Result<(String, ImageFacts)> {
+        let mut session = self.client.session(reference);
+        let resolved = session.manifest(self.architecture)?;
+        let digest = resolved.digest.clone();
+        self.layout.remember_ref(&reference.to_string(), &digest);
+        self.layout.ensure()?;
+        let mut log = StepLog::discard();
+        let facts = self.image_facts(&mut session, &resolved, &mut log)?;
+        Ok((digest, facts))
+    }
+
+    /// The OCI config a prior resolve cached for `digest`, when it is still readable.
+    #[must_use]
+    pub fn cached_facts(&self, digest: &str) -> Option<ImageFacts> {
+        let path = self.layout.config(digest);
+        let bytes = fs::read(&path).ok()?;
+        parse_config(&bytes, &path).ok()
+    }
+
+    /// Streams and verifies `reference`'s layers directly into `slot` (a writable snapshot).
+    ///
+    /// No sealed `images/oci/<digest>` rootfs is installed: the slot becomes the `base`/`external`
+    /// node. A cached config document avoids a second config download; the manifest and blobs are
+    /// fetched through the injected registry client, which re-reads credentials per session.
+    pub fn unpack_into(
+        &self,
+        reference: &ImageReference,
+        slot: &Path,
+        log: &mut StepLog<'_>,
+    ) -> Result<PulledImage> {
+        let mut session = self.client.session(reference);
+        let resolved = session.manifest(self.architecture)?;
+        let digest = resolved.digest.clone();
+        self.layout.remember_ref(&reference.to_string(), &digest);
+        self.layout.ensure()?;
+        let facts = self.image_facts(&mut session, &resolved, log)?;
+        self.unpack(&mut session, &resolved.manifest, slot, log)?;
+        Ok(self.pulled(slot.to_path_buf(), digest, facts, false))
+    }
+
+    /// Streams and verifies `reference`'s planned manifest layers directly into `slot`.
+    ///
+    /// The build plan's digest is authoritative: the reference is pinned to it, so the registry
+    /// serves the manifest **by digest** and a floating tag that moved between planning and
+    /// materializing cannot change what is unpacked. The tag is only remembered as an alias of
+    /// that digest for later warm resolves.
+    pub fn unpack_digest_into(
+        &self,
+        reference: &ImageReference,
+        expected_digest: &str,
+        slot: &Path,
+        log: &mut StepLog<'_>,
+    ) -> Result<PulledImage> {
+        let pinned = reference.with_digest(expected_digest)?;
+        let mut session = self.client.session(&pinned);
+        let resolved = match session.manifest(self.architecture) {
+            Ok(resolved) => resolved,
+            // Tag-only lab registries 404 on `manifests/sha256:…`; retry the tag but still require
+            // the planned digest, so a tag that moved stays a hard `MovedTag` error.
+            Err(Error::Http { status: 404, .. }) => {
+                session = self.client.session(reference);
+                session.manifest(self.architecture)?
+            }
+            Err(error) => return Err(error),
+        };
+        let digest = resolved.digest.clone();
+        if digest != expected_digest {
+            return Err(Error::MovedTag {
+                reference: reference.to_string(),
+                expected: expected_digest.to_owned(),
+                actual: digest,
+            });
+        }
+        self.layout.remember_ref(&reference.to_string(), &digest);
+        self.layout.ensure()?;
+        let facts = self.image_facts(&mut session, &resolved, log)?;
+        self.unpack(&mut session, &resolved.manifest, slot, log)?;
+        Ok(self.pulled(slot.to_path_buf(), digest, facts, false))
+    }
+
     /// Joins or opens the singleflight slot for one reference.
     fn join_flight(&self, key: &str) -> Result<FlightRole> {
         let mut table = self.flights.lock().map_err(|_| Error::Interrupted {

@@ -239,6 +239,24 @@ pub(crate) fn add_context(
     Ok(())
 }
 
+/// The canonical source resolution shared by `COPY`/`ADD` and per-instruction source keys.
+///
+/// The same `normalize` + wildcard/prefix + `.dockerignore`-filtered entry walk as
+/// [`copy_context`], so a source Merkle can never disagree with what a copy actually writes.
+pub(crate) fn matched_entries<'a>(
+    context: &'a BuildContext,
+    source: &str,
+) -> Result<Vec<&'a ContextEntry>> {
+    let source = normalize(source);
+    let matches = select(context.entries(), &source)?;
+    if matches.is_empty() {
+        return Err(step(format!(
+            "`{source}` matched no file in the build context"
+        )));
+    }
+    Ok(matches)
+}
+
 fn select<'a>(entries: &'a [ContextEntry], source: &str) -> Result<Vec<&'a ContextEntry>> {
     if source == "." || source == "./" {
         return Ok(entries.iter().collect());

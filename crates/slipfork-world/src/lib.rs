@@ -96,8 +96,8 @@ pub use resources::{
 pub use runtime_dir::RuntimePods;
 pub use snapshot::{
     BuildGraph, Cache, Facts, GC_GRACE_MS, GcOutcome, GcReport, KEY_DOMAIN, LEASE_FILE, Lease,
-    LeaseEntry, Node, NodeKey, NodeKind, Parallelism, Pin, PublishOutcome, RECORD_VERSION,
-    ReconcileFailed, Reconciled, SnapshotError, SnapshotResult, SnapshotSlot, SnapshotStore,
-    gc_mark_set, normalize_canon,
+    LeaseEntry, Node, NodeKey, NodeKind, Observed, Parallelism, Pin, PublishOutcome,
+    RECORD_VERSION, ReconcileFailed, Reconciled, SnapshotError, SnapshotResult, SnapshotSlot,
+    SnapshotStore, gc_mark_set, normalize_canon,
 };
 pub use supervisor::{PodStatus, WorldHost, WorldSupervisor, WorldTools, pod_statuses};

@@ -1,4 +1,8 @@
 //! Reconcile waves: per-key singleflight, sealed slots, record-only nodes, drained progress.
+//!
+//! [`SnapshotStore::process_node`] is the one reconcile core shared by the parallel wave driver
+//! here and the caller-thread [`super::reconcile_serial`] driver. Both hold the same per-key gate,
+//! seal/record/exchange rules, and singleflight invariants.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -13,16 +17,27 @@ use crate::snapshot::{
 
 use super::{Facts, NodeRecord, RECORD_VERSION, SnapshotStore};
 
-enum Outcome {
+/// How one node settled. Sealed outcomes count as built/reused; record-only outcomes never do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NodeOutcome {
+    /// A sealed subvolume was materialized, sealed and recorded.
     SealedBuilt,
+    /// A sealed subvolume and its record were reused.
     SealedReused,
-    Recorded,
+    /// A record-only node was materialized and recorded.
+    RecordedBuilt,
+    /// A record-only node's existing record was reused.
+    RecordedReused,
 }
 
 /// `(node, line, cause, sealed built, sealed reused)` after a wave failure.
 type WaveFailure = (NodeKey, u32, Box<SnapshotError>, usize, usize);
 
-type WaveResult = Result<(usize, usize), WaveFailure>;
+type WaveResult = Result<(Vec<NodeKey>, Vec<NodeKey>), WaveFailure>;
+
+/// The materializer shim both drivers hand the core.
+pub(crate) type Materialize<'a> =
+    dyn FnMut(&Node, &Path, &mut dyn FnMut(&str)) -> SnapshotResult<Facts> + 'a;
 
 /// Immutable per-call knobs for one wave pass.
 struct Plan {
@@ -86,8 +101,8 @@ impl SnapshotStore<'_> {
             let _ = drainer.join();
             result
         });
-        let (built, reused) = match waves {
-            Ok(counts) => counts,
+        let (built_keys, reused_keys) = match waves {
+            Ok(keys) => keys,
             Err((node, line, cause, built, reused)) => {
                 return Err(ReconcileFailed {
                     node,
@@ -104,15 +119,17 @@ impl SnapshotStore<'_> {
                 node: graph.head(),
                 line: 0,
                 cause: Box::new(cause),
-                built,
-                reused,
+                built: built_keys.len(),
+                reused: reused_keys.len(),
             })?;
         Ok(Reconciled {
             head: graph.head(),
-            built,
-            reused,
+            built: built_keys.len(),
+            reused: reused_keys.len(),
             pruned: outcome.pruned(),
             pin,
+            built_keys,
+            reused_keys,
         })
     }
 
@@ -130,8 +147,8 @@ impl SnapshotStore<'_> {
         let _lock = self
             .lock_shared()
             .map_err(|cause| (graph.head(), 0u32, Box::new(cause), 0usize, 0usize))?;
-        let mut built = 0usize;
-        let mut reused = 0usize;
+        let mut built = Vec::new();
+        let mut reused = Vec::new();
         for wave in graph.waves() {
             let nodes: Vec<&Node> = wave
                 .iter()
@@ -145,7 +162,20 @@ impl SnapshotStore<'_> {
                         .map(|node| {
                             let node = *node;
                             scope.spawn(move || {
-                                self.process_node(node, plan.cache, plan.now_ms, materialize, tx)
+                                let mut sink = |line: &str| {
+                                    let _ = tx.send((node.key, line.to_owned()));
+                                };
+                                let mut shim =
+                                    |node: &Node, path: &Path, child: &mut dyn FnMut(&str)| {
+                                        materialize(node, path, child)
+                                    };
+                                self.process_node(
+                                    node,
+                                    plan.cache,
+                                    plan.now_ms,
+                                    &mut shim,
+                                    &mut sink,
+                                )
                             })
                         })
                         .collect();
@@ -162,11 +192,17 @@ impl SnapshotStore<'_> {
                 });
                 for (node, outcome) in chunk.iter().zip(outcomes) {
                     match outcome {
-                        Ok(Outcome::SealedBuilt) => built += 1,
-                        Ok(Outcome::SealedReused) => reused += 1,
-                        Ok(Outcome::Recorded) => {}
+                        Ok(NodeOutcome::SealedBuilt) => built.push(node.key),
+                        Ok(NodeOutcome::SealedReused) => reused.push(node.key),
+                        Ok(NodeOutcome::RecordedBuilt | NodeOutcome::RecordedReused) => {}
                         Err(cause) => {
-                            return Err((node.key, node.line, Box::new(cause), built, reused));
+                            return Err((
+                                node.key,
+                                node.line,
+                                Box::new(cause),
+                                built.len(),
+                                reused.len(),
+                            ));
                         }
                     }
                 }
@@ -175,38 +211,33 @@ impl SnapshotStore<'_> {
         Ok((built, reused))
     }
 
-    fn process_node<F>(
+    /// The one reconcile core, called by the parallel and serial drivers under a per-key gate.
+    pub(crate) fn process_node(
         &self,
         node: &Node,
         cache: Cache,
         now_ms: u64,
-        materialize: &F,
-        tx: &Sender<(NodeKey, String)>,
-    ) -> SnapshotResult<Outcome>
-    where
-        F: Fn(&Node, &Path, &mut dyn FnMut(&str)) -> SnapshotResult<Facts> + Sync,
-    {
+        materialize: &mut Materialize<'_>,
+        sink: &mut dyn FnMut(&str),
+    ) -> SnapshotResult<NodeOutcome> {
         let gate = self.gate(&node.key);
         let outcome = {
             let _held = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            self.process_locked(node, cache, now_ms, materialize, tx)
+            self.process_locked(node, cache, now_ms, materialize, sink)
         };
         drop(gate);
         self.forget_gate(&node.key);
         outcome
     }
 
-    fn process_locked<F>(
+    fn process_locked(
         &self,
         node: &Node,
         cache: Cache,
         now_ms: u64,
-        materialize: &F,
-        tx: &Sender<(NodeKey, String)>,
-    ) -> SnapshotResult<Outcome>
-    where
-        F: Fn(&Node, &Path, &mut dyn FnMut(&str)) -> SnapshotResult<Facts>,
-    {
+        materialize: &mut Materialize<'_>,
+        sink: &mut dyn FnMut(&str),
+    ) -> SnapshotResult<NodeOutcome> {
         let dir = self.node_dir(&node.key);
         let record = self.read_record(&node.key).ok().flatten();
         if !node.kind.is_materialized() {
@@ -215,7 +246,7 @@ impl SnapshotStore<'_> {
             {
                 record.last_used_ms = now_ms;
                 self.write_record(&node.key, &record)?;
-                return Ok(Outcome::Recorded);
+                return Ok(NodeOutcome::RecordedReused);
             }
             let target = node
                 .parents
@@ -223,10 +254,7 @@ impl SnapshotStore<'_> {
                 .map(|parent| self.node_dir(parent))
                 .find(|path| path.is_dir())
                 .unwrap_or_else(|| self.root.clone());
-            let mut sink = |line: &str| {
-                let _ = tx.send((node.key, line.to_owned()));
-            };
-            let facts = materialize(node, &target, &mut sink)?;
+            let facts = materialize(node, &target, &mut *sink)?;
             let record = NodeRecord {
                 v: RECORD_VERSION,
                 kind: node.kind,
@@ -238,7 +266,7 @@ impl SnapshotStore<'_> {
                 facts,
             };
             self.write_record(&node.key, &record)?;
-            return Ok(Outcome::Recorded);
+            return Ok(NodeOutcome::RecordedBuilt);
         }
         let sealed = dir.is_dir() && self.engine.is_sealed(&dir).unwrap_or(false);
         if cache == Cache::Warm
@@ -247,7 +275,7 @@ impl SnapshotStore<'_> {
         {
             record.last_used_ms = now_ms;
             self.write_record(&node.key, &record)?;
-            return Ok(Outcome::SealedReused);
+            return Ok(NodeOutcome::SealedReused);
         }
         let exchange = cache == Cache::Cold && sealed;
         if !exchange {
@@ -270,11 +298,8 @@ impl SnapshotStore<'_> {
             self.next_ordinal(),
             parent.as_deref(),
         )?;
-        let mut sink = |line: &str| {
-            let _ = tx.send((node.key, line.to_owned()));
-        };
         let published = (|| -> SnapshotResult<()> {
-            let facts = materialize(node, slot.path(), &mut sink)?;
+            let facts = materialize(node, slot.path(), &mut *sink)?;
             slot.seal()?;
             let record = NodeRecord {
                 v: RECORD_VERSION,
@@ -298,10 +323,10 @@ impl SnapshotStore<'_> {
             slot.abandon();
             return Err(error);
         }
-        Ok(Outcome::SealedBuilt)
+        Ok(NodeOutcome::SealedBuilt)
     }
 
-    fn gate(&self, key: &NodeKey) -> Arc<Mutex<()>> {
+    pub(crate) fn gate(&self, key: &NodeKey) -> Arc<Mutex<()>> {
         let mut gates = self
             .gates
             .lock()
@@ -312,7 +337,7 @@ impl SnapshotStore<'_> {
             .clone()
     }
 
-    fn forget_gate(&self, key: &NodeKey) {
+    pub(crate) fn forget_gate(&self, key: &NodeKey) {
         let mut gates = self
             .gates
             .lock()

@@ -39,3 +39,31 @@ slice 1: snapshot/{key,graph,lease,slot,gc,store} green — key grammar, waves/h
 ## 2026-11-24T21:44 [lead]
 
 VM live proof (private tree /mnt/sf-m3120, no sync): real-Btrfs critical_snapshot_graph ok (1 test, 1.23s) on /mnt/slipfork-live; make check cargo gates all green (48 suites), js-test blocked only by a pre-existing stale daemon (pid 958964), unrelated to this slice
+
+## 2026-11-24T21:44 [lead]
+
+committed 7680850 [M3.120] slice 1: world snapshot graph (19 files, +2785/-21); node stays active for slices 2-4
+
+## 2026-11-24T21:45 [lead]
+
+status active -> active
+
+## 2026-11-24T21:45 [lead]
+
+attempt 2/3 started
+
+## 2026-11-24T21:45 [lead]
+
+slice 2 base 7680850406416b02a369cf0511b99ef1103e85cd
+
+## 2026-11-24T22:06 [conductor]
+
+edited fields
+
+## 2026-11-24T23:47 [lead]
+
+slice 2: image plan/materialize green — RefResolver (tag->digest, pinned unpack), per-COPY source Merkle, BuildPlanner+expand, serial store reconcile w/ rows, CacheMounts; steps.rs/run.rs/StepCache/StepLayout deleted; triad fixes: digest pin, shared process core, injected clock, ARG scope, metadata rows
+
+## 2026-11-24T23:47 [lead]
+
+slice 2 VM proof (private tree /mnt/sf-m3120, no do_vm sync, as slipfork user w/ XDG_RUNTIME_DIR): critical_dockerfile_live 6/6, critical_snapshot_graph 1/1, btrfs addendum test 1/1; CLI guard: up built->cached, docker build warm 4/0, COPY edit 3 misses, .git-only 0, Dockerfile edit 1, dev /project live, fork rows all <1ms + clean checkout, up --no-cache built; make check rc=0

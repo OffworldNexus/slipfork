@@ -82,6 +82,21 @@ impl ImageReference {
         self.tag.as_deref()
     }
 
+    /// The same registry and repository, pinned to `digest` (the tag is dropped).
+    ///
+    /// A planned digest is authoritative: pinning it lets the registry serve that exact
+    /// manifest even after the floating tag has moved on.
+    pub fn with_digest(&self, digest: &str) -> Result<Self> {
+        let digest = digest.trim();
+        validate_digest(digest).map_err(|reason| invalid(&self.to_string(), reason))?;
+        Ok(Self {
+            registry: self.registry.clone(),
+            repository: self.repository.clone(),
+            tag: None,
+            digest: Some(digest.to_owned()),
+        })
+    }
+
     /// Explicit digest, if the reference pinned one.
     #[must_use]
     pub fn digest(&self) -> Option<&str> {
@@ -205,7 +220,29 @@ fn validate_digest(digest: &str) -> std::result::Result<(), &'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::canonical_host;
+    use super::{ImageReference, canonical_host};
+
+    #[test]
+    fn with_digest_pins_the_planned_digest_and_drops_the_tag() {
+        let digest = concat!(
+            "sha256:",
+            "ab00000000000000000000000000000000000000000000000000000000000000"
+        );
+        let tagged = ImageReference::parse("docker.io/library/python:3.13-slim").unwrap();
+        let pinned = tagged.with_digest(digest).unwrap();
+        assert_eq!(
+            pinned.to_string(),
+            format!("registry-1.docker.io/library/python@{digest}")
+        );
+        assert_eq!(pinned.reference(), digest);
+        assert_eq!(pinned.tag(), None);
+        assert_eq!(pinned.digest(), Some(digest));
+        assert_eq!(pinned.registry(), tagged.registry());
+        assert_eq!(pinned.repository(), tagged.repository());
+        assert_eq!(tagged.tag(), Some("3.13-slim"));
+        assert!(tagged.with_digest("not-a-digest").is_err());
+        assert!(tagged.with_digest("sha256:AB").is_err());
+    }
 
     #[test]
     fn canonical_host_strips_scheme_path_userinfo_and_collapses_hub_aliases() {

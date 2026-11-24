@@ -175,8 +175,22 @@ impl NodeKey {
         config: &str,
         args: &[(String, String)],
     ) -> Self {
+        Self::step_with_inputs(arch, parents, canon, config, args, &[])
+    }
+
+    /// One step whose key also folds kind-specific inputs (`sources` for `COPY`/`ADD`).
+    #[must_use]
+    pub fn step_with_inputs(
+        arch: &str,
+        parents: &[NodeKey],
+        canon: &str,
+        config: &str,
+        args: &[(String, String)],
+        extra: &[(String, String)],
+    ) -> Self {
         let mut inputs = vec![("config".to_owned(), config.to_owned())];
         inputs.extend(args.iter().cloned());
+        inputs.extend(extra.iter().cloned());
         Self::derive(NodeKind::Step, arch, parents, canon, &inputs)
     }
 

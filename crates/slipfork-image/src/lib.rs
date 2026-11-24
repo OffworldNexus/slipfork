@@ -7,9 +7,9 @@
 //! [`NativeImageBuilder`] evaluates multi-stage `Dockerfile`s natively: `FROM … AS`, non-secret
 //! `ARG`, `ENV`, `WORKDIR`, `COPY [--from] [--chown]`, `ADD`, `RUN` (heredocs and
 //! `--mount=type=cache`), `USER`, `EXPOSE`, `CMD`/`ENTRYPOINT`, and `.dockerignore`. Every
-//! filesystem instruction is a writable Btrfs CoW snapshot sealed into `images/steps/<key>`, so a
-//! repeat build is a cache hit instead of a rebuild. `RUN` executes through `crun` in an
-//! unprivileged user namespace, never an external builder daemon.
+//! filesystem instruction becomes one content-addressed node in `snapshots/<key>` reconciled by
+//! the world's `SnapshotStore`, so a repeat build is a cache hit instead of a rebuild. `RUN`
+//! executes through `crun` in an unprivileged user namespace, never an external builder daemon.
 //!
 //! Every root, credential, architecture, and host fact is injected by the composition root, so
 //! this crate never reads the environment and never binds a socket.
@@ -19,7 +19,7 @@
 //!
 //! use slipfork_image::{
 //!     Architecture, BuildArgs, BuildRequest, ImageLayout, NativeImageBuilder, OciPuller,
-//!     RegistryCredentials, StepHost, StepLayout, StepLog,
+//!     RegistryCredentials, StepHost, StepLog,
 //! };
 //! use slipfork_world::{BtrfsEngine, StoreLayout, WorldEngine};
 //!
@@ -39,7 +39,7 @@
 //! let builder = NativeImageBuilder::new(
 //!     Arc::clone(&engine) as Arc<dyn WorldEngine>,
 //!     puller,
-//!     StepLayout::new(store.images_root()),
+//!     store.clone(),
 //!     Architecture::X86_64,
 //!     host,
 //! );
@@ -51,13 +51,14 @@
 //!     args: BuildArgs::new(),
 //!     target: None,
 //!     externals: std::collections::BTreeMap::new(),
-//! }, &mut log)?;
+//! }, &mut log, 0)?;
 //! println!("{} {}", report.key, report.rootfs.display());
 //! # Ok(())
 //! # }
 //! ```
 
 mod builder;
+mod cache_mounts;
 mod context;
 mod copy;
 mod credentials;
@@ -70,12 +71,12 @@ mod ignore;
 mod inputs;
 mod layout;
 mod manifest;
+mod plan;
 mod puller;
 mod reference;
 mod registry;
 mod runtime;
 mod step_log;
-mod steps;
 mod unpack;
 
 use std::fmt;
@@ -84,6 +85,7 @@ pub use builder::{
     BuildReport, BuildRequest, ExternalFrom, ExternalImage, NativeImageBuilder, StageWalk,
     StepTrace, external_references, instruction_width, planned_instruction_width, stage_walk,
 };
+pub use cache_mounts::CacheMounts;
 pub use context::{BuildContext, ContextEntry};
 pub use credentials::RegistryCredentials;
 pub use dockerfile::{
@@ -99,8 +101,8 @@ pub use puller::{OciPuller, PulledImage};
 pub use reference::{ImageReference, canonical_host};
 pub use registry::{Credentials, RegistryClient, RegistryScheme};
 pub use runtime::{CrunStepRuntime, StepHost, Stream};
+pub use slipfork_world::Cache;
 pub use step_log::{BuildEvent, StepEvent, StepLog, StepPlace, StepState, exit_detail};
-pub use steps::{CacheMode, StepCache, StepLayout, StepRecord};
 pub use unpack::LayerUnpacker;
 
 /// Container architecture the caller wants a multi-arch manifest resolved for.

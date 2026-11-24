@@ -93,6 +93,15 @@ pub enum Error {
     },
     /// A `COPY --from=<image>` reference has no pulled rootfs to read.
     ExternalImageMissing { reference: String },
+    /// A `FROM` tag moved between planning and unpacking; the planned digest no longer matches.
+    MovedTag {
+        /// The reference exactly as the `Dockerfile` wrote it.
+        reference: String,
+        /// The manifest digest the build plan sealed into the step key.
+        expected: String,
+        /// The digest the tag resolves to now.
+        actual: String,
+    },
     /// `crun` is not installed, so no `RUN` instruction can execute.
     CrunMissing { path: PathBuf },
     /// An in-process image collaborator was poisoned or panicked.
@@ -190,6 +199,13 @@ impl Error {
             Self::ExternalImageMissing { reference } => {
                 format!("no rootfs was pulled for `--from={reference}`")
             }
+            Self::MovedTag {
+                reference,
+                expected,
+                actual,
+            } => format!(
+                "`{reference}` moved from `{expected}` to `{actual}` after the build plan resolved it"
+            ),
             Self::CrunMissing { path } => {
                 format!("`RUN` needs `crun`, but `{}` is missing", path.display())
             }
@@ -225,6 +241,7 @@ impl Error {
             ),
             Self::UnknownAccount { .. } => "create it in an earlier `RUN` (e.g. `useradd`) or use a numeric uid:gid".to_owned(),
             Self::ExternalImageMissing { .. } => "declare the stage with `FROM <image> AS <name>` above this `COPY`, or fix the `--from=` reference".to_owned(),
+            Self::MovedTag { .. } => "re-run `slipfork up` so the plan seals the tag's current digest".to_owned(),
             Self::CrunMissing { .. } => "install crun from your distribution (`apt install crun`, `dnf install crun`, `pacman -S crun`) and retry".to_owned(),
             Self::Interrupted { .. } => "retry `slipfork up`".to_owned(),
             Self::Json { url, .. } if is_remote_url(url) => {

@@ -73,6 +73,18 @@ impl Variables {
         }
     }
 
+    /// Builds the substitution table from the stage's declared-in-scope ARGs and accumulated `ENV`.
+    #[must_use]
+    pub fn from_scope(args: &BTreeMap<String, String>, env: &BTreeMap<String, String>) -> Self {
+        Self {
+            values: args
+                .iter()
+                .chain(env)
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        }
+    }
+
     /// Replaces `$NAME` / `${NAME}` for known keys; unknown references stay verbatim.
     #[must_use]
     pub fn expand(&self, text: &str) -> String {

@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 /// Where a stage's root filesystem comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StageBase {
@@ -73,7 +75,7 @@ pub struct RunSpec {
 }
 
 /// Shell-form or JSON-exec-form command.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Command {
     /// `/bin/sh -c <script>`.
     Shell(String),
@@ -114,7 +116,7 @@ impl Command {
 }
 
 /// Port protocol for `EXPOSE`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Protocol {
     /// `tcp`.
     Tcp,
@@ -132,7 +134,7 @@ impl fmt::Display for Protocol {
 }
 
 /// One `EXPOSE` entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Port {
     /// Port number.
     pub number: u16,

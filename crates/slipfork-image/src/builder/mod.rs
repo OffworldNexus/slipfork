@@ -1,32 +1,38 @@
-//! Native multi-stage `Dockerfile` evaluation into sealed Btrfs step subvolumes.
+//! Native multi-stage `Dockerfile` evaluation into sealed snapshot nodes.
+//!
+//! [`NativeImageBuilder::build`] is a thin orchestrator: it parses the `Dockerfile`, plans every
+//! content key through [`BuildPlanner`], then asks the world's [`SnapshotStore`] to reconcile one
+//! graph per stage. The planner never writes disk; the store owns sealing, reuse, and GC.
 
 mod externals;
-mod run;
+mod materialize;
 
-use std::collections::BTreeMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use sha2::{Digest, Sha256};
-use slipfork_world::WorldEngine;
+use slipfork_world::{Cache, Node, Observed, SnapshotError, SnapshotStore, WorldEngine};
 
 use crate::Architecture;
 use crate::BaseImageBuilder;
-use crate::digest::hex;
-use crate::dockerfile::{
-    BuildArgs, Command, CopySpec, DockerfileParser, ImageConfig, Instruction, Stage, StageBase,
-    Variables,
-};
+use crate::cache_mounts::CacheMounts;
+use crate::context::BuildContext;
+use crate::dockerfile::{DockerfileParser, ImageConfig, Instruction, Stage};
 use crate::error::{Error, Result};
+use crate::inputs;
+use crate::plan::{BuildPlanner, RefResolver, StepTask};
 use crate::puller::{OciPuller, PulledImage};
 use crate::reference::ImageReference;
 use crate::runtime::{CrunStepRuntime, StepHost, StepLog};
-use crate::steps::{CacheMode, StepCache, StepLayout, StepRecord};
+
+pub use crate::plan::StepTrace;
 pub use externals::{ExternalFrom, ExternalImage, external_references};
-use externals::{FromSource, classify_from};
-use run::BuildRun;
+pub(crate) use externals::{FromSource, classify_from};
+
+use materialize::TaskMaterializer;
 
 /// Everything one `build` call needs; every path is absolute and caller-injected.
 #[derive(Debug, Clone)]
@@ -36,7 +42,7 @@ pub struct BuildRequest {
     /// The `Dockerfile` itself (usually `<context>/Dockerfile`).
     pub dockerfile: PathBuf,
     /// Non-secret, compiler-validated `arg` values.
-    pub args: BuildArgs,
+    pub args: crate::dockerfile::BuildArgs,
     /// Stop after this `AS` stage instead of building the final stage.
     pub target: Option<String>,
     /// Rootfs the composition root pulled for each `COPY --from=<image>` reference, keyed by the
@@ -44,23 +50,12 @@ pub struct BuildRequest {
     pub externals: BTreeMap<String, ExternalImage>,
 }
 
-/// The last instruction a build applied, named exactly as the author wrote it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StepTrace {
-    /// Instruction keyword (`run`, `copy`, …).
-    pub phase: &'static str,
-    /// Command text without the keyword, as written in the `Dockerfile`.
-    pub command: String,
-    /// Source line in the `Dockerfile`.
-    pub line: usize,
-}
-
 /// One finished image plus cache statistics.
 #[derive(Debug, Clone)]
 pub struct BuildReport {
     /// Sealed rootfs of the target stage.
     pub rootfs: PathBuf,
-    /// Cache key of the final step.
+    /// Content key of the final materialized node.
     pub key: String,
     /// Accumulated `ENV`/`WORKDIR`/`USER`/`EXPOSE`/`CMD`/`ENTRYPOINT` metadata.
     pub config: ImageConfig,
@@ -72,6 +67,8 @@ pub struct BuildReport {
     pub build_time: Duration,
     /// The last instruction this walk applied; `None` when the `Dockerfile` applied none.
     pub last: Option<StepTrace>,
+    /// Manifest digest of the final stage's `FROM` image, when it has one.
+    pub base_digest: Option<String>,
 }
 
 /// Declaration-ordered span of stages one build must evaluate.
@@ -127,18 +124,10 @@ pub fn planned_instruction_width(source: &str, target: Option<&str>) -> Result<u
 pub struct NativeImageBuilder {
     world: Arc<dyn WorldEngine>,
     puller: OciPuller,
-    layout: StepLayout,
+    layout: slipfork_world::StoreLayout,
     architecture: Architecture,
     host: StepHost,
-    cache: StepCache,
-}
-
-/// One stage's current sealed rootfs plus metadata.
-#[derive(Debug, Clone)]
-struct StageState {
-    rootfs: PathBuf,
-    key: String,
-    config: ImageConfig,
+    cache: Cache,
 }
 
 impl NativeImageBuilder {
@@ -147,25 +136,24 @@ impl NativeImageBuilder {
     pub fn new(
         world: Arc<dyn WorldEngine>,
         puller: OciPuller,
-        layout: StepLayout,
+        layout: slipfork_world::StoreLayout,
         architecture: Architecture,
         host: StepHost,
     ) -> Self {
-        let cache = StepCache::new(Arc::clone(&world), layout.clone());
         Self {
             world,
             puller,
             layout,
             architecture,
             host,
-            cache,
+            cache: Cache::Warm,
         }
     }
 
-    /// Switches the step cache between reuse (`Warm`) and full re-execution (`Cold`).
+    /// Switches reconcile between reuse (`Warm`) and full re-execution (`Cold`).
     #[must_use]
-    pub fn with_cache_mode(mut self, mode: CacheMode) -> Self {
-        self.cache = StepCache::with_mode(Arc::clone(&self.world), self.layout.clone(), mode);
+    pub fn with_cache(mut self, cache: Cache) -> Self {
+        self.cache = cache;
         self
     }
 
@@ -175,17 +163,23 @@ impl NativeImageBuilder {
         self.architecture
     }
 
-    /// Evaluates `request`, streaming `RUN` output to `log` and reusing sealed step subvolumes.
-    pub fn build(&self, request: &BuildRequest, log: &mut StepLog<'_>) -> Result<BuildReport> {
+    /// Evaluates `request`, streaming `RUN` output to `log` and reusing sealed snapshot nodes.
+    ///
+    /// `now_ms` is the caller's wall clock; the build never reads ambient time itself.
+    pub fn build(
+        &self,
+        request: &BuildRequest,
+        log: &mut StepLog<'_>,
+        now_ms: u64,
+    ) -> Result<BuildReport> {
         let started = Instant::now();
         let source = fs::read_to_string(&request.dockerfile)
             .map_err(|source| Error::io("read", &request.dockerfile, source))?;
         let stages = DockerfileParser::parse(&source)?;
         let walk = stage_walk(&stages, request.target.as_deref())?;
-        // Only the requested prefix runs, so a stage past `--target` must never force `crun` or
-        // pull context files into this build.
         let walked = &stages[..=walk.end];
         log.plan_width(instruction_width(walked));
+
         let runtime = CrunStepRuntime::new(self.host.clone());
         if walked
             .iter()
@@ -194,144 +188,143 @@ impl NativeImageBuilder {
         {
             runtime.ensure_crun()?;
         }
-        self.layout.ensure()?;
-        let mut run = BuildRun::new(self, request, &runtime, log, walked);
-        let state = self.build_stages(&mut run, &stages, walk.end)?;
-        Ok(BuildReport {
-            rootfs: state.rootfs,
-            key: state.key,
-            config: state.config,
-            cache_hits: run.cache_hits(),
-            cache_misses: run.cache_misses(),
-            build_time: started.elapsed(),
-            last: run.last_instruction(),
-        })
-    }
+        let context = BuildContext::for_walk(&request.context, inputs::needs_context(walked))?;
+        let resolver = RefResolver::new(
+            &self.puller,
+            self.layout.images_root(),
+            self.cache == Cache::Cold,
+        );
+        let planned =
+            BuildPlanner::new(request, walked, &context, &resolver, self.architecture).plan()?;
 
-    /// Evaluates the stages a [`stage_walk`] selected and returns the walked stage's state.
-    fn build_stages(
-        &self,
-        run: &mut BuildRun<'_, '_, '_>,
-        stages: &[Stage],
-        end: usize,
-    ) -> Result<StageState> {
-        for stage in &stages[..end] {
-            let state = run.stage(stage)?;
-            run.finish_stage(stage, state);
-        }
-        // `stage_walk` proved `end < stages.len()`, so the target stage always exists.
-        run.stage(&stages[end])
-    }
+        let store = SnapshotStore::new(&self.layout, self.world.as_ref());
+        let cache_mounts = CacheMounts::new(self.layout.images_root());
+        let materializer = TaskMaterializer {
+            world: self.world.as_ref(),
+            puller: &self.puller,
+            store: &store,
+            context: &context,
+            owner: self.host.owner(),
+            runtime: &runtime,
+            cache_mounts: &cache_mounts,
+        };
+        let log_cell = RefCell::new(log);
+        let stash: RefCell<Option<Error>> = RefCell::new(None);
+        let tasks = &planned.tasks;
+        let mut counted: BTreeSet<slipfork_world::NodeKey> = BTreeSet::new();
+        let mut hits = 0usize;
+        let mut misses = 0usize;
 
-    fn base_state(
-        &self,
-        stage: &Stage,
-        built: &[(Option<String>, StageState)],
-        log: &mut StepLog<'_>,
-    ) -> Result<StageState> {
-        match &stage.base {
-            StageBase::Image(reference) => {
-                let reference = ImageReference::parse(reference)?;
-                let image = self.puller.pull_into(&reference, log)?;
-                Ok(StageState {
-                    key: format!("base-{}", image.digest),
-                    config: ImageConfig::from(&image.facts),
-                    rootfs: image.rootfs,
-                })
+        for stage in &planned.stages {
+            debug_assert_eq!(stage.graph.head(), stage.head);
+            let stage_keys: BTreeSet<slipfork_world::NodeKey> = stage.keyed_rows().collect();
+            let cursor = Cell::new(0usize);
+            let open = Cell::new(None::<slipfork_world::NodeKey>);
+            let observer = |node: &Node, observed: Observed| {
+                if !stage_keys.contains(&node.key) {
+                    return;
+                }
+                let row = stage.row_index_from(cursor.get(), node.key);
+                match observed {
+                    Observed::Reused => {
+                        if let Some(index) = row {
+                            let mut log = log_cell.borrow_mut();
+                            stage.flush_metadata(cursor.get(), index, &mut log);
+                            let (place, keyword, args) = stage.row_parts(index);
+                            log.started(place, keyword, args);
+                            log.done(Duration::ZERO);
+                            cursor.set(index + 1);
+                        }
+                    }
+                    Observed::Building => {
+                        if let Some(index) = row {
+                            let mut log = log_cell.borrow_mut();
+                            stage.flush_metadata(cursor.get(), index, &mut log);
+                            let (place, keyword, args) = stage.row_parts(index);
+                            log.started(place, keyword, args);
+                            cursor.set(index + 1);
+                            open.set(Some(node.key));
+                        }
+                    }
+                    Observed::Built { elapsed } => {
+                        if open.get() == Some(node.key) {
+                            open.set(None);
+                            log_cell.borrow_mut().done(elapsed);
+                        }
+                    }
+                    Observed::Failed { elapsed } => {
+                        if open.get() == Some(node.key) {
+                            open.set(None);
+                            let code = stash.borrow().as_ref().and_then(Error::exit_code);
+                            log_cell.borrow_mut().failed(elapsed, code);
+                        }
+                    }
+                }
+            };
+            let outcome = store.reconcile_serial(
+                &stage.graph,
+                self.cache,
+                now_ms,
+                observer,
+                |node, slot, _sink| {
+                    let Some(task) = tasks.get(&node.key) else {
+                        return Err(SnapshotError::Materialize(format!(
+                            "no planned task for node {}",
+                            node.key
+                        )));
+                    };
+                    materializer
+                        .apply(node, task, slot, &log_cell)
+                        .map_err(|error| {
+                            let message = error.cause();
+                            *stash.borrow_mut() = Some(error);
+                            SnapshotError::Materialize(message)
+                        })
+                },
+            );
+            match outcome {
+                Ok(reconciled) => {
+                    for key in &reconciled.built_keys {
+                        if is_fs(tasks.get(key)) && counted.insert(*key) {
+                            misses += 1;
+                        }
+                    }
+                    for key in &reconciled.reused_keys {
+                        if is_fs(tasks.get(key)) && counted.insert(*key) {
+                            hits += 1;
+                        }
+                    }
+                    let mut log = log_cell.borrow_mut();
+                    stage.flush_metadata(cursor.get(), stage.rows.len(), &mut log);
+                }
+                Err(failure) => {
+                    if let Some(error) = stash.into_inner() {
+                        return Err(error);
+                    }
+                    return Err(Error::StepFailed {
+                        line: usize::try_from(failure.line).unwrap_or(usize::MAX),
+                        phase: "build",
+                        instruction: failure.node.as_hex()[..12].to_owned().into(),
+                        message: failure.cause.to_string(),
+                        exit_code: None,
+                        runtime: None,
+                        next: "fix the failing Dockerfile step and re-run; sealed nodes are reused"
+                            .to_owned(),
+                    });
+                }
             }
-            StageBase::Stage(name) => built
-                .iter()
-                .find(|(alias, _)| alias.as_deref() == Some(name.as_str()))
-                .map(|(_, state)| state.clone())
-                .ok_or_else(|| Error::UnknownStage { name: name.clone() }),
         }
-    }
 
-    fn source_state(
-        &self,
-        from: &str,
-        built: &[(Option<String>, StageState)],
-        stages: &[Stage],
-        externals: &BTreeMap<String, ExternalImage>,
-    ) -> Result<StageState> {
-        match classify_from(from, stages) {
-            Some(FromSource::Index(index) | FromSource::Stage(index)) => built
-                .get(index)
-                .map(|(_, state)| state.clone())
-                .ok_or_else(|| Error::UnknownStage {
-                    name: from.to_owned(),
-                }),
-            Some(FromSource::External) => externals
-                .get(from)
-                .map(|image| StageState {
-                    rootfs: image.rootfs.clone(),
-                    key: format!("external-{}", image.digest),
-                    config: ImageConfig::default(),
-                })
-                .ok_or_else(|| Error::ExternalImageMissing {
-                    reference: from.to_owned(),
-                }),
-            None => Err(Error::UnknownStage {
-                name: from.to_owned(),
-            }),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn filesystem_step<F>(
-        &self,
-        parent: &StageState,
-        instruction: &Instruction,
-        line: usize,
-        args: &BTreeMap<String, String>,
-        context_hash: &str,
-        config: &ImageConfig,
-        salt: &str,
-        apply: F,
-    ) -> Result<(StageState, bool)>
-    where
-        F: FnOnce(&Path) -> Result<()>,
-    {
-        let label = instruction.render();
-        let key = state_key(instruction, args, context_hash, config, &parent.key, salt);
-        if let Some(sealed) = self.cache.lookup(&key)? {
-            return Ok((
-                StageState {
-                    rootfs: sealed,
-                    key,
-                    config: config.clone(),
-                },
-                true,
-            ));
-        }
-        let writer = self.layout.writer(&key);
-        self.cache.abandon(&writer);
-        self.world.clone_subvolume(&parent.rootfs, &writer)?;
-        if let Err(err) = apply(&writer) {
-            self.cache.abandon(&writer);
-            return Err(err);
-        }
-        let rootfs = self
-            .cache
-            .store(
-                &key,
-                &writer,
-                &StepRecord {
-                    key: key.clone(),
-                    parent: parent.key.clone(),
-                    instruction: label,
-                    line,
-                },
-            )
-            .map_err(|err| at_line(err, line, instruction))?;
-        Ok((
-            StageState {
-                rootfs,
-                key,
-                config: config.clone(),
-            },
-            false,
-        ))
+        Ok(BuildReport {
+            rootfs: store.node_dir(&planned.final_key),
+            key: planned.final_key.as_hex(),
+            config: planned.final_config,
+            cache_hits: hits,
+            cache_misses: misses,
+            build_time: started.elapsed(),
+            last: planned.last,
+            base_digest: planned.base_digest,
+        })
     }
 }
 
@@ -341,61 +334,13 @@ impl BaseImageBuilder for NativeImageBuilder {
     }
 }
 
-fn state_key(
-    instruction: &Instruction,
-    args: &BTreeMap<String, String>,
-    context_hash: &str,
-    config: &ImageConfig,
-    parent: &str,
-    salt: &str,
-) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"slipfork-step-v1\0");
-    hasher.update(parent.as_bytes());
-    hasher.update(b"\0");
-    // A `COPY --from` step's sealed key includes the source rootfs key, so a floating external
-    // tag whose digest moved never gets served from a stale step.
-    hasher.update(salt.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(instruction.render().as_bytes());
-    hasher.update(b"\0");
-    for (key, value) in args {
-        hasher.update(key.as_bytes());
-        hasher.update(b"=");
-        hasher.update(value.as_bytes());
-        hasher.update(b"\0");
-    }
-    hasher.update(context_hash.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(config.fingerprint().as_bytes());
-    hex(&hasher.finalize())
-}
-
-fn expand_spec(spec: &CopySpec, variables: &Variables) -> CopySpec {
-    CopySpec {
-        from: spec.from.clone(),
-        chown: spec.chown.clone(),
-        mode: spec.mode,
-        sources: spec
-            .sources
-            .iter()
-            .map(|source| variables.expand(source))
-            .collect(),
-        dest: variables.expand(&spec.dest),
-    }
-}
-
-fn expand_command(command: &Command, variables: &Variables) -> Command {
-    match command {
-        Command::Shell(script) => Command::Shell(variables.expand(script)),
-        Command::Exec(argv) => {
-            Command::Exec(argv.iter().map(|arg| variables.expand(arg)).collect())
-        }
-    }
+/// Whether `task` is the filesystem kind that counts toward cache hits/misses.
+fn is_fs(task: Option<&StepTask>) -> bool {
+    matches!(task, Some(StepTask::Fs { .. }))
 }
 
 /// Folds a step failure into a line-decorated `StepFailed` naming the instruction as written.
-fn at_line(err: Error, line: usize, instruction: &Instruction) -> Error {
+pub(crate) fn at_line(err: Error, line: usize, instruction: &Instruction) -> Error {
     let phase = instruction.phase();
     let command = instruction.command_text();
     match err {
@@ -481,13 +426,16 @@ fn at_line(err: Error, line: usize, instruction: &Instruction) -> Error {
     }
 }
 
-/// Drops the internal `images/steps/<key>` prefix so errors name container paths only.
+/// Drops the internal `snapshots/<slot>` prefix so errors name container paths only.
 fn visible_path(path: &Path) -> String {
     let components: Vec<String> = path
         .components()
         .map(|component| component.as_os_str().to_string_lossy().into_owned())
         .collect();
-    match components.iter().position(|component| component == "steps") {
+    match components
+        .iter()
+        .position(|component| component == "snapshots")
+    {
         Some(index) if components.len() > index + 2 => {
             format!("/{}", components[index + 2..].join("/"))
         }

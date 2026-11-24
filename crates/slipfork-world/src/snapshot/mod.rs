@@ -22,7 +22,8 @@ pub use key::{KEY_DOMAIN, NodeKey, NodeKind, normalize_canon};
 pub use lease::{LEASE_FILE, Lease, LeaseEntry};
 pub use slot::{PublishOutcome, SnapshotSlot};
 pub use store::{
-    Cache, Facts, Parallelism, Pin, RECORD_VERSION, ReconcileFailed, Reconciled, SnapshotStore,
+    Cache, Facts, Observed, Parallelism, Pin, RECORD_VERSION, ReconcileFailed, Reconciled,
+    SnapshotStore,
 };
 
 /// Everything the snapshot store can refuse to do.
@@ -59,6 +60,8 @@ pub enum SnapshotError {
     },
     /// The Btrfs engine refused an operation.
     Engine(crate::Error),
+    /// A caller-injected materializer failed (the builder preserves its own typed error).
+    Materialize(String),
 }
 
 impl SnapshotError {
@@ -107,6 +110,10 @@ impl fmt::Display for SnapshotError {
                 path.display()
             ),
             Self::Engine(error) => write!(f, "{error}"),
+            Self::Materialize(message) => write!(
+                f,
+                "{message}\nnext: fix the failing build instruction and re-run `slipfork up`"
+            ),
         }
     }
 }

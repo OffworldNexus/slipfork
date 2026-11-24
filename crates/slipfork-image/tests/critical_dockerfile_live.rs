@@ -21,12 +21,11 @@ use std::thread;
 use std::time::Duration;
 
 use slipfork_image::{
-    BuildArgs, BuildEvent, BuildRequest, Command, CrunStepRuntime, ExternalImage, ImageConfig,
-    ImageLayout, ImageReference, NativeImageBuilder, OciPuller, Port, Protocol,
-    RegistryCredentials, RegistryScheme, RunSpec, StepHost, StepLayout, StepLog, Stream,
-    external_references,
+    BuildArgs, BuildEvent, BuildRequest, CacheMounts, Command, CrunStepRuntime, ExternalImage,
+    ImageConfig, ImageLayout, ImageReference, NativeImageBuilder, OciPuller, Port, Protocol,
+    RegistryCredentials, RegistryScheme, RunSpec, StepHost, StepLog, Stream, external_references,
 };
-use slipfork_world::{BtrfsEngine, Dirtiness, StoreLayout, WorldEngine, is_subvolume_path};
+use slipfork_world::{BtrfsEngine, Cache, Dirtiness, StoreLayout, WorldEngine, is_subvolume_path};
 
 /// The last few KiB of a build's streamed output, so a failing `crun` step is never silent.
 fn output_tail(log: &[(Stream, String)]) -> String {
@@ -56,7 +55,7 @@ fn build_capture(
             }
         };
         let mut log = StepLog::with_events(&mut events);
-        builder.build(request, &mut log)
+        builder.build(request, &mut log, 1_000)
     };
     (outcome, streamed)
 }
@@ -145,7 +144,6 @@ fn native_dockerfile_multistage_build_lifecycle() {
     let engine = Arc::new(BtrfsEngine::new(store.clone()));
     engine.ensure_store().expect("create the Btrfs image store");
     let images = ImageLayout::new(store.images_root());
-    let steps = StepLayout::new(store.images_root());
     let scratch = run.join("bundles");
 
     let fixture = support::Fixture::start();
@@ -161,7 +159,7 @@ fn native_dockerfile_multistage_build_lifecycle() {
     let builder = NativeImageBuilder::new(
         Arc::clone(&engine) as Arc<dyn WorldEngine>,
         puller,
-        steps.clone(),
+        store.clone(),
         arch,
         StepHost::new(crun, "/etc/resolv.conf", &scratch, uid, gid),
     );
@@ -200,7 +198,9 @@ fn native_dockerfile_multistage_build_lifecycle() {
     });
     assert_eq!(first.cache_hits, 0, "a cold build serves no sealed step");
     assert_eq!(first.cache_misses, 7, "seven filesystem instructions");
-    let cache_file = steps.cache_mount("/root/.cache/x").join("out.txt");
+    let cache_file = CacheMounts::new(store.images_root())
+        .dir("/root/.cache/x")
+        .join("out.txt");
     assert_eq!(support::read_text(&cache_file), "run-one\n");
     let blobs_after_first = fixture.blob_requests();
     assert!(
@@ -325,12 +325,9 @@ fn native_dockerfile_multistage_build_lifecycle() {
 
     // Every produced step and the final rootfs are sealed read-only subvolumes.
     let mut sealed = 0usize;
-    for entry in fs::read_dir(steps.steps()).expect("read the step cache") {
+    for entry in fs::read_dir(store.snapshots_root()).expect("read the snapshot store") {
         let path = entry.expect("step entry").path();
-        if path
-            .extension()
-            .is_some_and(|extension| extension == "json")
-        {
+        if !is_node_dir(&path) {
             continue;
         }
         assert!(
@@ -347,13 +344,13 @@ fn native_dockerfile_multistage_build_lifecycle() {
         );
         sealed += 1;
     }
-    assert_eq!(sealed, 8, "seven steps plus the second RUN variant");
+    assert_eq!(sealed, 9, "eight step variants plus the base node");
     assert!(engine.is_sealed(rootfs).expect("probe the final seal"));
 
     // Cleanup: reaping the worlds keeps the scratch root free of open process groups and
     // sealed subvolumes that `remove_dir_all` cannot delete.
     drop(fixture);
-    destroy_children(&engine, &steps.steps());
+    destroy_children(&engine, &store.snapshots_root());
     destroy_children(&engine, &store.images_root().join("oci"));
     let _ = fs::remove_dir_all(&run);
 }
@@ -374,7 +371,6 @@ fn a_target_stage_never_reaches_a_later_failing_stage() {
     let engine = Arc::new(BtrfsEngine::new(store.clone()));
     engine.ensure_store().expect("create the Btrfs image store");
     let images = ImageLayout::new(store.images_root());
-    let steps = StepLayout::new(store.images_root());
     let scratch = run.join("bundles");
 
     let fixture = support::Fixture::start();
@@ -390,7 +386,7 @@ fn a_target_stage_never_reaches_a_later_failing_stage() {
     let builder = NativeImageBuilder::new(
         Arc::clone(&engine) as Arc<dyn WorldEngine>,
         puller,
-        steps.clone(),
+        store.clone(),
         arch,
         StepHost::new(&crun, "/etc/resolv.conf", &scratch, uid, gid),
     );
@@ -544,7 +540,7 @@ fn a_target_stage_never_reaches_a_later_failing_stage() {
     );
 
     drop(fixture);
-    destroy_children(&engine, &steps.steps());
+    destroy_children(&engine, &store.snapshots_root());
     destroy_children(&engine, &store.images_root().join("oci"));
     let _ = fs::remove_dir_all(&run);
 }
@@ -587,7 +583,6 @@ fn external_copy_from_image_lifecycle() {
     let store = StoreLayout::new(&run);
     let engine = Arc::new(BtrfsEngine::new(store.clone()));
     engine.ensure_store().expect("create the Btrfs image store");
-    let steps = StepLayout::new(store.images_root());
     let scratch = run.join("bundles");
     let fixture = support::Fixture::start();
     let arch = support::host_architecture();
@@ -623,7 +618,7 @@ fn external_copy_from_image_lifecycle() {
     let builder = NativeImageBuilder::new(
         Arc::clone(&engine) as Arc<dyn WorldEngine>,
         loopback,
-        steps.clone(),
+        store.clone(),
         arch,
         StepHost::new(&crun, "/etc/resolv.conf", &scratch, uid, gid),
     );
@@ -818,7 +813,7 @@ fn external_copy_from_image_lifecycle() {
     let owner_builder = NativeImageBuilder::new(
         Arc::clone(&engine) as Arc<dyn WorldEngine>,
         https,
-        steps.clone(),
+        store.clone(),
         arch,
         StepHost::new(&crun, "/etc/resolv.conf", &scratch, uid, gid),
     );
@@ -858,7 +853,7 @@ fn external_copy_from_image_lifecycle() {
     );
 
     drop(fixture);
-    destroy_children(&engine, &steps.steps());
+    destroy_children(&engine, &store.snapshots_root());
     destroy_children(&engine, &store.images_root().join("oci"));
     let _ = fs::remove_dir_all(&run);
 }
@@ -877,7 +872,6 @@ fn debian_root_build_installs_system_packages_and_switches_named_users() {
     let store = StoreLayout::new(&run);
     let engine = Arc::new(BtrfsEngine::new(store.clone()));
     engine.ensure_store().expect("create the Btrfs image store");
-    let steps = StepLayout::new(store.images_root());
     let scratch = run.join("bundles");
     let arch = support::host_architecture();
     let https = OciPuller::new(
@@ -890,7 +884,7 @@ fn debian_root_build_installs_system_packages_and_switches_named_users() {
     let builder = NativeImageBuilder::new(
         Arc::clone(&engine) as Arc<dyn WorldEngine>,
         https,
-        steps.clone(),
+        store.clone(),
         arch,
         StepHost::new(crun, "/etc/resolv.conf", &scratch, uid, gid),
     );
@@ -1003,7 +997,150 @@ fn debian_root_build_installs_system_packages_and_switches_named_users() {
         "the remedy points at useradd: {rendered}"
     );
 
-    destroy_children(&engine, &steps.steps());
+    destroy_children(&engine, &store.snapshots_root());
+    destroy_children(&engine, &store.images_root().join("oci"));
+    let _ = fs::remove_dir_all(&run);
+}
+
+/// Real-Btrfs key isolation for `COPY`: an edit to a file no `COPY` names stays sealed, an edited
+/// copied file rebuilds only its step and suffix (both rebuilt rootfs bytes are read back), and
+/// `Cache::Cold` re-executes every step even though the keys are unchanged.
+#[test]
+fn copy_keys_isolate_edits_and_cold_rebuilds_every_step() {
+    let run = support::live_run_root("dockerfile-copy-keys");
+    // SAFETY: `getuid`/`getgid` only read the caller's identity and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    // SAFETY: as above; `getgid` has no preconditions.
+    let gid = unsafe { libc::getgid() };
+    let store = StoreLayout::new(&run);
+    let engine = Arc::new(BtrfsEngine::new(store.clone()));
+    engine.ensure_store().expect("create the Btrfs image store");
+    let scratch = run.join("bundles");
+    let fixture = support::Fixture::start();
+    let arch = support::host_architecture();
+    let puller = OciPuller::new(
+        Arc::clone(&engine) as Arc<dyn WorldEngine>,
+        ImageLayout::new(store.images_root()),
+        RegistryCredentials::default(),
+        arch,
+        "slipfork-tests/0.1".to_owned(),
+    )
+    .with_scheme(RegistryScheme::Http);
+    let builder = NativeImageBuilder::new(
+        Arc::clone(&engine) as Arc<dyn WorldEngine>,
+        puller,
+        store.clone(),
+        arch,
+        StepHost::new(crun_path(), "/etc/resolv.conf", &scratch, uid, gid),
+    );
+
+    let context = run.join("context");
+    fs::create_dir_all(context.join("app")).expect("create the copied app dir");
+    fs::create_dir_all(context.join("docs")).expect("create the copied docs dir");
+    fs::write(context.join("app/copied.txt"), "one\n").expect("write the first copy source");
+    fs::write(context.join("docs/copied.txt"), "docs-one\n").expect("write the middle source");
+    fs::write(context.join("tail.txt"), "tail\n").expect("write the suffix source");
+    fs::write(context.join("notes.md"), "untracked\n").expect("write an uncopied file");
+    let dockerfile = context.join("Dockerfile");
+    fs::write(
+        &dockerfile,
+        "FROM scratch\nCOPY app /app\nCOPY docs /docs\nCOPY tail.txt /tail.txt\n",
+    )
+    .expect("write the three-COPY Dockerfile");
+    let request = BuildRequest {
+        context: context.clone(),
+        dockerfile: dockerfile.clone(),
+        args: BuildArgs::new(),
+        target: None,
+        externals: BTreeMap::new(),
+    };
+
+    let (first, first_log) = build_capture(&builder, &request);
+    let first = first.unwrap_or_else(|error| {
+        panic!(
+            "first COPY-only build: {error}\nbuild output tail:\n{}",
+            output_tail(&first_log)
+        )
+    });
+    assert_eq!(first.cache_misses, 3, "three COPY steps graft from scratch");
+    assert_eq!(
+        support::read_text(&first.rootfs.join("app/copied.txt")),
+        "one\n",
+        "the first COPY carries its source bytes"
+    );
+    assert_eq!(
+        support::read_text(&first.rootfs.join("docs/copied.txt")),
+        "docs-one\n",
+        "the middle COPY carries its source bytes"
+    );
+    assert_eq!(
+        support::read_text(&first.rootfs.join("tail.txt")),
+        "tail\n",
+        "the suffix COPY carries its source bytes"
+    );
+
+    // A context edit no `COPY` names never moves a source key.
+    fs::write(context.join("notes.md"), "edited but uncopied\n").expect("edit the uncopied file");
+    let (unrelated, unrelated_log) = build_capture(&builder, &request);
+    let unrelated = unrelated.unwrap_or_else(|error| {
+        panic!(
+            "unrelated-context rebuild: {error}\nbuild output tail:\n{}",
+            output_tail(&unrelated_log)
+        )
+    });
+    assert_eq!(
+        unrelated.cache_misses, 0,
+        "an uncopied context edit must stay sealed"
+    );
+    assert_eq!(unrelated.cache_hits, 3);
+
+    // Editing the middle `COPY`'d file rebuilds that step and its suffix only.
+    fs::write(context.join("docs/copied.txt"), "docs-two\n").expect("edit the middle source");
+    let (edited, edited_log) = build_capture(&builder, &request);
+    let edited = edited.unwrap_or_else(|error| {
+        panic!(
+            "edited-COPY rebuild: {error}\nbuild output tail:\n{}",
+            output_tail(&edited_log)
+        )
+    });
+    assert_eq!(
+        edited.cache_misses, 2,
+        "the edited `COPY docs` step and its `COPY tail.txt` suffix rebuild"
+    );
+    assert_eq!(edited.cache_hits, 1, "`COPY app` stays sealed");
+    assert_eq!(
+        support::read_text(&edited.rootfs.join("docs/copied.txt")),
+        "docs-two\n",
+        "the rebuilt middle COPY must carry the edited bytes"
+    );
+    assert_eq!(
+        support::read_text(&edited.rootfs.join("tail.txt")),
+        "tail\n",
+        "the rebuilt suffix keeps its source bytes intact"
+    );
+    assert_eq!(
+        support::read_text(&edited.rootfs.join("app/copied.txt")),
+        "one\n",
+        "the earlier sealed COPY keeps its bytes"
+    );
+
+    // `Cache::Cold` re-resolves and re-executes every materialized node, keys unchanged.
+    let cold = builder.with_cache(Cache::Cold);
+    let (forced, forced_log) = build_capture(&cold, &request);
+    let forced = forced.unwrap_or_else(|error| {
+        panic!(
+            "`Cache::Cold` rebuild: {error}\nbuild output tail:\n{}",
+            output_tail(&forced_log)
+        )
+    });
+    assert_eq!(
+        forced.cache_misses, 3,
+        "`--no-cache` must re-execute every COPY step"
+    );
+    assert_eq!(forced.cache_hits, 0);
+
+    drop(fixture);
+    destroy_children(&engine, &store.snapshots_root());
     destroy_children(&engine, &store.images_root().join("oci"));
     let _ = fs::remove_dir_all(&run);
 }
@@ -1083,6 +1220,17 @@ fn crun_path() -> PathBuf {
 }
 
 /// Destroys every sealed subvolume directly under `root`; plain directories are left in place.
+/// Whether `path` is one of the store's `<64-hex>` node slots, never a record, lock or temp file.
+fn is_node_dir(path: &Path) -> bool {
+    path.is_dir()
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+}
+
 fn destroy_children(engine: &BtrfsEngine, root: &Path) {
     let Ok(entries) = fs::read_dir(root) else {
         return;

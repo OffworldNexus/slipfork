@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use slipfork_image::{
     Architecture, BuildArgs, BuildContext, BuildEvent, BuildRequest, Command, DockerfileParser,
     Dockerignore, ImageConfig, ImageLayout, ImageReference, Instruction, LayerUnpacker,
-    NativeImageBuilder, OciPuller, RegistryCredentials, StepHost, StepLayout, StepLog, Variables,
+    NativeImageBuilder, OciPuller, RegistryCredentials, StepHost, StepLog, Variables,
     build_inputs_digest, stage_walk,
 };
 use slipfork_world::{BtrfsEngine, StoreLayout, WorldEngine};
@@ -373,7 +373,7 @@ fn a_missing_crun_fails_typed_before_any_step_runs() {
     let builder = NativeImageBuilder::new(
         Arc::clone(&engine) as Arc<dyn WorldEngine>,
         puller,
-        StepLayout::new(store.images_root()),
+        store.clone(),
         Architecture::X86_64,
         StepHost::new(
             "/nonexistent/crun",
@@ -393,7 +393,7 @@ fn a_missing_crun_fails_typed_before_any_step_runs() {
     let mut events = |_: BuildEvent<'_>| {};
     let mut log = StepLog::with_events(&mut events);
     let error = builder
-        .build(&request, &mut log)
+        .build(&request, &mut log, 1_000)
         .expect_err("a missing crun must fail closed");
     assert!(
         matches!(error, slipfork_image::Error::CrunMissing { .. }),
@@ -512,7 +512,7 @@ fn an_absent_target_alias_fails_before_any_build_work() {
     let builder = NativeImageBuilder::new(
         Arc::clone(&engine) as Arc<dyn WorldEngine>,
         puller,
-        StepLayout::new(store.images_root()),
+        store.clone(),
         Architecture::X86_64,
         StepHost::new(
             "/nonexistent/crun",
@@ -532,7 +532,7 @@ fn an_absent_target_alias_fails_before_any_build_work() {
     let mut events = |_: BuildEvent<'_>| {};
     let mut log = StepLog::with_events(&mut events);
     let error = builder
-        .build(&request, &mut log)
+        .build(&request, &mut log, 1_000)
         .expect_err("an absent target alias must fail closed");
     assert!(
         matches!(error, slipfork_image::Error::UnknownStage { ref name } if name == "staging"),

@@ -9,12 +9,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use slipfork_forkfile::compile;
 use slipfork_image::{
-    Architecture, BuildArgs, BuildEvent, BuildRequest, CacheMode, ImageLayout, ImageReference,
-    NativeImageBuilder, OciPuller, StepEvent, StepHost, StepLayout, StepLog, StepState, Stream,
+    Architecture, BuildArgs, BuildEvent, BuildRequest, Cache, ImageLayout, ImageReference,
+    NativeImageBuilder, OciPuller, StepEvent, StepHost, StepLog, StepState, Stream,
     planned_instruction_width,
 };
 use slipfork_world::{BtrfsEngine, StoreLayout, WorldEngine};
@@ -309,21 +310,18 @@ impl Session {
             let builder = NativeImageBuilder::new(
                 Arc::clone(&lab.engine),
                 build_puller,
-                StepLayout::new(lab.store.images_root()),
+                lab.store.clone(),
                 lab.architecture,
                 step_host,
             )
-            .with_cache_mode(if *no_cache {
-                CacheMode::Cold
-            } else {
-                CacheMode::Warm
-            });
+            .with_cache(if *no_cache { Cache::Cold } else { Cache::Warm });
             builder.build(
                 &BuildRequest {
                     externals: pulled,
                     ..request.clone()
                 },
                 &mut log,
+                now_ms(),
             )
         };
         let report = match outcome {
@@ -339,10 +337,7 @@ impl Session {
         };
         let cache_key = report.key;
         let image_id = format!("sha256:{cache_key}");
-        let digest = cache_key
-            .strip_prefix("base-")
-            .filter(|key| key.starts_with("sha256:"))
-            .map(str::to_owned);
+        let digest = report.base_digest;
         let index = lab.store.images_root().join("built.json");
         if let Err(error) = record_built(
             &index,
@@ -594,6 +589,15 @@ fn record_built(
 
 fn out(text: &str) {
     let _ = emit(text);
+}
+
+/// Wall clock for snapshot records; this CLI command is a composition root.
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 #[cfg(test)]
