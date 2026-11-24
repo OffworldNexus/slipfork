@@ -23,7 +23,7 @@ use crate::error::{Error, Result};
 use crate::puller::{OciPuller, PulledImage};
 use crate::reference::ImageReference;
 use crate::runtime::{CrunStepRuntime, StepHost, StepLog};
-use crate::steps::{StepCache, StepLayout, StepRecord};
+use crate::steps::{CacheMode, StepCache, StepLayout, StepRecord};
 pub use externals::{ExternalFrom, ExternalImage, external_references};
 use externals::{FromSource, classify_from};
 use run::BuildRun;
@@ -160,6 +160,13 @@ impl NativeImageBuilder {
             host,
             cache,
         }
+    }
+
+    /// Switches the step cache between reuse (`Warm`) and full re-execution (`Cold`).
+    #[must_use]
+    pub fn with_cache_mode(mut self, mode: CacheMode) -> Self {
+        self.cache = StepCache::with_mode(Arc::clone(&self.world), self.layout.clone(), mode);
+        self
     }
 
     /// The architecture every `FROM <image>` is resolved for.

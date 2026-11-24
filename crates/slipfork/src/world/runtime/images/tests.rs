@@ -55,6 +55,7 @@ fn a_failed_build_writes_no_synthetic_capture() {
         ),
         "http",
         doc.default_features(),
+        false,
     );
     let mut sink = BootSink::for_step(
         Arc::new(Mutex::new(Emitter::closed())),
@@ -137,6 +138,7 @@ fn an_unpulled_external_copy_fails_at_its_dockerfile_line() {
         ),
         "http",
         doc.default_features(),
+        false,
     );
     let mut sink = BootSink::for_step(
         Arc::new(Mutex::new(Emitter::closed())),

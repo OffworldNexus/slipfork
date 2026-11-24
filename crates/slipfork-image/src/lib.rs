@@ -100,7 +100,7 @@ pub use reference::{ImageReference, canonical_host};
 pub use registry::{Credentials, RegistryClient, RegistryScheme};
 pub use runtime::{CrunStepRuntime, StepHost, Stream};
 pub use step_log::{BuildEvent, StepEvent, StepLog, StepPlace, StepState, exit_detail};
-pub use steps::{StepCache, StepLayout, StepRecord};
+pub use steps::{CacheMode, StepCache, StepLayout, StepRecord};
 pub use unpack::LayerUnpacker;
 
 /// Container architecture the caller wants a multi-arch manifest resolved for.

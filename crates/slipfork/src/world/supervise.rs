@@ -30,14 +30,19 @@ impl Session {
         unsafe {
             libc::setsid();
         }
-        match supervisor_main(&args.project, &args.world, self.host()) {
+        match supervisor_main(&args.project, &args.world, self.host(), args.no_cache) {
             Ok(()) => ExitCode::SUCCESS,
             Err(message) => fail(message, "inspect `.slipfork/supervisor.log`"),
         }
     }
 }
 
-fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), String> {
+fn supervisor_main(
+    project: &Path,
+    world: &str,
+    env: &HostEnv,
+    no_cache: bool,
+) -> Result<(), String> {
     let world = WorldName::parse(world).map_err(|error| error.to_string())?;
     let source = fs::read_to_string(project.join("Forkfile"))
         .map_err(|error| format!("read Forkfile: {error}"))?;
@@ -67,6 +72,7 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
         plan: &plan,
         features: features.clone(),
         image_inputs: &image_inputs,
+        no_cache,
         env,
         emitter: Arc::clone(&emitter),
     })?);

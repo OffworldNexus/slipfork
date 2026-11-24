@@ -13,7 +13,7 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use slipfork_forkfile::compile;
 use slipfork_image::{
-    Architecture, BuildArgs, BuildEvent, BuildRequest, ImageLayout, ImageReference,
+    Architecture, BuildArgs, BuildEvent, BuildRequest, CacheMode, ImageLayout, ImageReference,
     NativeImageBuilder, OciPuller, StepEvent, StepHost, StepLayout, StepLog, StepState, Stream,
     planned_instruction_width,
 };
@@ -142,7 +142,12 @@ impl Session {
 
     /// Builds one `Forkfile` image component, streaming every Dockerfile instruction live.
     pub(super) fn docker_build(&self, args: &DockerArgs) -> ExitCode {
-        let DockerVerb::Build { component, target } = &args.verb else {
+        let DockerVerb::Build {
+            component,
+            target,
+            no_cache,
+        } = &args.verb
+        else {
             unreachable!("docker_build is only reachable through DockerVerb::Build")
         };
         let path = self.cwd().join("Forkfile");
@@ -307,7 +312,12 @@ impl Session {
                 StepLayout::new(lab.store.images_root()),
                 lab.architecture,
                 step_host,
-            );
+            )
+            .with_cache_mode(if *no_cache {
+                CacheMode::Cold
+            } else {
+                CacheMode::Warm
+            });
             builder.build(
                 &BuildRequest {
                     externals: pulled,
@@ -357,6 +367,7 @@ impl Session {
                 "rootfs": report.rootfs.display().to_string(),
                 "cache_hits": report.cache_hits,
                 "cache_misses": report.cache_misses,
+                "no_cache": no_cache,
             });
             if let Some(digest) = &digest {
                 value["digest"] = json!(digest);

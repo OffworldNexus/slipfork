@@ -61,11 +61,16 @@ fn dispatch(cli: Cli, session: Session) -> ExitCode {
         Command::Status => session.status(json, verbose),
         Command::Ps => session.ps(json, verbose),
         Command::Doctor => session.doctor(json),
-        Command::Up { target, features } => session.up(&UpArgs {
+        Command::Up {
+            target,
+            features,
+            no_cache,
+        } => session.up(&UpArgs {
             json,
             target,
             features: features.features,
             no_default_features: features.no_default_features,
+            no_cache,
             verbose,
         }),
         Command::Down { target } => session.down(&DownArgs { json, target }),
@@ -165,9 +170,15 @@ fn dispatch(cli: Cli, session: Session) -> ExitCode {
                 DockerCommand::List => DockerVerb::List,
                 DockerCommand::Images => DockerVerb::Images,
                 DockerCommand::Pull { reference } => DockerVerb::Pull { reference },
-                DockerCommand::Build { component, target } => {
-                    DockerVerb::Build { component, target }
-                }
+                DockerCommand::Build {
+                    component,
+                    target,
+                    no_cache,
+                } => DockerVerb::Build {
+                    component,
+                    target,
+                    no_cache,
+                },
             };
             session.docker(&DockerArgs {
                 verb,
@@ -214,9 +225,15 @@ fn dispatch(cli: Cli, session: Session) -> ExitCode {
         }
         Command::Help { command } => print_help(command.as_deref(), session.color(), json),
         Command::Version => emit(&format!("slipfork {}\n", env!("CARGO_PKG_VERSION"))),
-        Command::Supervise { project, world } => {
-            session.supervise(&SuperviseArgs { project, world })
-        }
+        Command::Supervise {
+            project,
+            world,
+            no_cache,
+        } => session.supervise(&SuperviseArgs {
+            project,
+            world,
+            no_cache,
+        }),
     }
 }
 

@@ -43,6 +43,8 @@ pub enum DockerVerb {
         component: String,
         /// Stage that wins over the Forkfile's `stage` declaration.
         target: Option<String>,
+        /// Ignore the sealed step cache and execute every instruction again.
+        no_cache: bool,
     },
 }
 

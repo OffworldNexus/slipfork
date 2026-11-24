@@ -176,6 +176,8 @@ pub struct UpArgs {
     pub features: Vec<FeatureEdit>,
     /// Start from an empty base instead of the built-in `dev` default.
     pub no_default_features: bool,
+    /// Ignore sealed image and step caches for this run, forcing a full rebuild.
+    pub no_cache: bool,
     /// `-v`: add the dim `runtime:` plumbing row between a boot verdict and its `next:`.
     pub verbose: bool,
 }
@@ -235,6 +237,8 @@ pub struct SuperviseArgs {
     pub project: PathBuf,
     /// Validated world name.
     pub world: String,
+    /// Ignore sealed image and step caches for this boot.
+    pub no_cache: bool,
 }
 
 /// The on-disk handle a separate `down`/`restart` process uses.

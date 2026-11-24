@@ -679,6 +679,64 @@ fn private_registry_login_pull_and_copy_from_build_never_leak_the_credential() {
     );
     transcripts.push(("docker build", transcript(&build)));
 
+    // The runtime cache contract: a warm rebuild is all hits, `--no-cache` re-executes and
+    // replaces the same-key step (so the content key, hence the id, is unchanged), and the
+    // following warm build is cached again.
+    let report_of = |output: &Output| -> Value {
+        let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        assert!(
+            !text.contains('\u{1b}'),
+            "docker build --json must emit zero ANSI: {text:?}"
+        );
+        text.lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|value| value.get("rootfs").is_some())
+            .unwrap_or_else(|| panic!("docker build --json must end with its report: {text}"))
+    };
+    let warm_run = lab.run(&["docker", "build", "app", "--json"], None);
+    assert!(
+        warm_run.status.success(),
+        "the warm rebuild failed: {}",
+        transcript(&warm_run)
+    );
+    let warm = report_of(&warm_run);
+    assert_eq!(
+        warm["cache_misses"], 0,
+        "a warm rebuild must serve every step from the sealed cache: {warm}"
+    );
+    let cold_run = lab.run(&["docker", "build", "app", "--no-cache", "--json"], None);
+    assert!(
+        cold_run.status.success(),
+        "`docker build --no-cache` failed: {}",
+        transcript(&cold_run)
+    );
+    let cold = report_of(&cold_run);
+    assert_eq!(
+        cold["no_cache"], true,
+        "the report carries the flag: {cold}"
+    );
+    assert!(
+        cold["cache_misses"]
+            .as_u64()
+            .is_some_and(|misses| misses > 0),
+        "`--no-cache` must re-execute the sealed steps: {cold}"
+    );
+    assert_eq!(
+        cold["image_id"], report["image_id"],
+        "the content key is identical, so `--no-cache` must not mint a new image id: {cold}"
+    );
+    let rewarm_run = lab.run(&["docker", "build", "app", "--json"], None);
+    assert!(
+        rewarm_run.status.success(),
+        "the build after `--no-cache` failed: {}",
+        transcript(&rewarm_run)
+    );
+    let rewarm = report_of(&rewarm_run);
+    assert_eq!(
+        rewarm["cache_misses"], 0,
+        "the cold run must replace the canonical same-key step so the next build is cached: {rewarm}"
+    );
+
     let images = lab.run(&["docker", "images", "--json"], None);
     assert!(
         images.status.success(),

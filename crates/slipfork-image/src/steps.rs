@@ -73,6 +73,15 @@ impl StepLayout {
     }
 }
 
+/// Whether a build may reuse sealed steps or must re-execute every instruction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheMode {
+    /// Reuse every sealed step the layout already holds.
+    Warm,
+    /// Ignore sealed steps: re-execute and replace each same-key subvolume.
+    Cold,
+}
+
 /// Metadata that identifies a cached step.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StepRecord {
@@ -91,17 +100,31 @@ pub struct StepRecord {
 pub struct StepCache {
     world: Arc<dyn WorldEngine>,
     layout: StepLayout,
+    mode: CacheMode,
 }
 
 impl StepCache {
-    /// Wraps the world engine and the step layout.
+    /// Wraps the world engine and the step layout, reusing sealed steps.
     #[must_use]
     pub fn new(world: Arc<dyn WorldEngine>, layout: StepLayout) -> Self {
-        Self { world, layout }
+        Self::with_mode(world, layout, CacheMode::Warm)
+    }
+
+    /// Wraps the engine and layout, choosing whether sealed steps may be reused.
+    #[must_use]
+    pub fn with_mode(world: Arc<dyn WorldEngine>, layout: StepLayout, mode: CacheMode) -> Self {
+        Self {
+            world,
+            layout,
+            mode,
+        }
     }
 
     /// The sealed rootfs for `key`, when it exists and still carries `BTRFS_SUBVOL_RDONLY`.
     pub fn lookup(&self, key: &str) -> Result<Option<PathBuf>> {
+        if self.mode == CacheMode::Cold {
+            return Ok(None);
+        }
         let sealed = self.layout.sealed(key);
         if !sealed.exists() {
             return Ok(None);
@@ -118,6 +141,11 @@ impl StepCache {
     /// Seals `writer`, installs it as `<key>/`, and writes `<key>.json`.
     pub fn store(&self, key: &str, writer: &Path, record: &StepRecord) -> Result<PathBuf> {
         let sealed = self.layout.sealed(key);
+        // A cold build replaces the very same key: drop the stale sealed node and its record
+        // first, so the rename below installs the rebuilt subvolume instead of losing the race.
+        if self.mode == CacheMode::Cold && sealed.exists() {
+            self.discard(&sealed)?;
+        }
         self.world.seal(writer)?;
         match fs::rename(writer, &sealed) {
             Ok(()) => {}

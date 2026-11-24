@@ -72,6 +72,7 @@ pub(super) struct WorldBoot<'a> {
     pub(super) plan: &'a WorldPlan,
     pub(super) features: FeatureSet,
     pub(super) image_inputs: &'a BTreeMap<String, String>,
+    pub(super) no_cache: bool,
     pub(super) env: &'a HostEnv,
     pub(super) emitter: Arc<Mutex<Emitter>>,
 }
@@ -85,6 +86,7 @@ impl WorldRuntime {
             plan,
             features,
             image_inputs,
+            no_cache,
             env,
             emitter,
         } = boot;
@@ -127,12 +129,18 @@ impl WorldRuntime {
             .filter(|resource| resource.resource == ResourceKind::Postgres)
             .map(|resource| layout.world_clone(&world, resource.resource, &resource.id))
             .collect();
-        let trusted_stamp = stamps.trusted_stamp(
-            plan,
-            &features,
-            image_inputs,
-            pg_clones.iter().map(PathBuf::as_path),
-        );
+        // `--no-cache` bypasses the recorded head: no image is adopted, so every instruction
+        // executes and re-seals, and a fork rebuilds its pod clones instead of reusing them.
+        let trusted_stamp = if no_cache {
+            None
+        } else {
+            stamps.trusted_stamp(
+                plan,
+                &features,
+                image_inputs,
+                pg_clones.iter().map(PathBuf::as_path),
+            )
+        };
         let stamp_trusted = trusted_stamp.is_some();
         let adopted = trusted_stamp.map(|stamp| stamp.images).unwrap_or_default();
         let images = ImageCache::new(
@@ -149,6 +157,7 @@ impl WorldRuntime {
             step_host,
             scheme,
             features.clone(),
+            no_cache,
         );
         let host = WorldHost::new(
             WorldTools {

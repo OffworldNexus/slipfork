@@ -3074,6 +3074,79 @@ fn changed_build_inputs_rebuild_and_restart_converges() {
     );
     assert_eq!(latest_image_run(&journey, &project), dockerfile_run);
 
+    // 4b. `up --no-cache` ignores the sealed step cache: every instruction executes again with a
+    // new image run id and real timings, then a plain `up` adopts the fresh stamps and is cached.
+    let forced = journey.slipfork(&project, &["up", "--no-cache", "--json"]);
+    assert!(
+        forced.status.success(),
+        "{}",
+        up_failure("`up --no-cache` failed", &project, &forced)
+    );
+    let forced_text = stdout(&forced);
+    let forced_frames: Vec<serde_json::Value> = forced_text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("each --no-cache line is JSON"))
+        .collect();
+    let verdict = forced_frames
+        .last()
+        .expect("`up --json` ends with one object");
+    assert_eq!(
+        verdict["no_cache"], true,
+        "the final `up --json` object must carry the flag: {verdict}"
+    );
+    assert!(
+        forced_frames.iter().any(|frame| {
+            frame["event"] == "log"
+                && frame["line"]
+                    .as_str()
+                    .is_some_and(|line| line.contains("built-three"))
+        }),
+        "`--no-cache` must re-execute the cached `RUN`:\n{forced_text}"
+    );
+    assert!(
+        forced_frames.iter().any(|frame| {
+            frame["event"] == "step"
+                && frame["image"] == "app"
+                && frame["instruction"] == "RUN"
+                && frame["elapsed_ms"].is_u64()
+        }),
+        "`--no-cache` must stream real per-instruction rows with timings:\n{forced_text}"
+    );
+    let forced_run = latest_image_run(&journey, &project);
+    assert_ne!(
+        dockerfile_run, forced_run,
+        "`--no-cache` must record a new image run id instead of reusing the cached one"
+    );
+    // A stopped world never takes the daemon's Heal path, so this plain `up` must consult the
+    // image stamps the `--no-cache` boot sealed: adopting them is the cache really being warm.
+    let stopped = journey.slipfork(&project, &["down"]);
+    assert!(
+        stopped.status.success(),
+        "down after `--no-cache` failed: {}",
+        stderr(&stopped)
+    );
+    let cached_after_force = journey.slipfork(&project, &["up"]);
+    assert!(
+        cached_after_force.status.success(),
+        "{}",
+        up_failure(
+            "`up` after `--no-cache` failed",
+            &project,
+            &cached_after_force
+        )
+    );
+    assert!(
+        !stdout(&cached_after_force).contains("built"),
+        "a cold boot must adopt the fresh stamps instead of rebuilding:\n{}",
+        stdout(&cached_after_force)
+    );
+    assert_eq!(
+        latest_image_run(&journey, &project),
+        forced_run,
+        "a plain `up` after `--no-cache` must be cached again"
+    );
+
     // 5. A copied context edit changes the canonical context digest, rebuilds, and the new
     // content is what the image actually holds.
     fs::write(project.join("seed.txt"), &seed_two).expect("edit the copied context");

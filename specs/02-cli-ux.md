@@ -32,7 +32,7 @@ Resolution is deterministic and happens before any daemon mutation.
 
 | Verb | Usage | No target | Bare target resolution |
 | :--- | :--- | :--- | :--- |
-| `up` | `slipfork up [TARGET]` | this directory's `Forkfile` | `.forks/<name>` under cwd, then a registered world/fork |
+| `up` | `slipfork up [TARGET] [--no-cache]` | this directory's `Forkfile` | `.forks/<name>` under cwd, then a registered world/fork |
 | `down` | `slipfork down [TARGET]` | this directory's world | `.forks/<name>` under cwd, then a registered world/fork |
 | `restart` | `slipfork restart [TARGET] [-s SERVICE]` | every service here | a live service here, then `.forks/<name>`, then a world/fork |
 
@@ -100,7 +100,7 @@ A project root keeps its whole family visible after `slipfork down`: the root ro
 
 ## 4. `up` reconciliation and the `DECSTBM` bottom bar
 
-Repeating `slipfork up` is idempotent (`0ms`) only when the `Forkfile` content digest and feature set are unchanged. After an edit it reconciles: pods no longer declared stop and show `orphaned` until then, and added or changed services boot.
+Repeating `slipfork up` is idempotent (`0ms`) only when the `Forkfile` content digest and feature set are unchanged. After an edit it reconciles: pods no longer declared stop and show `orphaned` until then, and added or changed services boot. `--no-cache` skips that check entirely: it never heals or idles, reconciles even an unchanged world, and rebuilds every image from its `FROM` down; the following plain `up` is cached again.
 
 On an interactive ANSI TTY with `rows >= 3`, `up`, `restart` and `fork` establish a VT100 scroll region (`\x1b[1;{rows-1}r`); finished tasks scroll above a one-line `apt`-style panel on row `rows`.
 
@@ -199,7 +199,7 @@ Both render zero `\x1b[` bytes under `NO_COLOR`, a pipe, or `--json`.
 
 | Command | Behaviour |
 | :--- | :--- |
-| `slipfork up [TARGET]` | Boot this directory, a `.forks/<name>` checkout, or a registered world/fork; preflight that `Forkfile` first |
+| `slipfork up [TARGET] [--no-cache]` | Boot this directory, a `.forks/<name>` checkout, or a registered world/fork; preflight that `Forkfile` first; `--no-cache` re-runs every image step |
 | `slipfork down [TARGET]` | Stop this directory's world or the named world/fork; remove run subvolumes, keep data and logs |
 | `slipfork restart [TARGET] [-s SERVICE]` | Restart one service, a world/fork, or every service here through the bottom-bar TUI |
 | `slipfork logs [-f] [-a] [-t] [--since <ms>] [--until <ms>] [targets]...` | Services by default; `-a` adds images and resources; several targets merge in timestamp order |
@@ -238,7 +238,7 @@ With `dev` active Slipfork bind-mounts the live checkout at `/project`, so `uvic
 - **Plan frame:** `up`, `restart` and `fork` stream `{"event":"plan","rows":[{"kind","name"}…],"total":N}`
   before the first `started`; `--json` forwards it verbatim (extra keys are forward-compatible) with
   zero escapes. `down` carries the same frame on its event stream and still answers one final object.
-- **Payloads:** `up`/`restart` → `{world, url, elapsed_ms, nodes:[{kind,name,state,duration_ms}]}`; `down` → `{world, elapsed_ms}`; `fork` → `{fork, world, project, url, elapsed_ms, snapshot_ms}`; `drop` → `{dropped, elapsed_ms}`; `doctor` → `{ready, checks:[{name,ok,detail,next?}]}`; `status`/`ps` → `{worlds:[...]}` including `state` (`live`/`stopped`), `port`, `started_at_ms`, `url`, `routes` (each `{prefix, port, mode, domain?}`), `orphaned` and `stopped_forks` (membership means stopped; stopped rows omit `supervisor_pid`/`started_at_ms`); failures → `{"error":{code,message,next}}`.
+- **Payloads:** `up`/`restart` → `{world, url, elapsed_ms, nodes:[{kind,name,state,duration_ms}]}` (`up` adds a `no_cache` boolean); `down` → `{world, elapsed_ms}`; `fork` → `{fork, world, project, url, elapsed_ms, snapshot_ms}`; `drop` → `{dropped, elapsed_ms}`; `doctor` → `{ready, checks:[{name,ok,detail,next?}]}`; `status`/`ps` → `{worlds:[...]}` including `state` (`live`/`stopped`), `port`, `started_at_ms`, `url`, `routes` (each `{prefix, port, mode, domain?}`), `orphaned` and `stopped_forks` (membership means stopped; stopped rows omit `supervisor_pid`/`started_at_ms`); failures → `{"error":{code,message,next}}`.
 - **Ephemeral daemon:** auto-start warns once on stderr; distribution packages installed with
   `sudo` enable and start the per-user unit and the `:80` socket for the installing user, so the
   fallback appears only on tarball, headless, or rootless installs.
@@ -256,7 +256,7 @@ sealed step cache that `up` already uses.
 | `slipfork docker list` | `HOST USERNAME` table with dynamic widths; never a secret |
 | `slipfork docker images` | Cached OCI references and digests from the store's `refs.json` |
 | `slipfork docker pull <REFERENCE>` | Pulls into the sealed cache and prints `sha256:<digest>` |
-| `slipfork docker build <COMPONENT> [--target STAGE]` | Builds one Forkfile image, streaming `[i/n] INSTRUCTION args`; prints the digest |
+| `slipfork docker build <COMPONENT> [--target STAGE] [--no-cache]` | Builds one Forkfile image, streaming `[i/n] INSTRUCTION args`; prints the digest, re-running every instruction under `--no-cache` |
 
 `login` reads the password from one `--password-stdin` line or, on a real TTY, a no-echo prompt; it
 never accepts a secret in argv. A wrong password fails as one line plus one `next:` and writes
@@ -266,7 +266,8 @@ nothing. The store is `<config>/slipfork/registries.json` (mode `0600`); Docker'
 `--json` emits `{"host","username","stored":true}` for login, arrays for `list`/`images`, and
 one object for `logout`. `docker pull --json` and `docker build --json` both stream NDJSON
 `step`/`log` frames and then one final object; `build`'s object is
-`{"component","target","image_id","cache_key","digest?","rootfs","cache_hits","cache_misses"}`.
-The printed `sha256:` value is the local image id recorded in `built.json`, and `digest` appears
+`{"component","target","image_id","cache_key","digest?","rootfs","cache_hits","cache_misses","no_cache"}`.
+`--no-cache` skips every sealed step lookup, so every instruction executes and replaces the
+same-key subvolume; the next plain `up` is cached again. The printed `sha256:` value is the local image id recorded in `built.json`, and `digest` appears
 only for a pure pulled base (`cache_key` starts `base-sha256:`). No path boots a pod or contacts
 the daemon.

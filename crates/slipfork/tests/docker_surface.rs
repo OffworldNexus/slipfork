@@ -548,3 +548,29 @@ fn bearer_login_is_0600_and_a_wrong_password_never_reaches_disk_or_a_stream() {
         assert_no_secret(label, transcript);
     }
 }
+
+#[test]
+fn help_advertises_the_no_cache_flag_on_up_and_docker_build() {
+    let lab = Lab::new("no-cache-help");
+
+    let up = lab.run(&["up", "--help"], None);
+    assert!(up.status.success(), "{}", text(&up));
+    let up_help = strip_ansi(&text(&up));
+    assert!(
+        up_help.contains("--no-cache"),
+        "`up --help` must advertise the rebuild flag: {up_help}"
+    );
+
+    let build = lab.run(&["docker", "build", "--help"], None);
+    assert!(build.status.success(), "{}", text(&build));
+    let build_raw = text(&build);
+    assert!(
+        !build_raw.contains('\u{1b}') && !build_raw.contains('\r'),
+        "help stays plain under NO_COLOR: {build_raw:?}"
+    );
+    let build_help = strip_ansi(&build_raw);
+    assert!(
+        build_help.contains("--no-cache"),
+        "`docker build --help` must advertise the rebuild flag: {build_help}"
+    );
+}

@@ -79,6 +79,10 @@ impl Core {
         params: &Value,
         current: Option<Fingerprint>,
     ) -> Result<UpAction, Failure> {
+        let no_cache = params
+            .get("no_cache")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let project = project_path(params)?;
         let key = key_of(&project);
         let Some(World::Live { entry, .. }) = self.worlds.get(&key) else {
@@ -90,7 +94,12 @@ impl Core {
         }
         // Only heal when the recorded head still matches disk AND every declared service already
         // wrote its bundle; a half-booted or edited world reconciles to re-run the full DAG.
-        if !self.world_stale(&project, current) && services_bundled(&project, &entry.pods_dir) {
+        // `--no-cache` never heals: an unchanged live world still reconciles so every image is
+        // rebuilt from its `FROM` down before the boot.
+        if !no_cache
+            && !self.world_stale(&project, current)
+            && services_bundled(&project, &entry.pods_dir)
+        {
             return Ok(UpAction::Heal(Box::new(Heal {
                 world: entry.world,
                 project: entry.project,
@@ -380,12 +389,17 @@ impl Core {
                     format!("open `{}`: {error}", log_path.display()),
                 )
             })?;
-        let child = Command::new(&self.host.exe)
+        let mut command = Command::new(&self.host.exe);
+        command
             .arg("__supervise")
             .arg("--project")
             .arg(&project)
             .arg("--name")
-            .arg(world.as_str())
+            .arg(world.as_str());
+        if params.get("no_cache").and_then(Value::as_bool) == Some(true) {
+            command.arg("--no-cache");
+        }
+        let child = command
             .current_dir(&project)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

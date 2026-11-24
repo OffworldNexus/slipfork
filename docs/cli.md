@@ -41,7 +41,7 @@ flowchart LR
 | :--- | :--- |
 | `slipfork status` | Every world and domain as one tree; bare `slipfork` is the same verb |
 | `slipfork ps` | The same tree scoped to this directory's world or fork |
-| `slipfork up [TARGET]` | Boot this directory's `Forkfile`, a `.forks/<name>` checkout, or a registered world/fork |
+| `slipfork up [TARGET] [--no-cache]` | Boot this directory's `Forkfile`, a `.forks/<name>` checkout, or a registered world/fork; `--no-cache` rebuilds every image instead of reusing sealed stamps |
 | `slipfork down [TARGET]` | Stop this directory's world, or the named world/fork, keeping data and logs |
 | `slipfork restart [TARGET] [-s SERVICE]` | Restart a service, a world/fork, or every service here |
 | `slipfork fork [name]` | Snapshot code and world data, boot the fork on its own URL |
@@ -53,12 +53,17 @@ flowchart LR
 | `slipfork env [component]` | Resolved runtime variables, secrets redacted |
 | `slipfork features [+mail\|-dev\|reset]` | Resolved features and persisted edits for the next boot |
 | `slipfork secret list\|set\|unset` | Manage local offline secrets; `set` reads stdin |
-| `slipfork docker login\|logout\|list\|images\|pull\|build` | Registry credentials, cached OCI refs, native pulls and builds; never a Docker daemon |
+| `slipfork docker login\|logout\|list\|images\|pull\|build [--no-cache]` | Registry credentials, cached OCI refs, native pulls and builds; never a Docker daemon |
 | `slipfork open [service]` | Open the world or route URL in a browser |
 | `slipfork doctor` | Four plain-English rows: Storage, Containers, Daemon, Domains |
 | `slipfork fmt` | Format a Forkfile; `--check` reports only |
 | `slipfork migrate` | Convert a legacy `snow.yml` into a `Forkfile` |
 | `slipfork completions <shell>` | Print bash, zsh or fish completions |
+
+`slipfork up --no-cache` skips every sealed image and step lookup for one run, re-executes every
+`Dockerfile` instruction and replaces the same-key subvolume before booting; the next plain
+`slipfork up` is cached again. `slipfork docker build app --no-cache` does the same for one
+component and never contacts the daemon.
 
 `slipfork exec` allocates a real kernel PTY whenever stdin and stdout are terminals and `--json` is off, so `ipython`, `bash`, and `psql` keep their prompts, colours, and line editing. `-i` requires both terminals and fails closed without them, while `--no-interactive` keeps a plain pipe so prompts see immediate EOF.
 
@@ -308,8 +313,9 @@ $ slipfork up --json
 ```
 
 Under `--json`, `up` streams one NDJSON event per boot node and then
-`{world, url, elapsed_ms, nodes: [{kind, name, state, duration_ms}]}`; `restart` answers the same
-final shape, and `fork` answers `{fork, world, project, url, elapsed_ms, snapshot_ms}`.
+`{world, url, elapsed_ms, nodes: [{kind, name, state, duration_ms}], no_cache}`; `restart`
+answers the same final shape without the flag, and `fork` answers
+`{fork, world, project, url, elapsed_ms, snapshot_ms}`.
 
 ## Where next
 

@@ -137,7 +137,11 @@ impl Session {
         );
         let outcome = client.call_streaming(
             "up",
-            json!({ "project": project, "world": resolved.world.as_str() }),
+            json!({
+                "project": project,
+                "world": resolved.world.as_str(),
+                "no_cache": args.no_cache,
+            }),
             &mut |event| {
                 if event["event"].as_str() == Some("failed") && tui.failed() {
                     return;
@@ -167,6 +171,7 @@ impl Session {
                         "url": reply["url"],
                         "elapsed_ms": elapsed,
                         "nodes": nodes,
+                        "no_cache": args.no_cache,
                     }));
                 }
                 ExitCode::SUCCESS

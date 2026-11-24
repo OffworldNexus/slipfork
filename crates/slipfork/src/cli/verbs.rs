@@ -108,6 +108,9 @@ pub enum Command {
         target: Option<String>,
         #[command(flatten)]
         features: FeatureArgs,
+        /// Ignore sealed image and step caches for this run.
+        #[arg(long)]
+        no_cache: bool,
     },
 
     /// Stop this directory's world, or the named world/fork, and every pod in it.
@@ -303,6 +306,8 @@ pub enum Command {
         project: PathBuf,
         #[arg(long = "name", value_name = "NAME")]
         world: String,
+        #[arg(long)]
+        no_cache: bool,
     },
 }
 
@@ -369,6 +374,9 @@ pub enum DockerCommand {
         /// Build only up to this Dockerfile stage.
         #[arg(long, value_name = "STAGE")]
         target: Option<String>,
+        /// Ignore the sealed step cache and execute every instruction again.
+        #[arg(long)]
+        no_cache: bool,
     },
 }
 

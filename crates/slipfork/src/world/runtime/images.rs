@@ -10,8 +10,9 @@ use std::sync::{Arc, Mutex};
 use slipfork_forkfile::FeatureSet;
 use slipfork_forkfile::ast::Forkfile;
 use slipfork_image::{
-    Architecture, BuildArgs, BuildRequest, ImageLayout, ImageReference, NativeImageBuilder,
-    OciPuller, PulledImage, RegistryCredentials, StepHost, StepLayout, StepTrace,
+    Architecture, BuildArgs, BuildRequest, CacheMode, ImageLayout, ImageReference,
+    NativeImageBuilder, OciPuller, PulledImage, RegistryCredentials, StepHost, StepLayout,
+    StepTrace,
 };
 use slipfork_world::run_log::RunNote;
 use slipfork_world::{
@@ -69,6 +70,8 @@ pub(super) struct ImageCache {
 impl ImageCache {
     /// Builds the cache; `adopted` carries a parent fork's already-sealed image subvolumes and
     /// runtime facts, so a matching `world_epoch` resolves every image in `~1ms` as `cached`.
+    /// `no_cache` ignores every adopted stamp and rebuilds in place: the cold step policy skips
+    /// every sealed lookup and replaces each same-key subvolume instead.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         engine: Arc<dyn WorldEngine>,
@@ -84,10 +87,12 @@ impl ImageCache {
         host: StepHost,
         scheme: &str,
         features: FeatureSet,
+        no_cache: bool,
     ) -> Self {
         let images_root = layout.images_root();
         let mut sealed = BTreeMap::new();
-        for (id, stamp) in adopted {
+        // `--no-cache` ignores every adopted stamp: each image rebuilds from its `FROM` down.
+        for (id, stamp) in adopted.into_iter().filter(|_| !no_cache) {
             if !images.iter().any(|node| node.id == id) {
                 continue;
             }
@@ -126,7 +131,12 @@ impl ImageCache {
             StepLayout::new(images_root),
             architecture,
             host,
-        );
+        )
+        .with_cache_mode(if no_cache {
+            CacheMode::Cold
+        } else {
+            CacheMode::Warm
+        });
         let store = LogStore::at(layout.store_root(), world.clone());
         Self {
             world,
