@@ -1,7 +1,7 @@
-# Best-effort stop of the OpenRC ingress; linger does not exist here.
-pre_deinstall() {
-    if command -v rc-service >/dev/null 2>&1; then
-        rc-service slipfork-ingress stop >/dev/null 2>&1 || true
-        rc-update del slipfork-ingress default >/dev/null 2>&1 || true
-    fi
-}
+#!/bin/sh
+# Best-effort stop of the OpenRC ingress before the payload is removed.
+if command -v rc-service >/dev/null 2>&1; then
+	rc-service slipfork-ingress stop >/dev/null 2>&1 || true
+	rc-update del slipfork-ingress default >/dev/null 2>&1 || true
+fi
+exit 0

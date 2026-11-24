@@ -1,12 +1,13 @@
+#!/bin/sh
 # The package ships the OpenRC ingress script; this hook points it at the
-# installing user and starts it. Rootless installs with no SUDO_USER stay silent.
-post_install() {
-    if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != root ] &&
-        command -v rc-service >/dev/null 2>&1; then
-        printf 'SLIPFORK_INGRESS_USER=%s\n' "${SUDO_USER}" >/etc/conf.d/slipfork-ingress
-        rc-update add slipfork-ingress default >/dev/null 2>&1 || true
-        rc-service slipfork-ingress start >/dev/null 2>&1 || true
-    elif [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != root ]; then
-        echo "next: loginctl enable-linger ${SUDO_USER} && sudo -iu ${SUDO_USER} systemctl --user enable --now slipfork.service" >&2
-    fi
-}
+# installing user and starts it. Installs with no SUDO_USER (or as root) stay silent.
+if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != root ]; then
+	if command -v rc-service >/dev/null 2>&1; then
+		printf 'SLIPFORK_INGRESS_USER=%s\n' "${SUDO_USER}" >/etc/conf.d/slipfork-ingress
+		rc-update add slipfork-ingress default >/dev/null 2>&1 || true
+		rc-service slipfork-ingress start >/dev/null 2>&1 || true
+	else
+		echo "next: apk add openrc && printf 'SLIPFORK_INGRESS_USER=%s\n' '${SUDO_USER}' >/etc/conf.d/slipfork-ingress && rc-service slipfork-ingress start" >&2
+	fi
+fi
+exit 0
