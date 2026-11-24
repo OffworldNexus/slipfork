@@ -3451,3 +3451,6 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-24T00:36 [M3.86] (lead) base 275f07f8dc937c4777c1ef026775a03725b330d4
 - 2026-11-24T00:37 [M3.86] (lead) status active -> review
 - 2026-11-24T00:38 [M3.86] (lead) status review -> done
+- 2026-11-24T03:14 [M3.83] (conductor) status ready -> done: shipped as M3.83.1-.4; live proof on 165.232.86.174 (run 295597)
+- 2026-11-24T03:14 [M3] (conductor) status active -> done
+- 2026-11-24T03:14 AUTOPILOT off by conductor slipfork 0.1.1 published to stable; M3 complete

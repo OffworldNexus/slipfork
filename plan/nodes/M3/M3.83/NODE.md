@@ -2,7 +2,7 @@
 id: M3.83
 title: "One logging manager: persistent run catalog, target resolution, and failure hints"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.79, M3.80, M3.81, M3.82]
@@ -26,7 +26,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-24T00:17"
-updated: "2026-11-24T00:17"
+updated: "2026-11-24T03:14"
 ---
 
 # Problem (owner hit all of these in one `up`)
