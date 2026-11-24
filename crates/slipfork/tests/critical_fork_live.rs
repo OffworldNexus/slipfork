@@ -706,6 +706,66 @@ fn collect_subvolumes(directory: &Path, found: &mut Vec<PathBuf>) {
     }
 }
 
+/// M3.123: a fork's prep frames and its merged `plan` frame share one denominator.
+///
+/// The renderer derives `[i/N]` from the plan's row positions, so `--json` must never expose a
+/// narrower `total` on a prep frame: every planned row that echoes a counter uses the plan total.
+fn assert_one_fork_denominator(frames: &[serde_json::Value], label: &str) {
+    let plan = frames
+        .iter()
+        .find(|frame| frame["event"] == "plan")
+        .unwrap_or_else(|| panic!("{label} must announce one plan: {frames:?}"));
+    let rows = plan["rows"].as_array().expect("plan rows");
+    let total = plan["total"].as_u64().expect("plan total");
+    assert_eq!(
+        total,
+        u64::try_from(rows.len()).expect("plan rows fit u64"),
+        "{label}: one merged total: {plan}"
+    );
+    assert!(
+        total >= 5,
+        "{label}: the fork plan is prep + world rows: {plan}"
+    );
+    for kind in ["fork", "git"] {
+        assert!(
+            rows.iter().any(|row| row["kind"] == kind),
+            "{label}: `{kind}` prep row in the plan: {plan}"
+        );
+    }
+    let mut echoed = 0;
+    for frame in frames
+        .iter()
+        .filter(|frame| matches!(frame["event"].as_str(), Some("finished" | "up-to-date")))
+    {
+        let Some(step) = frame["step"].as_u64() else {
+            continue;
+        };
+        let kind = frame["kind"].as_str().unwrap_or_default();
+        let name = frame["name"].as_str().unwrap_or_default();
+        let Some(position) = rows
+            .iter()
+            .position(|row| row["kind"] == kind && row["name"] == name)
+        else {
+            continue;
+        };
+        assert_eq!(
+            step,
+            u64::try_from(position).expect("row fits u64") + 1,
+            "{label}: `{kind} {name}` must echo its merged plan position: {frame}"
+        );
+        assert_eq!(
+            frame["total"].as_u64(),
+            Some(total),
+            "{label}: `{kind} {name}` must share the plan denominator: {frame}"
+        );
+        echoed += 1;
+    }
+    assert!(
+        echoed >= 2,
+        "{label}: the prep frames must echo the merged plan: {frames:?}"
+    );
+}
+
 #[test]
 fn fork_and_drop_a_live_world_without_leaving_snapshots() {
     let _guard = LAB_LOCK.lock().unwrap_or_else(|error| error.into_inner());
@@ -866,6 +926,7 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
     let fork = lab.run(&["fork", "feat-auth", "--json"]);
     let fork_reply = lab.json(&fork, "fork feat-auth");
     let fork_frames = lab.frames(&fork, "fork feat-auth");
+    assert_one_fork_denominator(&fork_frames, "fork feat-auth");
     let checkpoints_after: u64 = lab
         .exec(
             &lab.project,

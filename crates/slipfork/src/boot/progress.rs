@@ -103,6 +103,18 @@ impl BootProgress {
         (index, total)
     }
 
+    /// The `[i/n]` a settled row prints: its announced plan position, so a per-frame total that
+    /// disagrees with the merged plan can never fork the one visible denominator. A row the plan
+    /// never announced (`restart`, `down`) keeps its own frame counter.
+    pub(super) fn settled(&self, kind: &str, name: &str, frame: (usize, usize)) -> (usize, usize) {
+        let (index, total) = self.position(kind, name);
+        if index > 0 && total > 0 {
+            (index, total)
+        } else {
+            frame
+        }
+    }
+
     /// Counts one settled outer slot (image, setup, service, hook).
     pub(super) fn advance(&mut self) {
         self.outer_done = self.outer_done.saturating_add(1);
@@ -271,6 +283,101 @@ mod tests {
             ("image".to_owned(), "api".to_owned()),
             ("service".to_owned(), "web".to_owned()),
         ]
+    }
+
+    /// M3.123: a fork announces its two prep rows plus every world row as one plan, so all five
+    /// settled rows share the plan's denominator and the magenta kind role even when a daemon
+    /// prep frame still echoes a narrower `1/3`.
+    #[test]
+    fn a_fork_plan_keeps_one_denominator_and_the_magenta_keyword() {
+        use crate::boot::render::{Node, completed_row, outer_verb, outer_widths};
+
+        let plan: Vec<(String, String)> = [
+            ("fork", "snapshot"),
+            ("git", "branch salut"),
+            ("image", "api"),
+            ("setup", "uv sync"),
+            ("service", "web"),
+        ]
+        .into_iter()
+        .map(|(kind, name)| (kind.to_owned(), name.to_owned()))
+        .collect();
+        let widths = outer_widths(&plan);
+        let mut progress = BootProgress::new("Forking salut");
+        progress.announce(&plan, plan.len());
+
+        // The daemon's legacy prep frames disagree; the merged plan always wins.
+        assert_eq!(progress.settled("fork", "snapshot", (1, 3)), (1, 5));
+        assert_eq!(progress.settled("git", "branch salut", (2, 3)), (2, 5));
+        assert_eq!(progress.settled("image", "api", (0, 0)), (3, 5));
+
+        let rows = [
+            (
+                "fork",
+                "snapshot",
+                "",
+                34,
+                true,
+                "✓ [1/5] fork   snapshot      34ms",
+            ),
+            (
+                "git",
+                "branch salut",
+                "",
+                3,
+                true,
+                "✓ [2/5] git    branch salut  3ms",
+            ),
+            (
+                "image",
+                "api",
+                "cached",
+                7,
+                true,
+                "✓ [3/5] image  api           cached  7ms",
+            ),
+            (
+                "setup",
+                "uv sync",
+                "up to date",
+                0,
+                false,
+                "• [4/5] setup  uv sync       up to date  <1ms",
+            ),
+            (
+                "service",
+                "web",
+                "running",
+                204,
+                true,
+                "✓ [5/5] start  web           running  204ms",
+            ),
+        ];
+        for (position, (kind, name, state, millis, success, expected)) in
+            rows.into_iter().enumerate()
+        {
+            assert_eq!(progress.settled(kind, name, (0, 0)), (position + 1, 5));
+            let node = Node {
+                kind,
+                name,
+                state,
+                millis,
+                run_id: None,
+                success,
+            };
+            let plain = completed_row(&node, position + 1, 5, &widths, false);
+            assert_eq!(plain, expected);
+            assert!(!plain.contains('\u{1b}'));
+            let styled = completed_row(&node, position + 1, 5, &widths, true);
+            assert!(
+                styled.contains(&format!("\u{1b}[35m{}\u{1b}[0m", outer_verb(kind))),
+                "the kind keyword is magenta: {styled}"
+            );
+            assert!(
+                styled.contains(&format!("\u{1b}[1m{name}\u{1b}[0m")),
+                "the target is bold: {styled}"
+            );
+        }
     }
 
     /// Outer 1/3 settled plus inner 3/6 settled of the building image is exactly 50%, and settling

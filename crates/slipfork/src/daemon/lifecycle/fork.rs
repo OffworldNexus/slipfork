@@ -143,7 +143,7 @@ impl Core {
         let rows = Self::planned_fork_rows(&target.project, raw_name, target.features.as_ref());
         plan::emit(&rows, rows.len(), emit);
         let request = target.features.clone();
-        let prepared = self.snapshot(target, raw_name, fork, preflight_ms, emit)?;
+        let prepared = self.snapshot(target, raw_name, fork, preflight_ms, &rows, emit)?;
         if let Some(request) = request {
             if let Err(failure) = Self::apply_features(&prepared.project, request) {
                 self.discard_fork(&prepared);
@@ -287,6 +287,7 @@ impl Core {
         name: &str,
         fork: ForkName,
         preflight_ms: u64,
+        rows: &[plan::PlannedRow],
         emit: &mut dyn FnMut(Value),
     ) -> Result<PreparedFork, Failure> {
         let ForkTarget {
@@ -318,11 +319,8 @@ impl Core {
                     ),
                 )
             })?;
-        emit(json!({
-            "event": "started", "step": 1, "total": 3, "kind": "fork",
-            "name": "snapshot",
-            "label": format!("snapshotting {}", fork.as_str()),
-        }));
+        let snapshot = plan::PrepFrame::planned(rows, "fork", "snapshot", 1);
+        emit(snapshot.started(format!("snapshotting {}", fork.as_str())));
         let snapshot_started = Instant::now();
         let paths = engine
             .fork(&project, &world, &fork)
@@ -332,17 +330,11 @@ impl Core {
         // and supervisor log so the fork starts with its own clean boot log.
         let _ = std::fs::remove_file(paths.project.join(".slipfork/world.json"));
         let _ = std::fs::remove_file(paths.project.join(".slipfork/supervisor.log"));
-        emit(json!({
-            "event": "finished", "step": 1, "total": 3, "kind": "fork",
-            "name": "snapshot", "label": "snapshot", "detail": "project + world data",
-            "elapsed_ms": snapshot_ms,
-        }));
+        emit(snapshot.finished("snapshot".to_owned(), "project + world data", snapshot_ms));
         let git_started = Instant::now();
-        emit(json!({
-            "event": "started", "step": 2, "total": 3, "kind": "git",
-            "name": format!("branch {name}"),
-            "label": format!("switching the fork to {name}"),
-        }));
+        let git_name = format!("branch {name}");
+        let git = plan::PrepFrame::planned(rows, "git", &git_name, 2);
+        emit(git.started(format!("switching the fork to {name}")));
         if let Err(failure) = vcs
             .switch(&paths.project, name)
             .map_err(|error| vcs_failure(&error))
@@ -350,11 +342,7 @@ impl Core {
             let _ = engine.drop_fork(&project, &world, &fork, Dirtiness::Clean, true);
             return Err(failure);
         }
-        emit(json!({
-            "event": "finished", "step": 2, "total": 3, "kind": "git",
-            "name": format!("branch {name}"), "label": format!("branch {name}"),
-            "detail": "checked out", "elapsed_ms": elapsed_ms(git_started),
-        }));
+        emit(git.finished(git_name.clone(), "checked out", elapsed_ms(git_started)));
         Ok(PreparedFork {
             parent: project,
             project: paths.project,
@@ -421,32 +409,28 @@ impl Core {
                 format!("fork `{}` has uncommitted changes", fork.as_str()),
             ));
         }
-        emit(json!({
-            "event": "started", "step": 1, "total": 2, "kind": "fork",
-            "label": format!("stopping {}", fork.as_str()),
-        }));
+        let stop = plan::PrepFrame::fixed("fork", 1, 2);
+        emit(stop.started(format!("stopping {}", fork.as_str())));
         if registered {
             self.stop_world(&fork_key, Duration::from_secs(60), &mut |_, _| {})
                 .map_err(|failure| Failure::new("fork-busy", first_line(&failure.message)))?;
         }
-        emit(json!({
-            "event": "finished", "step": 1, "total": 2, "kind": "fork",
-            "label": "stopped fork", "detail": "pods stopped",
-            "elapsed_ms": elapsed_ms(started),
-        }));
-        emit(json!({
-            "event": "started", "step": 2, "total": 2, "kind": "fork",
-            "label": "deleting snapshots",
-        }));
+        emit(stop.finished(
+            "stopped fork".to_owned(),
+            "pods stopped",
+            elapsed_ms(started),
+        ));
+        let delete = plan::PrepFrame::fixed("fork", 2, 2);
+        emit(delete.started("deleting snapshots".to_owned()));
         let engine = BtrfsEngine::new(layout);
         engine
             .drop_fork(&project, &world, &fork, dirtiness, force)
             .map_err(|error| btrfs_failure(&error, &project))?;
-        emit(json!({
-            "event": "finished", "step": 2, "total": 2, "kind": "fork",
-            "label": "deleted snapshots", "detail": "project + world data",
-            "elapsed_ms": elapsed_ms(started),
-        }));
+        emit(delete.finished(
+            "deleted snapshots".to_owned(),
+            "project + world data",
+            elapsed_ms(started),
+        ));
         let _ = crate::daemon::registry::store_fingerprint(&self.state_dir, &fork_project, None);
         self.worlds.remove(&fork_key);
         self.ingress = None;

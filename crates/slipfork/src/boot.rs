@@ -424,8 +424,8 @@ impl BootTui {
             self.apply(actions, palette);
             return;
         }
-        let (index, total) =
-            build::counter(event).unwrap_or_else(|| self.progress.position(node.kind, node.name));
+        let frame = build::counter(event).unwrap_or((0, 0));
+        let (index, total) = self.progress.settled(node.kind, node.name, frame);
         let row = completed_row(&node, index, total, &self.widths, self.mode.color());
         if let Some(pane) = &self.pane
             && let Ok(mut pane) = pane.lock()

@@ -56,6 +56,95 @@ pub(crate) fn fork_rows(branch: &str) -> Vec<PlannedRow> {
     ]
 }
 
+/// The merged plan's row count, as every per-row `step`/`total` frame echoes it.
+fn total(rows: &[PlannedRow]) -> u64 {
+    u64::try_from(rows.len()).unwrap_or(u64::MAX)
+}
+
+/// The 1-based position of a planned row, matched by the exact `kind` and `name` the later
+/// `started`/`finished` frames carry.
+fn index(rows: &[PlannedRow], kind: &str, name: &str) -> Option<u64> {
+    rows.iter()
+        .position(|(planned_kind, planned_name)| planned_kind == kind && planned_name == name)
+        .and_then(|position| u64::try_from(position).ok())
+        .map(|position| position + 1)
+}
+
+/// One fork-prep frame: the `fork` snapshot, the `git` branch switch, or a `drop` teardown row.
+///
+/// Its counter is resolved once. A planned row takes its 1-based position and the merged plan's
+/// total, so `--json` can never disagree with the already latched `plan` frame; a teardown row of
+/// a verb that announces no plan takes an explicit pair.
+pub(crate) struct PrepFrame<'a> {
+    kind: &'a str,
+    name: Option<&'a str>,
+    step: u64,
+    total: u64,
+}
+
+impl<'a> PrepFrame<'a> {
+    /// A prep row announced in the merged plan, falling back only if the row was absent.
+    pub(crate) fn planned(
+        rows: &[PlannedRow],
+        kind: &'a str,
+        name: &'a str,
+        position: u64,
+    ) -> Self {
+        Self {
+            kind,
+            name: Some(name),
+            step: index(rows, kind, name).unwrap_or(position),
+            total: total(rows),
+        }
+    }
+
+    /// A prep row of a verb that announces no plan (`drop`): an explicit `step`/`total` pair.
+    pub(crate) fn fixed(kind: &'a str, step: u64, total: u64) -> Self {
+        Self {
+            kind,
+            name: None,
+            step,
+            total,
+        }
+    }
+
+    /// The `started` frame, carrying the phrase shown while the row runs.
+    pub(crate) fn started(&self, label: String) -> Value {
+        self.frame("started", label, None, None)
+    }
+
+    /// The settled `finished` frame, with its plain detail cell and elapsed time.
+    pub(crate) fn finished(&self, label: String, detail: &str, elapsed_ms: u64) -> Value {
+        self.frame("finished", label, Some(detail), Some(elapsed_ms))
+    }
+
+    fn frame(
+        &self,
+        event: &str,
+        label: String,
+        detail: Option<&str>,
+        elapsed_ms: Option<u64>,
+    ) -> Value {
+        let mut frame = json!({
+            "event": event,
+            "step": self.step,
+            "total": self.total,
+            "kind": self.kind,
+            "label": label,
+        });
+        if let Some(name) = self.name {
+            frame["name"] = Value::String(name.to_owned());
+        }
+        if let Some(detail) = detail {
+            frame["detail"] = Value::String(detail.to_owned());
+        }
+        if let Some(elapsed_ms) = elapsed_ms {
+            frame["elapsed_ms"] = Value::from(elapsed_ms);
+        }
+        frame
+    }
+}
+
 /// Emits the one `plan` frame; `total` is how many rows the verb will finish (0 means all rows).
 pub(crate) fn emit(rows: &[PlannedRow], total: usize, emit: &mut dyn FnMut(Value)) {
     if rows.is_empty() {
