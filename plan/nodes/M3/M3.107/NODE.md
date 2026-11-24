@@ -2,7 +2,7 @@
 id: M3.107
 title: "Boot-failure and run-replay visual hierarchy; keep captures pure (stream, no synthetic summary)"
 kind: epic
-status: active
+status: done
 priority: 3
 depends_on: []
 paths:
@@ -18,7 +18,7 @@ attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-24T12:02"
-updated: "2026-11-24T12:04"
+updated: "2026-11-24T14:55"
 ---
 
 # Problems (owner screenshot, 0.1.1 dev binary)

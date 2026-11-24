@@ -35,3 +35,11 @@ Owner addendum: live per-instruction Dockerfile build; split M3.107.2 (engine/da
 ## 2026-11-24T12:15 [lead]
 
 OWNER BAN: never run tools/do_vm.py sync (wiped /home/slipfork/demo twice); never touch ~/demo or its supervisor. VM proof = rsync crates/ Cargo.toml Cargo.lock into /home/slipfork/slipfork via do_vm key + cargo build as slipfork, scratch project /home/slipfork/m3107, script -qec PTY capture, clean scratch worlds. Gutter design approved.
+
+## 2026-11-24T14:55 [lead]
+
+GATE: workspace fmt/clippy/test green (46 suites); VM live 8/8; PTY captures delivered; guard+docs honesty OK
+
+## 2026-11-24T14:55 [lead]
+
+status active -> done
