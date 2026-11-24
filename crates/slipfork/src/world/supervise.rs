@@ -502,6 +502,18 @@ impl BootSink {
         let _ = writeln!(self.mirror, "{text}");
         self.log.append_stream(stream, text);
     }
+
+    /// Appends one build instruction row through this step's existing run capture.
+    ///
+    /// The run capture already owns the only live sink on `runs/<id>.log`; locking it here keeps
+    /// its cached byte offset authoritative, so every `.idx` entry still lands on a row boundary.
+    pub(super) fn step_row(&mut self, text: &str) {
+        if let Some(run) = &self.log.run
+            && let Ok(mut target) = run.lock()
+        {
+            target.step_row(text);
+        }
+    }
 }
 
 #[derive(Clone)]

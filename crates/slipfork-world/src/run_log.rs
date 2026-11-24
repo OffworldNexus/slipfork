@@ -226,6 +226,15 @@ impl RunCapture {
         self.sink.append_stream(now_ms(), stream, text)
     }
 
+    /// Appends one build instruction row through the capture's single open sink.
+    ///
+    /// The row must go through [`RunCapture`] itself: opening a second [`LogSink`] on the same
+    /// capture would advance the file without advancing this sink's cached offset, leaving every
+    /// later `.idx` entry pointing into the middle of a row.
+    pub fn append_step(&mut self, text: &str) -> Result<()> {
+        self.sink.append(crate::pod_log::LogKind::Step, text)
+    }
+
     /// Appends the catalog line, then `last` (and `last-failed`) pointers. Idempotent.
     pub fn finish(&mut self, state: &str, duration_ms: u64) -> Result<()> {
         if self.finished {

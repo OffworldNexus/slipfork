@@ -75,7 +75,9 @@ impl LogStream {
         }
         loop {
             let mut lines = Vec::new();
-            let _ = reader.read_lines(&mut |line| lines.push(line.clone()));
+            let read = reader
+                .read_lines(&mut |line| lines.push(line.clone()))
+                .unwrap_or(0);
             for line in lines {
                 emit(line_event(
                     run_id,
@@ -85,7 +87,10 @@ impl LogStream {
                     Some(line.ts_ms),
                 ));
             }
-            if !self.follow || !alive() {
+            // A replay must reach EOF before flushing: one pass fills a single 64 KiB chunk, so a
+            // 240 KiB capture needs several drains before its trailing partial line is emitted.
+            let finishing = !self.follow || !alive();
+            if finishing && read == 0 {
                 let mut rest = Vec::new();
                 reader.flush(&mut |line| rest.push(line.clone()));
                 for line in rest {
@@ -99,7 +104,9 @@ impl LogStream {
                 }
                 return Ok(json!({ "closed": false }));
             }
-            thread::sleep(Duration::from_millis(40));
+            if !finishing {
+                thread::sleep(Duration::from_millis(40));
+            }
         }
     }
 
@@ -267,10 +274,13 @@ impl LogStream {
         loop {
             let mut read_any = false;
             for (id, reader) in &mut readers {
-                let _ = reader.read_lines(&mut |line| {
-                    read_any = true;
-                    merge.push(id, line);
-                });
+                let read = reader
+                    .read_lines(&mut |line| {
+                        read_any = true;
+                        merge.push(id, line);
+                    })
+                    .unwrap_or(0);
+                read_any |= read > 0;
             }
             for (pod, line) in merge.drain(now_ms().saturating_sub(REORDER_MS)) {
                 emit(line_event(
@@ -282,6 +292,11 @@ impl LogStream {
                 ));
             }
             if !self.follow {
+                // A replay must reach EOF across every capture before flushing: one pass fills a
+                // single 64 KiB chunk per reader, so keep merging until no file has bytes left.
+                if read_any {
+                    continue;
+                }
                 for (id, reader) in &mut readers {
                     reader.flush(&mut |line| merge.push(id, line));
                 }
@@ -324,5 +339,6 @@ fn kind_name(kind: LogKind) -> &'static str {
     match kind {
         LogKind::Line => "line",
         LogKind::Divider => "divider",
+        LogKind::Step => "step",
     }
 }

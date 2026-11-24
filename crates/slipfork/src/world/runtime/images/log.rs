@@ -57,6 +57,7 @@ impl<'a> BuildLog<'a> {
                 BuildEvent::Note { text } => self.note(text),
                 BuildEvent::Step(step) => {
                     if step.state == StepState::Started {
+                        self.divider(&step);
                         let note = started_note(dockerfile, &step);
                         let _ = self.notes.started(self.run_id.as_deref(), &note);
                         started = Some(note);
@@ -118,6 +119,48 @@ impl<'a> BuildLog<'a> {
         self.sink.append_stream(stream, &text);
         let _ = pod_log::append_stream(&self.dir, &self.id, stream, text.as_bytes());
     }
+
+    /// Writes one instruction row to the image capture and the run capture at START.
+    ///
+    /// A build capture holds child output only, so without this row the replay of a multi-step
+    /// build is one unexplained block under the failing instruction's header. The row is engine
+    /// bookkeeping, never child output: it never sets the `captured` flag, and no row is written
+    /// when the step settles. The run capture already owns its live sink, so the row goes through
+    /// [`BootSink::step_row`] instead of opening a second writer on the same file.
+    fn divider(&mut self, event: &StepEvent<'_>) {
+        let text = step_label(event);
+        if let Ok(mut sink) = pod_log::LogSink::open(&self.dir, &self.id) {
+            let _ = sink.append(pod_log::LogKind::Step, &text);
+        }
+        if self.run_id.is_some() {
+            self.sink.step_row(&text);
+        }
+    }
+}
+
+/// One instruction's capture row: `<index>/<total> <KEYWORD> <args>`, ANSI-free and single-line.
+fn step_label(event: &StepEvent<'_>) -> String {
+    let raw = format!(
+        "{}/{} {} {}",
+        event.index, event.total, event.instruction, event.args
+    );
+    let stripped = strip_ansi(&raw);
+    // A heredoc `RUN` carries newlines and tabs; the capture frames rows on `\t`, so every
+    // control-space character collapses to one space and the row stays physical.
+    let mut label = String::with_capacity(stripped.len());
+    let mut gap = false;
+    for ch in stripped.chars() {
+        if matches!(ch, '\n' | '\r' | '\t') {
+            gap = true;
+            continue;
+        }
+        if gap {
+            label.push(' ');
+            gap = false;
+        }
+        label.push(ch);
+    }
+    label.trim_end().to_owned()
 }
 
 /// The instruction a build announced at START, so a failure always leaves the right header.
@@ -224,11 +267,12 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use slipfork_image::{StepEvent, StepPlace, StepState};
     use slipfork_world::{LogStore, WorldName};
 
-    use super::{BuildLog, failed_note, started_note, success_note};
+    use super::{BuildLog, failed_note, started_note, step_label, success_note};
     use crate::world::supervise::{BootSink, Emitter};
 
     fn temp(prefix: &str) -> tempfile::TempDir {
@@ -283,6 +327,51 @@ mod tests {
                 "a capture is command output only, saw `{absent}`:\n{captured}"
             );
         }
+    }
+
+    /// A capture divider names the instruction's position, keyword, and args as the author wrote
+    /// them, with no trailing space when the instruction takes none.
+    #[test]
+    fn a_step_label_is_one_position_keyword_and_args_line() {
+        let copy = StepEvent::new(
+            StepPlace::new(2, 3, 2),
+            "COPY",
+            ". /app",
+            StepState::Started,
+            Duration::ZERO,
+            None,
+        );
+        assert_eq!(step_label(&copy), "2/3 COPY . /app");
+
+        let bare = StepEvent::new(
+            StepPlace::new(1, 1, 1),
+            "RUN",
+            "",
+            StepState::Started,
+            Duration::ZERO,
+            None,
+        );
+        assert_eq!(step_label(&bare), "1/1 RUN");
+    }
+
+    /// A heredoc `RUN` carries ANSI, newlines, and tabs: the row strips the escapes and stays one
+    /// physical line, because the capture frames rows on `\t`.
+    #[test]
+    fn a_step_label_collapses_control_space_onto_one_line() {
+        let heredoc = StepEvent::new(
+            StepPlace::new(3, 3, 9),
+            "RUN",
+            "\u{1b}[1msh -c 'echo one\necho two\t\techo three'\u{1b}[0m",
+            StepState::Started,
+            Duration::ZERO,
+            None,
+        );
+        let label = step_label(&heredoc);
+        assert_eq!(label, "3/3 RUN sh -c 'echo one echo two echo three'");
+        assert!(
+            !label.contains(&['\u{1b}', '\n', '\r', '\t'][..]),
+            "a step row must never carry ANSI or a row break: {label:?}"
+        );
     }
 
     /// The note a build publishes when a step STARTS names its instruction, line, and phase.

@@ -495,12 +495,13 @@ impl EventPrinter {
     }
 }
 
-/// The magenta instruction keyword padded, outside the tint, to the plan's widest keyword.
+/// The lowercase instruction keyword, in the substep role, padded outside the tint.
 fn keyword_cell(palette: Palette, step: &StepEvent<'_>) -> String {
+    let keyword = step.instruction.to_lowercase();
     let pad = step
         .instruction_width
-        .saturating_sub(step.instruction.chars().count());
-    format!("{}{}", palette.verb(step.instruction), " ".repeat(pad))
+        .saturating_sub(keyword.chars().count());
+    format!("{}{}", palette.substep(&keyword), " ".repeat(pad))
 }
 
 fn stream_name(stream: Stream) -> &'static str {
@@ -620,18 +621,16 @@ mod tests {
     fn keyword_cell_pads_outside_the_tint_to_the_plan_width() {
         for instruction in ["FROM", "COPY", "RUN", "WORKDIR"] {
             let plain = cell(instruction, 7, false);
+            let keyword = instruction.to_lowercase();
             assert_eq!(plain.len(), 7, "{plain:?}");
-            assert_eq!(
-                plain,
-                format!("{instruction}{}", " ".repeat(7 - instruction.len()))
-            );
+            assert_eq!(plain, format!("{keyword}{}", " ".repeat(7 - keyword.len())));
             assert!(!plain.contains('\u{1b}'), "plain cells are unstyled");
         }
 
-        assert_eq!(cell("FROM", 7, true), "\u{1b}[35mFROM\u{1b}[0m   ");
-        assert_eq!(cell("COPY", 7, true), "\u{1b}[35mCOPY\u{1b}[0m   ");
-        assert_eq!(cell("RUN", 7, true), "\u{1b}[35mRUN\u{1b}[0m    ");
-        assert_eq!(cell("WORKDIR", 7, true), "\u{1b}[35mWORKDIR\u{1b}[0m");
+        assert_eq!(cell("FROM", 7, true), "\u{1b}[38;5;132mfrom\u{1b}[0m   ");
+        assert_eq!(cell("COPY", 7, true), "\u{1b}[38;5;132mcopy\u{1b}[0m   ");
+        assert_eq!(cell("RUN", 7, true), "\u{1b}[38;5;132mrun\u{1b}[0m    ");
+        assert_eq!(cell("WORKDIR", 7, true), "\u{1b}[38;5;132mworkdir\u{1b}[0m");
         let padded = cell("FROM", 7, true);
         assert!(
             padded.ends_with("\u{1b}[0m   "),

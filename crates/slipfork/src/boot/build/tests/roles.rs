@@ -93,11 +93,11 @@ fn re_anchor_rows_preserve_both_outer_and_inner_levels() {
     );
     assert_eq!(
         inner.anchor_row(Palette::new(false)),
-        "  → 3/6 RUN   sh -c \"…\""
+        "  → 3/6 run   sh -c \"…\""
     );
     assert_eq!(
         inner.anchor_row(Palette::new(true)),
-        "  → \u{1b}[38;5;244m3/6\u{1b}[0m \u{1b}[35mRUN\u{1b}[0m   sh -c \"…\""
+        "  → \u{1b}[38;5;244m3/6\u{1b}[0m \u{1b}[38;5;132mrun\u{1b}[0m   sh -c \"…\""
     );
 }
 
@@ -194,8 +194,8 @@ fn golden_two_level_rows_pin_every_styled_and_no_color_byte() {
         [
             "\u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      \u{1b}[32mcached\u{1b}[0m  \u{1b}[38;5;244m8ms\u{1b}[0m",
             "\u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m[3/3]\u{1b}[0m \u{1b}[35mstart\u{1b}[0m  \u{1b}[1mweb\u{1b}[0m      \u{1b}[32mrunning\u{1b}[0m  @uv run blastit dev --port 8000  \u{1b}[38;5;244m195ms\u{1b}[0m",
-            "  ⠸ \u{1b}[38;5;244m3/6\u{1b}[0m \u{1b}[35mRUN\u{1b}[0m   sh -c \"…\"  \u{1b}[38;5;244m1.2s\u{1b}[0m",
-            "  \u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m1/6\u{1b}[0m \u{1b}[35mFROM\u{1b}[0m  python:3.13-slim  \u{1b}[38;5;244m<1ms\u{1b}[0m",
+            "  ⠸ \u{1b}[38;5;244m3/6\u{1b}[0m \u{1b}[38;5;132mrun\u{1b}[0m   sh -c \"…\"  \u{1b}[38;5;244m1.2s\u{1b}[0m",
+            "  \u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m1/6\u{1b}[0m \u{1b}[38;5;132mfrom\u{1b}[0m  python:3.13-slim  \u{1b}[38;5;244m<1ms\u{1b}[0m",
             "\u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      \u{1b}[32mbuilt\u{1b}[0m 6 steps  \u{1b}[38;5;244m12.3s\u{1b}[0m",
             "\u{1b}[31m✗\u{1b}[0m \u{1b}[35mRUN\u{1b}[0m \u{1b}[1mapi\u{1b}[0m \u{1b}[31mfailed\u{1b}[0m \u{1b}[38;5;244m(exit 1)\u{1b}[0m",
             "  \u{1b}[38;5;244mnext:\u{1b}[0m \u{1b}[36mslipfork logs -r b2ebd7\u{1b}[0m",
@@ -229,8 +229,8 @@ fn golden_two_level_rows_pin_every_styled_and_no_color_byte() {
         [
             "✓ [1/3] image  api      cached  8ms",
             "✓ [3/3] start  web      running  @uv run blastit dev --port 8000  195ms",
-            "  ⠸ 3/6 RUN   sh -c \"…\"  1.2s",
-            "  ✓ 1/6 FROM  python:3.13-slim  <1ms",
+            "  ⠸ 3/6 run   sh -c \"…\"  1.2s",
+            "  ✓ 1/6 from  python:3.13-slim  <1ms",
             "✓ [1/3] image  api      built 6 steps  12.3s",
             "✗ RUN api failed (exit 1)",
             "  next: slipfork logs -r b2ebd7",

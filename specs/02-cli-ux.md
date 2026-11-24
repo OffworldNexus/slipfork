@@ -179,15 +179,24 @@ A failure prints the step's message, its one `next:` replay command, then the ba
 ✗ Failed to run setup 'uv sync' (backend)
 ```
 
-`slipfork logs -r [<id>|last|failed]` replays one recorded step run (`c91e04`, `#c91e04`, `last`, or `failed`), honouring `--since`/`--until`/`-t`/`--json`. A bare `-r` defaults to `failed`; write `-r=<id>` next to a target (`slipfork logs -r=c91e04 api`).
+`slipfork logs -r [<id>|last|failed]` replays one recorded run (`c91e04`, `#c91e04`, `last`, or `failed`), honouring `--since`/`--until`/`-t`/`--json`; a bare `-r` defaults to `failed`, and `-r=<id>` next to a target (`slipfork logs -r=c91e04 api`) scopes it.
 
-```console
-$ slipfork logs -r
-$ slipfork logs -r last
-$ slipfork logs -r=c91e04 api
+An image build is one catalog run over many Dockerfile instructions, so its header names the run only — `#<id>  image  <target>  <started>` — then one clocked row per executed instruction in build order, each instruction's child output under it in the `│`/`┃` gutter, and exactly one closing verdict:
+
+```text
+#b7f2a1  image  backend  2026-11-22 23:09:12
+
+  23:09:12.104  1/4 FROM python:3.13-slim
+  23:09:12.118  2/4 COPY . /app
+  23:09:12.290  3/4 RUN sh -c "npm run build"
+  23:09:12.517 │ added 214 packages in 1.2s
+
+✗ RUN backend failed (exit 3)
 ```
 
-With no failed record, bare `-r` prints one `✗ no failed run in this world` line plus one `next: slipfork up`, exits non-zero, and never replays an empty capture. `slipfork logs --runs` prints the borderless catalog table, so any past id can be found:
+Setup and hook runs keep their `#<id>  setup  <target>  <command>  <started>` header and settle with `✓ WORKDIR backend done (1.8s)` or one failure verdict. A closed stdout (`… --json | head -1`) ends the stream quietly with exit `0`, zero error rows on stderr and zero ANSI.
+
+With no failed record, bare `-r` prints one `✗ no failed run in this world` line plus one `next: slipfork up`, exits non-zero, and never replays an empty capture. `slipfork logs --runs` prints the borderless catalog table — one row per executed step, an image build being a single row — so any past id can be found:
 
 ```text
 #run_id  kind   step               status  duration  recorded
@@ -203,8 +212,8 @@ Both render zero `\x1b[` bytes under `NO_COLOR`, a pipe, or `--json`.
 | `slipfork down [TARGET]` | Stop this directory's world or the named world/fork; remove run subvolumes, keep data and logs |
 | `slipfork restart [TARGET] [-s SERVICE]` | Restart one service, a world/fork, or every service here through the bottom-bar TUI |
 | `slipfork logs [-f] [-a] [-t] [--since <ms>] [--until <ms>] [targets]...` | Services by default; `-a` adds images and resources; several targets merge in timestamp order |
-| `slipfork logs -r [<id>\|last\|failed]` | Replay one recorded step run (`#<id>` accepted); bare `-r` means `failed`, honouring `--since`/`--until`/`-t`/`--json` |
-| `slipfork logs --runs` | Borderless `#run_id`, kind, step, status, duration, recorded table of every executed step |
+| `slipfork logs -r [<id>\|last\|failed]` | Replay one catalog run (`#<id>` accepted): an image's whole build as one clocked row per instruction plus gutter output, then exactly one verdict; bare `-r` means `failed`, honouring `--since`/`--until`/`-t`/`--json` |
+| `slipfork logs --runs` | Borderless `#run_id`, kind, step, status, duration, recorded table of every executed step; an image build is a single run |
 | `slipfork shell <target>` | Required target: PTY bash/sh, `psql`, `redis-cli`; refuses `s3` and unknowns |
 | `slipfork exec [service\|image] -- <cmd>` | Ad-hoc command inside the target with a real PTY on a terminal; exit code forwarded |
 

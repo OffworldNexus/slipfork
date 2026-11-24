@@ -38,6 +38,13 @@ impl RunTarget {
         }
     }
 
+    /// Appends one build instruction row through the capture's single open sink.
+    pub(crate) fn step_row(&mut self, text: &str) {
+        if let Some(capture) = &mut self.capture {
+            let _ = capture.append_step(text);
+        }
+    }
+
     pub(crate) fn finish(&mut self, state: &str, duration_ms: u64) -> Option<String> {
         let mut capture = self.capture.take()?;
         let run_id = capture.run_id().to_owned();

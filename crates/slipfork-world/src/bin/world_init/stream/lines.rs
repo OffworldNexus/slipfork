@@ -149,6 +149,9 @@ pub(super) fn reply(stream: &mut UnixStream, frame: &InitFrame) -> Result<(), Fa
 pub(super) fn output_kind(kind: slipfork_world::pod_log::LogKind) -> slipfork_world::OutputKind {
     match kind {
         slipfork_world::pod_log::LogKind::Line => slipfork_world::OutputKind::Line,
+        // Build instruction rows only ever live in an image/run capture; they never cross a pod
+        // stream, so they map onto the divider frame rather than growing a new wire variant.
+        slipfork_world::pod_log::LogKind::Step => slipfork_world::OutputKind::Divider,
         slipfork_world::pod_log::LogKind::Divider => slipfork_world::OutputKind::Divider,
     }
 }

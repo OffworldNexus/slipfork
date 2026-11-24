@@ -168,7 +168,7 @@ impl Phase {
         truncate_ansi(&row, width)
     }
 
-    /// `  ✓ n/N INSTRUCTION  args  elapsed` — no target, no brackets, indent 2.
+    /// `  ✓ n/N instruction  args  elapsed` — no target, no brackets, indent 2.
     fn inner_row(&self, mark: &str, millis: Option<u64>, palette: Palette) -> String {
         let mut row = String::from("  ");
         row.push_str(mark);
@@ -177,10 +177,11 @@ impl Phase {
             row.push_str(&palette.meta(&format!("{index}/{total}")));
             row.push(' ');
         }
+        let keyword = self.verb.to_lowercase();
         push_padded(
             &mut row,
-            &palette.verb(&self.verb),
-            self.verb.chars().count(),
+            &palette.substep(&keyword),
+            keyword.chars().count(),
             self.columns.verb,
         );
         let args = self.args.trim();

@@ -89,6 +89,13 @@ impl Palette {
         self.tint(text, "35")
     }
 
+    /// An inner Dockerfile instruction (`from`, `copy`, `run`): a dustier magenta one level
+    /// below the outer keyword role.
+    #[must_use]
+    pub fn substep(self, text: &str) -> String {
+        self.tint(text, "38;5;132")
+    }
+
     /// A component kind or identifier: cyan.
     #[must_use]
     pub fn kind(self, text: &str) -> String {

@@ -130,8 +130,8 @@ fn out_of_order_completions_release_once_per_index_then_the_end_row() {
     let tail = tail.expect("the image settles");
     let rows = settled_rows(&tail);
     assert_eq!(rows.len(), 2, "one settled row per index: {rows:?}");
-    assert!(rows[0].starts_with("  ✓ 1/2 FROM"), "{rows:?}");
-    assert!(rows[1].starts_with("  ✓ 2/2 COPY"), "{rows:?}");
+    assert!(rows[0].starts_with("  ✓ 1/2 from"), "{rows:?}");
+    assert!(rows[1].starts_with("  ✓ 2/2 copy"), "{rows:?}");
     let end = end_row(&tail).expect("the image end row");
     assert_eq!(
         Some(end),
@@ -216,7 +216,7 @@ fn a_provisional_external_pull_row_is_superseded_by_the_real_instruction() {
     rows.extend(settled_rows(&tail));
 
     assert_eq!(rows.len(), 2, "rows 1 and 2, once each: {rows:?}");
-    assert!(rows[0].starts_with("  ✓ 1/2 FROM"), "{rows:?}");
+    assert!(rows[0].starts_with("  ✓ 1/2 from"), "{rows:?}");
     let uri_rows: Vec<&String> = rows.iter().filter(|row| row.contains("2/2")).collect();
     assert_eq!(uri_rows.len(), 1, "one row for index 2: {rows:?}");
     assert!(uri_rows[0].contains(real), "{uri_rows:?}");
@@ -291,8 +291,8 @@ fn a_buffered_hole_still_releases_ascending_with_the_instruction_total() {
     let tail = tail.expect("the image settles");
     let rows = settled_rows(&tail);
     assert_eq!(rows.len(), 2, "the hole never blocks later rows: {rows:?}");
-    assert!(rows[0].starts_with("  ✓ 1/3 FROM"), "{rows:?}");
-    assert!(rows[1].starts_with("  ✓ 3/3 RUN"), "{rows:?}");
+    assert!(rows[0].starts_with("  ✓ 1/3 from"), "{rows:?}");
+    assert!(rows[1].starts_with("  ✓ 3/3 run"), "{rows:?}");
     let end = end_row(&tail).expect("the image end row");
     assert!(
         end.starts_with("✓ image  api  built 3 steps"),
@@ -326,7 +326,7 @@ fn image_first_finish_releases_buffered_rows_with_an_in_flight_step() {
         .expect("the image settles before the boot fallback");
     let rows = settled_rows(&actions);
     assert_eq!(rows.len(), 1, "the buffered row 1 is released: {rows:?}");
-    assert!(rows[0].starts_with("  ✓ 1/3 FROM"), "{rows:?}");
+    assert!(rows[0].starts_with("  ✓ 1/3 from"), "{rows:?}");
     assert!(
         actions
             .last()
@@ -501,18 +501,18 @@ fn every_inner_row_shares_one_instruction_column_from_the_first_step() {
         ("WORKDIR", "/code", 46),
     ];
     let expected_plain = [
-        "  ✓ 1/5 FROM     python:3.14-trixie AS base  1ms",
-        "  ✓ 2/5 COPY     . /app  2ms",
-        "  ✓ 3/5 ADD      x /y  3ms",
-        "  ✓ 4/5 RUN      echo hi  4ms",
-        "  ✓ 5/5 WORKDIR  /code  46ms",
+        "  ✓ 1/5 from     python:3.14-trixie AS base  1ms",
+        "  ✓ 2/5 copy     . /app  2ms",
+        "  ✓ 3/5 add      x /y  3ms",
+        "  ✓ 4/5 run      echo hi  4ms",
+        "  ✓ 5/5 workdir  /code  46ms",
     ];
     let expected_styled = [
-        "  \u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m1/5\u{1b}[0m \u{1b}[35mFROM\u{1b}[0m     python:3.14-trixie AS base  \u{1b}[38;5;244m1ms\u{1b}[0m",
-        "  \u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m2/5\u{1b}[0m \u{1b}[35mCOPY\u{1b}[0m     . /app  \u{1b}[38;5;244m2ms\u{1b}[0m",
-        "  \u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m3/5\u{1b}[0m \u{1b}[35mADD\u{1b}[0m      x /y  \u{1b}[38;5;244m3ms\u{1b}[0m",
-        "  \u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m4/5\u{1b}[0m \u{1b}[35mRUN\u{1b}[0m      echo hi  \u{1b}[38;5;244m4ms\u{1b}[0m",
-        "  \u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m5/5\u{1b}[0m \u{1b}[35mWORKDIR\u{1b}[0m  /code  \u{1b}[38;5;244m46ms\u{1b}[0m",
+        "  \u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m1/5\u{1b}[0m \u{1b}[38;5;132mfrom\u{1b}[0m     python:3.14-trixie AS base  \u{1b}[38;5;244m1ms\u{1b}[0m",
+        "  \u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m2/5\u{1b}[0m \u{1b}[38;5;132mcopy\u{1b}[0m     . /app  \u{1b}[38;5;244m2ms\u{1b}[0m",
+        "  \u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m3/5\u{1b}[0m \u{1b}[38;5;132madd\u{1b}[0m      x /y  \u{1b}[38;5;244m3ms\u{1b}[0m",
+        "  \u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m4/5\u{1b}[0m \u{1b}[38;5;132mrun\u{1b}[0m      echo hi  \u{1b}[38;5;244m4ms\u{1b}[0m",
+        "  \u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m5/5\u{1b}[0m \u{1b}[38;5;132mworkdir\u{1b}[0m  /code  \u{1b}[38;5;244m46ms\u{1b}[0m",
     ];
 
     for styled in [false, true] {
@@ -545,7 +545,10 @@ fn every_inner_row_shares_one_instruction_column_from_the_first_step() {
                 expected_plain[position]
             };
             assert_eq!(row, expected, "row is byte-exact: {row:?}");
-            assert!(row.contains(instruction), "the keyword survives: {row:?}");
+            assert!(
+                row.contains(&instruction.to_lowercase()),
+                "the lowercase keyword survives: {row:?}"
+            );
 
             let column = row.find(args).expect("args are present");
             if let Some(previous) = previous {

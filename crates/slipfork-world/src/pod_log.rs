@@ -1,7 +1,7 @@
 //! Persistent capture files: one append-only `<store>/logs/<world>/<id>.log` per pod or image.
 //!
-//! Every line is written as `<epoch_ms>\tO|E|L|D\t<text>` (`O` stdout, `E` stderr, `L` merged,
-//! `D` divider), so replay keeps each stream while merging pods strictly by
+//! Every line is written as `<epoch_ms>\tO|E|L|D|S\t<text>` (`O` stdout, `E` stderr, `L` merged,
+//! `D` restart divider, `S` build instruction), so replay keeps each stream while merging pods strictly by
 //! timestamp instead of file order. Beside it lives the companion `<id>.idx`: fixed 16-byte
 //! big-endian `(ts_ms, byte_offset)` entries written on the first line and then at least every
 //! [`INDEX_LINES`] lines or [`INDEX_BYTES`] bytes. [`read_range`] binary-searches that index and
@@ -74,12 +74,16 @@ pub enum LogKind {
     Line,
     /// A `── <id> started|restarted ──` divider written by the init.
     Divider,
+    /// One captured build instruction row (`1/3 COPY . /app`), written by the image builder.
+    Step,
 }
 
-/// The framing marker for one row: `D` divider, `O`/`E` a tagged line, `L` merged output.
+/// The framing marker for one row: `D` divider, `S` build instruction, `O`/`E` a tagged line,
+/// `L` merged output.
 fn marker(kind: LogKind, stream: Stream) -> &'static str {
     match (kind, stream) {
         (LogKind::Divider, _) => "D",
+        (LogKind::Step, _) => "S",
         (LogKind::Line, Stream::Stdout) => "O",
         (LogKind::Line, Stream::Stderr) => "E",
         (LogKind::Line, Stream::Combined) => "L",
@@ -90,6 +94,7 @@ fn marker(kind: LogKind, stream: Stream) -> &'static str {
 fn parse_marker(marker: &[u8]) -> (LogKind, Stream) {
     match marker {
         b"D" => (LogKind::Divider, Stream::Combined),
+        b"S" => (LogKind::Step, Stream::Combined),
         b"O" => (LogKind::Line, Stream::Stdout),
         b"E" => (LogKind::Line, Stream::Stderr),
         _ => (LogKind::Line, Stream::Combined),
@@ -101,7 +106,7 @@ fn parse_marker(marker: &[u8]) -> (LogKind, Stream) {
 pub struct LogLine {
     /// Milliseconds since the Unix epoch, recorded when the pump wrote the line.
     pub ts_ms: u64,
-    /// Line or divider.
+    /// Line, divider, or build instruction.
     pub kind: LogKind,
     /// Which child stream produced it; `Combined` for merged or legacy captures.
     pub stream: Stream,

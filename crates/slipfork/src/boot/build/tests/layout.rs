@@ -204,13 +204,13 @@ fn twenty_line_failing_step_caps_live_region_at_eight_and_expands_all_twenty_to_
         .expect("live steps lock")
         .block_rows('⠹', 80, plain);
     assert_eq!(live_paint.len(), 9, "{live_paint:?}");
-    assert!(live_paint[0].starts_with("  ⠹ 1/2 RUN  sh -c 'burst'"));
+    assert!(live_paint[0].starts_with("  ⠹ 1/2 run  sh -c 'burst'"));
     assert!(!live_paint[0].contains('['), "{live_paint:?}");
     assert!(!live_paint.iter().any(|row| row.contains("line-12")));
     assert!(live_paint.iter().any(|row| row.contains("    │ line-13")));
     assert!(live_paint.iter().any(|row| row.contains("    ┃ line-20")));
 
-    // On failure, all 20 captured lines expand into scrollback at indent 4 after `  ✗ 1/2 RUN …`.
+    // On failure, all 20 captured lines expand into scrollback at indent 4 after `  ✗ 1/2 run …`.
     let failed_actions = narrative.failed(
         &json!({
             "event": "failed",
@@ -236,7 +236,7 @@ fn twenty_line_failing_step_caps_live_region_at_eight_and_expands_all_twenty_to_
         21,
         "1 failed inner phase row + 20 gutter lines: {held:?}"
     );
-    assert_eq!(held[0], "  ✗ 1/2 RUN  sh -c 'burst'");
+    assert_eq!(held[0], "  ✗ 1/2 run  sh -c 'burst'");
     for (number, row) in held.iter().enumerate().skip(1) {
         let glyph = if number % 2 == 0 { '┃' } else { '│' };
         assert_eq!(row, &format!("    {glyph} line-{number:02}"));

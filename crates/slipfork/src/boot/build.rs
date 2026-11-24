@@ -143,7 +143,9 @@ impl Narrative {
         let instruction = event["instruction"].as_str().unwrap_or("RUN");
         let args = event["args"].as_str().unwrap_or_default();
         let elapsed = event["elapsed_ms"].as_u64().unwrap_or(0);
-        let width = usize_of(event["instruction_width"].as_u64());
+        // The plan's widest instruction, floored by the lowercase keyword this row prints.
+        let width = usize_of(event["instruction_width"].as_u64())
+            .max(instruction.to_lowercase().chars().count());
         let key = LiveKey::Step {
             image: image.to_owned(),
             index,

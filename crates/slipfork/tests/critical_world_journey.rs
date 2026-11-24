@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::fs;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
@@ -127,13 +127,15 @@ print("crash-marker", file=sys.stderr, flush=True)
 raise SystemExit(1)
 "#;
 
-// The run-catalog journey: one image whose `RUN` fails before any pod can start.
-const FAIL_BUILD_DOCKERFILE: &str = "\
-FROM python:3.13-slim
-RUN sh -c 'echo out-line; echo err-line >&2; exit 3'
-WORKDIR /project
-CMD [\"python3\", \"--version\"]
-";
+// The run-catalog journey: one image whose `RUN` fails before any pod can start. Exactly three
+// instructions, so the replay is a real `1/4`, `2/4`, `3/4`, `4/4` build sequence. The `RUN` prints more
+// than a pipe buffer before failing, so a `| head` reader provably closes a still-blocked writer.
+const FAIL_BUILD_RUN: &str = "\
+sh -c 'i=1; while [ $i -le 6000 ]; do echo \"bulk-$i-xxxxxxxxxxxxxxxxxxxxxxxxxxxx\"; i=$((i+1)); done; echo out-line; echo err-line >&2; exit 3'";
+
+fn fail_build_dockerfile() -> String {
+    format!("FROM python:3.13-slim\nCOPY . /app\nWORKDIR /app\nRUN {FAIL_BUILD_RUN}\n")
+}
 
 const CATALOG_FORKFILE: &str = r#"# forkfile: 0.1
 image app . {
@@ -501,6 +503,50 @@ impl Journey {
             .expect("write the piped input");
         drop(child.stdin.take());
         child.wait_with_output().expect("collect the piped run")
+    }
+
+    /// Spawns one verb with a piped stdout, reads exactly one line, then closes the pipe and reaps
+    /// the child: a `| head` reader proves a closed stdout exits quietly.
+    ///
+    /// `blocked` asserts the writer is still parked on a full pipe after that one line, which only
+    /// a capture replay (thousands of output rows) can guarantee; a catalog listing is smaller than
+    /// the pipe buffer and may already have exited cleanly.
+    fn slipfork_head(&self, project: &Path, args: &[&str], blocked: bool) -> (Option<i32>, String) {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+            .args(args)
+            .current_dir(project)
+            .env("NO_COLOR", "1")
+            .env("XDG_RUNTIME_DIR", &self.runtime)
+            .env("XDG_STATE_HOME", self.run.join("state"))
+            .env("XDG_DATA_HOME", &self.data_home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the slipfork binary must be runnable");
+        {
+            let stdout = child.stdout.take().expect("piped stdout");
+            let mut reader = BufReader::new(stdout);
+            let mut first = String::new();
+            reader
+                .read_line(&mut first)
+                .expect("read one record from the piped stream");
+            assert!(
+                !first.trim().is_empty(),
+                "a `--json` stream must print its first record"
+            );
+            if blocked {
+                assert!(
+                    child.try_wait().expect("poll the piped child").is_none(),
+                    "the writer must still be blocked on the full pipe after one line"
+                );
+            }
+        }
+        let output = child.wait_with_output().expect("reap the closed-pipe run");
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
     }
 
     /// Spawns `slipfork` on a real kernel PTY owned by the test harness.
@@ -1229,7 +1275,7 @@ fn world_up_restart_down_journey() {
     assert!(
         first_out
             .lines()
-            .any(|line| line.starts_with("  ✓ 1/") && line.contains("FROM") && !line.contains('[')),
+            .any(|line| line.starts_with("  ✓ 1/") && line.contains("from") && !line.contains('[')),
         "inner Dockerfile steps render indented `n/N` without brackets:\n{first_out}"
     );
     assert!(
@@ -1797,6 +1843,25 @@ fn world_up_restart_down_journey() {
         "the printed `-r {run_id}` must replay the failed service run: {}",
         stderr(&replay)
     );
+    // A non-image run keeps its own command in the header: `#<id>  service  broken  <command>  <when>`.
+    let replay_text = stdout(&replay);
+    let header = replay_text
+        .lines()
+        .find(|line| line.starts_with(&format!("#{run_id}")))
+        .unwrap_or_else(|| {
+            panic!("`logs -r {run_id}` must print a `#<id>` header:\n{replay_text}")
+        });
+    let fields: Vec<&str> = header.split("  ").collect();
+    assert!(
+        fields.len() == 5
+            && fields[0] == format!("#{run_id}")
+            && fields[1] == "service"
+            && fields[2] == "broken"
+            && fields[3] == "@uv run python -c \"raise SystemExit(7)\""
+            && fields[4].contains('-')
+            && fields[4].contains(':'),
+        "the service replay header must be `#<id>  service  broken  <command>  <started>`:\n{header:?}"
+    );
     let by_target = journey.slipfork(&broken, &["logs", "broken"]);
     assert!(
         by_target.status.success(),
@@ -2024,7 +2089,7 @@ fn world_up_restart_down_journey() {
     // 3b. A failing image `RUN` is a durable catalog run: `logs <image>` and `logs -r <id>` replay
     // the build output, `--runs` lists it, and a later successful boot plus `down` keeps all three.
     let buildfail = journey.project("buildfail", CATALOG_FORKFILE);
-    fs::write(buildfail.join("Dockerfile"), FAIL_BUILD_DOCKERFILE)
+    fs::write(buildfail.join("Dockerfile"), fail_build_dockerfile())
         .expect("write the failing Dockerfile");
     let failed_build = journey.slipfork(&buildfail, &["up"]);
     assert_eq!(
@@ -2098,6 +2163,13 @@ fn world_up_restart_down_journey() {
                 .iter()
                 .all(|index| bytes[*index].is_ascii_digit())
     };
+    // Every instruction is exactly one clocked replay row, in build order, before the verdict.
+    let step_needles = [
+        "1/4 FROM python:3.13-slim".to_owned(),
+        "2/4 COPY . /app".to_owned(),
+        "3/4 WORKDIR /app".to_owned(),
+        format!("4/4 RUN {FAIL_BUILD_RUN}"),
+    ];
     for (label, output) in [
         ("logs app", stdout(&by_image)),
         ("logs -r <id>", stdout(&by_run)),
@@ -2108,12 +2180,15 @@ fn world_up_restart_down_journey() {
             .unwrap_or_else(|| panic!("`{label}` must print a `#<id>` run header:\n{output}"));
         let fields: Vec<&str> = header.split("  ").collect();
         assert!(
-            fields.len() >= 5
+            fields.len() == 4
                 && fields[0] == format!("#{build_run}")
-                && fields[1] == "RUN"
-                && fields[2] == "app"
-                && fields[3] == "sh -c 'echo out-line; echo err-line >&2; exit 3'",
-            "`{label}` header must name `#<id>  RUN  app  <command as written>`:\n{header:?}"
+                && fields[1] == "image"
+                && fields[2] == "app",
+            "`{label}` header must name the run identity only (`#<id>  image  app  <started>`):\n{header:?}"
+        );
+        assert!(
+            !header.contains("RUN") && !header.contains("sh -c"),
+            "`{label}` header must not repeat an instruction:\n{header:?}"
         );
         assert_eq!(
             header.matches("app").count(),
@@ -2143,6 +2218,36 @@ fn world_up_restart_down_journey() {
                 "`{label}` timestamps each replay row, saw {clock:?}:\n{output}"
             );
         }
+        // Every instruction is exactly one clocked row, in build order, ahead of the verdict.
+        let verdict_at = output
+            .find("✗ RUN app failed (exit 3)")
+            .unwrap_or_else(|| panic!("`{label}` must print the final verdict:\n{output}"));
+        let mut last_seen = 0;
+        for needle in &step_needles {
+            let rows: Vec<&str> = output
+                .lines()
+                .filter(|line| line.trim_end().ends_with(needle.as_str()))
+                .collect();
+            assert_eq!(
+                rows.len(),
+                1,
+                "`{label}` must replay `{needle}` exactly once:\n{output}"
+            );
+            let row = rows[0];
+            let at = output
+                .find(needle.as_str())
+                .unwrap_or_else(|| panic!("`{label}` must replay `{needle}`:\n{output}"));
+            assert!(
+                at >= last_seen && at < verdict_at,
+                "`{label}` replays instructions in build order before the verdict:\n{output}"
+            );
+            last_seen = at;
+            let (clock, _) = row.trim_start().split_once("  ").unwrap_or_default();
+            assert!(
+                is_clock(clock),
+                "`{label}` clocks the `{needle}` step row, saw {row:?}:\n{output}"
+            );
+        }
         assert!(
             !output.contains('\u{1b}'),
             "`{label}` stays ANSI-free:\n{output}"
@@ -2162,6 +2267,14 @@ fn world_up_restart_down_journey() {
         assert!(
             output.trim_end().ends_with("✗ RUN app failed (exit 3)"),
             "`{label}` must end with the record's verdict:\n{output}"
+        );
+        assert_eq!(
+            output
+                .lines()
+                .filter(|line| line.trim_end() == "✗ RUN app failed (exit 3)")
+                .count(),
+            1,
+            "`{label}` prints exactly one final verdict line:\n{output}"
         );
     }
 
@@ -2201,6 +2314,35 @@ fn world_up_restart_down_journey() {
         replay_json_text.contains("\"stream\":\"stderr\""),
         "`logs -r --json` must carry the stderr stream: {replay_json_text}"
     );
+    let mut last_step = None;
+    for needle in &step_needles {
+        let rows: Vec<usize> = replay_events
+            .iter()
+            .enumerate()
+            .filter(|(_, event)| event["line"].as_str() == Some(needle.as_str()))
+            .map(|(position, _)| position)
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "`logs -r --json` must carry `{needle}` exactly once: {replay_events:?}"
+        );
+        let position = rows[0];
+        assert!(
+            last_step.is_none_or(|last| position > last),
+            "`logs -r --json` orders the instruction rows in build order: {replay_events:?}"
+        );
+        last_step = Some(position);
+        let event = &replay_events[position];
+        assert_eq!(
+            event["kind"], "step",
+            "`{needle}` must be a `step` row: {event}"
+        );
+        assert!(
+            event["ts_ms"].is_u64(),
+            "`{needle}` must carry a numeric timestamp: {event}"
+        );
+    }
     let replay_run = replay_events
         .iter()
         .find(|event| event["run_id"].as_str() == Some(build_run.as_str()))
@@ -2215,12 +2357,29 @@ fn world_up_restart_down_journey() {
         "`logs -r --json` emits the record bare as its first line: {replay_events:?}"
     );
     assert_eq!(replay_run["phase"], "run", "{replay_run}");
-    assert_eq!(
-        replay_run["instruction"], "sh -c 'echo out-line; echo err-line >&2; exit 3'",
-        "{replay_run}"
-    );
-    assert_eq!(replay_run["source"], "Dockerfile:2", "{replay_run}");
+    assert_eq!(replay_run["instruction"], FAIL_BUILD_RUN, "{replay_run}");
+    assert_eq!(replay_run["source"], "Dockerfile:4", "{replay_run}");
     assert_eq!(replay_run["exit_code"], 3, "{replay_run}");
+
+    // A reader that stops early (`| head`) closes stdout: both catalog streams must exit 0 with an
+    // empty, ANSI-free stderr instead of printing `error: failed to write output: Broken pipe`.
+    for (args, blocked) in [
+        (vec!["logs", "-r", build_run.as_str(), "--json"], true),
+        (vec!["logs", "--runs", "--json"], false),
+    ] {
+        let (code, head_stderr) = journey.slipfork_head(&buildfail, &args, blocked);
+        assert_eq!(
+            code,
+            Some(0),
+            "`{}` must exit 0 on a closed pipe: {head_stderr:?}",
+            args.join(" ")
+        );
+        assert!(
+            head_stderr.is_empty(),
+            "`{}` must stay silent on a closed pipe: {head_stderr:?}",
+            args.join(" ")
+        );
+    }
 
     // 3c. Bare `-r` answers "what just broke"; `last` names the newest record, and `--json`
     // mirrors every form with the same run id.
@@ -2233,7 +2392,7 @@ fn world_up_restart_down_journey() {
     let bare_text = stdout(&bare_replay);
     assert!(
         bare_text.contains(&format!("#{build_run}"))
-            && bare_text.contains("sh -c 'echo out-line; echo err-line >&2; exit 3'")
+            && bare_text.contains(FAIL_BUILD_RUN)
             && bare_text.trim_end().ends_with("✗ RUN app failed (exit 3)"),
         "bare `logs -r` must replay the failed RUN header, command and verdict:\n{bare_text}"
     );
@@ -2351,11 +2510,8 @@ fn world_up_restart_down_journey() {
     assert_eq!(record["target"], "app", "{record}");
     assert_eq!(record["state"], "failed", "{record}");
     assert_eq!(record["phase"], "run", "{record}");
-    assert_eq!(
-        record["instruction"], "sh -c 'echo out-line; echo err-line >&2; exit 3'",
-        "{record}"
-    );
-    assert_eq!(record["source"], "Dockerfile:2", "{record}");
+    assert_eq!(record["instruction"], FAIL_BUILD_RUN, "{record}");
+    assert_eq!(record["source"], "Dockerfile:4", "{record}");
     assert_eq!(record["exit_code"], 3, "{record}");
     assert!(record["started_ms"].is_u64(), "{record}");
     assert!(record["finished_ms"].is_u64(), "{record}");
@@ -2382,9 +2538,10 @@ fn world_up_restart_down_journey() {
     );
 
     // 3c. Every failing instruction explains itself. An engine-executed step (`COPY --from` a
-    // missing stage, a `FROM` that cannot be pulled) names the instruction in the replay header,
-    // writes its raw one-line cause as that step's `┃` output, and still ends with a verdict naming
-    // the verb. A failure before any step puts the reason in the verdict instead of an empty block.
+    // missing stage, a `FROM` that cannot be pulled) gets one clocked step row, writes its raw
+    // one-line cause as that step's `┃` output, and still ends with a verdict naming the verb. The
+    // replay header is run identity only (`#<id>  image  <target>  <started>`). A failure before
+    // any step puts the reason in the verdict instead of an empty block.
     let stagefail = journey.project("stagefail", CATALOG_FORKFILE);
     fs::write(stagefail.join("Dockerfile"), MISSING_STAGE_DOCKERFILE)
         .expect("write the missing-stage Dockerfile");
@@ -2435,12 +2592,45 @@ fn world_up_restart_down_journey() {
         .unwrap_or_else(|| panic!("`logs -r` must print a run header:\n{stage_text}"));
     let stage_fields: Vec<&str> = stage_header.split("  ").collect();
     assert!(
-        stage_fields.len() >= 5
-            && stage_fields[1] == "COPY"
-            && stage_fields[2] == "app"
-            && stage_fields[3].contains("--from=Missing-Stage")
-            && stage_fields[3].contains("/x /y"),
-        "the replay header names the instruction that ran:\n{stage_header:?}"
+        stage_fields.len() == 4
+            && stage_fields[0] == format!("#{stage_run}")
+            && stage_fields[1] == "image"
+            && stage_fields[2] == "app",
+        "the replay header names the run identity only (`#<id>  image  app  <started>`):\n{stage_header:?}"
+    );
+    assert!(
+        stage_fields[3].contains('-') && stage_fields[3].contains(':'),
+        "the replay header must end with a date+time, saw {:?}:\n{stage_header:?}",
+        stage_fields[3]
+    );
+    assert!(
+        !stage_header.contains("COPY"),
+        "the replay header must not repeat an instruction:\n{stage_header:?}"
+    );
+    assert_eq!(
+        stage_header.matches("app").count(),
+        1,
+        "the replay must never print the image id twice:\n{stage_header:?}"
+    );
+    // Exactly one clocked step row names the failing instruction, ahead of the verdict.
+    let stage_step = "2/3 COPY --from=Missing-Stage /x /y";
+    assert_eq!(
+        stage_text
+            .lines()
+            .filter(|line| line.trim_end().ends_with(stage_step))
+            .count(),
+        1,
+        "exactly one step row must name `{stage_step}`:\n{stage_text}"
+    );
+    let stage_step_at = stage_text
+        .rfind(stage_step)
+        .unwrap_or_else(|| panic!("the failing step row is missing:\n{stage_text}"));
+    let stage_verdict_at = stage_text
+        .rfind("✗ COPY app failed")
+        .unwrap_or_else(|| panic!("the replay verdict is missing:\n{stage_text}"));
+    assert!(
+        stage_step_at < stage_verdict_at,
+        "the failing step row must precede the verdict:\n{stage_text}"
     );
     assert_eq!(
         stage_text
@@ -2555,11 +2745,45 @@ fn world_up_restart_down_journey() {
         .unwrap_or_else(|| panic!("`logs -r` must print a run header:\n{from_text}"));
     let from_fields: Vec<&str> = from_header.split("  ").collect();
     assert!(
-        from_fields.len() >= 5
-            && from_fields[1] == "FROM"
-            && from_fields[2] == "app"
-            && from_fields[3] == "127.0.0.1:1/nope:latest",
-        "the replay header names the `FROM` that ran:\n{from_header:?}"
+        from_fields.len() == 4
+            && from_fields[0] == format!("#{from_run}")
+            && from_fields[1] == "image"
+            && from_fields[2] == "app",
+        "the replay header names the run identity only (`#<id>  image  app  <started>`):\n{from_header:?}"
+    );
+    assert!(
+        from_fields[3].contains('-') && from_fields[3].contains(':'),
+        "the replay header must end with a date+time, saw {:?}:\n{from_header:?}",
+        from_fields[3]
+    );
+    assert!(
+        !from_header.contains("FROM"),
+        "the replay header must not repeat an instruction:\n{from_header:?}"
+    );
+    assert_eq!(
+        from_header.matches("app").count(),
+        1,
+        "the replay must never print the image id twice:\n{from_header:?}"
+    );
+    // Exactly one clocked step row names the failing instruction, ahead of the verdict.
+    let from_step = "FROM 127.0.0.1:1/nope:latest";
+    assert_eq!(
+        from_text
+            .lines()
+            .filter(|line| line.trim_end().ends_with(from_step))
+            .count(),
+        1,
+        "exactly one step row must name `{from_step}`:\n{from_text}"
+    );
+    let from_step_at = from_text
+        .rfind(from_step)
+        .unwrap_or_else(|| panic!("the failing step row is missing:\n{from_text}"));
+    let from_verdict_at = from_text
+        .rfind("✗ FROM app failed")
+        .unwrap_or_else(|| panic!("the replay verdict is missing:\n{from_text}"));
+    assert!(
+        from_step_at < from_verdict_at,
+        "the failing step row must precede the verdict:\n{from_text}"
     );
     let from_reason = from_text
         .lines()
@@ -2606,8 +2830,8 @@ fn world_up_restart_down_journey() {
         .len();
     assert!(
         bad_block.contains(&format!("→ [1/{bad_total}] image"))
-            && bad_block.contains("  → 1/1 FROM")
-            && !bad_block.contains("[1/1] FROM"),
+            && bad_block.contains("  → 1/1 from")
+            && !bad_block.contains("[1/1] from"),
         "`up` opens the outer `[1/{bad_total}] image` row then the indented `1/1 FROM` row before parsing:\n{bad_block}"
     );
     assert!(
@@ -2644,11 +2868,45 @@ fn world_up_restart_down_journey() {
         .unwrap_or_else(|| panic!("`logs -r` must print a run header:\n{bad_text}"));
     let bad_fields: Vec<&str> = bad_header.split("  ").collect();
     assert!(
-        bad_fields.len() >= 5
-            && bad_fields[1] == "FROM"
-            && bad_fields[2] == "app"
-            && bad_fields[3] == "/bad:latest",
-        "the header names the `FROM` that ran:\n{bad_header:?}"
+        bad_fields.len() == 4
+            && bad_fields[0] == format!("#{bad_run}")
+            && bad_fields[1] == "image"
+            && bad_fields[2] == "app",
+        "the replay header names the run identity only (`#<id>  image  app  <started>`):\n{bad_header:?}"
+    );
+    assert!(
+        bad_fields[3].contains('-') && bad_fields[3].contains(':'),
+        "the replay header must end with a date+time, saw {:?}:\n{bad_header:?}",
+        bad_fields[3]
+    );
+    assert!(
+        !bad_header.contains("FROM"),
+        "the replay header must not repeat an instruction:\n{bad_header:?}"
+    );
+    assert_eq!(
+        bad_header.matches("app").count(),
+        1,
+        "the replay must never print the image id twice:\n{bad_header:?}"
+    );
+    // Exactly one clocked step row names the failing instruction, ahead of the verdict.
+    let bad_step = "FROM /bad:latest";
+    assert_eq!(
+        bad_text
+            .lines()
+            .filter(|line| line.trim_end().ends_with(bad_step))
+            .count(),
+        1,
+        "exactly one step row must name `{bad_step}`:\n{bad_text}"
+    );
+    let bad_step_at = bad_text
+        .rfind(bad_step)
+        .unwrap_or_else(|| panic!("the failing step row is missing:\n{bad_text}"));
+    let bad_verdict_at = bad_text
+        .rfind("✗ FROM app failed")
+        .unwrap_or_else(|| panic!("the replay verdict is missing:\n{bad_text}"));
+    assert!(
+        bad_step_at < bad_verdict_at,
+        "the failing step row must precede the verdict:\n{bad_text}"
     );
     assert_eq!(
         bad_text

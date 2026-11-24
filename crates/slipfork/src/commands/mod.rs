@@ -317,6 +317,9 @@ pub(crate) fn message_and_next(message: &str, fallback: &str) -> (String, String
 }
 
 /// Writes one already-rendered chunk to stdout without panicking on a closed pipe.
+///
+/// A reader that stops early (`logs -r --json | head`) closes stdout: that is the stream ending
+/// cleanly, not a failure, so it exits `0` and writes nothing to stderr.
 pub(crate) fn emit(text: &str) -> ExitCode {
     let mut stdout = io::stdout().lock();
     match stdout
@@ -324,6 +327,7 @@ pub(crate) fn emit(text: &str) -> ExitCode {
         .and_then(|()| stdout.flush())
     {
         Ok(()) => ExitCode::SUCCESS,
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: failed to write output: {error}");
             eprintln!("next: check that stdout is writable");

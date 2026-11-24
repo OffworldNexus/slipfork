@@ -638,10 +638,11 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         "both services must render a finished row: {readable}"
     );
     assert!(
-        readable.contains("FROM")
-            && readable.contains("python:3.13-slim")
+        readable
+            .split(['\n', '\r'])
+            .any(|row| row.contains("python:3.13-slim") && row.contains("from"))
             && !readable.contains("registry-1.docker.io"),
-        "`FROM` row must carry the reference as written, never normalized: {readable}"
+        "`from` row must carry the reference as written, never normalized: {readable}"
     );
     for forbidden in [
         "sha256",
@@ -1429,14 +1430,14 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     let repaints: Vec<String> = narrative.output.split("\u{1b}7").map(plain).collect();
     assert!(
         repaints.iter().any(|frame| {
-            frame.contains("3/4 RUN")
+            frame.contains("3/4 run")
                 && !frame.contains("[3/4]")
                 && frame.chars().any(|glyph| BRAILLE.contains(glyph))
                 && frame.contains(&format!("    │ a-{pty_stamp}"))
                 && !frame.contains(&format!("b-{pty_stamp}"))
                 && frame.contains("0/2  25% · [1/2] image web · step 3/4 RUN")
         }),
-        "at least one repaint during `sleep 1` must paint indented `3/4 RUN` + spinner + indent-4 `│ a-{pty_stamp}` + `0/2  25% · [1/2] image web · step 3/4 RUN` before `b-{pty_stamp}` exists:\n{repaints:#?}"
+        "at least one repaint during `sleep 1` must paint indented `3/4 run` + spinner + indent-4 `│ a-{pty_stamp}` + `0/2  25% · [1/2] image web · step 3/4 RUN` before `b-{pty_stamp}` exists:\n{repaints:#?}"
     );
     let shown = plain(&narrative.output);
     assert!(
@@ -1448,12 +1449,12 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         "a fresh build must open with `→ [1/2] image  web`: {shown}"
     );
     assert!(
-        shown.contains("  ✓ 1/4 FROM")
+        shown.contains("  ✓ 1/4 from")
             && shown.contains("python:3.13-slim")
             && !shown.contains("registry-1.docker.io"),
-        "`FROM` row must carry `python:3.13-slim` as written: {shown}"
+        "`from` row must carry `python:3.13-slim` as written: {shown}"
     );
-    for settled in ["  ✓ 1/4 FROM", "  ✓ 2/4 COPY", "  ✓ 3/4 RUN"] {
+    for settled in ["  ✓ 1/4 from", "  ✓ 2/4 copy", "  ✓ 3/4 run"] {
         assert!(
             shown.contains(settled),
             "a settled inner step must collapse to one indented `{settled}` row: {shown}"
@@ -1472,7 +1473,7 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     assert!(shown.contains(&format!("    │ out-{pty_stamp}")), "{shown}");
     assert!(shown.contains(&format!("    ┃ err-{pty_stamp}")), "{shown}");
     assert!(
-        shown.contains("  ✗ 4/4 RUN"),
+        shown.contains("  ✗ 4/4 run"),
         "the failing inner step stays expanded at indent 2: {shown}"
     );
     assert_eq!(
@@ -1541,9 +1542,9 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         "no spinner frames: {piped_all}"
     );
     assert!(piped_out.contains("→ [1/2] image  web"), "{piped_out}");
-    assert!(piped_out.contains("  ✓ 1/4 FROM"), "{piped_out}");
+    assert!(piped_out.contains("  ✓ 1/4 from"), "{piped_out}");
     assert!(piped_out.contains("python:3.13-slim"), "{piped_out}");
-    assert!(piped_out.contains("  → 3/4 RUN"), "{piped_out}");
+    assert!(piped_out.contains("  → 3/4 run"), "{piped_out}");
     for bracketed in ["[1/4]", "[2/4]", "[3/4]", "[4/4]"] {
         assert!(
             !piped_all.contains(bracketed),
@@ -1631,7 +1632,7 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         ok_screen.contains("→ [1/2] image  web"),
         "the parent outer row must stay above the settled inner steps:\n{ok_screen}"
     );
-    for settled in ["  ✓ 1/3 FROM", "  ✓ 2/3 COPY", "  ✓ 3/3 WORKDIR"] {
+    for settled in ["  ✓ 1/3 from", "  ✓ 2/3 copy", "  ✓ 3/3 workdir"] {
         assert!(
             ok_screen.contains(settled),
             "settled step `{settled}` must stay visible in scrollback:\n{ok_screen}"
@@ -1695,7 +1696,7 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         }),
         "a cached image must settle as `✓ [1/2] image  web  cached`:\n{cached_screen}"
     );
-    for inner_token in ["FROM", "COPY", "WORKDIR", "built "] {
+    for inner_token in ["1/3 from", "2/3 copy", "3/3 workdir", "built "] {
         assert!(
             !cached_shown.contains(inner_token),
             "a cached image must emit zero inner rows (`{inner_token}`):\n{cached_shown}"

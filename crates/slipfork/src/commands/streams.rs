@@ -1,9 +1,14 @@
 //! `logs`, `shell`, and `exec`: streaming verbs rendered from typed events.
 //!
 //! The daemon sends `{"kind","pod","stream","line"}` events plus one `roster` event that fixes the
-//! gutter width. This renderer owns dividers, `--json`, and the final `{"exit":n}`. A terminal
-//! `shell` receives the world's real `/dev/pts/N` master and relays raw bytes untouched; a pipe
-//! relays stdin as base64 input frames, so `psql`, `redis-cli`, and `sh` work over a plain pipe.
+//! gutter width. The renderer in [`render`] owns dividers, instruction rows, `--json`, and the
+//! final `{"exit":n}`. A terminal `shell` receives the world's real `/dev/pts/N` master and relays
+//! raw bytes untouched; a pipe relays stdin as base64 input frames, so `psql`, `redis-cli`, and
+//! `sh` work over a plain pipe.
+
+mod render;
+
+pub(crate) use render::Renderer;
 
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,11 +17,8 @@ use serde_json::{Value, json};
 
 use crate::commands::{Session, emit};
 use crate::daemon::{DaemonClient, DaemonError};
-use crate::ui::table::{Column, Table};
-use crate::ui::{Palette, Verdict};
 
 use super::runs::{RunRow, render_runs};
-use super::timeparse::format_clock;
 pub(crate) use super::timeparse::format_ts;
 
 /// Set by the SIGINT handler so a followed stream exits `0` on Ctrl-C.
@@ -88,11 +90,11 @@ impl Session {
         match client.call_streaming("logs", params, &mut |event| renderer.event(event)) {
             Ok(_) => {
                 renderer.finish(0);
-                ExitCode::SUCCESS
+                write_status(&renderer)
             }
             Err(_) if INTERRUPTED.load(Ordering::SeqCst) => {
                 renderer.finish(0);
-                ExitCode::SUCCESS
+                write_status(&renderer)
             }
             Err(error) => self.exact_fail(&error, "logs", args.json),
         }
@@ -118,28 +120,36 @@ impl Session {
         });
         match outcome {
             Ok(_) => {
+                let mut failed = false;
                 if args.json {
                     // The daemon already matched `RunRecord`'s 10 documented keys; forward verbatim.
                     for record in &catalog {
                         let line = serde_json::to_string(record).unwrap_or_default();
-                        let _ = emit(&format!("{line}\n"));
+                        failed |= matches!(emit(&format!("{line}\n")), ExitCode::FAILURE);
                     }
                     if skipped > 0 {
-                        let _ = emit(&format!("{}\n", json!({ "skipped": skipped })));
+                        failed |= matches!(
+                            emit(&format!("{}\n", json!({ "skipped": skipped }))),
+                            ExitCode::FAILURE
+                        );
                     }
                 } else {
                     if let Some(notice) = empty_runs_notice(records.len(), skipped) {
-                        println!("{notice}");
+                        failed |= matches!(emit(&format!("{notice}\n")), ExitCode::FAILURE);
                     } else if !records.is_empty() {
                         for line in render_runs(&records, self.color()) {
-                            println!("{line}");
+                            failed |= matches!(emit(&format!("{line}\n")), ExitCode::FAILURE);
                         }
                     }
                     if let Some(notice) = skipped_notice(skipped) {
                         eprintln!("{notice}");
                     }
                 }
-                ExitCode::SUCCESS
+                if failed {
+                    ExitCode::FAILURE
+                } else {
+                    ExitCode::SUCCESS
+                }
             }
             Err(error) => self.stream_fail(&error, "logs", args.json),
         }
@@ -161,11 +171,11 @@ impl Session {
         match client.call_streaming("logs", params, &mut |event| renderer.event(event)) {
             Ok(_) => {
                 renderer.finish(0);
-                ExitCode::SUCCESS
+                write_status(&renderer)
             }
             Err(_) if INTERRUPTED.load(Ordering::SeqCst) => {
                 renderer.finish(0);
-                ExitCode::SUCCESS
+                write_status(&renderer)
             }
             Err(error) => self.stream_fail(&error, "logs", args.json),
         }
@@ -201,6 +211,15 @@ impl Session {
     }
 }
 
+/// A finished render succeeds unless a write failed for a reason other than a closed pipe.
+fn write_status(renderer: &Renderer) -> ExitCode {
+    if renderer.failed() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
 /// The bare-catalog hint; a record-bearing or skipped-line-bearing catalog never prints it.
 fn empty_runs_notice(records: usize, skipped: usize) -> Option<&'static str> {
     (records == 0 && skipped == 0)
@@ -232,230 +251,6 @@ pub(crate) fn refusal_next(error: &DaemonError, verb: &str) -> String {
         "unknown-run" => "slipfork logs --runs".to_owned(),
         "world-booting" => "wait for `slipfork up` to finish, then retry".to_owned(),
         _ => "run `slipfork status` to inspect the world".to_owned(),
-    }
-}
-
-/// Renders typed daemon events as gutters, dividers, or NDJSON.
-pub(crate) struct Renderer {
-    palette: Palette,
-    json: bool,
-    /// `logs` prefixes every line with its pod gutter; `exec` stays verbatim like `docker exec`.
-    gutter: bool,
-    /// Prefix a human timestamp before the pod gutter (`-t`).
-    timestamps: bool,
-    /// Replay rows carry a `HH:MM:SS.mmm` clock and the v3 stream gutter.
-    clock: bool,
-    width: usize,
-    /// Human rows emitted in this replay, so an empty capture prints no double blank line.
-    rows: usize,
-    /// The replay's verdict, assembled from the run record.
-    verdict: Option<Verdict>,
-    /// The record's one-line reason, used by the verdict when no row above carries it.
-    reason: Option<String>,
-}
-
-impl Renderer {
-    /// One renderer with only the mode flags set; every constructor narrows it.
-    fn blank(color: bool, json: bool, gutter: bool, timestamps: bool, clock: bool) -> Self {
-        Self {
-            palette: Palette::new(color),
-            json,
-            gutter,
-            timestamps,
-            clock,
-            width: 0,
-            rows: 0,
-            verdict: None,
-            reason: None,
-        }
-    }
-
-    fn new(color: bool, json: bool, timestamps: bool) -> Self {
-        Self::blank(color, json, true, timestamps, false)
-    }
-
-    /// The `exec`/`shell` renderer: the command's own stdout and stderr, byte for byte.
-    pub(crate) fn exec(color: bool, json: bool) -> Self {
-        Self::blank(color, json, false, false, false)
-    }
-
-    /// The `logs -r <id>` renderer: one recorded run's clocked stream-gutter rows.
-    fn replay(color: bool, json: bool, timestamps: bool) -> Self {
-        Self::blank(color, json, false, timestamps, true)
-    }
-
-    pub(crate) fn event(&mut self, event: &Value) {
-        let pod = event.get("pod").and_then(Value::as_str).unwrap_or_default();
-        let kind = event.get("kind").and_then(Value::as_str).unwrap_or("line");
-        let stream = event
-            .get("stream")
-            .and_then(Value::as_str)
-            .unwrap_or("stdout");
-        let line = event
-            .get("line")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let ts_ms = event.get("ts_ms").and_then(Value::as_u64);
-        if kind == "roster" {
-            // `logs -r --json` mirrors the catalog record before its captured lines.
-            if self.json
-                && let Some(run) = event.get("run")
-            {
-                let _ = emit(&format!("{run}\n"));
-            }
-            self.roster(event);
-            return;
-        }
-        if self.json {
-            let mut payload = json!({
-                "pod": pod,
-                "stream": stream,
-                "line": line,
-                "kind": kind,
-            });
-            if let Some(ts_ms) = ts_ms {
-                payload["ts_ms"] = json!(ts_ms);
-            }
-            let _ = emit(&format!("{payload}\n"));
-            return;
-        }
-        match kind {
-            "eof" => {}
-            "divider" => {
-                let _ = emit(&format!("{}\n", self.palette.meta(line)));
-            }
-            _ if self.clock => {
-                // The v3 replay row: 2-space indent, a dim clock in the gutter, then the glyph.
-                let glyph = self.palette.gutter(stream);
-                let row = ts_ms.map_or_else(
-                    || format!("  {glyph} {line}"),
-                    |ts| {
-                        let clock = if self.timestamps {
-                            self.palette.meta(&format_ts(ts))
-                        } else {
-                            self.palette.meta(&format_clock(ts))
-                        };
-                        format!("  {clock} {glyph} {line}")
-                    },
-                );
-                self.rows += 1;
-                let _ = emit(&format!("{row}\n"));
-            }
-            _ if !self.gutter => {
-                let stamp = if self.timestamps {
-                    ts_ms
-                        .map(|ts| format!("{} ", self.palette.meta(&format_ts(ts))))
-                        .unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                let _ = emit(&format!("{stamp}{line}\n"));
-            }
-            _ => {
-                let stamp = if self.timestamps {
-                    ts_ms
-                        .map(|ts| format!("{} ", self.palette.meta(&format_ts(ts))))
-                        .unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                let columns = [
-                    Column::left().at_least(self.width),
-                    Column::left(),
-                    Column::left(),
-                ];
-                let gutter = Table::new(&columns).gap(" ").indent(&stamp);
-                let cells = [
-                    self.palette.tint(pod, "1"),
-                    self.palette.gutter(stream),
-                    line.to_owned(),
-                ];
-                // Measure the real row, line included: the table engine skips a zero-width column,
-                // and measuring an empty body would silently drop every log line.
-                let widths = gutter.widths(&[cells.to_vec()]);
-                let row = gutter.line(&widths, &cells);
-                let _ = emit(&format!("{row}\n"));
-            }
-        }
-    }
-
-    /// Fixes the gutter width from the daemon's pod roster; it never grows mid-stream.
-    fn roster(&mut self, event: &Value) {
-        if self.json {
-            return;
-        }
-        let pods: Vec<&str> = event
-            .get("pods")
-            .and_then(Value::as_array)
-            .map(|items| items.iter().filter_map(Value::as_str).collect())
-            .unwrap_or_default();
-        self.width = pods
-            .iter()
-            .map(|pod| pod.chars().count())
-            .max()
-            .unwrap_or(0);
-        if let Some(run) = event.get("run") {
-            // A roster carrying a catalog record is a capture replay, so every following row takes
-            // the clocked v3 stream-gutter path.
-            self.gutter = false;
-            self.clock = true;
-            self.print_header(run);
-        }
-    }
-
-    /// One replay header row: `#<run_id>  <RUN|kind>  <target>  <command>  <started_at>`.
-    fn print_header(&mut self, run: &Value) {
-        let run_id = run["run_id"].as_str().unwrap_or_default();
-        let kind = run["kind"].as_str().unwrap_or_default();
-        let phase = run["phase"].as_str().filter(|phase| !phase.is_empty());
-        // The header names the instruction that ran: `RUN` for an image, the record kind otherwise.
-        let verb = match phase {
-            Some(phase) if kind == "image" => phase.to_ascii_uppercase(),
-            _ => kind.to_owned(),
-        };
-        let target = run["target"].as_str().unwrap_or_default();
-        let command = run["instruction"]
-            .as_str()
-            .filter(|instruction| !instruction.is_empty())
-            .or_else(|| run["command"].as_str())
-            .unwrap_or_default();
-        let started = run["started_ms"].as_u64().map(format_ts);
-        let header = self
-            .palette
-            .header_line(run_id, &verb, target, command, started.as_deref());
-        let _ = emit(&format!("{header}\n\n"));
-        self.verdict = Some(Verdict {
-            verb,
-            target: target.to_owned(),
-            state: run["state"].as_str().unwrap_or_default().to_owned(),
-            exit_code: run["exit_code"]
-                .as_i64()
-                .and_then(|code| i32::try_from(code).ok()),
-            duration_ms: run["duration_ms"].as_u64(),
-        });
-        self.reason = run["reason"]
-            .as_str()
-            .filter(|reason| !reason.is_empty())
-            .map(str::to_owned);
-    }
-
-    pub(crate) fn finish(&self, code: i64) {
-        if self.json {
-            let _ = emit(&format!("{}\n", json!({ "exit": code })));
-            return;
-        }
-        if let Some(verdict) = &self.verdict {
-            // A failure with no replayable row at all explains itself in the verdict itself.
-            let line = match &self.reason {
-                Some(reason) if self.rows == 0 && verdict.exit_code.is_none() => {
-                    self.palette.verdict_detail(verdict, reason)
-                }
-                _ => self.palette.verdict(verdict),
-            };
-            // Exactly one blank line separates rows from the verdict; an empty capture has none.
-            let gap = if self.rows > 0 { "\n" } else { "" };
-            let _ = emit(&format!("{gap}{line}\n"));
-        }
     }
 }
 
