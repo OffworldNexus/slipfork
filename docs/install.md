@@ -106,8 +106,11 @@ Every package declares `crun`, `btrfs-progs`, and `slirp4netns`. The last one is
 that gives a world outbound network, so `@uv`, `@pnpm`, and HTTPS reach the internet.
 
 The `.deb`, `.rpm`, and pacman packages ship both systemd units and enable them for the installing
-user: the install hook reads `SUDO_USER` from a normal `sudo` install, turns on lingering, starts
-`slipfork.service`, and enables `slipfork-ingress.socket`. There is no separate ingress command.
+user: the hook reads `SUDO_USER`/`SUDO_UID`, turns on lingering and starts `slipfork.service`, then
+renders and enables `slipfork-ingress.socket` even when the user-daemon tools are missing. When it
+cannot name your account it prints one `next:` hint; if the socket cannot start it prints one `!`
+line and the remedy — `ss -ltn 'sport = :80'` when another listener holds port 80, otherwise
+`journalctl -u slipfork-ingress.socket` — while the package still installs.
 
 ```console
 $ slipfork --version
