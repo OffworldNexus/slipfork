@@ -30,6 +30,7 @@ mod error;
 #[allow(unsafe_code)]
 pub mod fdpass;
 mod layout;
+mod log_store;
 pub mod namespaces;
 mod pod;
 mod pod_env;
@@ -77,6 +78,7 @@ pub use layout::{
     FORKS_DIR, ForkDir, ForkName, PODS_DIR, ProjectScope, STORE_DIR, StoreLayout, WorldName,
     fork_checkout, fork_checkouts, fork_under, fork_world_id, project_root, world_id_for_project,
 };
+pub use log_store::LogStore;
 pub use namespaces::{NAMESPACE_KINDS, NamespaceIdentity, NamespaceTable};
 pub use pod::{
     Bind, BindSource, PodBundle, PodEnv, PodFile, PodHost, PodSpec, is_reusable_pod, write_bundle,

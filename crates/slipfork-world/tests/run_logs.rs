@@ -3,10 +3,10 @@
 //! One executed step must mint one unique 6-char id, leave a framed `.log` plus its `.idx`, and
 //! append exactly one `index.jsonl` line; a discarded no-op must leave nothing behind.
 
+use slipfork_world::LogStore;
+use slipfork_world::WorldName;
 use slipfork_world::pod_log::read_range;
-use slipfork_world::run_log::{
-    INDEX_FILE, LAST_FAILED_FILE, LAST_FILE, RunCapture, read_index, resolve_run, runs_dir,
-};
+use slipfork_world::run_log::{LAST_FAILED_FILE, LAST_FILE, RunCapture};
 
 fn temp(prefix: &str) -> tempfile::TempDir {
     tempfile::Builder::new()
@@ -15,12 +15,20 @@ fn temp(prefix: &str) -> tempfile::TempDir {
         .expect("create a disk temp directory")
 }
 
+fn store(root: &tempfile::TempDir) -> LogStore {
+    LogStore::at(
+        root.path().to_path_buf(),
+        WorldName::parse("demo").expect("valid world name"),
+    )
+}
+
 #[test]
 fn an_executed_step_mints_one_unique_id_capture_pair_and_catalog_line() {
     let root = temp("run-log-executed");
-    let logs_root = root.path().join("logs").join("demo");
+    let store = store(&root);
+    let project = root.path().join("apps/demo");
 
-    let mut first = RunCapture::begin(&logs_root, "setup", "backend", "uv sync")
+    let mut first = RunCapture::begin(&store, &project, "setup", "backend", "uv sync")
         .expect("begin a real run capture");
     let first_id = first.run_id().to_owned();
     assert_eq!(first_id.len(), 6, "{first_id}");
@@ -36,28 +44,31 @@ fn an_executed_step_mints_one_unique_id_capture_pair_and_catalog_line() {
         .expect("append stderr");
     first.finish("ready", 41).expect("finish the run");
 
-    let mut second = RunCapture::begin(&logs_root, "hook", "api:pre-deploy", "uv run seed")
+    let mut second = RunCapture::begin(&store, &project, "hook", "api:pre-deploy", "uv run seed")
         .expect("begin a second capture");
     let second_id = second.run_id().to_owned();
     assert_ne!(first_id, second_id, "ids are unique per executed step");
     second.append("seeded 3 rows").expect("append");
     second.finish("failed", 1_234).expect("finish the run");
 
-    let dir = runs_dir(&logs_root);
+    let dir = store.run_dir();
     for id in [&first_id, &second_id] {
         assert!(dir.join(format!("{id}.log")).is_file(), "missing {id}.log");
         assert!(dir.join(format!("{id}.idx")).is_file(), "missing {id}.idx");
     }
 
-    let records = read_index(&logs_root).expect("read the catalog");
+    let records = store.records().expect("read the catalog").records;
     assert_eq!(records.len(), 2, "{records:?}");
     assert_eq!(records[0].run_id, first_id);
     assert_eq!(records[0].kind, "setup");
-    assert_eq!(records[0].name, "backend");
+    assert_eq!(records[0].target, "backend");
     assert_eq!(records[0].command, "uv sync");
     assert_eq!(records[0].state, "ready");
     assert_eq!(records[0].duration_ms, 41);
-    assert!(records[0].ts_ms > 0);
+    assert!(records[0].started_ms > 0);
+    assert!(records[0].finished_ms.is_some());
+    assert_eq!(records[0].world, "demo");
+    assert!(records[0].project.ends_with("apps/demo"));
     assert_eq!(records[1].state, "failed");
     assert_eq!(records[1].duration_ms, 1_234);
 
@@ -74,21 +85,24 @@ fn an_executed_step_mints_one_unique_id_capture_pair_and_catalog_line() {
         second_id
     );
     assert!(
-        std::fs::read_to_string(dir.join(INDEX_FILE))
+        std::fs::read_to_string(store.index())
             .expect("catalog text")
             .lines()
             .count()
             == 2
     );
 
-    let resolved = resolve_run(&logs_root, &format!("#{first_id}")).expect("resolve #id");
+    let resolved =
+        slipfork_world::run_log::resolve_run(&store.world_logs(), &format!("#{first_id}"))
+            .expect("resolve #id");
     assert_eq!(resolved, first_id);
     assert_eq!(
-        resolve_run(&logs_root, "last").expect("resolve last"),
+        slipfork_world::run_log::resolve_run(&store.world_logs(), "last").expect("resolve last"),
         second_id
     );
     assert_eq!(
-        resolve_run(&logs_root, "failed").expect("resolve failed"),
+        slipfork_world::run_log::resolve_run(&store.world_logs(), "failed")
+            .expect("resolve failed"),
         second_id
     );
 
@@ -103,7 +117,7 @@ fn an_executed_step_mints_one_unique_id_capture_pair_and_catalog_line() {
         "the real stderr replays: {lines:?}"
     );
     assert!(
-        resolve_run(&logs_root, "deadbe")
+        slipfork_world::run_log::resolve_run(&store.world_logs(), "deadbe")
             .unwrap_err()
             .to_string()
             .contains("no recorded run")
@@ -113,14 +127,15 @@ fn an_executed_step_mints_one_unique_id_capture_pair_and_catalog_line() {
 #[test]
 fn a_cached_no_op_mints_no_id_and_leaves_no_run_files() {
     let root = temp("run-log-cached");
-    let logs_root = root.path().join("logs").join("demo");
+    let store = store(&root);
+    let project = root.path().join("apps/demo");
 
-    let capture =
-        RunCapture::begin(&logs_root, "image", "base", "base").expect("begin a real run capture");
+    let capture = RunCapture::begin(&store, &project, "image", "base", "base")
+        .expect("begin a real run capture");
     let id = capture.run_id().to_owned();
     capture.discard();
 
-    let dir = runs_dir(&logs_root);
+    let dir = store.run_dir();
     assert!(
         !dir.join(format!("{id}.log")).exists(),
         "no .log for a no-op"
@@ -129,7 +144,7 @@ fn a_cached_no_op_mints_no_id_and_leaves_no_run_files() {
         !dir.join(format!("{id}.idx")).exists(),
         "no .idx for a no-op"
     );
-    assert!(read_index(&logs_root).expect("empty catalog").is_empty());
+    assert!(store.records().expect("empty catalog").records.is_empty());
     assert!(!dir.join(LAST_FILE).exists(), "a no-op never moves `last`");
-    assert!(resolve_run(&logs_root, "last").is_err());
+    assert!(slipfork_world::run_log::resolve_run(&store.world_logs(), "last").is_err());
 }

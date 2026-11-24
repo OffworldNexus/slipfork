@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use slipfork::boot::{Node, boot_widths, completed_row, elapsed_text, pane_geometry, status_line};
 use slipfork::status::{self, Options};
 use slipfork::ui::table::{ColumnWidths, visible_width};
+use slipfork_world::LogStore;
 
 #[test]
 fn mountinfo_unescapes_octal_and_picks_the_longest_containing_mount() {
@@ -31,24 +32,53 @@ fn mountinfo_unescapes_octal_and_picks_the_longest_containing_mount() {
             PathBuf::from(r"/mnt/my drive\data"),
         ]
     );
-    let store = |project: &str| slipfork::mounts::store_root(&mounts, Path::new(project));
+    let mount = |project: &str| slipfork::mounts::mount_for(&mounts, Path::new(project));
     assert_eq!(
-        store("/var/lib/slipfork/t/fork-live-1/demo"),
-        PathBuf::from("/var/lib/slipfork/.slipfork-store")
+        mount("/var/lib/slipfork/t/fork-live-1/demo"),
+        Path::new("/var/lib/slipfork")
     );
     assert_eq!(
-        store("/var/lib/slipfork2/demo"),
-        PathBuf::from("/var/lib/slipfork2/.slipfork-store"),
+        mount("/var/lib/slipfork2/demo"),
+        Path::new("/var/lib/slipfork2"),
         "the nested mount must win over its parent"
     );
+    assert_eq!(mount("/var/lib/slipfork-other/demo"), Path::new("/"));
     assert_eq!(
-        store("/var/lib/slipfork-other/demo"),
-        PathBuf::from("/.slipfork-store")
+        mount(r"/mnt/my drive\data/app"),
+        Path::new(r"/mnt/my drive\data"),
+        "octal-unescaped mounts stay matchable"
+    );
+
+    let data_home = Path::new("/var/tmp/slipfork-data");
+    assert_eq!(
+        LogStore::root_for(
+            &mounts,
+            Path::new("/var/lib/slipfork-other/demo"),
+            data_home,
+            true
+        ),
+        data_home.join("slipfork/store"),
+        "a `/`-rooted project resolves under data_home, never `/.slipfork-store`"
     );
     assert_eq!(
-        store(r"/mnt/my drive\data/app"),
-        PathBuf::from(r"/mnt/my drive\data/.slipfork-store"),
-        "octal-unescaped mounts stay matchable"
+        LogStore::root_for(
+            &mounts,
+            Path::new("/var/lib/slipfork2/demo"),
+            data_home,
+            true
+        ),
+        PathBuf::from("/var/lib/slipfork2/.slipfork-store"),
+        "a writable nested mount owns its own store"
+    );
+    assert_eq!(
+        LogStore::root_for(
+            &mounts,
+            Path::new("/var/lib/slipfork2/demo"),
+            data_home,
+            false
+        ),
+        data_home.join("slipfork/store"),
+        "a mount this user cannot write resolves under data_home"
     );
 }
 

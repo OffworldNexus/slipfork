@@ -16,6 +16,7 @@ pub(crate) use target::{TargetError, Targets};
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -37,8 +38,6 @@ pub struct HostEnv {
     pub runtime_dir: PathBuf,
     /// `$XDG_STATE_HOME/slipfork`, or `~/.local/state/slipfork`.
     pub state_dir: PathBuf,
-    /// `<mount>/.slipfork-store` resolved by `main.rs` for the active project directory.
-    pub store_root: PathBuf,
     /// Host mount points read once by `main.rs` from `/proc/self/mountinfo`.
     pub mounts: Vec<PathBuf>,
     /// Host architecture name (`std::env::consts::ARCH`).
@@ -73,13 +72,29 @@ pub struct HostEnv {
 }
 
 impl HostEnv {
-    /// `<mount>/.slipfork-store` for `project`, selected from the mount table injected by `main.rs`.
+    /// `<mount>/.slipfork-store` (or `<data_home>/slipfork/store`) for `project`.
+    ///
+    /// The mount table, the data home, and the selected mount's writability are all injected by
+    /// this composition root; [`slipfork_world::LogStore::root_for`] owns the rule.
     #[must_use]
     pub(crate) fn store_root_for(&self, project: &Path) -> PathBuf {
-        if project.as_os_str().is_empty() || self.mounts.is_empty() {
-            return self.store_root.clone();
-        }
-        crate::mounts::store_root(&self.mounts, project)
+        let mount = crate::mounts::mount_for(&self.mounts, project);
+        slipfork_world::LogStore::root_for(
+            &self.mounts,
+            project,
+            &self.data_home(),
+            can_write(mount),
+        )
+    }
+
+    /// `$XDG_DATA_HOME`, else `$HOME/.local/share`, read from the once-snapshotted environment.
+    fn data_home(&self) -> PathBuf {
+        self.env
+            .get("XDG_DATA_HOME")
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from)
+            .or_else(|| self.home.as_ref().map(|home| home.join(".local/share")))
+            .unwrap_or_else(|| PathBuf::from(format!("/var/tmp/slipfork-data-{}", self.uid)))
     }
 
     pub(crate) fn tool(&self, name: &str) -> Result<PathBuf, String> {
@@ -103,6 +118,15 @@ impl HostEnv {
         }
         self.tool("slipfork-world-init")
     }
+}
+
+/// Whether this user can write `path`; probed by the composition root, never by a library crate.
+fn can_write(path: &Path) -> bool {
+    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `access(2)` only reads this process's effective credentials and `path`'s mode.
+    unsafe { libc::access(path.as_ptr(), libc::W_OK) == 0 }
 }
 
 /// Parsed `slipfork up [target] [-F ...] [--no-default-features]` arguments.

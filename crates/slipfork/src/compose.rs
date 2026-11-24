@@ -62,7 +62,7 @@ pub fn detect_ui(args: &[OsString]) -> UiMode {
 }
 
 /// Assembles the injected host environment for this invocation.
-pub fn host(args: &[OsString], cwd: &Path, terminal: Terminal) -> Result<HostEnv, String> {
+pub fn host(_args: &[OsString], _cwd: &Path, terminal: Terminal) -> Result<HostEnv, String> {
     let exe = std::env::current_exe()
         .map_err(|error| format!("cannot locate the slipfork binary: {error}"))?;
     // SAFETY: `geteuid(2)`/`getegid(2)` only read this process's credentials.
@@ -83,8 +83,6 @@ pub fn host(args: &[OsString], cwd: &Path, terminal: Terminal) -> Result<HostEnv
     let mounts = std::fs::read_to_string("/proc/self/mountinfo")
         .map(|text| mounts::parse_mountinfo(&text))
         .unwrap_or_default();
-    let project = active_project(args, cwd);
-    let store_root = mounts::store_root(&mounts, &project);
     let install_root = std::env::var_os("SLIPFORK_INSTALL_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/"));
@@ -95,7 +93,6 @@ pub fn host(args: &[OsString], cwd: &Path, terminal: Terminal) -> Result<HostEnv
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(format!("/run/user/{uid}"))),
         state_dir: state_home.join("slipfork"),
-        store_root,
         mounts,
         arch: std::env::consts::ARCH,
         uid,
@@ -114,14 +111,6 @@ pub fn host(args: &[OsString], cwd: &Path, terminal: Terminal) -> Result<HostEnv
         opener,
         env: std::env::vars().collect(),
     })
-}
-
-/// Resolves the project directory for this invocation (`--project` under `__supervise`, else `cwd`).
-fn active_project(args: &[OsString], cwd: &Path) -> PathBuf {
-    if let Some(path) = crate::cli::verbs::Cli::preparse_supervise_project(args) {
-        return std::fs::canonicalize(&path).unwrap_or(path);
-    }
-    cwd.to_path_buf()
 }
 
 /// Reads this host's name once; the kernel truncates anything longer than 255 bytes.

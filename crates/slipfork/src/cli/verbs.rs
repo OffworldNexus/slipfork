@@ -3,7 +3,6 @@
 //! Every verb, positional, and flag that ships is declared exactly once here. `--help`,
 //! `slipfork completions <shell>`, and the `slipfork(1)` manpage are derived from this tree.
 
-use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::builder::styling::{AnsiColor, Effects, Styles};
@@ -58,31 +57,7 @@ pub struct Cli {
     pub command: Option<Command>,
 }
 
-impl Cli {
-    /// Reads the hidden `__supervise --project <PATH>` spelling before clap parses, so the
-    /// composition root resolves the store root without walking raw argv itself.
-    #[must_use]
-    pub fn preparse_supervise_project(args: &[OsString]) -> Option<PathBuf> {
-        if args.first()? != "__supervise" {
-            return None;
-        }
-        let mut index = 1;
-        while index < args.len() {
-            let argument = &args[index];
-            if argument == "--project" {
-                return args.get(index + 1).map(PathBuf::from);
-            }
-            if let Some(value) = argument
-                .to_str()
-                .and_then(|argument| argument.strip_prefix("--project="))
-            {
-                return Some(PathBuf::from(value));
-            }
-            index += 1;
-        }
-        None
-    }
-}
+impl Cli {}
 
 /// `-F, --features` plus `--no-default-features`, shared by `up`, `fork`, and `env`.
 #[derive(Debug, Clone, Default, clap::Args)]

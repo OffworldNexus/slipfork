@@ -240,8 +240,10 @@ impl WorldRuntime {
             BootKind::Image | BootKind::Setup | BootKind::Hook
         ) {
             let command = step.command.clone().unwrap_or_else(|| step.subject.clone());
+            let store = slipfork_world::LogStore::at(self.layout.store_root(), self.world.clone());
             log = log.capture_run(
-                &self.layout.world_logs(&self.world),
+                &store,
+                &self.project,
                 step.kind.as_str(),
                 &step.node_name(),
                 &command,

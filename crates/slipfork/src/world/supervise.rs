@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use slipfork_world::{
-    BootEvent, BootFailure, BootScheduler, BootState, BootStep, ResourceKind, StampStore,
+    BootEvent, BootFailure, BootScheduler, BootState, BootStep, LogStore, ResourceKind, StampStore,
     StepOutcome, WorldName, WorldStamp, WorldStampStore, control, is_btrfs_path, plan_epoch,
     run_log::RunCapture, world_plan_with, write_pg_checkpoints,
 };
@@ -358,13 +358,14 @@ impl BootSink {
     /// step that executes nothing never earns one.
     pub(super) fn capture_run(
         mut self,
-        logs_root: &Path,
+        store: &LogStore,
+        project: &Path,
         kind: &str,
         name: &str,
         command: &str,
     ) -> Self {
         self.log.run = Some(Arc::new(Mutex::new(RunTarget::new(
-            logs_root, kind, name, command,
+            store, project, kind, name, command,
         ))));
         self
     }
@@ -419,7 +420,8 @@ struct EventLog {
 
 /// One step's lazy run capture: begun on the first line, finished with its final state.
 struct RunTarget {
-    logs_root: PathBuf,
+    store: LogStore,
+    project: PathBuf,
     kind: String,
     name: String,
     command: String,
@@ -428,9 +430,10 @@ struct RunTarget {
 }
 
 impl RunTarget {
-    fn new(logs_root: &Path, kind: &str, name: &str, command: &str) -> Self {
+    fn new(store: &LogStore, project: &Path, kind: &str, name: &str, command: &str) -> Self {
         Self {
-            logs_root: logs_root.to_path_buf(),
+            store: store.clone(),
+            project: project.to_path_buf(),
             kind: kind.to_owned(),
             name: name.to_owned(),
             command: command.to_owned(),
@@ -444,7 +447,13 @@ impl RunTarget {
             return;
         }
         if self.capture.is_none() {
-            match RunCapture::begin(&self.logs_root, &self.kind, &self.name, &self.command) {
+            match RunCapture::begin(
+                &self.store,
+                &self.project,
+                &self.kind,
+                &self.name,
+                &self.command,
+            ) {
                 Ok(capture) => self.capture = Some(capture),
                 Err(_) => {
                     self.closed = true;

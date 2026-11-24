@@ -686,14 +686,18 @@ mod tests {
     #[test]
     fn a_failed_setup_names_a_run_id_that_replays_the_real_stderr() {
         use slipfork_world::pod_log::read_range;
-        use slipfork_world::run_log::{RunCapture, resolve_run, runs_dir};
+        use slipfork_world::run_log::{RunCapture, resolve_run};
 
         let root = tempfile::Builder::new()
             .prefix("run-id-replay")
             .tempdir_in("/var/tmp")
             .expect("disk temp directory");
-        let logs_root = root.path().join("logs").join("demo");
-        let mut capture = RunCapture::begin(&logs_root, "setup", "backend", "uv sync")
+        let store = slipfork_world::LogStore::at(
+            root.path().to_path_buf(),
+            slipfork_world::WorldName::parse("demo").expect("valid world"),
+        );
+        let project = root.path().join("apps/demo");
+        let mut capture = RunCapture::begin(&store, &project, "setup", "backend", "uv sync")
             .expect("begin a real run capture");
         capture
             .append("Resolved 12 packages in 3ms")
@@ -713,9 +717,9 @@ mod tests {
         );
         assert_eq!(sentence.matches('✗').count(), 1, "{sentence}");
 
-        let resolved = resolve_run(&logs_root, &run_id).expect("resolve the printed id");
+        let resolved = resolve_run(&store.world_logs(), &run_id).expect("resolve the printed id");
         let mut reader =
-            read_range(&runs_dir(&logs_root), &resolved, None, None).expect("open the run capture");
+            read_range(&store.run_dir(), &resolved, None, None).expect("open the run capture");
         let mut lines = Vec::new();
         let _ = reader.read_lines(&mut |line| lines.push(line.text.clone()));
         reader.flush(&mut |line| lines.push(line.text.clone()));

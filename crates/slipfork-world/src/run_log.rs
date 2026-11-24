@@ -5,6 +5,9 @@
 //! and appends one [`RunRecord`] line to `runs/index.jsonl`. The `runs/last` and `runs/last-failed`
 //! pointer files let `slipfork logs -r last|failed` resolve without scanning the catalog.
 //!
+//! [`crate::LogStore`] owns store-root resolution, the path vocabulary, and the tolerant catalog
+//! read/write/prune operations; this module keeps the per-capture sink and the resolution rules.
+//!
 //! A step that did no work (`cached`, `up to date`) mints no id: the capture is begun lazily on the
 //! first output line and [`RunCapture::discard`] removes its files when the state turns out to be a
 //! no-op. Long-lived services keep their own `<store>/logs/<world>/<service>.log`.
@@ -18,10 +21,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::log_store::LogStore;
 use crate::pod_log::{self, LogKind, LogSink, now_ms};
 
 /// Width of one minted run id (`#b7f2a1`).
 pub const RUN_ID_LEN: usize = 6;
+/// The per-world directory holding every captured run.
+pub const RUNS_DIR: &str = "runs";
 /// The append-only catalog of every recorded run.
 pub const INDEX_FILE: &str = "index.jsonl";
 /// Pointer to the most recently recorded run id.
@@ -34,24 +40,51 @@ pub const LAST_FAILED_FILE: &str = "last-failed";
 pub struct RunRecord {
     /// The 6-character run id, without `#`.
     pub run_id: String,
-    /// Epoch milliseconds when the step started.
-    pub ts_ms: u64,
     /// Step kind (`image`, `setup`, `hook`).
     pub kind: String,
     /// Bare node name (`backend`, `api`, `api:pre-deploy`).
-    pub name: String,
+    pub target: String,
     /// The command the step ran (`uv sync`), or the image id for a build.
     pub command: String,
     /// Final state (`built`, `pulled`, `ready`, `failed`).
     pub state: String,
+    /// Epoch milliseconds when the step started.
+    pub started_ms: u64,
+    /// Epoch milliseconds when the step finished.
+    pub finished_ms: Option<u64>,
     /// Wall time of the step in milliseconds.
     pub duration_ms: u64,
+    /// Absolute project directory the step ran for.
+    pub project: String,
+    /// World id the step ran in.
+    pub world: String,
+}
+
+/// One catalog read: every valid record plus how many lines were skipped.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Catalog {
+    /// Valid records, newest-wins per `run_id`, oldest first.
+    pub records: Vec<RunRecord>,
+    /// Old-schema or damaged lines that were skipped instead of failing the read.
+    pub skipped: usize,
 }
 
 /// One world's run-capture directory (`<store>/logs/<world>/runs`).
 #[must_use]
 pub fn runs_dir(logs_root: &Path) -> PathBuf {
-    logs_root.join("runs")
+    logs_root.join(RUNS_DIR)
+}
+
+/// `<runs>/<id>.log`: the canonical capture path for one run.
+#[must_use]
+pub fn capture_path(runs: &Path, id: &str) -> PathBuf {
+    pod_log::log_path(runs, id)
+}
+
+/// `<runs>/index.jsonl`: the append-only catalog file.
+#[must_use]
+pub fn index_file(runs: &Path) -> PathBuf {
+    runs.join(INDEX_FILE)
 }
 
 /// One open run capture: the framed `.log`, its `.idx`, and the catalog metadata.
@@ -60,10 +93,12 @@ pub struct RunCapture {
     sink: LogSink,
     dir: PathBuf,
     run_id: String,
-    ts_ms: u64,
+    started_ms: u64,
     kind: String,
-    name: String,
+    target: String,
     command: String,
+    project: String,
+    world: String,
     finished: bool,
 }
 
@@ -73,8 +108,14 @@ impl RunCapture {
     /// The id is 6 lowercase hex characters drawn from `/dev/urandom`, retried against the
     /// directory until no earlier capture owns it; a host without `/dev/urandom` falls back to a
     /// pid/nanosecond digest with the same retry.
-    pub fn begin(logs_root: &Path, kind: &str, name: &str, command: &str) -> Result<Self> {
-        let dir = runs_dir(logs_root);
+    pub fn begin(
+        store: &LogStore,
+        project: &Path,
+        kind: &str,
+        target: &str,
+        command: &str,
+    ) -> Result<Self> {
+        let dir = store.run_dir();
         DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -88,10 +129,12 @@ impl RunCapture {
             sink,
             dir,
             run_id,
-            ts_ms: now_ms(),
+            started_ms: now_ms(),
             kind: kind.to_owned(),
-            name: name.to_owned(),
+            target: target.to_owned(),
             command: command.to_owned(),
+            project: project.display().to_string(),
+            world: store.world().as_str().to_owned(),
             finished: false,
         })
     }
@@ -113,16 +156,20 @@ impl RunCapture {
             return Ok(());
         }
         self.finished = true;
-        append_record(
+        let finished_ms = now_ms();
+        crate::log_store::append_record(
             &self.dir,
             &RunRecord {
                 run_id: self.run_id.clone(),
-                ts_ms: self.ts_ms,
                 kind: self.kind.clone(),
-                name: self.name.clone(),
+                target: self.target.clone(),
                 command: self.command.clone(),
                 state: state.to_owned(),
+                started_ms: self.started_ms,
+                finished_ms: Some(finished_ms),
                 duration_ms,
+                project: self.project.clone(),
+                world: self.world.clone(),
             },
         )?;
         write_pointer(&self.dir, LAST_FILE, &self.run_id)?;
@@ -142,29 +189,40 @@ impl RunCapture {
     }
 }
 
-/// Reads the whole catalog in append order; a malformed line is a real parse error.
-pub fn read_index(logs_root: &Path) -> Result<Vec<RunRecord>> {
-    let path = runs_dir(logs_root).join(INDEX_FILE);
+/// Reads one world's catalog in append order, newest-wins per `run_id`.
+///
+/// A line written by an older schema or damaged by a partial write is skipped and counted instead
+/// of failing the whole catalog, so a corrupt `index.jsonl` never bricks `slipfork logs`.
+pub fn catalog(runs: &Path) -> Result<Catalog> {
+    let path = index_file(runs);
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Catalog::default());
+        }
         Err(source) => return Err(Error::io("read", &path, source)),
     };
-    let mut records = Vec::new();
-    for (number, line) in text.lines().enumerate() {
+    let mut records: Vec<RunRecord> = Vec::new();
+    let mut seen: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut skipped = 0;
+    for line in text.lines() {
         if line.trim().is_empty() {
             continue;
         }
-        let record = serde_json::from_str::<RunRecord>(line).map_err(|error| Error::Protocol {
-            message: format!(
-                "malformed run index `{}` line {}: {error}",
-                path.display(),
-                number + 1
-            ),
-        })?;
-        records.push(record);
+        let Ok(record) = serde_json::from_str::<RunRecord>(line) else {
+            skipped += 1;
+            continue;
+        };
+        match seen.get(&record.run_id) {
+            Some(&position) => records[position] = record,
+            None => {
+                seen.insert(record.run_id.clone(), records.len());
+                records.push(record);
+            }
+        }
     }
-    Ok(records)
+    records.sort_by_key(|record| record.started_ms);
+    Ok(Catalog { records, skipped })
 }
 
 /// Resolves `c91e04`, `#c91e04`, `last`, or `failed` to one recorded run id.
@@ -228,24 +286,7 @@ fn mint(dir: &Path) -> Result<String> {
     })
 }
 
-fn append_record(dir: &Path, record: &RunRecord) -> Result<()> {
-    let path = dir.join(INDEX_FILE);
-    let line = serde_json::to_string(record).map_err(|error| Error::Protocol {
-        message: format!("serialize run record: {error}"),
-    })?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(&path)
-        .map_err(|source| Error::io("open", &path, source))?;
-    file.write_all(line.as_bytes())
-        .and_then(|()| file.write_all(b"\n"))
-        .and_then(|()| file.flush())
-        .map_err(|source| Error::io("write", &path, source))
-}
-
-fn read_pointer(dir: &Path, name: &str) -> Result<Option<String>> {
+pub(crate) fn read_pointer(dir: &Path, name: &str) -> Result<Option<String>> {
     let path = dir.join(name);
     match fs::read_to_string(&path) {
         Ok(text) => {
@@ -257,7 +298,7 @@ fn read_pointer(dir: &Path, name: &str) -> Result<Option<String>> {
     }
 }
 
-fn write_pointer(dir: &Path, name: &str, run_id: &str) -> Result<()> {
+pub(crate) fn write_pointer(dir: &Path, name: &str, run_id: &str) -> Result<()> {
     let path = dir.join(name);
     let temporary = path.with_extension("tmp");
     let mut file = OpenOptions::new()
