@@ -8,14 +8,12 @@ use std::process::ExitCode;
 
 use serde_json::json;
 
-use crate::boot::BootTui;
-use crate::boot::elapsed_text;
+use crate::boot::{BootTui, dropped_row};
 use crate::commands::Session;
 use crate::daemon::DaemonClient;
-use crate::ui::paint;
 
 use super::features::WorldFeatures;
-use super::up::emit_json;
+use super::up::{emit_json, emit_stream};
 use super::{DropArgs, ForkArgs};
 
 impl Session {
@@ -50,9 +48,7 @@ impl Session {
             args.verbose,
         );
         let outcome = client.call_streaming("fork", params, &mut |event| {
-            if args.json && (args.verbose || event["event"].as_str() != Some("note")) {
-                let _ = emit_json(event);
-            }
+            emit_stream(args.json, args.verbose, event);
             tui.observe(event);
         });
         match outcome {
@@ -131,7 +127,10 @@ impl Session {
         let outcome = client.call_streaming(
             "drop",
             json!({ "project": self.cwd(), "name": args.name, "force": args.force }),
-            &mut |event| tui.observe(event),
+            &mut |event| {
+                emit_stream(args.json, false, event);
+                tui.observe(event);
+            },
         );
         match outcome {
             Ok(reply) => {
@@ -142,13 +141,7 @@ impl Session {
                         &json!({ "dropped": reply["dropped"], "elapsed_ms": elapsed }),
                     );
                 }
-                let color = self.color();
-                tui.line(&format!(
-                    "{} Dropped {} {}",
-                    paint("✓", "32", color),
-                    paint(&args.name, "1", color),
-                    paint(&format!("({})", elapsed_text(elapsed)), "2", color)
-                ));
+                tui.line(&dropped_row(&args.name, elapsed, self.color()));
                 tui.finish();
                 ExitCode::SUCCESS
             }

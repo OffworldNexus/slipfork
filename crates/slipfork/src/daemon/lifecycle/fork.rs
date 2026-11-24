@@ -448,27 +448,31 @@ impl Core {
                 format!("fork `{}` has uncommitted changes", fork.as_str()),
             ));
         }
-        let stop = plan::PrepFrame::fixed("fork", 1, 2);
-        emit(stop.started(format!("stopping {}", fork.as_str())));
+        // One four-row plan before the first `started`: `stop` owns rows 1-2, `delete` rows 3-4,
+        // so every frame echoes `[i/4]` and the fork name is the target on both phases.
+        let plan = plan::drop_plan(fork.as_str());
+        plan::emit(&plan.rows, plan.rows.len(), emit);
+        emit(plan.stop.started(format!("stopping {}", fork.as_str())));
+        let stop_started = Instant::now();
         if registered {
             self.stop_world(&fork_key, Duration::from_secs(60), &mut |_, _| {})
                 .map_err(|failure| Failure::new("fork-busy", first_line(&failure.message)))?;
         }
-        emit(stop.finished(
-            "stopped fork".to_owned(),
+        emit(plan.stop.finished(
+            "stopped".to_owned(),
             "pods stopped",
-            elapsed_ms(started),
+            elapsed_ms(stop_started),
         ));
-        let delete = plan::PrepFrame::fixed("fork", 2, 2);
-        emit(delete.started("deleting snapshots".to_owned()));
+        emit(plan.delete.started(format!("deleting {}", fork.as_str())));
+        let delete_started = Instant::now();
         let engine = BtrfsEngine::new(layout);
         engine
             .drop_fork(&project, &world, &fork, dirtiness, force)
             .map_err(|error| btrfs_failure(&error, &project))?;
-        emit(delete.finished(
-            "deleted snapshots".to_owned(),
+        emit(plan.delete.finished(
+            "deleted".to_owned(),
             "project + world data",
-            elapsed_ms(started),
+            elapsed_ms(delete_started),
         ));
         let _ = crate::daemon::registry::store_fingerprint(&self.state_dir, &fork_project, None);
         self.worlds.remove(&fork_key);

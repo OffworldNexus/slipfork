@@ -32,6 +32,7 @@ use self::progress::BootProgress;
 use self::render as text;
 use self::render::{Node, OuterWidths, completed_row};
 
+pub use self::render::dropped_row;
 pub use crate::ui::elapsed_text;
 
 /// One live boot pane; drop it (via [`BootTui::finish`]) before printing the final result.
@@ -371,7 +372,9 @@ impl BootTui {
             self.refresh_widths();
         }
         let live = !self.progress.announced() || self.progress.planned(&kind, &name);
-        let (index, outer_total) = self.progress.position(&kind, &name);
+        let (index, outer_total) =
+            self.progress
+                .position_at(&kind, &name, usize::try_from(step).unwrap_or(0));
         let position = (index > 0 && outer_total > 0).then_some((index, outer_total));
         if kind != "image" && index > 0 {
             self.progress

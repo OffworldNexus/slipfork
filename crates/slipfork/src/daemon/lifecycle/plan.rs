@@ -56,6 +56,109 @@ pub(crate) fn fork_rows(branch: &str) -> Vec<PlannedRow> {
     ]
 }
 
+/// One planned frame with owned cells, so `drop` frames never borrow the row vector.
+pub(crate) struct PlanFrame {
+    kind: String,
+    name: String,
+    step: u64,
+    total: u64,
+}
+
+impl PlanFrame {
+    /// The `started` frame, carrying the phrase shown while the row runs.
+    pub(crate) fn started(&self, label: String) -> Value {
+        self.frame("started", label, None, None)
+    }
+
+    /// The settled `finished` frame, with its plain detail cell and elapsed time.
+    pub(crate) fn finished(&self, label: String, detail: &str, elapsed_ms: u64) -> Value {
+        self.frame("finished", label, Some(detail), Some(elapsed_ms))
+    }
+
+    fn frame(
+        &self,
+        event: &str,
+        label: String,
+        detail: Option<&str>,
+        elapsed_ms: Option<u64>,
+    ) -> Value {
+        let mut frame = json!({
+            "event": event,
+            "step": self.step,
+            "total": self.total,
+            "kind": self.kind,
+            "name": self.name,
+            "label": label,
+        });
+        if let Some(detail) = detail {
+            frame["detail"] = Value::String(detail.to_owned());
+        }
+        if let Some(elapsed_ms) = elapsed_ms {
+            frame["elapsed_ms"] = Value::from(elapsed_ms);
+        }
+        frame
+    }
+}
+
+/// The two frames of one repeated `drop` phase.
+pub(crate) struct DropPhase {
+    started: PlanFrame,
+    finished: PlanFrame,
+}
+
+impl DropPhase {
+    /// The phase's `started` frame, carrying the phrase shown while the row runs.
+    pub(crate) fn started(&self, label: String) -> Value {
+        self.started.started(label)
+    }
+
+    /// The phase's settled `finished` frame, with its plain detail cell and elapsed time.
+    pub(crate) fn finished(&self, label: String, detail: &str, elapsed_ms: u64) -> Value {
+        self.finished.finished(label, detail, elapsed_ms)
+    }
+}
+
+/// `drop <name>`'s one transparent plan: four rows plus the frames that echo them.
+pub(crate) struct DropPlan {
+    pub(crate) rows: Vec<PlannedRow>,
+    pub(crate) stop: DropPhase,
+    pub(crate) delete: DropPhase,
+}
+
+/// Builds `drop <name>`'s four rows and both phase frames together, so `[1/4]`..`[4/4]` and
+/// `total = rows.len()` cannot disagree by construction.
+pub(crate) fn drop_plan(name: &str) -> DropPlan {
+    let rows: Vec<PlannedRow> = [
+        ("stop", name),
+        ("stop", name),
+        ("delete", name),
+        ("delete", name),
+    ]
+    .into_iter()
+    .map(|(kind, name)| (kind.to_owned(), name.to_owned()))
+    .collect();
+    let total = total(&rows);
+    let phase = |kind: &str, step: u64| DropPhase {
+        started: PlanFrame {
+            kind: kind.to_owned(),
+            name: name.to_owned(),
+            step,
+            total,
+        },
+        finished: PlanFrame {
+            kind: kind.to_owned(),
+            name: name.to_owned(),
+            step: step + 1,
+            total,
+        },
+    };
+    DropPlan {
+        stop: phase("stop", 1),
+        delete: phase("delete", 3),
+        rows,
+    }
+}
+
 /// The merged plan's row count, as every per-row `step`/`total` frame echoes it.
 fn total(rows: &[PlannedRow]) -> u64 {
     u64::try_from(rows.len()).unwrap_or(u64::MAX)
@@ -64,20 +167,16 @@ fn total(rows: &[PlannedRow]) -> u64 {
 /// The 1-based position of a planned row, matched by the exact `kind` and `name` the later
 /// `started`/`finished` frames carry.
 fn index(rows: &[PlannedRow], kind: &str, name: &str) -> Option<u64> {
-    rows.iter()
-        .position(|(planned_kind, planned_name)| planned_kind == kind && planned_name == name)
-        .and_then(|position| u64::try_from(position).ok())
-        .map(|position| position + 1)
+    occurrence(rows, kind, name, 1)
 }
 
-/// One fork-prep frame: the `fork` snapshot, the `git` branch switch, or a `drop` teardown row.
+/// One prep frame: the `fork` snapshot, the `git` branch switch, or a `drop` phase row.
 ///
-/// Its counter is resolved once. A planned row takes its 1-based position and the merged plan's
-/// total, so `--json` can never disagree with the already latched `plan` frame; a teardown row of
-/// a verb that announces no plan takes an explicit pair.
+/// Its counter is resolved once from the merged plan, so `--json` can never disagree with the
+/// already latched `plan` frame.
 pub(crate) struct PrepFrame<'a> {
     kind: &'a str,
-    name: Option<&'a str>,
+    name: &'a str,
     step: u64,
     total: u64,
 }
@@ -92,19 +191,9 @@ impl<'a> PrepFrame<'a> {
     ) -> Self {
         Self {
             kind,
-            name: Some(name),
+            name,
             step: index(rows, kind, name).unwrap_or(position),
             total: total(rows),
-        }
-    }
-
-    /// A prep row of a verb that announces no plan (`drop`): an explicit `step`/`total` pair.
-    pub(crate) fn fixed(kind: &'a str, step: u64, total: u64) -> Self {
-        Self {
-            kind,
-            name: None,
-            step,
-            total,
         }
     }
 
@@ -130,11 +219,9 @@ impl<'a> PrepFrame<'a> {
             "step": self.step,
             "total": self.total,
             "kind": self.kind,
+            "name": self.name,
             "label": label,
         });
-        if let Some(name) = self.name {
-            frame["name"] = Value::String(name.to_owned());
-        }
         if let Some(detail) = detail {
             frame["detail"] = Value::String(detail.to_owned());
         }
@@ -143,6 +230,16 @@ impl<'a> PrepFrame<'a> {
         }
         frame
     }
+}
+
+/// The `nth` (1-based) occurrence of a planned row, matched by the exact kind and name.
+fn occurrence(rows: &[PlannedRow], kind: &str, name: &str, nth: usize) -> Option<u64> {
+    rows.iter()
+        .enumerate()
+        .filter(|(_, (planned_kind, planned_name))| planned_kind == kind && planned_name == name)
+        .nth(nth.saturating_sub(1))
+        .and_then(|(position, _)| u64::try_from(position).ok())
+        .map(|position| position + 1)
 }
 
 /// Emits the one `plan` frame; `total` is how many rows the verb will finish (0 means all rows).
@@ -234,5 +331,43 @@ mod tests {
             !WorldFeatures::path(root.path()).exists(),
             "evaluating the fork's plan must never write the parent's features.json"
         );
+    }
+
+    /// M3.133: `drop` is one four-row plan; both phase frames are built from the same rows, so
+    /// `[1/4]`..`[4/4]` and `total = 4` are guaranteed by construction.
+    #[test]
+    fn drop_plan_builds_four_rows_and_their_frames_together() {
+        let plan = super::drop_plan("jello");
+        assert_eq!(
+            plan.rows,
+            vec![
+                ("stop".to_owned(), "jello".to_owned()),
+                ("stop".to_owned(), "jello".to_owned()),
+                ("delete".to_owned(), "jello".to_owned()),
+                ("delete".to_owned(), "jello".to_owned()),
+            ]
+        );
+        for (frame, (step, kind)) in [
+            (plan.stop.started("stopping jello".to_owned()), (1, "stop")),
+            (
+                plan.stop
+                    .finished("stopped".to_owned(), "pods stopped", 100),
+                (2, "stop"),
+            ),
+            (
+                plan.delete.started("deleting jello".to_owned()),
+                (3, "delete"),
+            ),
+            (
+                plan.delete
+                    .finished("deleted".to_owned(), "project + world data", 101),
+                (4, "delete"),
+            ),
+        ] {
+            assert_eq!(frame["step"], step, "{frame}");
+            assert_eq!(frame["total"], 4, "{frame}");
+            assert_eq!(frame["kind"], kind, "{frame}");
+            assert_eq!(frame["name"], "jello", "{frame}");
+        }
     }
 }

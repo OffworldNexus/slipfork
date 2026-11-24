@@ -2095,3 +2095,168 @@ fn fork_adopts_a_root_context_image_cached_across_a_branch_switch() {
         String::from_utf8_lossy(&down.stderr)
     );
 }
+
+/// M3.133: `drop` is one four-row plan (`[1/4]`..`[4/4]`) plus one verdict under `NO_COLOR`,
+/// `--json` mirrors those steps, and an unreachable control plane surfaces one remedy only.
+#[test]
+fn drop_prints_one_four_row_plan_and_json_mirrors_it() {
+    let _guard = LAB_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let lab = Lab::new();
+    // One tiny service keeps this drop-focused journey fast and independent of the eight-pod demo.
+    const FORKFILE: &str = concat!(
+        "# forkfile: 0.1\n",
+        "image app from python:3.13-slim {\n",
+        "  service web {\n",
+        "    run: python3 -m http.server 8000\n",
+        "  }\n",
+        "}\n",
+    );
+    fs::write(lab.project.join("Forkfile"), FORKFILE).expect("write the drop fixture");
+    let git = require_tool("git");
+    for args in [
+        vec!["add", "Forkfile"],
+        vec!["commit", "-q", "-m", "drop fixture"],
+    ] {
+        let status = Command::new(&git)
+            .arg("-C")
+            .arg(&lab.project)
+            .args(&args)
+            .status()
+            .expect("run git");
+        assert!(status.success(), "git {args:?} failed");
+    }
+    let up = lab.run(&["up", "--json"]);
+    let _ = lab.json(&up, "up");
+    lab.branch(&lab.project, "jello");
+
+    let fork = lab.run(&["fork", "jello", "--json"]);
+    let _ = lab.json(&fork, "fork jello");
+
+    let drop = lab.run(&["drop", "jello"]);
+    assert!(
+        drop.status.success(),
+        "{}",
+        String::from_utf8_lossy(&drop.stderr)
+    );
+    assert!(
+        !drop.stdout.contains(&0x1b),
+        "`NO_COLOR` drop must emit zero escape bytes: {:?}",
+        String::from_utf8_lossy(&drop.stdout)
+    );
+    let stdout = String::from_utf8_lossy(&drop.stdout);
+    let lines: Vec<&str> = stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    assert_eq!(lines.len(), 5, "four frames + one verdict: {stdout:?}");
+    assert_eq!(lines[0], "→ [1/4] stop jello");
+    assert_eq!(lines[2], "→ [3/4] delete jello");
+    /// Exactly one real `ui/elapsed` token: `<1ms`, `\d+ms`, or `\d+\.\ds`.
+    fn is_timing(token: &str) -> bool {
+        if token == "<1ms" {
+            return true;
+        }
+        if let Some(ms) = token.strip_suffix("ms") {
+            return !ms.is_empty() && ms.bytes().all(|byte| byte.is_ascii_digit());
+        }
+        let Some(seconds) = token.strip_suffix('s') else {
+            return false;
+        };
+        let Some((whole, fraction)) = seconds.split_once('.') else {
+            return false;
+        };
+        !whole.is_empty()
+            && whole.bytes().all(|byte| byte.is_ascii_digit())
+            && fraction.len() == 1
+            && fraction.bytes().all(|byte| byte.is_ascii_digit())
+    }
+    for (line, prefix) in [
+        (lines[1], "✓ [2/4] stop    jello  done  pods stopped  "),
+        (
+            lines[3],
+            "✓ [4/4] delete  jello  done  project + world data  ",
+        ),
+    ] {
+        let timing = line
+            .strip_prefix(prefix)
+            .unwrap_or_else(|| panic!("the settled row shape: {line:?}"));
+        let tokens: Vec<&str> = timing.split_whitespace().collect();
+        assert_eq!(tokens.len(), 1, "only the timing cell may follow: {line:?}");
+        assert!(is_timing(tokens[0]), "real elapsed grammar: {line:?}");
+    }
+    assert!(
+        lines[4].starts_with("✓ Dropped jello (") && lines[4].ends_with(')'),
+        "one verdict: {:?}",
+        lines[4]
+    );
+
+    // The same plan in the machine transcript: one `plan` frame, four stepped frames, summary last.
+    let fork = lab.run(&["fork", "jello", "--json"]);
+    let _ = lab.json(&fork, "fork jello again");
+    let drop = lab.run(&["drop", "jello", "--json"]);
+    let frames = lab.frames(&drop, "drop jello --json");
+    let summary = frames.last().expect("drop --json summary");
+    assert_eq!(summary["dropped"], "jello", "{summary}");
+    assert!(summary["elapsed_ms"].as_u64().is_some(), "{summary}");
+    let plan = frames
+        .iter()
+        .find(|frame| frame["event"] == "plan")
+        .expect("drop must announce one plan");
+    assert_eq!(plan["total"], 4, "{plan}");
+    assert_eq!(plan["rows"].as_array().map(Vec::len), Some(4), "{plan}");
+    let phases: Vec<&serde_json::Value> = frames
+        .iter()
+        .filter(|frame| matches!(frame["event"].as_str(), Some("started" | "finished")))
+        .collect();
+    assert_eq!(phases.len(), 4, "{frames:?}");
+    for (frame, (step, kind)) in
+        phases
+            .iter()
+            .zip([(1, "stop"), (2, "stop"), (3, "delete"), (4, "delete")])
+    {
+        assert_eq!(frame["step"], step, "{frame}");
+        assert_eq!(frame["total"], 4, "{frame}");
+        assert_eq!(frame["kind"], kind, "{frame}");
+        assert_eq!(frame["name"], "jello", "{frame}");
+    }
+
+    // An unreachable CLI control plane (the daemon socket path is not a directory) exits 1 with
+    // exactly one remedy and opens no rows; this proves the client framing, not a daemon stop.
+    let fork = lab.run(&["fork", "jello", "--json"]);
+    let _ = lab.json(&fork, "fork jello before the dead control plane");
+    let dead = lab.state_home.join("dead-runtime-dir");
+    fs::write(&dead, "a regular file, never a runtime directory\n")
+        .expect("write the dead runtime placeholder");
+    let unreachable_control_plane = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .args(["drop", "jello"])
+        .current_dir(&lab.project)
+        .env("NO_COLOR", "1")
+        .env("XDG_RUNTIME_DIR", &dead)
+        .env("XDG_STATE_HOME", &lab.state_home)
+        .env("TERM", "dumb")
+        .output()
+        .expect("run slipfork drop without a control plane");
+    assert_eq!(
+        unreachable_control_plane.status.code(),
+        Some(1),
+        "{unreachable_control_plane:?}"
+    );
+    let stderr = String::from_utf8_lossy(&unreachable_control_plane.stderr);
+    assert_eq!(stderr.matches("next:").count(), 1, "{stderr}");
+    let stdout = String::from_utf8_lossy(&unreachable_control_plane.stdout);
+    assert!(
+        !stdout.contains("delete") && !stdout.contains("ms") && !stdout.contains("Dropped"),
+        "an unreachable control plane must open zero rows: {stdout:?}"
+    );
+    assert!(
+        !unreachable_control_plane.stdout.contains(&0x1b),
+        "{stdout:?}"
+    );
+
+    let drop = lab.run(&["drop", "jello"]);
+    assert!(
+        drop.status.success(),
+        "{}",
+        String::from_utf8_lossy(&drop.stderr)
+    );
+}

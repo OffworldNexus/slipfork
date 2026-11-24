@@ -155,9 +155,7 @@ impl Session {
                 if let Some(node) = boot_node(event) {
                     nodes.push(node);
                 }
-                if args.json && (args.verbose || event["event"].as_str() != Some("note")) {
-                    let _ = emit_json(event);
-                }
+                emit_stream(args.json, args.verbose, event);
                 tui.observe(event);
             },
         );
@@ -458,6 +456,13 @@ fn boot_node(event: &Value) -> Option<Value> {
         "state": event["state"].as_str().unwrap_or("unknown"),
         "duration_ms": event["duration_ms"],
     }))
+}
+
+/// Emits one streamed frame when `--json` is on: `--verbose` keeps `note` frames, else they drop.
+pub(super) fn emit_stream(json: bool, verbose: bool, event: &Value) {
+    if json && (verbose || event["event"].as_str() != Some("note")) {
+        let _ = emit_json(event);
+    }
 }
 
 /// Emits one already-built JSON object with zero ANSI.

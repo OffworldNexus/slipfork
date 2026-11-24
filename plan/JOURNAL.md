@@ -3454,3 +3454,464 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-24T03:14 [M3.83] (conductor) status ready -> done: shipped as M3.83.1-.4; live proof on 165.232.86.174 (run 295597)
 - 2026-11-24T03:14 [M3] (conductor) status active -> done
 - 2026-11-24T03:14 AUTOPILOT off by conductor slipfork 0.1.1 published to stable; M3 complete
+- 2026-11-24T11:34 [M3.101] (conductor) created (task) Remove build-internal remedies from user-facing errors
+- 2026-11-24T11:34 [M3.102] (conductor) created (task) Client/daemon identity handshake: refuse a stale daemon with one remedy
+- 2026-11-24T11:34 [M3.103] (conductor) created (task) make install must not leave the packaged daemon serving old code
+- 2026-11-24T11:34 [M3.101] (conductor) status ready -> active
+- 2026-11-24T11:34 [M3.102] (conductor) status ready -> active
+- 2026-11-24T11:34 [M3.103] (conductor) status ready -> active
+- 2026-11-24T11:34 [M3] (conductor) status done -> active
+- 2026-11-24T11:34 [M3.101] (conductor) status active -> active
+- 2026-11-24T11:34 [M3.102] (conductor) status active -> active
+- 2026-11-24T11:34 [M3.103] (conductor) status active -> active
+- 2026-11-24T11:34 [M3.103] (lead) status active -> active
+- 2026-11-24T11:34 [M3.103] (lead) attempt 1/3 started
+- 2026-11-24T11:34 [M3.103] (lead) base 8680e6778ab50715167dd0a699778dff2f6fec11
+- 2026-11-24T11:34 [M3.101] (lead) attempt 1/3 started
+- 2026-11-24T11:34 [M3.101] (lead) base 8680e6778ab50715167dd0a699778dff2f6fec11
+- 2026-11-24T11:35 [M3.101] (lead) status active -> review
+- 2026-11-24T11:35 [M3.102] (lead) status active -> active
+- 2026-11-24T11:35 [M3.102] (lead) attempt 1/3 started
+- 2026-11-24T11:35 [M3.102] (lead) base 8680e6778ab50715167dd0a699778dff2f6fec11
+- 2026-11-24T11:36 [M3.103] (lead) status active -> review
+- 2026-11-24T11:37 [M3.102] (lead) status active -> review
+- 2026-11-24T11:39 [M3.101] (lead) status review -> done
+- 2026-11-24T11:39 [M3.102] (lead) edited fields
+- 2026-11-24T11:40 [M3.103] (lead) status review -> done
+- 2026-11-24T11:41 [M3.102] (lead) status review -> done
+- 2026-11-24T11:42 [M3.104] (conductor) created (task) One sentence + one next in JSON error paths (no embedded remedy duplication)
+- 2026-11-24T11:42 [M3.104] (conductor) status ready -> active
+- 2026-11-24T11:43 [M3.104] (lead) attempt 1/3 started
+- 2026-11-24T11:43 [M3.104] (lead) base ee117200f4916770f1fee7c34d50cb6c72fa3c24
+- 2026-11-24T11:43 [M3.105] (conductor) created (task) Skew remedy names the stale daemon's pid (systemctl stop is not always the answer)
+- 2026-11-24T11:43 [M3.105] (conductor) status ready -> active
+- 2026-11-24T11:44 [M3.105] (lead) status active -> active
+- 2026-11-24T11:44 [M3.105] (lead) attempt 1/3 started
+- 2026-11-24T11:44 [M3.105] (lead) base ee117200f4916770f1fee7c34d50cb6c72fa3c24
+- 2026-11-24T11:45 [M3.104] (lead) status active -> done
+- 2026-11-24T11:45 [M3.106] (conductor) created (task) Structured run captures: stdout/stderr labels, timestamps and a step header
+- 2026-11-24T11:45 [M3.106] (conductor) status ready -> ready
+- 2026-11-24T11:45 [M3.106] (conductor) status ready -> active
+- 2026-11-24T11:46 [M3.105] (lead) status active -> review
+- 2026-11-24T11:47 [M3.106] (lead) edited fields
+- 2026-11-24T11:47 [M3.106] (lead) status active -> active
+- 2026-11-24T11:47 [M3.106] (lead) attempt 1/3 started
+- 2026-11-24T11:47 [M3.106] (lead) base c154cf928d15bdc8274a12af1bda7385bb569f88
+- 2026-11-24T11:47 [M3.106] (lead) edited fields
+- 2026-11-24T11:48 [M3.105] (lead) status review -> done
+- 2026-11-24T11:55 [M3.106] (lead) edited fields
+- 2026-11-24T11:58 [M3.106] (lead) status active -> review
+- 2026-11-24T11:58 [M3.106] (lead) status review -> done
+- 2026-11-24T12:02 [M3.107] (conductor) created (task) Boot-failure and run-replay visual hierarchy; keep captures pure (stream, no synthetic summary)
+- 2026-11-24T12:02 [M3.107] (conductor) status ready -> active
+- 2026-11-24T12:02 [M3.107] (lead) attempt 1/3 started
+- 2026-11-24T12:02 [M3.107] (lead) base 33a3fb63a98796acf4c7045385fb3f6f4a021417
+- 2026-11-24T12:04 [M3.107] (lead) OWNER CLARIFICATION: show the executed RUN command (not image id twice); stream RUN stdout/stderr live during up (indented out/err, TUI rows intact); demote `cr
+- 2026-11-24T12:04 [M3.107] (lead) edited fields
+- 2026-11-24T12:04 [M3.107.1] (lead) created (task) Capture truth: stream-tagged replay, pure captures, run record names the RUN that ran
+- 2026-11-24T12:04 [M3.107.1] (lead) status ready -> active
+- 2026-11-24T12:04 [M3.107.1] (lead) attempt 1/3 started
+- 2026-11-24T12:04 [M3.107.1] (lead) base 33a3fb63a98796acf4c7045385fb3f6f4a021417
+- 2026-11-24T12:04 [M3.107.2] (lead) created (task) Live RUN streaming during up + command-first failure envelope
+- 2026-11-24T12:04 [M3.107.2] (lead) edited fields
+- 2026-11-24T12:05 [M3.107.1] (lead) edited fields
+- 2026-11-24T12:08 [M3.107] (lead) Visual contract v2 (Opus) written into NODE.md; owner withdrew the earlier colour table
+- 2026-11-24T12:11 [M3.107] (lead) Owner addendum: live per-instruction Dockerfile build; split M3.107.2 (engine/daemon events) + M3.107.3 (client live rendering)
+- 2026-11-24T12:12 [M3.107.2] (lead) edited fields
+- 2026-11-24T12:12 [M3.107.3] (lead) created (task) Live build rendering in up: spinner phase rows, streamed out/err, collapse, one verdict
+- 2026-11-24T12:13 [M3.107.3] (lead) edited fields
+- 2026-11-24T12:14 [M3.107.1] (lead) edited fields
+- 2026-11-24T12:14 [M3.107.1] (lead) attempt 2/3 started
+- 2026-11-24T12:15 [M3.107] (lead) OWNER BAN: never run tools/do_vm.py sync (wiped /home/slipfork/demo twice); never touch ~/demo or its supervisor. VM proof = rsync crates/ Cargo.toml Cargo.lock
+- 2026-11-24T12:18 [M3.107.1] (lead) status active -> review
+- 2026-11-24T12:20 [M3.107.1] (lead) edited fields
+- 2026-11-24T12:20 [M3.107.1] (lead) status review -> ready: triad: arch FAIL (re-parse, prose exit scan, RunNote), ux FAIL (logs -f gutter), live journey json assertion
+- 2026-11-24T12:20 [M3.107.1] (lead) status ready -> active
+- 2026-11-24T12:20 [M3.107.1] (lead) attempt 3/3 started
+- 2026-11-24T12:27 [M3.107.1] (lead) edited fields
+- 2026-11-24T12:27 [M3.107.1] (lead) status active -> review
+- 2026-11-24T12:27 [M3.107.1] (lead) live VM: critical_world_journey 2/2, critical_dockerfile_live 3/3; fmt/clippy/guard/critical_guard OK
+- 2026-11-24T12:27 [M3.107.1] (lead) status review -> done
+- 2026-11-24T12:27 [M3.107.2] (lead) status ready -> active
+- 2026-11-24T12:27 [M3.107.2] (lead) attempt 1/3 started
+- 2026-11-24T12:27 [M3.107.2] (lead) base 845ffb726cbed9e138058d067168d046026b2908
+- 2026-11-24T12:34 [M3.107.2] (lead) status active -> review
+- 2026-11-24T12:36 [M3.107.2] (lead) edited fields
+- 2026-11-24T12:36 [M3.107.2] (lead) live VM: critical_status_live 6/6 (XDG_RUNTIME_DIR must be short: AF_UNIX limit), world_journey 2/2, dockerfile_live 3/3; triad FAIL arch/tests/ux -> 1 fix pass
+- 2026-11-24T12:36 [M3.107.2] (lead) status review -> ready
+- 2026-11-24T12:36 [M3.107.2] (lead) status ready -> active
+- 2026-11-24T12:36 [M3.107.2] (lead) attempt 2/3 started
+- 2026-11-24T12:43 [M3.107.2] (lead) status active -> ready: live: a/b frames arrive at client 0ns apart (batched) though ts_ms gap>=900
+- 2026-11-24T12:43 [M3.107.2] (lead) status ready -> active
+- 2026-11-24T12:43 [M3.107.2] (lead) attempt 3/3 started
+- 2026-11-24T12:45 [M3.108] (conductor) created (task) COPY --from=<external image ref> (Docker parity) in the native builder
+- 2026-11-24T12:45 [M3.108] (conductor) status ready -> ready
+- 2026-11-24T12:45 [M3.107.2] (lead) status active -> review
+- 2026-11-24T12:45 [M3.107.2] (lead) live VM: status_live 6/6 incl >=900ms client-arrival gap, world_journey 2/2, dockerfile_live 3/3, oci_live 3/3
+- 2026-11-24T12:45 [M3.107.2] (lead) status review -> done
+- 2026-11-24T12:46 [M3.107.3] (lead) edited fields
+- 2026-11-24T12:46 [M3.107.3] (lead) status ready -> active
+- 2026-11-24T12:46 [M3.107.3] (lead) attempt 1/3 started
+- 2026-11-24T12:46 [M3.107.3] (lead) base 1157050ffb18782091ae2483b18c8512c86947eb
+- 2026-11-24T12:46 [M3.107.3] (lead) status active -> ready
+- 2026-11-24T12:46 [M3.107.3] (lead) edited fields
+- 2026-11-24T12:46 [M3.107.3] (lead) status ready -> active
+- 2026-11-24T12:46 [M3.107.3] (lead) status active -> ready
+- 2026-11-24T12:46 [M3.107.3] (lead) edited fields
+- 2026-11-24T12:46 [M3.107.3] (lead) status ready -> active
+- 2026-11-24T12:52 [M3.109] (conductor) created (task) Registry authentication and a 'slipfork docker' namespace (login/logout/build/pull/images)
+- 2026-11-24T12:52 [M3.109] (conductor) status ready -> ready
+- 2026-11-24T12:52 [M3.109] (conductor) edited fields
+- 2026-11-24T12:53 [M3.107.3] (lead) status active -> ready: attempt1 budget exhausted; compiles, 1 unit fail, 2 live fails
+- 2026-11-24T12:53 [M3.107.3] (lead) edited fields
+- 2026-11-24T12:53 [M3.107.3] (lead) status ready -> active
+- 2026-11-24T12:53 [M3.107.3] (lead) attempt 2/3 started
+- 2026-11-24T12:54 [M3.107.4] (lead) created (task) Every failing instruction explains itself: step notes for all kinds + engine reason in capture/record
+- 2026-11-24T12:54 [M3.107.1] (lead) OWNER REGRESSION: COPY --from failure replayed empty with no instruction/reason; fixed forward in M3.107.4
+- 2026-11-24T12:55 [M3.107.5] (lead) created (task) Bare `logs -r` replays the latest failed run
+- 2026-11-24T12:56 [M3.107.4] (lead) OWNER ANSWER: yes — engine raw one-line reason as a single stderr ┃ line for a step with no process output (FROM/pull/COPY/ADD); exactly one line, plain, no cru
+- 2026-11-24T12:56 [M3.107.5] (lead) Owner addendum (bare logs -r = latest failed) owned here, after M3.107.4 (shares streams.rs/logs.rs/journey with .3/.4)
+- 2026-11-24T12:58 [M3.110] (conductor) created (task) Build containers run as container root in a 0->user userns; context is never mounted
+- 2026-11-24T12:58 [M3.110] (conductor) status ready -> ready
+- 2026-11-24T12:58 [M3.107.3] (lead) status active -> ready
+- 2026-11-24T12:58 [M3.107.3] (lead) edited fields
+- 2026-11-24T12:58 [M3.107.3] (lead) status ready -> review
+- 2026-11-24T13:01 [M3.107.3] (lead) status review -> ready: triad FAIL + live: engine sha256 notes in gutter, service exit code missing
+- 2026-11-24T13:01 [M3.107.3] (lead) edited fields
+- 2026-11-24T13:01 [M3.107.3] (lead) status ready -> active
+- 2026-11-24T13:01 [M3.107.3] (lead) attempt 3/3 started
+- 2026-11-24T13:02 [M3.110] (conductor) Opus architect recommendation (adopt): per-step single mapping of the effective uid -> invoking uid (default root; USER x resolves from the rootfs /etc/passwd a
+- 2026-11-24T13:04 [M3.107.3] (lead) attempt 3 ended mid-edit (garbled report); tree does not compile: E0405 PullSink not exported; escalating to expert to finish from current tree
+- 2026-11-24T13:04 ESCALATION #36 -> expert for M3.107.3 by lead: 3 cheap attempts exhausted on budget; live narrative/pane registry + engine-note channel + PTY proofs; tree mid-edit not
+- 2026-11-24T13:57 [M3.107.3] (lead) status active -> review
+- 2026-11-24T13:57 [M3.107.3] (lead) expert finish; live VM: status_live 6/6, world_journey 2/2, fork_live 3/3, dockerfile_live 3/3
+- 2026-11-24T13:57 [M3.107.3] (lead) status review -> done
+- 2026-11-24T13:57 [M3.107.4] (lead) status ready -> active
+- 2026-11-24T13:57 [M3.107.4] (lead) attempt 1/3 started
+- 2026-11-24T13:57 [M3.107.4] (lead) base cee3d4dee6ba963bbeaf82777458f844ea86d5e6
+- 2026-11-24T13:58 [M3.107.6] (lead) created (task) Split boot/pane.rs into cohesive <=500-LOC modules (no behaviour change)
+- 2026-11-24T14:04 [M3.107.4] (lead) status active -> review
+- 2026-11-24T14:04 [M3.107.4] (lead) edited fields
+- 2026-11-24T14:07 [M3.107.4] (lead) status review -> ready: triad: arch BLOCKER RUN exit_code dropped (live confirmed), ux BLOCKER bad from: ref empty block
+- 2026-11-24T14:07 [M3.107.4] (lead) status ready -> active
+- 2026-11-24T14:07 [M3.107.4] (lead) attempt 2/3 started
+- 2026-11-24T14:14 [M3.107.4] (lead) attempt 3/3 started
+- 2026-11-24T14:16 [M3.107.4] (lead) status active -> review
+- 2026-11-24T14:16 [M3.107.4] (lead) live VM: world_journey 2/2, status_live 6/6, dockerfile_live 3/3 (+oci 3/3 earlier)
+- 2026-11-24T14:16 [M3.107.4] (lead) status review -> done
+- 2026-11-24T14:16 [M3.107.5] (lead) status ready -> active
+- 2026-11-24T14:16 [M3.107.5] (lead) attempt 1/3 started
+- 2026-11-24T14:16 [M3.107.5] (lead) base 7377f1f1c572d6937f6f550733a12395b8345e0b
+- 2026-11-24T14:20 [M3.107.5] (lead) status active -> review
+- 2026-11-24T14:21 [M3.107.5] (lead) status review -> ready: triad: arch+ux FAIL (dup renderer, client-side selector, code collision, next: roles, spec paragraph)
+- 2026-11-24T14:21 [M3.107.5] (lead) edited fields
+- 2026-11-24T14:21 [M3.107.5] (lead) status ready -> active
+- 2026-11-24T14:21 [M3.107.5] (lead) attempt 2/3 started
+- 2026-11-24T14:26 [M3.107.5] (lead) status active -> review
+- 2026-11-24T14:26 [M3.107.5] (lead) live VM: world_journey 2/2, status_live 6/6, fork_live 3/3; logs.rs 1049 (base 1034) -> split owed in M3.107.6
+- 2026-11-24T14:26 [M3.107.5] (lead) status review -> done
+- 2026-11-24T14:27 [M3.107.6] (lead) edited fields
+- 2026-11-24T14:27 [M3.107.6] (lead) status ready -> active
+- 2026-11-24T14:27 [M3.107.6] (lead) attempt 1/3 started
+- 2026-11-24T14:27 [M3.107.6] (lead) base 76330ac3b012187297dfedcc78276c6ceff2ee24
+- 2026-11-24T14:35 [M3.107.7] (lead) created (task) Keyword role = magenta 35 on every surface + byte-exact role test
+- 2026-11-24T14:35 [M3.107.6] (lead) status active -> review
+- 2026-11-24T14:35 [M3.107.6] (lead) pure move; workspace fmt/clippy/test green; live VM all suites green except status_live:1066 stale gutter glyph (stderr ┃) -> fixed in M3.107.7
+- 2026-11-24T14:35 [M3.107.6] (lead) status review -> done
+- 2026-11-24T14:35 [M3.107.7] (lead) status ready -> active
+- 2026-11-24T14:35 [M3.107.7] (lead) attempt 1/3 started
+- 2026-11-24T14:35 [M3.107.7] (lead) base 43ef83cdff78a61ca43cbf144940c4a2334405fb
+- 2026-11-24T14:37 [M3.107.7] (lead) status active -> ready
+- 2026-11-24T14:37 [M3.107.7] (lead) edited fields
+- 2026-11-24T14:37 [M3.107.7] (lead) status ready -> review
+- 2026-11-24T14:40 [M3.107.7] (lead) attempt 2/3 started
+- 2026-11-24T14:40 [M3.107.7] (lead) VM PTY capture: roles correct (35 verbs, 1 target, 2 meta, 31/32/33/36); defects: 0-col pty -> 8-char wraps; failing-step expansion printed ┃ before earlier │; 
+- 2026-11-24T14:43 [M3.107.7] (lead) status review -> ready
+- 2026-11-24T14:43 [M3.107.7] (lead) edited fields
+- 2026-11-24T14:43 [M3.107.7] (lead) status ready -> review
+- 2026-11-24T14:45 [M3.107.7] (lead) attempt 3/3 started
+- 2026-11-24T14:49 [M3.107.7] (lead) status review -> ready
+- 2026-11-24T14:49 [M3.107.7] (lead) edited fields
+- 2026-11-24T14:49 [M3.107.7] (lead) status ready -> review
+- 2026-11-24T14:49 [M3.107.7] (lead) attempt3: root cause = racing stdout/stderr reader threads in world_init; merged poll reader (stdout-first on simultaneous readiness)
+- 2026-11-24T14:54 [M3.107.7] (lead) live VM 8/8 suites; PTY 120x32 + zero-size + NO_COLOR + --json captured; workspace check green; boot/** <=500
+- 2026-11-24T14:54 [M3.107.7] (lead) status review -> done
+- 2026-11-24T14:55 [M3.107] (lead) GATE: workspace fmt/clippy/test green (46 suites); VM live 8/8; PTY captures delivered; guard+docs honesty OK
+- 2026-11-24T14:55 [M3.107] (lead) status active -> done
+- 2026-11-24T14:55 [M3.108] (conductor) status ready -> active
+- 2026-11-24T14:55 [M3.111] (conductor) created (task) Log polish: whole-build replay header and quiet Broken pipe
+- 2026-11-24T14:55 [M3.111] (conductor) status ready -> ready
+- 2026-11-24T14:57 [M3.108] (lead) attempt 1/3 started
+- 2026-11-24T14:57 [M3.108] (lead) base 2306f1ba51027c7c1604d2346312b299d129176b
+- 2026-11-24T15:01 [M3.108] (lead) status active -> review
+- 2026-11-24T15:07 [M3.108] (lead) status review -> done
+- 2026-11-24T15:07 [M3.110] (conductor) status ready -> active
+- 2026-11-24T15:10 [M3.110] (lead) attempt 1/3 started
+- 2026-11-24T15:10 [M3.110] (lead) base 6192967232079691c50ee911362b35f7d08b6f79; brief: per-step single uid mapping, seccomp chown errnoRet 0 (verified on crun 1.14.1: returns success), APT_CONF
+- 2026-11-24T15:57 [M3.110] (lead) Live proof: debian:trixie-slim build passed on the VM (apt-get update + install curl/postgresql, useradd app, USER app -> id=1001(app), USER postgres -> initdb 
+- 2026-11-24T15:57 [M3.110] (lead) status active -> review
+- 2026-11-24T15:57 [M3.110] (lead) status review -> done
+- 2026-11-24T15:58 [M3.109] (conductor) status ready -> active
+- 2026-11-24T15:59 [M3.109] (lead) edited fields
+- 2026-11-24T15:59 [M3.109.1] (lead) created (task) Per-host registry credentials, 0600 store, Docker fallback, login probe
+- 2026-11-24T15:59 [M3.109.2] (lead) created (task) slipfork docker namespace: login/logout/list/build/pull/images with live build events
+- 2026-11-24T15:59 [M3.109.3] (lead) created (task) Loopback OCI registry lab: login 0600, no secret leak, private FROM/COPY --from build
+- 2026-11-24T15:59 [M3.109.1] (lead) status ready -> active
+- 2026-11-24T15:59 [M3.109.1] (lead) attempt 1/3 started
+- 2026-11-24T15:59 [M3.109.1] (lead) base 4693c013b1fdd112d94a5e983cd563e85fdae47f
+- 2026-11-24T16:05 [M3.109.1] (lead) edited fields
+- 2026-11-24T16:05 [M3.109] (lead) edited fields
+- 2026-11-24T16:05 [M3.109] (lead) edited fields
+- 2026-11-24T16:05 [M3.109.1] (lead) edited fields
+- 2026-11-24T16:05 [M3.109.2] (lead) edited fields
+- 2026-11-24T16:05 [M3.109.3] (lead) edited fields
+- 2026-11-24T16:08 [M3.109.1] (lead) status active -> done
+- 2026-11-24T16:08 [M3.109.2] (lead) status ready -> active
+- 2026-11-24T16:08 [M3.109.2] (lead) attempt 1/3 started
+- 2026-11-24T16:08 [M3.109.2] (lead) base 4693c013b1fdd112d94a5e983cd563e85fdae47f
+- 2026-11-24T16:08 [M3.109.2] (lead) edited fields
+- 2026-11-24T16:13 [M3.109.2] (lead) edited fields
+- 2026-11-24T16:13 [M3.109] (lead) edited fields
+- 2026-11-24T16:14 [M3.112] (conductor) created (task) Service start failures capture their own output and exit in the run
+- 2026-11-24T16:14 [M3.113] (conductor) created (task) Build step rows render in instruction order, once, end row last
+- 2026-11-24T16:14 [M3.112] (conductor) edited fields
+- 2026-11-24T16:14 [M3.113] (conductor) status ready -> active
+- 2026-11-24T16:15 [M3.109.2] (lead) edited fields
+- 2026-11-24T16:15 [M3.109] (lead) edited fields
+- 2026-11-24T16:16 [M3.114] (conductor) created (task) up --no-cache: bust the image cache and force a rebuild
+- 2026-11-24T16:16 [M3.114] (conductor) status ready -> ready
+- 2026-11-24T16:16 [M3.113] (lead) attempt 1/3 started
+- 2026-11-24T16:16 [M3.113] (lead) base 4693c013b1fdd112d94a5e983cd563e85fdae47f
+- 2026-11-24T16:18 [M3.109.2] (lead) status active -> done
+- 2026-11-24T16:18 [M3.109.3] (lead) status ready -> active
+- 2026-11-24T16:18 [M3.109.3] (lead) attempt 1/3 started
+- 2026-11-24T16:18 [M3.109.3] (lead) base 4693c013b1fdd112d94a5e983cd563e85fdae47f
+- 2026-11-24T16:18 [M3.112] (conductor) edited fields
+- 2026-11-24T16:18 [M3.112] (conductor) Owner live: web crashes immediately (missing blastit shim) yet up waits ~10s for the port. ready.rs::wait_tcp polls the socket with no process-exit check. Requi
+- 2026-11-24T16:19 [M3.115] (conductor) created (task) up must fingerprint Dockerfiles/context so edits rebuild the image
+- 2026-11-24T16:19 [M3.115] (conductor) status ready -> ready
+- 2026-11-24T16:21 [M3.116] (conductor) created (task) Package hooks: ingress setup decoupled from the user-daemon branch and never silent
+- 2026-11-24T16:21 [M3.116] (conductor) status ready -> active
+- 2026-11-24T16:21 [M3.113] (lead) status active -> done
+- 2026-11-24T16:24 [M3.109.3] (lead) edited fields
+- 2026-11-24T16:24 [M3.109] (lead) edited fields
+- 2026-11-24T16:24 [M3.116] (lead) status active -> active
+- 2026-11-24T16:24 [M3.116] (lead) attempt 1/3 started
+- 2026-11-24T16:24 [M3.116] (lead) base 8675d6a5db410a058d3b4743607d71af6d336329
+- 2026-11-24T16:24 [M3.109.3] (lead) edited fields
+- 2026-11-24T16:26 [M3.116] (lead) status active -> review
+- 2026-11-24T16:26 [M3.109.3] (lead) edited fields
+- 2026-11-24T16:26 [M3.109] (lead) edited fields
+- 2026-11-24T16:28 [M3.109.3] (lead) status active -> done
+- 2026-11-24T16:28 [M3.109] (lead) loopback OCI bearer lab green; make check + docs-check + Triad gate
+- 2026-11-24T16:28 [M3.109] (lead) status active -> done
+- 2026-11-24T16:28 [M3.116] (lead) status review -> ready: Triad: guard printf under set -e, split missing-template/write/masked remedies, Arch post_upgrade, id-first uid, fail-closed rpm syntax 
+- 2026-11-24T16:28 [M3.112] (conductor) status ready -> active
+- 2026-11-24T16:29 [M3.117] (lead) created (task) Two-level boot progress: outer [i/n] plan rows, indented inner Dockerfile steps, level-aware bar
+- 2026-11-24T16:29 [M3.117] (lead) edited fields
+- 2026-11-24T16:29 [M3.117] (lead) design A accepted by lead; blocked on single-writer lock: M3.112 active on critical_world_journey.rs (+ shared workspace compile) -> serialized via depends
+- 2026-11-24T16:30 [M3.116] (lead) status ready -> done
+- 2026-11-24T16:31 [M3.112] (lead) status active -> active
+- 2026-11-24T16:31 [M3.112] (lead) attempt 1/3 started
+- 2026-11-24T16:31 [M3.112] (lead) base 39e33ea4a7951561796df6f74124daa9d888d3d1
+- 2026-11-24T16:38 [M3.112] (lead) status active -> ready: triad FAIL (arch/ux/tests): portless+unix no tee, duplicate exit vocabulary, cap silent, missing record/fail-fast assertions
+- 2026-11-24T16:38 [M3.112] (lead) status ready -> active
+- 2026-11-24T16:38 [M3.112] (lead) attempt 2/3 started
+- 2026-11-24T16:38 [M3.112] (lead) attempt 2: consolidated fix pass (paths unchanged)
+- 2026-11-24T16:41 [M3.112] (lead) attempt2 live VM: critical_world_journey 2/2 ok (22.27s) incl crash fail-fast/capture/record asserts; pre-existing M3.108 stagefail fixture repaired (Missing-St
+- 2026-11-24T16:41 [M3.112] (lead) attempt2 live manual (scratch /var/lib/slipfork/t/m3112-crash): warm up fails 287ms, stdout '┃ crash-marker-m3112', '✗ start web failed (exit 1)'; logs -r fcf6f
+- 2026-11-24T16:41 [M3.112] (lead) status active -> done
+- 2026-11-24T16:42 [M3.117] (conductor) status ready -> active
+- 2026-11-24T16:42 [M3.117] (lead) base 5062f3440ff3c9b44885d6c50f4c172cce429206
+- 2026-11-24T16:42 [M3.117] (lead) attempt 1/3 started
+- 2026-11-24T16:47 [M3.115] (conductor) edited fields
+- 2026-11-24T16:47 [M3.115] (conductor) Owner: up/restart do not converge after a Forkfile or Dockerfile change. up_plan compares a fingerprint of the Forkfile+features only (no Dockerfile/context); r
+- 2026-11-24T16:48 [M3.117] (lead) status active -> ready: attempt1 budget exhausted mid-wiring; boot.rs keystone + tests remain
+- 2026-11-24T16:48 [M3.117] (lead) status ready -> active
+- 2026-11-24T16:48 [M3.117] (lead) attempt 2/3 started
+- 2026-11-24T16:48 [M3.118] (conductor) created (task) Dev services must run from the live checkout, not the image copy
+- 2026-11-24T16:48 [M3.118] (conductor) status ready -> ready
+- 2026-11-24T16:49 [M3.118] (conductor) edited fields
+- 2026-11-24T16:49 [M3.118] (conductor) OWNER CORRECTION: do not hardcode /project. Derive the live mount/working directory from the Dockerfile: parse the final stage's WORKDIR and the COPY destinatio
+- 2026-11-24T16:50 [M3.118] (conductor) edited fields
+- 2026-11-24T16:50 [M3.118] (conductor) ADDITIONAL OWNER RULE: if the final stage's effective WORKDIR is still / (no WORKDIR instruction), REFUSE to boot a dev world. No fallback mount, no guessing. F
+- 2026-11-24T16:51 [M3.117] (lead) attempt2 ended silently: lib compiles, tests (bins + status_surface) fail on new signatures; live assertions not updated; escalating to expert
+- 2026-11-24T16:51 ESCALATION #37 -> expert for M3.117 by lead: 2 cheap attempts exhausted; finish tests/goldens/live assertions for two-level boot progress
+- 2026-11-24T16:54 [M3.115] (conductor) OWNER EVIDENCE (dev active): up --json => {"event":"ready","nodes":[],"elapsed_ms":0} (Idle, no reconcile); slipfork exec web -- pwd => /; /project/hello.py = N
+- 2026-11-24T16:55 [M3.119] (conductor) created (task) BuildGraph + SnapshotStore: one desired-graph reconcile/gc manager for Btrfs snapshots
+- 2026-11-24T16:55 [M3.119] (conductor) status ready -> active
+- 2026-11-24T17:09 [M3.119] (conductor) status active -> done
+- 2026-11-24T17:09 [M3.120] (conductor) created (task) BuildGraph + SnapshotStore refactor (4 slices): reconcile, lease, GC
+- 2026-11-24T17:09 [M3.120] (conductor) status ready -> ready
+- 2026-11-24T17:35 [M3.117] (lead) status active -> review
+- 2026-11-24T17:46 [M3.121] (lead) created (task) Image cache ignores Dockerfile edits: changed RUN reuses the old image
+- 2026-11-24T17:46 [M3.117] (lead) status review -> ready: VM capture: bar shows internal fraction units 2/8; service failure gutter reversed (┃ before │)
+- 2026-11-24T17:46 [M3.117] (lead) status ready -> active
+- 2026-11-24T17:46 [M3.117] (lead) attempt 3/3 started
+- 2026-11-24T17:47 [M3.121] (conductor) status ready -> superseded: duplicate of M3.115; image build cache ignores Dockerfile/context changes
+- 2026-11-24T17:47 [M3.115] (conductor) REPRODUCED by the M3.117 lead on the VM: build with RUN echo one, edit to RUN echo two; exit 9; up prints nothing; after down, up shows image cached and the fai
+- 2026-11-24T17:51 [M3.115] (conductor) OWNER: no leftover spaghetti. Do NOT add a second cache/fingerprint layer. First fix the existing image state key / context digest so a Dockerfile/context edit 
+- 2026-11-24T17:51 [M3.120] (conductor) OWNER: no leftover spaghetti. This refactor is deletion-first: remove steps.rs, ImageCache, StampStore/WorldStampStore, up_plan::fingerprint and inputs_predate 
+- 2026-11-24T17:55 [M3.122] (conductor) created (task) sanitize(): transliterate accents and collapse separator runs (Remy, not R-m-y)
+- 2026-11-24T17:55 [M3.122] (conductor) status ready -> active
+- 2026-11-24T17:56 [M3.122] (lead) status active -> active
+- 2026-11-24T17:56 [M3.122] (lead) attempt 1/3 started
+- 2026-11-24T17:56 [M3.122] (lead) base c5a6451610725530332ce929e90a8722622c92ca
+- 2026-11-24T17:56 [M3.122] (lead) status active -> done
+- 2026-11-24T18:01 [M3.117] (lead) status active -> ready
+- 2026-11-24T18:01 [M3.117] (lead) edited fields
+- 2026-11-24T18:01 [M3.117] (lead) status ready -> review
+- 2026-11-24T18:10 [M3.117] (lead) expert finish; live VM 6 suites green (pod_runtime, pod_control_lab, world_journey, status_live, fork_live, dockerfile_live); PTY captures of 4 cases + NO_COLOR
+- 2026-11-24T18:10 [M3.117] (lead) status review -> done
+- 2026-11-24T18:10 [M3.115] (conductor) status ready -> active
+- 2026-11-24T18:10 [M3.111] (conductor) Also verify the M3.117 mid-build missing 2/4 COPY row (between 1/4 FROM and 3/4 RUN): if a fast completed step is skipped in a rendered frame, fix the renderer;
+- 2026-11-24T18:13 [M3.115] (lead) status active -> active
+- 2026-11-24T18:13 [M3.115] (lead) attempt 1/3 started
+- 2026-11-24T18:13 [M3.115] (lead) base e374e5d2b1eb5b760d3da37b4530bffbbd9e61a4
+- 2026-11-24T18:51 [M3.123] (conductor) created (task) fork output: approved palette and one plan total (no [1/3] -> [3/5] switch)
+- 2026-11-24T18:51 [M3.123] (conductor) status ready -> active
+- 2026-11-24T18:51 [M3.123] (lead) edited fields
+- 2026-11-24T18:51 [M3.123] (lead) attempt 1/3 started
+- 2026-11-24T18:51 [M3.123] (lead) base e374e5d2b1eb5b760d3da37b4530bffbbd9e61a4; M3.115 dirty in tree (core.rs/up.rs/world/runtime*/slipfork-image/slipfork-world) — do not touch/stage
+- 2026-11-24T19:01 [M3.123] (lead) status active -> review
+- 2026-11-24T19:01 [M3.123] (lead) VM (clean HEAD+M3.123 snapshot): fork_live 3/3, status_live 6/6, world_journey 3/3; PTY up(cached)+fork: outer keywords magenta 35, one denominator [i/4], --jso
+- 2026-11-24T19:01 [M3.123] (lead) status review -> done
+- 2026-11-24T19:02 [M3.115] (lead) edited fields
+- 2026-11-24T19:03 [M3.124] (conductor) created (task) Row schema: separate state and command columns; visible neutral metadata colour (not SGR 2)
+- 2026-11-24T19:03 [M3.124] (conductor) edited fields
+- 2026-11-24T19:03 [M3.124] (conductor) status ready -> active
+- 2026-11-24T19:03 [M3.115] (lead) fix: canonical build-input digest (Dockerfile bytes + .dockerignore context via BuildContext::for_walk) folded into plan_epoch/trusted_stamp and the daemon fing
+- 2026-11-24T19:03 [M3.124] (lead) edited fields
+- 2026-11-24T19:03 [M3.124] (lead) status active -> active
+- 2026-11-24T19:03 [M3.124] (lead) attempt 1/3 started
+- 2026-11-24T19:03 [M3.124] (lead) base 43cfeff3ef4e3405aac45a648e9417fb23edbc75; narrowed tests/** to explicit files (M3.115 owns dirty critical_world_journey.rs); metadata role change made once
+- 2026-11-24T19:03 [M3.115] (lead) status active -> done
+- 2026-11-24T19:04 [M3.118] (conductor) status ready -> active
+- 2026-11-24T19:06 [M3.118] (lead) status active -> active
+- 2026-11-24T19:06 [M3.118] (lead) attempt 1/3 started
+- 2026-11-24T19:06 [M3.118] (lead) base 43cfeff3ef4e3405aac45a648e9417fb23edbc75
+- 2026-11-24T19:07 [M3.124] (lead) attempt1 partial (budget). LEAD DECISION state colours: success-settled words (cached, up to date, built, ready, running, done) green 32; starting/booting/stopp
+- 2026-11-24T19:07 [M3.124] (lead) attempt 2/3 started
+- 2026-11-24T19:08 [M3.124] (lead) OWNER APPROVED state colours as shipped role (v3.3 in M3.107 contract): no cyan states
+- 2026-11-24T19:14 [M3.124] (lead) status active -> review
+- 2026-11-24T19:18 [M3.121] (lead) edited fields
+- 2026-11-24T19:18 [M3.121] (lead) Lead VM check at 43cfeff: Dockerfile edits now converge (RUN edit rebuilds and fails with exit 9, with and without down) -> that half is covered by M3.115. NOT 
+- 2026-11-24T19:19 [M3.124] (lead) attempt 3/3 started
+- 2026-11-24T19:20 [M3.121] (conductor) edited fields
+- 2026-11-24T19:20 [M3.121] (conductor) status superseded -> ready
+- 2026-11-24T19:20 [M3.121] (conductor) Owner-relevant split verified by the M3.124 lead: Dockerfile instruction edits now rebuild/fail correctly (M3.115), but editing a file included by COPY does NOT
+- 2026-11-24T19:23 [M3.124] (lead) edited fields
+- 2026-11-24T19:29 [M3.124] (lead) clean HEAD+M3.124 snapshot: fmt/clippy/workspace tests green (47 suites); VM status_live 6/6, fork_live 3/3; PTY up(fresh+cached)/fork/status: zero ESC[2m, meta
+- 2026-11-24T19:29 [M3.124] (lead) status review -> done
+- 2026-11-24T19:29 [M3.125] (conductor) created (task) Delete Palette::dim alias: one metadata role (meta), migrate every caller
+- 2026-11-24T19:29 [M3.125] (conductor) status ready -> active
+- 2026-11-24T19:29 [M3.125] (conductor) status active -> superseded: missing # Acceptance; recreated as M3.126
+- 2026-11-24T19:29 [M3.126] (conductor) created (task) Delete Palette::dim alias: one metadata role (meta), migrate every caller
+- 2026-11-24T19:29 [M3.126] (conductor) status ready -> active
+- 2026-11-24T19:29 [M3.126] (lead) status active -> active
+- 2026-11-24T19:29 [M3.126] (lead) attempt 1/3 started
+- 2026-11-24T19:29 [M3.126] (lead) base 55588006ec089ddbade413b6f9f44b7d19a8e79f
+- 2026-11-24T19:35 [M3.126] (lead) edited fields
+- 2026-11-24T19:35 [M3.126] (lead) attempt 2/3 started
+- 2026-11-24T19:35 [M3.126] (lead) addendum: inner Dockerfile keyword column sized from the build plan (engine StepEvent width -> step frame -> boot/docker renderers)
+- 2026-11-24T19:38 [M3.126] (lead) status active -> review
+- 2026-11-24T19:42 [M3.118] (lead) VM fresh Btrfs loop (/mnt/sf-m3118, clean 43cfeff+M3.118 tree): no-WORKDIR dev refuses 1 line+next (no world.json); WORKDIR /code pwd=/code, exec+shell see host
+- 2026-11-24T19:42 [M3.118] (lead) status active -> review
+- 2026-11-24T19:42 [M3.118] (lead) status review -> done
+- 2026-11-24T19:42 [M3.121] (conductor) status ready -> active
+- 2026-11-24T19:43 [M3.126] (lead) Triad clean (arch 4 MAJOR resolved in 1 pass, tests 2 MAJOR resolved, ux clean); make check green
+- 2026-11-24T19:43 [M3.126] (lead) status review -> done
+- 2026-11-24T19:55 [M3.121] (lead) attempt 1/3 started
+- 2026-11-24T19:55 [M3.121] (lead) base b637448ebdeb53810238c0ef55517c4dd8dc02f7 (worktree .worktrees/m3-121)
+- 2026-11-24T20:01 [M3.121] (lead) status active -> done
+- 2026-11-24T20:02 [M3.127] (conductor) created (task) Align critical_world_journey with the shipped status/logs schema
+- 2026-11-24T20:02 [M3.127] (conductor) status ready -> active
+- 2026-11-24T20:02 [M3.127] (lead) attempt 1/3 started
+- 2026-11-24T20:02 [M3.127] (lead) base 41c6d1d18c9e2d4b7f9b6e35f6ff63020b2bdfc0
+- 2026-11-24T20:08 [M3.127] (lead) status active -> done
+- 2026-11-24T20:09 [M3.114] (conductor) status ready -> active
+- 2026-11-24T20:10 [M3.114] (lead) status active -> active
+- 2026-11-24T20:10 [M3.114] (lead) attempt 1/3 started
+- 2026-11-24T20:10 [M3.114] (lead) base 909167ed94994cdcee109e6e9a417ddef8d5c76e
+- 2026-11-24T20:17 [M3.114] (lead) edited fields
+- 2026-11-24T20:17 [M3.114] (lead) scope widened to slipfork-image steps.rs+builder/** for CacheMode::Cold (review-arch BLOCKER: no second step cache)
+- 2026-11-24T20:17 [M3.114] (lead) edited fields
+- 2026-11-24T20:17 [M3.114] (lead) edited fields
+- 2026-11-24T20:17 [M3.114] (lead) edited fields
+- 2026-11-24T20:17 [M3.114] (lead) attempt 2/3 started
+- 2026-11-24T20:28 [M3.114] (lead) status active -> review
+- 2026-11-24T20:28 [M3.114] (lead) status review -> done
+- 2026-11-24T20:29 [M3.111] (conductor) status ready -> active
+- 2026-11-24T20:33 [M3.111] (lead) status active -> active
+- 2026-11-24T20:33 [M3.111] (lead) attempt 1/3 started
+- 2026-11-24T20:33 [M3.111] (lead) base e17c8f20bb6feccad1d573afe1f4c4a840e3ba11
+- 2026-11-24T20:33 [M3.111] (lead) edited fields
+- 2026-11-24T20:38 [M3.111] (lead) attempt 2/3 started
+- 2026-11-24T20:38 [M3.111] (lead) edited fields
+- 2026-11-24T20:38 [M3.111] (lead) edited fields
+- 2026-11-24T20:39 [M3.111] (lead) edited fields
+- 2026-11-24T20:40 [M3.128] (conductor) created (task) Daemon identity includes the binary build (mtime+size), so a rebuilt exe invalidates a running daemon
+- 2026-11-24T20:40 [M3.111] (conductor) edited fields
+- 2026-11-24T20:40 [M3.128] (conductor) status ready -> active
+- 2026-11-24T20:40 [M3.128] (lead) attempt 1/3 started
+- 2026-11-24T20:40 [M3.128] (lead) base e17c8f20bb6feccad1d573afe1f4c4a840e3ba11
+- 2026-11-24T20:41 [M3.128] (lead) status active -> review
+- 2026-11-24T20:44 [M3.129] (conductor) created (task) fork rebuilds every image: build-context digest includes VCS metadata, so a branch switch invalidates the parent stamp
+- 2026-11-24T20:44 [M3.129] (conductor) status ready -> active
+- 2026-11-24T20:44 [M3.128] (lead) status review -> done
+- 2026-11-24T20:45 [M3.129] (lead) status active -> active
+- 2026-11-24T20:45 [M3.129] (lead) attempt 1/3 started
+- 2026-11-24T20:45 [M3.129] (lead) base d42b8ae7575a98243a503cc227f62f5ec6ef7e37
+- 2026-11-24T20:48 [M3.129] (lead) EVIDENCE (VM private tree /mnt/sf-m3129, pre-fix bin): root-context image (image app ., Dockerfile COPY . ., WORKDIR /code). Parent stamp world_epoch=586aa192bd
+- 2026-11-24T20:55 [M3.111] (lead) edited fields
+- 2026-11-24T20:55 [M3.111] (lead) scope restored: commands/logs/boot/ui/world-runtime/capture/supervise + world pod_log/run_log/world_init lines + tests + specs/02
+- 2026-11-24T21:03 [M3.120] (conductor) Owner decision (2026-11-24): forks stay plain CoW checkouts. Do NOT convert fork projects into linked git worktrees. Rationale: git worktree add requires an emp
+- 2026-11-24T21:04 [M3.129] (lead) attempt 2/3 started
+- 2026-11-24T21:04 [M3.129] (lead) addendum (owner report): repeated `fork <name>` emits a snapshot row then raw could not snapshot ... File exists (os error 17); refuse in preflight before any r
+- 2026-11-24T21:10 [M3.129.1] (lead) created (task) critical_status_live multi-step build fixtures need WORKDIR after M3.118
+- 2026-11-24T21:11 [M3.129.1] (lead) status ready -> superseded
+- 2026-11-24T21:11 [M3.130] (lead) created (task) critical_status_live multi-step build fixtures need WORKDIR after M3.118
+- 2026-11-24T21:11 [M3.111] (lead) VM proof (private tree, no sync): 4-step failing build replays 1/4..4/4 clocked rows in order, then |/! gutters, then one 'X RUN app failed (exit 3)'; --json ca
+- 2026-11-24T21:11 [M3.111] (lead) M3.117 row verified on the VM: live TTY transcript shows 'check 2/4 copy . /app' between 'check 1/4 from' and 'check 3/4 workdir' (and 2/4 COPY animating in the
+- 2026-11-24T21:11 [M3.111] (lead) also fixed: non-follow replay stopped at the first 64 KiB LogRange chunk (240 KiB build truncated); live journey 4/4 green on /mnt/slipfork-live; critical_statu
+- 2026-11-24T21:11 [M3.111] (lead) status active -> done
+- 2026-11-24T21:11 [M3.129] (lead) plan.py rejected a top-level M3.130 id and created a stray child M3.129.1; that child is superseded and this node is now a container (kind epic) only to satisfy
+- 2026-11-24T21:11 [M3.129] (lead) status active -> review
+- 2026-11-24T21:11 [M3.129] (lead) edited fields
+- 2026-11-24T21:11 [M3.129] (lead) attempt 3 done: preflight fork-exists (registry/.forks/fork world/clones) before any row; next=slipfork drop <name> -f (plain drop is refused for a live dirty c
+- 2026-11-24T21:11 [M3.130] (conductor) status ready -> active
+- 2026-11-24T21:11 [M3.130] (lead) status active -> active
+- 2026-11-24T21:11 [M3.130] (lead) attempt 1/3 started
+- 2026-11-24T21:11 [M3.130] (lead) base 5718b918527666f00da94d7718ee66e214033c8c
+- 2026-11-24T21:12 [M3.129] (lead) status review -> done
+- 2026-11-24T21:12 [M3.129] (lead) COMMIT 0e03d00. Triad PASS (arch/tests/ux; minors discarded: clone-enumeration helper outside node paths, check order, exact-message equality). make check EXIT=
+- 2026-11-24T21:12 [M3.120] (conductor) status ready -> active
+- 2026-11-24T21:13 [M3.120] (lead) status active -> active
+- 2026-11-24T21:13 [M3.120] (lead) attempt 1/3 started
+- 2026-11-24T21:13 [M3.120] (lead) base 0e03d00aaa4c413bbe3583dbe4116e5378ecc15e
+- 2026-11-24T21:22 [M3.130] (lead) VM green 6/6 (SLIPFORK_TEST_ROOT=/mnt/slipfork-live, private tree /home/slipfork/m3130 @0e03d00, never do_vm.py sync/demo). WORKDIR /app added to 3 fixtures, 1/
+- 2026-11-24T21:27 [M3.130] (lead) acceptance: live suite green 6/6 on /mnt/slipfork-live (private /home/slipfork/m3130 tree; sibling slipfork-world-init built from HEAD — /usr/bin's stale copy c
+- 2026-11-24T21:27 [M3.130] (lead) status active -> review
+- 2026-11-24T21:27 [M3.130] (lead) status review -> done
+- 2026-11-24T21:28 [M3.131] (conductor) created (task) Live tests can silently use a stale installed slipfork-world-init (VM /usr/bin), hiding real failures
+- 2026-11-24T21:44 [M3.120] (lead) slice 1: snapshot/{key,graph,lease,slot,gc,store} green — key grammar, waves/head, record-only image records, pins=closure, per-key singleflight, 24h mark-sweep
+- 2026-11-24T21:44 [M3.120] (lead) VM live proof (private tree /mnt/sf-m3120, no sync): real-Btrfs critical_snapshot_graph ok (1 test, 1.23s) on /mnt/slipfork-live; make check cargo gates all gre
+- 2026-11-24T21:44 [M3.120] (lead) committed 7680850 [M3.120] slice 1: world snapshot graph (19 files, +2785/-21); node stays active for slices 2-4
+- 2026-11-24T21:45 [M3.120] (lead) status active -> active
+- 2026-11-24T21:45 [M3.120] (lead) attempt 2/3 started
+- 2026-11-24T21:45 [M3.120] (lead) slice 2 base 7680850406416b02a369cf0511b99ef1103e85cd
+- 2026-11-24T22:02 [M3.132] (conductor) created (task) Fork/drop state UX defects: per-frame counters in drop, ambiguous nested fork names, stale and half-created fork entries
+- 2026-11-24T22:06 [M3.120] (conductor) edited fields
+- 2026-11-24T22:06 [M3.133] (conductor) created (task) drop: one plan total and consistent rows (per-frame totals 1/1..4/4)
+- 2026-11-24T22:06 [M3.133] (conductor) status ready -> active
+- 2026-11-24T22:06 [M3.133] (lead) attempt 1/3 started
+- 2026-11-24T22:06 [M3.133] (lead) base 7680850406416b02a369cf0511b99ef1103e85cd
+- 2026-11-24T22:09 [M3.133] (lead) edited fields
+- 2026-11-24T22:09 [M3.133] (unknown) paths += crates/slipfork/src/world/fork.rs (drop verb --json frames)
+- 2026-11-24T22:52 [M3.134] (conductor) created (epic) ForkLedger: one state DB for worlds and forks, flat envs with lineage, deterministic convergence
+- 2026-11-24T23:06 [M3.134] (conductor) Owner override on the store layer: use sea-orm + sea-orm-migration (entities + migrations/ + Migrator at daemon start), NOT raw rusqlite. specs/03 §7 is being r
+- 2026-11-24T23:32 [M3.133] (lead) status active -> review
+- 2026-11-24T23:32 [M3.133] (lead) edited fields
+- 2026-11-24T23:34 [M3.133] (lead) edited fields
+- 2026-11-24T23:34 [M3.133] (lead) paths += world/up.rs (shared --json stream-frame helper)
+- 2026-11-24T23:38 [M3.133] (lead) status review -> done
