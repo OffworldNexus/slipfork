@@ -1523,29 +1523,40 @@ fn world_up_restart_down_journey() {
         failed_out.contains("→ [") || failed_out.contains('✗'),
         "failure must keep a phase header or the ✗ tail:\nstdout={failed_out}\nstderr={failed_err}"
     );
-    // A service failure prints its crisp sentence plus exactly one catalog-derived remedy
-    // (`boot::render::failure_sentence`): no `error:`, no numbered `Forkfile:` line, no second hint.
+    // A service failure prints its crisp sentence on `stderr` plus exactly one catalog-derived
+    // remedy (`boot::render::failure_sentence`) on the stream that carries the boot rows: no
+    // `error:`, no numbered `Forkfile:` line, no second hint.
     let stderr_lines: Vec<&str> = failed_err
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .collect();
     assert_eq!(
-        stderr_lines.len(),
-        2,
-        "a service failure prints one sentence and one remedy:\nstdout={failed_out}\nstderr={failed_err}"
+        stderr_lines,
+        ["✗ Failed to start service broken"],
+        "a service failure prints exactly one sentence on stderr:\nstdout={failed_out}\nstderr={failed_err}"
     );
-    assert_eq!(stderr_lines[0], "✗ Failed to start service broken");
-    let run_id = stderr_lines[1]
-        .strip_prefix("next: slipfork logs -r ")
-        .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| panic!("the one remedy must replay a run:\n{failed_err}"))
-        .to_owned();
-    assert_eq!(failed_err.matches("next:").count(), 1, "{failed_err}");
+    let failure_copy = format!("{failed_out}\n{failed_err}");
+    let remedies: Vec<&str> = failure_copy
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| line.strip_prefix("next: slipfork logs -r "))
+        .collect();
+    assert_eq!(
+        remedies.len(),
+        1,
+        "a service failure prints exactly one `-r` remedy across both streams:\n{failure_copy}"
+    );
+    assert!(
+        !remedies[0].is_empty(),
+        "the one remedy must replay a run:\n{failure_copy}"
+    );
+    let run_id = remedies[0].to_owned();
+    assert_eq!(failure_copy.matches("next:").count(), 1, "{failure_copy}");
     for forbidden in ["error:", "check logs with:", "Forkfile:"] {
         assert!(
-            !failed_err.contains(forbidden),
-            "a service failure must not print `{forbidden}`:\n{failed_err}"
+            !failure_copy.contains(forbidden),
+            "a service failure must not print `{forbidden}`:\n{failure_copy}"
         );
     }
     let replay = journey.slipfork(&broken, &["logs", "-r", &run_id]);
