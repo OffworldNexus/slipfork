@@ -90,9 +90,9 @@ The package enables the **user** unit and the system socket only for the install
 | Runtime | `crun`, `btrfs-progs`, `libgcc`; the binary is **dynamically** linked musl (a static musl binary cannot `dlopen`) |
 | `:80` ingress | OpenRC service `slipfork-ingress` binds `127.0.0.1:80`; the per-user daemon connects over its Unix socket |
 | Paths | `/usr/bin/slipfork`, `/usr/share/slipfork/**`, `/usr/share/vim/vimfiles/**`, `/etc/conf.d/slipfork-ingress` |
-| Verify | `apk add ./slipfork-*.apk`, `rc-service slipfork-ingress start`, boot one world, `slipfork down` |
+| Verify | `apk add ./slipfork-*.apk`, `printf 'SLIPFORK_INGRESS_USER=%s\n' "$(id -un)" \| sudo tee /etc/conf.d/slipfork-ingress`, `rc-update add slipfork-ingress default`, `rc-service slipfork-ingress start`, boot one world, `slipfork down` |
 
-The package's install hook writes `SLIPFORK_INGRESS_USER=$SUDO_USER`, then runs `rc-update add slipfork-ingress default` and `rc-service slipfork-ingress start` for the system `slipfork-ingress` script that owns `127.0.0.1:80`. Only `openrc` is supported on Alpine; do not ship a systemd unit that silently no-ops.
+The package ships the system `slipfork-ingress` OpenRC script that owns `127.0.0.1:80`, but its post-install hook is deliberately a silent `#!/bin/sh` that exits 0: `apk` runs maintainer scripts with a PATH-only environment, so it never sees `SUDO_USER`. The installing user points the ingress at themselves by writing `/etc/conf.d/slipfork-ingress` with the three-line snippet in `docs/install.md` (`printf … "$(id -un)"`, then `rc-update add slipfork-ingress default` and `rc-service slipfork-ingress start`). Install-hook auto-enable is a systemd feature of the `.deb`, `.rpm`, and pacman formats only; on systemd hosts `docs/install.sh` does the equivalent socket setup when run as root with `SUDO_USER`. Only `openrc` is supported on Alpine; do not ship a systemd unit that silently no-ops.
 
 ---
 
