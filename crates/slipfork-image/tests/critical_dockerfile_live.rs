@@ -22,14 +22,37 @@ use std::time::Duration;
 use slipfork_image::{
     BuildArgs, BuildRequest, Command, Credentials, CrunStepRuntime, ImageConfig, ImageLayout,
     NativeImageBuilder, OciPuller, Port, Protocol, RegistryScheme, RunSpec, StepHost, StepLayout,
+    StepLog, Stream,
 };
 use slipfork_world::{BtrfsEngine, Dirtiness, StoreLayout, WorldEngine, is_subvolume_path};
 
-/// The last few KiB of a build log, so a failing `crun` step is never silent.
-fn output_tail(log: &[u8]) -> String {
+/// The last few KiB of a build's streamed output, so a failing `crun` step is never silent.
+fn output_tail(log: &[(Stream, String)]) -> String {
     const LIMIT: usize = 4096;
-    let start = log.len().saturating_sub(LIMIT);
-    String::from_utf8_lossy(&log[start..]).trim().to_owned()
+    let joined = log
+        .iter()
+        .map(|(_, line)| line.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let start = joined.len().saturating_sub(LIMIT);
+    joined.get(start..).unwrap_or(&joined).to_owned()
+}
+
+/// Runs one build against a bound [`StepLog`], keeping every `(stream, line)` for failure tails.
+fn build_capture(
+    builder: &NativeImageBuilder,
+    request: &BuildRequest,
+) -> (
+    slipfork_image::Result<slipfork_image::BuildReport>,
+    Vec<(Stream, String)>,
+) {
+    let mut streamed: Vec<(Stream, String)> = Vec::new();
+    let outcome = {
+        let mut sink = |stream: Stream, line: &str| streamed.push((stream, line.to_owned()));
+        let mut log = StepLog::new(&mut sink);
+        builder.build(request, &mut log)
+    };
+    (outcome, streamed)
 }
 
 /// The payload the loopback URL server serves to `ADD <url>`.
@@ -161,15 +184,13 @@ fn native_dockerfile_multistage_build_lifecycle() {
         args: BuildArgs::new(),
         target: None,
     };
-    let mut first_log = Vec::new();
-    let first = builder
-        .build(&request, &mut first_log)
-        .unwrap_or_else(|error| {
-            panic!(
-                "first multi-stage build: {error}\nbuild output tail:\n{}",
-                output_tail(&first_log)
-            )
-        });
+    let (first, first_log) = build_capture(&builder, &request);
+    let first = first.unwrap_or_else(|error| {
+        panic!(
+            "first multi-stage build: {error}\nbuild output tail:\n{}",
+            output_tail(&first_log)
+        )
+    });
     assert_eq!(first.cache_hits, 0, "a cold build serves no sealed step");
     assert_eq!(first.cache_misses, 6, "six filesystem instructions");
     let cache_file = steps.cache_mount("/root/.cache/x").join("out.txt");
@@ -186,15 +207,13 @@ fn native_dockerfile_multistage_build_lifecycle() {
         dockerfile_source(&base, &install_url, "run-two", uid, gid),
     )
     .expect("rewrite the Dockerfile");
-    let mut second_log = Vec::new();
-    let second = builder
-        .build(&request, &mut second_log)
-        .unwrap_or_else(|error| {
-            panic!(
-                "second build: {error}\nbuild output tail:\n{}",
-                output_tail(&second_log)
-            )
-        });
+    let (second, second_log) = build_capture(&builder, &request);
+    let second = second.unwrap_or_else(|error| {
+        panic!(
+            "second build: {error}\nbuild output tail:\n{}",
+            output_tail(&second_log)
+        )
+    });
     assert_eq!(second.cache_misses, 1, "only the changed RUN re-executes");
     assert_eq!(second.cache_hits, 5, "the final stage steps are reused");
     assert_eq!(
@@ -204,15 +223,13 @@ fn native_dockerfile_multistage_build_lifecycle() {
     );
 
     // Third build: byte-identical to the second, so every step is a sealed cache hit.
-    let mut cached_log = Vec::new();
-    let cached = builder
-        .build(&request, &mut cached_log)
-        .unwrap_or_else(|error| {
-            panic!(
-                "cached build: {error}\nbuild output tail:\n{}",
-                output_tail(&cached_log)
-            )
-        });
+    let (cached, cached_log) = build_capture(&builder, &request);
+    let cached = cached.unwrap_or_else(|error| {
+        panic!(
+            "cached build: {error}\nbuild output tail:\n{}",
+            output_tail(&cached_log)
+        )
+    });
     assert_eq!(cached.cache_misses, 0, "an identical rebuild never re-runs");
     assert_eq!(cached.cache_hits, 6, "every step must hit the sealed cache");
     // 2-vCPU CI scheduler jitter on a loop-backed ext4 image can triple wall-clock; 250ms still
@@ -389,25 +406,21 @@ fn a_target_stage_never_reaches_a_later_failing_stage() {
         args: BuildArgs::new(),
         target: Some("dev".to_owned()),
     };
-    let mut dev_log = Vec::new();
-    let dev = builder
-        .build(&dev_request, &mut dev_log)
-        .unwrap_or_else(|error| {
-            panic!(
-                "`--target dev` must never reach the prod RUN: {error}\nbuild output tail:\n{}",
-                output_tail(&dev_log)
-            )
-        });
+    let (dev, dev_log) = build_capture(&builder, &dev_request);
+    let dev = dev.unwrap_or_else(|error| {
+        panic!(
+            "`--target dev` must never reach the prod RUN: {error}\nbuild output tail:\n{}",
+            output_tail(&dev_log)
+        )
+    });
     assert_eq!(dev.cache_misses, 0, "the dev stage is metadata only");
 
     let prod_request = BuildRequest {
         target: Some("prod".to_owned()),
         ..dev_request.clone()
     };
-    let mut prod_log = Vec::new();
-    let error = builder
-        .build(&prod_request, &mut prod_log)
-        .expect_err("the prod stage's failing RUN must fail the build");
+    let (error, prod_log) = build_capture(&builder, &prod_request);
+    let error = error.expect_err("the prod stage's failing RUN must fail the build");
     assert!(
         matches!(error, slipfork_image::Error::StepFailed { line: 4, .. }),
         "unexpected error: {error}\nbuild output tail:\n{}",
@@ -416,8 +429,8 @@ fn a_target_stage_never_reaches_a_later_failing_stage() {
 
     // Rebuilding after a failed/interrupted prod `RUN` must reclaim any stale `sf-<hash>` state in
     // `crun` instead of failing with `container 'sf-...' already exists`.
-    let mut retry_log = Vec::new();
-    let retry_error = builder.build(&prod_request, &mut retry_log).expect_err(
+    let (retry_error, retry_log) = build_capture(&builder, &prod_request);
+    let retry_error = retry_error.expect_err(
         "retrying the failing prod stage still fails on line 4, never `already exists`",
     );
     assert!(
@@ -447,9 +460,11 @@ fn a_target_stage_never_reaches_a_later_failing_stage() {
             .expect("clone writable step rootfs");
         let step_runtime =
             CrunStepRuntime::new(StepHost::new(&crun, "/etc/resolv.conf", &scratch, uid, gid));
-        let mut step_log = Vec::new();
-        step_runtime
-            .run(
+        let mut step_log: Vec<(Stream, String)> = Vec::new();
+        let outcome = {
+            let mut sink = |stream: Stream, line: &str| step_log.push((stream, line.to_owned()));
+            let mut log = StepLog::new(&mut sink);
+            step_runtime.run(
                 &stale_id,
                 &step_rootfs,
                 &ImageConfig::default(),
@@ -459,14 +474,15 @@ fn a_target_stage_never_reaches_a_later_failing_stage() {
                 },
                 &[],
                 1,
-                &mut step_log,
+                &mut log,
             )
-            .unwrap_or_else(|err| {
-                panic!(
-                    "CrunStepRuntime must evict stale container `{stale_id}` before run: {err}\n{}",
-                    output_tail(&step_log)
-                )
-            });
+        };
+        outcome.unwrap_or_else(|err| {
+            panic!(
+                "CrunStepRuntime must evict stale container `{stale_id}` before run: {err}\n{}",
+                output_tail(&step_log)
+            )
+        });
         assert!(
             runtime_user_dir.join("crun").is_dir(),
             "crun must root its state at `{}`",
@@ -500,9 +516,8 @@ fn a_target_stage_never_reaches_a_later_failing_stage() {
         target: Some("staging".to_owned()),
         ..dev_request
     };
-    let error = builder
-        .build(&unknown, &mut Vec::new())
-        .expect_err("an absent target alias must fail");
+    let (error, _) = build_capture(&builder, &unknown);
+    let error = error.expect_err("an absent target alias must fail");
     assert!(
         matches!(error, slipfork_image::Error::UnknownStage { ref name } if name == "staging"),
         "unexpected error: {error}"

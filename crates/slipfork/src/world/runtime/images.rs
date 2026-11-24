@@ -12,7 +12,7 @@ use slipfork_forkfile::FeatureSet;
 use slipfork_forkfile::ast::Forkfile;
 use slipfork_image::{
     Architecture, BuildArgs, BuildRequest, Credentials, ImageLayout, ImageReference,
-    NativeImageBuilder, OciPuller, PulledImage, StepHost, StepLayout,
+    NativeImageBuilder, OciPuller, PulledImage, StepHost, StepLayout, StepLog,
 };
 use slipfork_world::{
     BootState, ImageNode, ImageStamp, LogStore, StoreLayout, WorldEngine, WorldName,
@@ -285,7 +285,14 @@ impl ImageCache {
                 target: self.doc.eval_image_stage_with(image, &self.features),
             };
             let mut tee = BuildLog::new(log, &self.store, image);
-            let report = match self.builder.build(&request, &mut tee) {
+            let built = {
+                let mut sink = |stream: slipfork_image::Stream, line: &str| {
+                    tee.append_stream(stream, line);
+                };
+                let mut step_log = StepLog::new(&mut sink);
+                self.builder.build(&request, &mut step_log)
+            };
+            let report = match built {
                 Ok(report) => {
                     tee.finish();
                     report

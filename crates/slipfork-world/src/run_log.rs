@@ -21,9 +21,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::control::Stream;
 use crate::error::{Error, Result};
 use crate::log_store::LogStore;
-use crate::pod_log::{self, LogKind, LogSink, now_ms};
+use crate::pod_log::{self, LogSink, now_ms};
 
 /// Width of one minted run id (`#b7f2a1`).
 pub const RUN_ID_LEN: usize = 6;
@@ -169,9 +170,9 @@ impl RunCapture {
         &self.run_id
     }
 
-    /// Appends one cleaned output line to the capture.
-    pub fn append(&mut self, text: &str) -> Result<()> {
-        self.sink.append(LogKind::Line, text)
+    /// Appends one cleaned output line, keeping the stream that produced it.
+    pub fn append_stream(&mut self, stream: Stream, text: &str) -> Result<()> {
+        self.sink.append_stream(now_ms(), stream, text)
     }
 
     /// Appends the catalog line, then `last` (and `last-failed`) pointers. Idempotent.

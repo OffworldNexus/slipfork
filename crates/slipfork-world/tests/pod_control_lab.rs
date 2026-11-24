@@ -22,7 +22,7 @@ use slipfork_world::{
     Bind, BindSource, BootGraph, BootKind, BootStep, Error, ForkName, FrameLines, ImageFacts,
     LogKind, LogLine, LogReader, LogSink, NamespaceIdentity, NamespaceTable, PROTOCOL_VERSION,
     PodEnv, PodFile, PodHost, PodSpec, PostgresLauncher, RedisLauncher, Request, RuntimePods,
-    S3Bucket, S3Credentials, StoreLayout, WorldName, WorldPlan, control, decode_request,
+    S3Bucket, S3Credentials, StoreLayout, Stream, WorldName, WorldPlan, control, decode_request,
     pod_log::{
         INDEX_BYTES, INDEX_ENTRY_BYTES, INDEX_LINES, LogMerge, index_path, load_index, read_range,
     },
@@ -440,7 +440,8 @@ fn pty_requests_and_canonical_log_paths_round_trip() {
 
     let lab = lab("canonical-log");
     let dir = lab.join("store").join("logs").join("demo");
-    slipfork_world::pod_log::append(&dir, "api", b"build output\n").expect("append a build log");
+    slipfork_world::pod_log::append_stream(&dir, "api", Stream::Combined, b"build output\n")
+        .expect("append a build log");
     let path = slipfork_world::pod_log::log_path(&dir, "api");
     assert_eq!(
         fs::metadata(&dir).expect("stat leaf").mode() & 0o777,
@@ -465,12 +466,38 @@ fn pty_requests_and_canonical_log_paths_round_trip() {
             .is_some_and(|(ts, _)| ts.parse::<u64>().is_ok()),
         "each append row carries a millisecond timestamp: {raw:?}"
     );
-    slipfork_world::pod_log::append(&dir, "api", b"more\n").expect("append again");
+    slipfork_world::pod_log::append_stream(&dir, "api", Stream::Combined, b"more\n")
+        .expect("append again");
     let raw = fs::read_to_string(&path).expect("read the log");
     let rows: Vec<&str> = raw.lines().collect();
     assert_eq!(rows.len(), 2, "{raw:?}");
     assert!(rows[1].ends_with("\tL\tmore"), "{raw:?}");
     assert_eq!(fs::metadata(&path).expect("stat").mode() & 0o777, 0o600);
+
+    // Tagged raw rows keep their stream through the framing and the indexed replay.
+    slipfork_world::pod_log::append_stream(&dir, "split", Stream::Stdout, b"out-line\n")
+        .expect("append a tagged stdout line");
+    slipfork_world::pod_log::append_stream(&dir, "split", Stream::Stderr, b"err-line\n")
+        .expect("append a tagged stderr line");
+    let split = fs::read_to_string(slipfork_world::pod_log::log_path(&dir, "split"))
+        .expect("read the tagged capture");
+    let split_rows: Vec<&str> = split.lines().collect();
+    assert_eq!(split_rows.len(), 2, "{split:?}");
+    assert!(split_rows[0].ends_with("\tO\tout-line"), "{split:?}");
+    assert!(split_rows[1].ends_with("\tE\terr-line"), "{split:?}");
+    let mut tagged = read_range(&dir, "split", None, None).expect("replay the tagged rows");
+    let mut streams = Vec::new();
+    while tagged
+        .read_lines(&mut |line| streams.push(line.stream))
+        .expect("read tagged rows")
+        > 0
+    {}
+    tagged.flush(&mut |line| streams.push(line.stream));
+    assert_eq!(
+        streams,
+        [Stream::Stdout, Stream::Stderr],
+        "the replayed rows keep their streams: {streams:?}"
+    );
     let _ = fs::remove_dir_all(&lab);
 }
 

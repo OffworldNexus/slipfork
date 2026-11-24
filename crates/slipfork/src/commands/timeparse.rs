@@ -177,6 +177,18 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
+/// UTC `HH:MM:SS.mmm` clock gutter for a replayed run step, independent of the host timezone.
+pub(crate) fn format_clock(ts_ms: u64) -> String {
+    let time = (ts_ms / 1000).rem_euclid(86_400);
+    let millis = ts_ms % 1000;
+    format!(
+        "{:02}:{:02}:{:02}.{millis:03}",
+        time / 3600,
+        time % 3600 / 60,
+        time % 60
+    )
+}
+
 /// UTC `YYYY-MM-DD HH:MM:SS` gutter for `-t`, independent of the host timezone.
 pub(crate) fn format_ts(ts_ms: u64) -> String {
     let seconds = (ts_ms / 1000) as i64;

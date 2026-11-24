@@ -8,7 +8,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use slipfork_world::run_log::{LAST_FAILED_FILE, LAST_FILE, RunCapture, RunRecord};
-use slipfork_world::{LogStore, WorldName};
+use slipfork_world::{LogStore, Stream, WorldName};
 
 fn temp(prefix: &str) -> tempfile::TempDir {
     tempfile::Builder::new()
@@ -95,7 +95,7 @@ fn begin_record_and_records_roundtrip_through_one_log_store() {
     .expect("begin a run");
     let run_id = capture.run_id().to_owned();
     capture
-        .append("resolved 12 packages")
+        .append_stream(Stream::Stdout, "resolved 12 packages")
         .expect("append stdout");
     capture.finish("ready", 41).expect("finish the run");
 

@@ -6,12 +6,12 @@ use std::path::PathBuf;
 
 use slipfork_world::{LogStore, pod_log};
 
-use crate::world::supervise::strip_ansi;
+use crate::world::supervise::{BootSink, strip_ansi};
 
-/// A `Write` tee: build progress goes to the live boot sink **and** to
+/// A build-log tee: build progress goes to the live boot sink **and** to
 /// `<store>/logs/<world>/<image>.log`, so `slipfork logs <image>` reads failed-build output.
 pub(super) struct BuildLog<'a> {
-    sink: &'a mut dyn Write,
+    sink: &'a mut BootSink,
     dir: PathBuf,
     id: String,
     pending: Vec<u8>,
@@ -19,7 +19,7 @@ pub(super) struct BuildLog<'a> {
 
 impl<'a> BuildLog<'a> {
     /// Taps `store`'s world capture directory for `id`, so no caller recomputes a logs path.
-    pub(super) fn new(sink: &'a mut dyn Write, store: &LogStore, id: &str) -> Self {
+    pub(super) fn new(sink: &'a mut BootSink, store: &LogStore, id: &str) -> Self {
         Self {
             sink,
             dir: store.world_logs(),
@@ -28,16 +28,22 @@ impl<'a> BuildLog<'a> {
         }
     }
 
-    /// Writes one cleaned, newline-terminated line to the live sink and the `slipfork logs`
-    /// capture. The sink (`EventLog`) is line-buffered: without `\n` it would hold every build
-    /// line — including the failure cause — until an unrelated flush, so the run capture stays empty.
-    fn emit(&mut self, line: &[u8]) -> io::Result<()> {
-        let Some(text) = clean_line(line) else {
-            return Ok(());
+    /// Writes one cleaned line tagged with its `crun` stream to the live sink and the capture.
+    pub(super) fn append_stream(&mut self, stream: slipfork_image::Stream, line: &str) {
+        let Some(text) = clean_line(line.as_bytes()) else {
+            return;
         };
-        self.sink.write_all(text.as_bytes())?;
-        self.sink.write_all(b"\n")?;
-        let _ = pod_log::append(&self.dir, &self.id, text.as_bytes());
+        let stream = world_stream(stream);
+        self.sink.append_stream(stream, &text);
+        let _ = pod_log::append_stream(&self.dir, &self.id, stream, text.as_bytes());
+    }
+
+    /// Writes one untagged line as stdout; the `Write` path keeps piping raw bytes.
+    fn emit(&mut self, line: &[u8]) -> io::Result<()> {
+        self.append_stream(
+            slipfork_image::Stream::Stdout,
+            &String::from_utf8_lossy(line),
+        );
         Ok(())
     }
 
@@ -90,14 +96,23 @@ fn clean_line(bytes: &[u8]) -> Option<String> {
     (!text.trim().is_empty()).then_some(text)
 }
 
+/// Maps the image crate's stream onto the world's wire/capture stream.
+fn world_stream(stream: slipfork_image::Stream) -> slipfork_world::Stream {
+    match stream {
+        slipfork_image::Stream::Stdout => slipfork_world::Stream::Stdout,
+        slipfork_image::Stream::Stderr => slipfork_world::Stream::Stderr,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::io::Write;
+    use std::sync::{Arc, Mutex};
 
     use slipfork_world::{LogStore, WorldName};
 
     use super::BuildLog;
+    use crate::world::supervise::{BootSink, Emitter};
 
     fn temp(prefix: &str) -> tempfile::TempDir {
         tempfile::Builder::new()
@@ -107,16 +122,26 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_run_tees_its_output_and_error_into_the_image_log() {
+    fn a_failed_run_tees_its_streams_and_error_into_the_image_log() {
         let root = temp("image-log");
         let store = LogStore::at(
             root.path(),
             WorldName::parse("demo").expect("valid world name"),
         );
-        let mut mirror = Vec::new();
-        let mut tee = BuildLog::new(&mut mirror, &store, "frontend");
-        tee.write_all(b"step 1/2 npm ci\nstep 2/2 npm run build\nnpm ERR! missing script: build")
-            .expect("stream the failing RUN output");
+        let mut sink = BootSink::for_step(
+            Arc::new(Mutex::new(Emitter::closed())),
+            1,
+            2,
+            "image",
+            "frontend",
+        );
+        let mut tee = BuildLog::new(&mut sink, &store, "frontend");
+        tee.append_stream(slipfork_image::Stream::Stdout, "step 1/2 npm ci");
+        tee.append_stream(slipfork_image::Stream::Stdout, "step 2/2 npm run build");
+        tee.append_stream(
+            slipfork_image::Stream::Stderr,
+            "npm ERR! missing script: build",
+        );
         tee.fail(
             "build `frontend` failed: Dockerfile:12: `RUN npm run build` failed: `crun` exited with code 1\nnext: fix the command above; then rerun `slipfork up`",
         );
@@ -136,6 +161,14 @@ mod tests {
             );
         }
         assert!(
+            captured.contains("\tO\tstep 1/2 npm ci"),
+            "stdout rows keep their `O` marker:\n{captured}"
+        );
+        assert!(
+            captured.contains("\tE\tnpm ERR! missing script: build"),
+            "stderr rows keep their `E` marker:\n{captured}"
+        );
+        assert!(
             !captured.contains("next:"),
             "the capture carries no embedded remedy:\n{captured}"
         );
@@ -143,21 +176,6 @@ mod tests {
             captured.matches("Dockerfile:12").count(),
             1,
             "the error lands once:\n{captured}"
-        );
-
-        let mirror = String::from_utf8(mirror).expect("the live sink mirrors UTF-8 output");
-        assert!(
-            mirror.contains("npm ERR! missing script: build\n"),
-            "the sink receives a newline-terminated line: {mirror:?}"
-        );
-        assert!(
-            mirror
-                .contains("Dockerfile:12: `RUN npm run build` failed: `crun` exited with code 1\n"),
-            "the failure cause reaches the sink once, framed: {mirror:?}"
-        );
-        assert!(
-            !mirror.contains("next:"),
-            "a remedy never reaches the sink: {mirror:?}"
         );
         assert!(
             !captured.trim().is_empty(),

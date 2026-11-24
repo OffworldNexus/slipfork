@@ -735,10 +735,16 @@ mod tests {
         let mut capture = RunCapture::begin(&store, &project, "setup", "backend", "uv sync")
             .expect("begin a real run capture");
         capture
-            .append("Resolved 12 packages in 3ms")
+            .append_stream(
+                slipfork_world::Stream::Stdout,
+                "Resolved 12 packages in 3ms",
+            )
             .expect("append stdout");
         capture
-            .append("error: Failed to resolve `numpy==9`")
+            .append_stream(
+                slipfork_world::Stream::Stderr,
+                "error: Failed to resolve `numpy==9`",
+            )
             .expect("append stderr");
         let run_id = capture.run_id().to_owned();
         capture.finish("failed", 41).expect("finish the run");

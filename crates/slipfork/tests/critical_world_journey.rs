@@ -1703,6 +1703,102 @@ fn world_up_restart_down_journey() {
         "`logs -r {build_run}` must replay the failed RUN output:\n{}",
         stdout(&by_run)
     );
+    // The replay is a real capture view: a `#<id>  image  app  …  <started>` header, then labeled
+    // `out`/`err` lines with a UTC clock — and never the failure summary itself.
+    let is_clock = |text: &str| {
+        let bytes = text.as_bytes();
+        bytes.len() == 12
+            && bytes[2] == b':'
+            && bytes[5] == b':'
+            && bytes[8] == b'.'
+            && [0, 1, 3, 4, 6, 7, 9, 10, 11]
+                .iter()
+                .all(|index| bytes[*index].is_ascii_digit())
+    };
+    for (label, output) in [
+        ("logs app", stdout(&by_image)),
+        ("logs -r <id>", stdout(&by_run)),
+    ] {
+        let header = output
+            .lines()
+            .find(|line| line.starts_with(&format!("#{build_run}")))
+            .unwrap_or_else(|| panic!("`{label}` must print a `#<id>` run header:\n{output}"));
+        let fields: Vec<&str> = header.split("  ").collect();
+        assert!(
+            fields.len() >= 5
+                && fields[0] == format!("#{build_run}")
+                && fields[1] == "image"
+                && fields[2] == "app",
+            "`{label}` header must name `#<id>  image  app` in >=5 fields:\n{header:?}"
+        );
+        let started = fields.last().copied().unwrap_or_default();
+        assert!(
+            started.contains('-') && started.contains(':'),
+            "`{label}` header must end with a date+time, saw {started:?}:\n{header:?}"
+        );
+        let clocked = |needle: &str, stream: &str| {
+            output.lines().find_map(|line| {
+                let (clock, rest) = line.split_once("  ")?;
+                (rest.starts_with(stream) && rest.contains(needle)).then_some(clock)
+            })
+        };
+        let out_clock = clocked("failed-run-marker", "out")
+            .unwrap_or_else(|| panic!("`{label}` must replay labeled stdout:\n{output}"));
+        let err_clock = clocked("failed-run-error", "err")
+            .unwrap_or_else(|| panic!("`{label}` must replay labeled stderr:\n{output}"));
+        for clock in [out_clock, err_clock] {
+            assert!(
+                is_clock(clock),
+                "`{label}` timestamps each replay row, saw {clock:?}:\n{output}"
+            );
+        }
+        assert!(
+            !output.contains('\u{1b}'),
+            "`{label}` stays ANSI-free:\n{output}"
+        );
+        assert!(
+            !output.contains("✗ Failed") && !output.contains("next:"),
+            "the failure summary stays outside the capture:\n{output}"
+        );
+    }
+
+    let replay_json = journey.slipfork(&buildfail, &["logs", "-r", &build_run, "--json"]);
+    assert!(
+        replay_json.status.success(),
+        "`logs -r {build_run} --json`: {}",
+        stderr(&replay_json)
+    );
+    let replay_json_text = stdout(&replay_json);
+    let replay_events: Vec<serde_json::Value> = replay_json_text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            serde_json::from_str(line).unwrap_or_else(|error| {
+                panic!("`logs -r --json` must emit one JSON object per line ({error}): {line:?}")
+            })
+        })
+        .collect();
+    assert!(
+        !replay_json_text.contains('\u{1b}'),
+        "`logs -r --json` stays ANSI-free:\n{replay_json_text}"
+    );
+    assert!(
+        replay_events.iter().any(|event| {
+            event["line"] == "failed-run-marker"
+                && event["stream"] == "stdout"
+                && event["ts_ms"].is_u64()
+        }),
+        "`--json` must carry the stdout stream and its timestamp: {replay_events:?}"
+    );
+    assert!(
+        replay_events.iter().any(|event| {
+            event["line"] == "failed-run-error"
+                && event["stream"] == "stderr"
+                && event["ts_ms"].is_u64()
+        }),
+        "`--json` must carry the stderr stream and its timestamp: {replay_events:?}"
+    );
+
     let catalog = journey.slipfork(&buildfail, &["logs", "--runs"]);
     assert!(
         catalog.status.success(),

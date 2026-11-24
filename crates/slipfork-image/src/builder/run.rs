@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
 
 use super::{
     BuildRequest, NativeImageBuilder, Stage, StageState, at_line, expand_command, expand_spec,
@@ -12,23 +11,23 @@ use crate::context::BuildContext;
 use crate::copy;
 use crate::dockerfile::{CopySpec, Instruction, ParsedInstruction, RunSpec, Variables};
 use crate::error::{Error, Result};
-use crate::runtime::CrunStepRuntime;
+use crate::runtime::{CrunStepRuntime, StepLog};
 
 /// Mutable state of one `build` walk: stage outputs, cache counters, and the log sink.
-pub(super) struct BuildRun<'a> {
+pub(super) struct BuildRun<'a, 's, 'l> {
     builder: &'a NativeImageBuilder,
     request: &'a BuildRequest,
     context: &'a BuildContext,
     context_hash: &'a str,
     runtime: &'a CrunStepRuntime,
-    log: &'a mut dyn Write,
+    log: &'l mut StepLog<'s>,
     stages: &'a [Stage],
     built: Vec<(Option<String>, StageState)>,
     hits: usize,
     misses: usize,
 }
 
-impl<'a> BuildRun<'a> {
+impl<'a, 's, 'l> BuildRun<'a, 's, 'l> {
     /// Bundles the injected roots and the mutable log sink for one build walk.
     pub(super) fn new(
         builder: &'a NativeImageBuilder,
@@ -36,7 +35,7 @@ impl<'a> BuildRun<'a> {
         context: &'a BuildContext,
         context_hash: &'a str,
         runtime: &'a CrunStepRuntime,
-        log: &'a mut dyn Write,
+        log: &'l mut StepLog<'s>,
         stages: &'a [Stage],
     ) -> Self {
         Self {

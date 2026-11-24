@@ -4,7 +4,6 @@ mod run;
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -23,7 +22,7 @@ use crate::dockerfile::{
 use crate::error::{Error, Result};
 use crate::puller::{OciPuller, PulledImage};
 use crate::reference::ImageReference;
-use crate::runtime::{CrunStepRuntime, StepHost};
+use crate::runtime::{CrunStepRuntime, StepHost, StepLog};
 use crate::steps::{StepCache, StepLayout, StepRecord};
 use run::BuildRun;
 
@@ -132,7 +131,7 @@ impl NativeImageBuilder {
     }
 
     /// Evaluates `request`, streaming `RUN` output to `log` and reusing sealed step subvolumes.
-    pub fn build(&self, request: &BuildRequest, log: &mut dyn Write) -> Result<BuildReport> {
+    pub fn build(&self, request: &BuildRequest, log: &mut StepLog<'_>) -> Result<BuildReport> {
         let started = Instant::now();
         let source = fs::read_to_string(&request.dockerfile)
             .map_err(|source| Error::io("read", &request.dockerfile, source))?;
@@ -188,7 +187,7 @@ impl NativeImageBuilder {
     /// Evaluates the stages a [`stage_walk`] selected and returns the walked stage's state.
     fn build_stages(
         &self,
-        run: &mut BuildRun<'_>,
+        run: &mut BuildRun<'_, '_, '_>,
         stages: &[Stage],
         end: usize,
     ) -> Result<StageState> {

@@ -605,6 +605,7 @@ impl LogStream {
                 emit(line_event(
                     run_id,
                     kind_name(line.kind),
+                    line.stream.as_str(),
                     &line.text,
                     Some(line.ts_ms),
                 ));
@@ -616,6 +617,7 @@ impl LogStream {
                     emit(line_event(
                         run_id,
                         kind_name(line.kind),
+                        line.stream.as_str(),
                         &line.text,
                         Some(line.ts_ms),
                     ));
@@ -666,6 +668,7 @@ impl LogStream {
                     if !emit(line_event(
                         &event.pod,
                         event.kind.as_str(),
+                        event.stream.as_str(),
                         &event.line,
                         event.ts_ms,
                     )) {
@@ -695,8 +698,38 @@ impl LogStream {
             ));
         };
         let logs_dir = store.world_logs();
+        // A single image id replays its own run capture, so its header and its lines always come
+        // from the same run instead of a stale append-only `<image>.log`.
+        let image_run = (self.replay_ids.len() == 1)
+            .then(|| {
+                self.catalog
+                    .as_ref()
+                    .and_then(|index| index.newest_for_target(&self.replay_ids[0]))
+                    .filter(|record| record.kind == "image")
+                    .cloned()
+            })
+            .flatten();
         let mut readers = Vec::new();
         for id in &self.replay_ids {
+            if let Some(record) = &image_run {
+                let reader = read_range(
+                    &store.run_dir(),
+                    &record.run_id,
+                    self.since_ms,
+                    self.until_ms,
+                )
+                .map_err(|error| {
+                    Failure::new(
+                        "no-log",
+                        format!(
+                            "✗ cannot read run `{}` for `{id}`: {error}\nnext: retry with `slipfork logs -r last`",
+                            record.run_id
+                        ),
+                    )
+                })?;
+                readers.push((id.clone(), reader));
+                continue;
+            }
             match read_range(&logs_dir, id, self.since_ms, self.until_ms) {
                 Ok(reader) => readers.push((id.clone(), reader)),
                 Err(_) if !self.explicit => {}
@@ -738,13 +771,21 @@ impl LogStream {
             ));
         }
         let roster: Vec<String> = readers.iter().map(|(id, _)| id.clone()).collect();
-        if !emit(json!({
+        let mut frame = json!({
             "kind": "roster",
             "pod": "",
             "stream": "combined",
             "line": "",
             "pods": roster,
-        })) {
+        });
+        // One resolved capture still names its catalog record, so the replay's header describes the
+        // run its lines came from. A service capture keeps no header.
+        if let Some(record) = &image_run
+            && let Ok(value) = serde_json::to_value(record)
+        {
+            frame["run"] = value;
+        }
+        if !emit(frame) {
             return Ok(json!({ "closed": true }));
         }
         let mut merge = LogMerge::default();
@@ -760,6 +801,7 @@ impl LogStream {
                 emit(line_event(
                     &pod,
                     kind_name(line.kind),
+                    line.stream.as_str(),
                     &line.text,
                     Some(line.ts_ms),
                 ));
@@ -772,6 +814,7 @@ impl LogStream {
                     emit(line_event(
                         &pod,
                         kind_name(line.kind),
+                        line.stream.as_str(),
                         &line.text,
                         Some(line.ts_ms),
                     ));
@@ -788,12 +831,12 @@ impl LogStream {
     }
 }
 
-/// One daemon event carrying `ts_ms` only when the capture knew it.
-fn line_event(pod: &str, kind: &str, line: &str, ts_ms: Option<u64>) -> Value {
+/// One daemon event carrying `ts_ms` only when the capture knew it and always its stream.
+fn line_event(pod: &str, kind: &str, stream: &str, line: &str, ts_ms: Option<u64>) -> Value {
     let mut event = json!({
         "kind": kind,
         "pod": pod,
-        "stream": "combined",
+        "stream": stream,
         "line": line,
     });
     if let Some(ts_ms) = ts_ms {
@@ -920,7 +963,7 @@ mod tests {
         let mut capture = RunCapture::begin(&store, &project, "image", "app", "dockerfile .")
             .expect("begin a real run capture");
         capture
-            .append("failed-run-marker")
+            .append_stream(slipfork_world::Stream::Stdout, "failed-run-marker")
             .expect("append the line");
         let run_id = capture.run_id().to_owned();
         capture.finish("failed", 9).expect("finish the run");

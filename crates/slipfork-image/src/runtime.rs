@@ -1,7 +1,7 @@
 //! `RUN` execution through `crun`, one container per Dockerfile instruction.
 
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Stdio};
@@ -12,6 +12,32 @@ use crate::dockerfile::{CacheMount, Command as StepCommand, ImageConfig, Owner, 
 use crate::error::{Error, Result};
 
 const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+/// Which child stream one step-log line came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stream {
+    /// The `RUN` command's standard output.
+    Stdout,
+    /// The `RUN` command's standard error.
+    Stderr,
+}
+
+/// Typed sink for one step's live child output: every line keeps its stream and its order.
+pub struct StepLog<'a> {
+    sink: &'a mut dyn FnMut(Stream, &str),
+}
+
+impl<'a> StepLog<'a> {
+    /// Wraps the caller's line sink.
+    pub fn new(sink: &'a mut dyn FnMut(Stream, &str)) -> Self {
+        Self { sink }
+    }
+
+    /// Emits one line tagged with the stream that produced it.
+    pub fn line(&mut self, stream: Stream, text: &str) {
+        (self.sink)(stream, text);
+    }
+}
 
 /// Plain host values `crun` needs; the composition root injects all of them.
 #[derive(Debug, Clone)]
@@ -105,7 +131,7 @@ impl CrunStepRuntime {
         run: &RunSpec,
         cache: &[(CacheMount, PathBuf)],
         line: usize,
-        log: &mut dyn Write,
+        log: &mut StepLog<'_>,
     ) -> Result<()> {
         self.ensure_crun()?;
         fs::create_dir_all(&self.host.scratch_root)
@@ -165,7 +191,7 @@ impl CrunStepRuntime {
         &self,
         id: &str,
         bundle: &Path,
-        log: &mut dyn Write,
+        log: &mut StepLog<'_>,
     ) -> Result<std::process::ExitStatus> {
         let mut child = StdCommand::new(&self.host.crun)
             // `--cgroup-manager` is a crun global option: it must precede the subcommand.
@@ -186,7 +212,7 @@ impl CrunStepRuntime {
                     Error::io("run", &self.host.crun, source)
                 }
             })?;
-        let (sender, receiver) = mpsc::channel::<String>();
+        let (sender, receiver) = mpsc::channel::<(Stream, String)>();
         let readers: Vec<thread::JoinHandle<()>> = [
             child.stdout.take().map(Reader::stdout),
             child.stderr.take().map(Reader::stderr),
@@ -199,9 +225,8 @@ impl CrunStepRuntime {
         })
         .collect();
         drop(sender);
-        for line in receiver {
-            let _ = writeln!(log, "{line}");
-            let _ = log.flush();
+        for (stream, line) in receiver {
+            log.line(stream, &line);
         }
         for reader in readers {
             let _ = reader.join();
@@ -326,6 +351,14 @@ impl Reader {
     fn stderr(pipe: std::process::ChildStderr) -> Self {
         Self::Stderr(pipe)
     }
+
+    /// The stream this pipe carries.
+    fn stream(&self) -> Stream {
+        match self {
+            Self::Stdout(_) => Stream::Stdout,
+            Self::Stderr(_) => Stream::Stderr,
+        }
+    }
 }
 
 impl Read for Reader {
@@ -337,10 +370,11 @@ impl Read for Reader {
     }
 }
 
-fn stream_lines(reader: Reader, sender: &Sender<String>) {
+fn stream_lines(reader: Reader, sender: &Sender<(Stream, String)>) {
+    let stream = reader.stream();
     for line in BufReader::new(reader).lines() {
         let Ok(line) = line else { break };
-        if sender.send(line).is_err() {
+        if sender.send((stream, line)).is_err() {
             break;
         }
     }

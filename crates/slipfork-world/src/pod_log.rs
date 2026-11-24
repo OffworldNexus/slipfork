@@ -1,6 +1,7 @@
 //! Persistent capture files: one append-only `<store>/logs/<world>/<id>.log` per pod or image.
 //!
-//! Every line is written as `<epoch_ms>\tL|D\t<text>`, so replay can merge pods strictly by
+//! Every line is written as `<epoch_ms>\tO|E|L|D\t<text>` (`O` stdout, `E` stderr, `L` merged,
+//! `D` divider), so replay keeps each stream while merging pods strictly by
 //! timestamp instead of file order. Beside it lives the companion `<id>.idx`: fixed 16-byte
 //! big-endian `(ts_ms, byte_offset)` entries written on the first line and then at least every
 //! [`INDEX_LINES`] lines or [`INDEX_BYTES`] bytes. [`read_range`] binary-searches that index and
@@ -19,7 +20,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::control::FrameLines;
+use crate::control::{FrameLines, Stream};
 use crate::error::{Error, Result};
 
 /// Left half of the restart divider (`── api started ──`).
@@ -75,20 +76,23 @@ pub enum LogKind {
     Divider,
 }
 
-impl LogKind {
-    const fn marker(self) -> &'static str {
-        match self {
-            Self::Line => "L",
-            Self::Divider => "D",
-        }
+/// The framing marker for one row: `D` divider, `O`/`E` a tagged line, `L` merged output.
+fn marker(kind: LogKind, stream: Stream) -> &'static str {
+    match (kind, stream) {
+        (LogKind::Divider, _) => "D",
+        (LogKind::Line, Stream::Stdout) => "O",
+        (LogKind::Line, Stream::Stderr) => "E",
+        (LogKind::Line, Stream::Combined) => "L",
     }
+}
 
-    fn parse(marker: &[u8]) -> Self {
-        if marker == b"D" {
-            Self::Divider
-        } else {
-            Self::Line
-        }
+/// Decodes one framing marker into its kind and stream; anything else is legacy merged output.
+fn parse_marker(marker: &[u8]) -> (LogKind, Stream) {
+    match marker {
+        b"D" => (LogKind::Divider, Stream::Combined),
+        b"O" => (LogKind::Line, Stream::Stdout),
+        b"E" => (LogKind::Line, Stream::Stderr),
+        _ => (LogKind::Line, Stream::Combined),
     }
 }
 
@@ -99,17 +103,20 @@ pub struct LogLine {
     pub ts_ms: u64,
     /// Line or divider.
     pub kind: LogKind,
+    /// Which child stream produced it; `Combined` for merged or legacy captures.
+    pub stream: Stream,
     /// The text without its terminator.
     pub text: String,
 }
 
 impl LogLine {
-    /// Builds one line value; tests use this for deterministic ordering.
+    /// Builds one merged line value; tests use this for deterministic ordering.
     #[must_use]
     pub fn new(ts_ms: u64, kind: LogKind, text: impl Into<String>) -> Self {
         Self {
             ts_ms,
             kind,
+            stream: Stream::Combined,
             text: text.into(),
         }
     }
@@ -126,16 +133,21 @@ impl LogLine {
             return Self::new(0, LogKind::Line, String::from_utf8_lossy(raw));
         };
         let rest = &raw[tab + 1..];
-        let (kind, text) = match rest.iter().position(|byte| *byte == b'\t') {
+        let (kind, stream, text) = match rest.iter().position(|byte| *byte == b'\t') {
             Some(sep) => {
-                let kind = LogKind::parse(&rest[..sep]);
-                (kind, &rest[sep + 1..])
+                let (kind, stream) = parse_marker(&rest[..sep]);
+                (kind, stream, &rest[sep + 1..])
             }
-            None => (LogKind::Line, rest),
+            None => (LogKind::Line, Stream::Combined, rest),
         };
         let text = String::from_utf8_lossy(text);
         let text = text.trim_end_matches('\r');
-        Self::new(ts, kind, text)
+        Self {
+            ts_ms: ts,
+            kind,
+            stream,
+            text: text.to_owned(),
+        }
     }
 }
 
@@ -207,9 +219,19 @@ impl LogSink {
         self.append_at(now_ms(), kind, text)
     }
 
-    /// Appends one line with an explicit timestamp.
+    /// Appends one line with an explicit timestamp; the stream is the merged capture.
     pub fn append_at(&mut self, ts_ms: u64, kind: LogKind, text: &str) -> Result<()> {
-        let line = format!("{ts_ms}\t{}\t{}\n", kind.marker(), text);
+        let line = format!("{ts_ms}\t{}\t{}\n", marker(kind, Stream::Combined), text);
+        self.write_line(ts_ms, line)
+    }
+
+    /// Appends one timestamped stdout/stderr line, keeping its stream in the framing.
+    pub fn append_stream(&mut self, ts_ms: u64, stream: Stream, text: &str) -> Result<()> {
+        let line = format!("{ts_ms}\t{}\t{}\n", marker(LogKind::Line, stream), text);
+        self.write_line(ts_ms, line)
+    }
+
+    fn write_line(&mut self, ts_ms: u64, line: String) -> Result<()> {
         let offset = self.offset;
         self.file
             .write_all(line.as_bytes())
@@ -257,16 +279,17 @@ pub fn index_path(logs_root: &Path, id: &str) -> PathBuf {
     logs_root.join(format!("{id}.idx"))
 }
 
-/// Appends raw `bytes` to `<logs_root>/<id>.log` as framed [`LogKind::Line`] rows.
+/// Appends raw `bytes` tagged with their stream (`O` stdout, `E` stderr, `L` merged) to
+/// `<logs_root>/<id>.log` as [`LogKind::Line`] rows.
 ///
 /// This is the shared raw writer the native image builder calls for build output, so a failed
-/// build reads back through the same `<ts_ms>\tL\t<text>` format and index as captured pod output.
-/// The directory chain is created mode `0700` and both files mode `0600`.
-pub fn append(logs_root: &Path, id: &str, bytes: &[u8]) -> Result<()> {
+/// build reads back through the same `<ts_ms>\t<marker>\t<text>` format and index as captured pod
+/// output. The directory chain is created mode `0700` and both files mode `0600`.
+pub fn append_stream(logs_root: &Path, id: &str, stream: Stream, bytes: &[u8]) -> Result<()> {
     let mut sink = LogSink::open(logs_root, id)?;
     let text = String::from_utf8_lossy(bytes);
     for line in text.split_terminator('\n') {
-        sink.append(LogKind::Line, line.trim_end_matches('\r'))?;
+        sink.append_stream(now_ms(), stream, line.trim_end_matches('\r'))?;
     }
     Ok(())
 }

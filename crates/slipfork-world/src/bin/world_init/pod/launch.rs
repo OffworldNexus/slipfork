@@ -11,7 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use slipfork_world::control::FrameLines;
-use slipfork_world::pod_log::{CHUNK, LogKind, LogSink};
+use slipfork_world::pod_log::{CHUNK, LogSink, now_ms};
 use slipfork_world::{PodSpec, StoreLayout};
 
 use crate::shared::{LaunchClaim, PodInfo, WorldShared, exit_code, reap_zombies, wait_child};
@@ -299,10 +299,10 @@ pub(super) fn crun_run(
         .map_err(|source| Fault::cause(action.clone(), REMEDY_CRUN, source))?;
     let launcher_pid = i32::try_from(child.id()).unwrap_or_default();
     if let Some(stdout) = child.stdout.take() {
-        spawn_pump(stdout, Arc::clone(&sink));
+        spawn_pump(stdout, Arc::clone(&sink), slipfork_world::Stream::Stdout);
     }
     if let Some(stderr) = child.stderr.take() {
-        spawn_pump(stderr, Arc::clone(&sink));
+        spawn_pump(stderr, Arc::clone(&sink), slipfork_world::Stream::Stderr);
     }
     let code = wait_child(&mut child, shared, launcher_pid);
     if code != 0 {
@@ -330,7 +330,11 @@ fn spawn_line_reader<R: Read + Send + 'static>(
     })
 }
 
-fn spawn_pump<R: Read + Send + 'static>(mut reader: R, sink: Arc<Mutex<LogSink>>) {
+fn spawn_pump<R: Read + Send + 'static>(
+    mut reader: R,
+    sink: Arc<Mutex<LogSink>>,
+    stream: slipfork_world::Stream,
+) {
     thread::spawn(move || {
         let mut lines = FrameLines::new();
         let mut chunk = [0_u8; 8192];
@@ -339,7 +343,7 @@ fn spawn_pump<R: Read + Send + 'static>(mut reader: R, sink: Arc<Mutex<LogSink>>
                 Ok(0) => break,
                 Ok(read) => {
                     for raw in lines.feed(&chunk[..read], CHUNK) {
-                        append(&sink, &raw);
+                        append(&sink, &raw, stream);
                     }
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -347,15 +351,15 @@ fn spawn_pump<R: Read + Send + 'static>(mut reader: R, sink: Arc<Mutex<LogSink>>
             }
         }
         if let Some(raw) = lines.take_partial() {
-            append(&sink, &raw);
+            append(&sink, &raw, stream);
         }
     });
 }
 
-fn append(sink: &Mutex<LogSink>, raw: &[u8]) {
+fn append(sink: &Mutex<LogSink>, raw: &[u8], stream: slipfork_world::Stream) {
     let text = String::from_utf8_lossy(raw);
     let text = text.trim_end_matches('\r');
     if let Ok(mut sink) = sink.lock() {
-        let _ = sink.append(LogKind::Line, text);
+        let _ = sink.append_stream(now_ms(), stream, text);
     }
 }

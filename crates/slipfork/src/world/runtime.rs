@@ -452,9 +452,8 @@ impl WorldRuntime {
         // independent nodes never stall behind a long `pre-deploy` seed.
         let mut tail: VecDeque<String> = VecDeque::new();
         let code = self
-            .run_pod_once(&spec, &mut |_stream, line| {
-                let _ = writeln!(log, "{line}");
-                let _ = log.flush();
+            .run_pod_once(&spec, &mut |stream, line| {
+                log.append_stream(stream, line);
                 if tail.len() == 10 {
                     tail.pop_front();
                 }
@@ -467,8 +466,7 @@ impl WorldRuntime {
             // A command that printed nothing still leaves one real line in its run capture, so a
             // failed step is never reported against an empty `slipfork logs -r <id>`.
             let line = exit_line(&command, code);
-            let _ = writeln!(log, "{line}");
-            let _ = log.flush();
+            log.append_stream(Stream::Stdout, &line);
             let mut message = line;
             for line in tail {
                 message.push_str("\n  ");

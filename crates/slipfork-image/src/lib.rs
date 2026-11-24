@@ -19,7 +19,7 @@
 //!
 //! use slipfork_image::{
 //!     Architecture, BuildArgs, BuildRequest, Credentials, ImageLayout, NativeImageBuilder,
-//!     OciPuller, StepHost, StepLayout,
+//!     OciPuller, StepHost, StepLayout, StepLog,
 //! };
 //! use slipfork_world::{BtrfsEngine, StoreLayout, WorldEngine};
 //!
@@ -43,12 +43,14 @@
 //!     Architecture::X86_64,
 //!     host,
 //! );
+//! let mut sink = |_: slipfork_image::Stream, _: &str| {};
+//! let mut log = StepLog::new(&mut sink);
 //! let report = builder.build(&BuildRequest {
 //!     context: "/mnt/btrfs/projects/demo".into(),
 //!     dockerfile: "/mnt/btrfs/projects/demo/Dockerfile".into(),
 //!     args: BuildArgs::new(),
 //!     target: None,
-//! }, &mut std::io::sink())?;
+//! }, &mut log)?;
 //! println!("{} {}", report.key, report.rootfs.display());
 //! # Ok(())
 //! # }
@@ -86,7 +88,7 @@ pub use manifest::{Descriptor, ImageIndex, ImageManifest, Platform};
 pub use puller::{OciPuller, PulledImage};
 pub use reference::ImageReference;
 pub use registry::{Credentials, RegistryClient, RegistryScheme};
-pub use runtime::{CrunStepRuntime, StepHost};
+pub use runtime::{CrunStepRuntime, StepHost, StepLog, Stream};
 pub use steps::{StepCache, StepLayout, StepRecord};
 pub use unpack::LayerUnpacker;
 

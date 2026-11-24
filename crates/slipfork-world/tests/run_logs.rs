@@ -5,6 +5,7 @@
 //! nothing behind.
 
 use slipfork_world::LogStore;
+use slipfork_world::Stream;
 use slipfork_world::WorldName;
 use slipfork_world::pod_log::read_range;
 use slipfork_world::run_log::{LAST_FAILED_FILE, LAST_FILE, RunCapture};
@@ -39,9 +40,11 @@ fn an_executed_step_mints_one_unique_id_capture_pair_and_catalog_line() {
             .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
         "lowercase hex: {first_id}"
     );
-    first.append("Resolved 12 packages").expect("append stdout");
     first
-        .append("error: Failed to resolve `numpy==9`")
+        .append_stream(Stream::Stdout, "Resolved 12 packages")
+        .expect("append stdout");
+    first
+        .append_stream(Stream::Stderr, "error: Failed to resolve `numpy==9`")
         .expect("append stderr");
     first.finish("ready", 41).expect("finish the run");
 
@@ -49,7 +52,9 @@ fn an_executed_step_mints_one_unique_id_capture_pair_and_catalog_line() {
         .expect("begin a second capture");
     let second_id = second.run_id().to_owned();
     assert_ne!(first_id, second_id, "ids are unique per executed step");
-    second.append("seeded 3 rows").expect("append");
+    second
+        .append_stream(Stream::Stdout, "seeded 3 rows")
+        .expect("append");
     second.finish("failed", 1_234).expect("finish the run");
 
     let dir = store.run_dir();
@@ -168,7 +173,9 @@ fn concurrent_workers_keep_every_record_and_no_torn_line() {
                     let mut capture =
                         RunCapture::begin(&store, &project, "setup", &target, "uv sync")
                             .expect("begin a concurrent capture");
-                    capture.append("resolved 12 packages").expect("append");
+                    capture
+                        .append_stream(Stream::Stdout, "resolved 12 packages")
+                        .expect("append");
                     capture.finish("ready", 3).expect("finish");
                 }
             })

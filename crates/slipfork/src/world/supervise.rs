@@ -411,6 +411,17 @@ impl BootSink {
         let _ = writeln!(self.log, "{message}");
         let _ = self.log.flush();
     }
+
+    /// Appends one stream-tagged child line to the stderr mirror and this step's run capture.
+    pub(super) fn append_stream(&mut self, stream: slipfork_world::Stream, line: &str) {
+        let text = strip_ansi(line);
+        let text = text.trim_end_matches('\r');
+        if text.trim().is_empty() {
+            return;
+        }
+        let _ = writeln!(self.mirror, "{text}");
+        self.log.append_stream(stream, text);
+    }
 }
 
 impl Write for BootSink {
@@ -458,9 +469,9 @@ impl RunTarget {
             })
     }
 
-    fn append(&mut self, text: &str) {
+    fn append_stream(&mut self, stream: slipfork_world::Stream, text: &str) {
         if let Some(capture) = &mut self.capture {
-            let _ = capture.append(text);
+            let _ = capture.append_stream(stream, text);
         }
     }
 
@@ -500,14 +511,22 @@ impl EventLog {
     fn forward(&self, line: &[u8]) {
         let text = String::from_utf8_lossy(line);
         let text = strip_ansi(&text);
-        let text = text.trim_end_matches('\r');
+        self.emit(slipfork_world::Stream::Stdout, text.trim_end_matches('\r'));
+    }
+
+    fn append_stream(&mut self, stream: slipfork_world::Stream, text: &str) {
+        let text = strip_ansi(text);
+        self.emit(stream, text.trim_end_matches('\r'));
+    }
+
+    fn emit(&self, stream: slipfork_world::Stream, text: &str) {
         if text.trim().is_empty() {
             return;
         }
         if let Some(run) = &self.run
             && let Ok(mut target) = run.lock()
         {
-            target.append(text);
+            target.append_stream(stream, text);
         }
         let frame = json!({
             "event": "log",
@@ -516,6 +535,7 @@ impl EventLog {
             "total": self.total,
             "label": self.label,
             "name": self.name,
+            "stream": stream.as_str(),
         });
         if let Ok(mut emitter) = self.emitter.lock() {
             emitter.send(frame);
@@ -757,7 +777,7 @@ mod tests {
         // The runtime writes this synthetic line precisely so the capture is never empty; the test
         // replays whatever the production formatter produced.
         let exit = crate::world::runtime::exit_line("uv sync", 2);
-        target.append(&exit);
+        target.append_stream(slipfork_world::Stream::Stdout, &exit);
         assert_eq!(target.finish("failed", 7).as_deref(), Some(run_id.as_str()));
 
         let mut reader = slipfork_world::pod_log::read_range(&store.run_dir(), &run_id, None, None)
