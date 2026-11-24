@@ -30,7 +30,12 @@ const ROUTE: [Column; 5] = [
     Column::left(),
     Column::left(),
 ];
-const SUPPORT: [Column; 3] = [Column::left(), Column::left(), Column::left()];
+const SUPPORT: [Column; 4] = [
+    Column::left(),
+    Column::left(),
+    Column::left(),
+    Column::left(),
+];
 
 /// Every precomputed column grid for one render.
 struct Widths {
@@ -57,9 +62,10 @@ impl Widths {
             }
             for row in &rows.support {
                 support.push(vec![
-                    row.id.clone(),
-                    row.descriptor.clone(),
+                    row.keyword.clone(),
+                    row.target.clone(),
                     row.state.word.to_owned(),
+                    row.command.clone().unwrap_or_default(),
                 ]);
             }
         }
@@ -125,7 +131,7 @@ pub fn render(reply: &PsReply, options: &Options) -> String {
     if worlds.is_empty() {
         return format!(
             "{}\n",
-            Palette::new(options.color).dim("○ No worlds running")
+            Palette::new(options.color).meta("○ No worlds running")
         );
     }
     let projected: Vec<WorldRows<'_>> = worlds.iter().map(|world| project(world)).collect();
@@ -240,11 +246,11 @@ fn render_world(
     let world = rows.world;
     let table = Table::new(&HEADER);
     if world.state == PsWorldState::Stopped {
-        out.push_str(&palette.dim("○ "));
+        out.push_str(&palette.meta("○ "));
         let cells = vec![
-            palette.dim(display_name(world)),
-            palette.dim(&display_path(&world.path, options.home.as_deref())),
-            palette.dim("stopped"),
+            palette.meta(display_name(world)),
+            palette.meta(&display_path(&world.path, options.home.as_deref())),
+            palette.status("stopped"),
             String::new(),
         ];
         out.push_str(&table.line(&widths.header, &cells));
@@ -253,7 +259,7 @@ fn render_world(
         out.push_str(&palette.tint("●", "32"));
         out.push(' ');
         let pid = match world.supervisor_pid {
-            Some(pid) if options.verbose => palette.dim(&format!("pid {pid}")),
+            Some(pid) if options.verbose => palette.meta(&format!("pid {pid}")),
             _ => String::new(),
         };
         let cells = vec![
@@ -297,11 +303,11 @@ fn render_stopped_forks(
     out.push('\n');
     let table = Table::new(&HEADER);
     for fork in forks {
-        out.push_str(&palette.dim("○ "));
+        out.push_str(&palette.meta("○ "));
         let cells = vec![
-            palette.dim(&fork.name),
-            palette.dim(&display_path(&fork.path, options.home.as_deref())),
-            palette.dim("stopped"),
+            palette.meta(&fork.name),
+            palette.meta(&display_path(&fork.path, options.home.as_deref())),
+            palette.status("stopped"),
             String::new(),
         ];
         out.push_str(&table.line(&widths.header, &cells));
@@ -317,19 +323,19 @@ fn render_domain(
     widths: &Widths,
 ) {
     out.push_str("  ");
-    out.push_str(&palette.dim(if last { "└─ " } else { "├─ " }));
+    out.push_str(&palette.meta(if last { "└─ " } else { "├─ " }));
     out.push_str(&palette.url(&format!("http://{}", domain.host)));
     out.push('\n');
     let branch = if last { "   " } else { "│  " };
     let table = Table::new(&ROUTE);
     for (index, row) in domain.rows.iter().enumerate() {
         out.push_str("  ");
-        out.push_str(&palette.dim(branch));
+        out.push_str(&palette.meta(branch));
         let last_row = index + 1 == domain.rows.len();
-        out.push_str(&palette.dim(if last_row { "└─ " } else { "├─ " }));
+        out.push_str(&palette.meta(if last_row { "└─ " } else { "├─ " }));
         let cells = [
-            palette.tint(&row.path, "1;33"),
-            palette.dim("->"),
+            palette.meta(&row.path),
+            palette.meta("->"),
             palette.value(&row.target),
             match &row.kind {
                 Some(kind) => palette.kind(kind),
@@ -344,21 +350,22 @@ fn render_domain(
 
 fn render_support(out: &mut String, rows: &[SupportRow], palette: Palette, widths: &Widths) {
     out.push_str("  ");
-    out.push_str(&palette.dim("└─ "));
-    out.push_str(&palette.dim("support"));
+    out.push_str(&palette.meta("└─ "));
+    out.push_str(&palette.meta("support"));
     out.push('\n');
     let table = Table::new(&SUPPORT);
     for (index, row) in rows.iter().enumerate() {
         out.push_str("     ");
-        out.push_str(&palette.dim(if index + 1 == rows.len() {
+        out.push_str(&palette.meta(if index + 1 == rows.len() {
             "└─ "
         } else {
             "├─ "
         }));
         let cells = [
-            row.id.clone(),
-            row.descriptor.clone(),
+            palette.verb(&row.keyword),
+            palette.value(&row.target),
             palette.status(row.state.word),
+            row.command.clone().unwrap_or_default(),
         ];
         out.push_str(&table.line(&widths.support, &cells));
         out.push('\n');

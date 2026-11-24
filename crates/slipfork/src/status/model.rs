@@ -80,7 +80,7 @@ pub fn no_world_line(cwd: &Path, home: Option<&Path>, color: bool) -> String {
         "{}\n",
         paint(
             &format!("○ No world for {}", display_path(cwd, home)),
-            "2",
+            "38;5;244",
             color
         )
     )

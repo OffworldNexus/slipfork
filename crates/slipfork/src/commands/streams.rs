@@ -322,7 +322,7 @@ impl Renderer {
         match kind {
             "eof" => {}
             "divider" => {
-                let _ = emit(&format!("{}\n", self.palette.dim(line)));
+                let _ = emit(&format!("{}\n", self.palette.meta(line)));
             }
             _ if self.clock => {
                 // The v3 replay row: 2-space indent, a dim clock in the gutter, then the glyph.
@@ -331,9 +331,9 @@ impl Renderer {
                     || format!("  {glyph} {line}"),
                     |ts| {
                         let clock = if self.timestamps {
-                            self.palette.dim(&format_ts(ts))
+                            self.palette.meta(&format_ts(ts))
                         } else {
-                            self.palette.dim(&format_clock(ts))
+                            self.palette.meta(&format_clock(ts))
                         };
                         format!("  {clock} {glyph} {line}")
                     },
@@ -344,7 +344,7 @@ impl Renderer {
             _ if !self.gutter => {
                 let stamp = if self.timestamps {
                     ts_ms
-                        .map(|ts| format!("{} ", self.palette.dim(&format_ts(ts))))
+                        .map(|ts| format!("{} ", self.palette.meta(&format_ts(ts))))
                         .unwrap_or_default()
                 } else {
                     String::new()
@@ -354,7 +354,7 @@ impl Renderer {
             _ => {
                 let stamp = if self.timestamps {
                     ts_ms
-                        .map(|ts| format!("{} ", self.palette.dim(&format_ts(ts))))
+                        .map(|ts| format!("{} ", self.palette.meta(&format_ts(ts))))
                         .unwrap_or_default()
                 } else {
                     String::new()

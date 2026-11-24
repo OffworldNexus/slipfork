@@ -316,22 +316,25 @@ mod tests {
                 "fork",
                 "snapshot",
                 "",
+                Some("project + world data"),
                 34,
                 true,
-                "✓ [1/5] fork   snapshot      34ms",
+                "✓ [1/5] fork   snapshot      done  project + world data  34ms",
             ),
             (
                 "git",
                 "branch salut",
                 "",
+                Some("checked out"),
                 3,
                 true,
-                "✓ [2/5] git    branch salut  3ms",
+                "✓ [2/5] git    branch salut  done  checked out  3ms",
             ),
             (
                 "image",
                 "api",
                 "cached",
+                None,
                 7,
                 true,
                 "✓ [3/5] image  api           cached  7ms",
@@ -340,6 +343,7 @@ mod tests {
                 "setup",
                 "uv sync",
                 "up to date",
+                None,
                 0,
                 false,
                 "• [4/5] setup  uv sync       up to date  <1ms",
@@ -348,12 +352,13 @@ mod tests {
                 "service",
                 "web",
                 "running",
+                None,
                 204,
                 true,
                 "✓ [5/5] start  web           running  204ms",
             ),
         ];
-        for (position, (kind, name, state, millis, success, expected)) in
+        for (position, (kind, name, state, command, millis, success, expected)) in
             rows.into_iter().enumerate()
         {
             assert_eq!(progress.settled(kind, name, (0, 0)), (position + 1, 5));
@@ -361,6 +366,7 @@ mod tests {
                 kind,
                 name,
                 state,
+                command,
                 millis,
                 run_id: None,
                 success,

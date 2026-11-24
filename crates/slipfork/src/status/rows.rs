@@ -32,12 +32,14 @@ pub struct RoutedRow {
 /// One unrouted service, resource, or orphaned pod.
 #[derive(Debug, Clone)]
 pub struct SupportRow {
+    /// Step keyword: `service`, `postgres 18`, or `redis 7`.
+    pub keyword: String,
     /// Service or resource id.
-    pub id: String,
-    /// `service`, `postgres 18`, or `redis 7`.
-    pub descriptor: String,
+    pub target: String,
     /// Lifecycle word.
     pub state: State,
+    /// Declared `run:` command, printed plain in the final column when known.
+    pub command: Option<String>,
 }
 
 /// The lifecycle word shown in the final column.
@@ -101,9 +103,10 @@ pub fn project(world: &PsWorld) -> WorldRows<'_> {
             }
         } else {
             support.push(SupportRow {
-                id: service.id.clone(),
-                descriptor: descriptor(service),
+                keyword: descriptor(service),
+                target: service.id.clone(),
                 state,
+                command: service.command.clone(),
             });
         }
     }

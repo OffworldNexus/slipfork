@@ -27,7 +27,8 @@ fn reply() -> slipfork::ps::PsReply {
             "services": [
                 { "id": "api", "kind": "service", "running": true, "port": 8000,
                   "routes": [{ "prefix": "/api", "port": 8000, "mode": "preserve" }] },
-                { "id": "worker", "kind": "service", "running": true },
+                { "id": "worker", "kind": "service", "running": true,
+                  "command": "python3 -m http.server 8195" },
                 { "id": "front", "kind": "service", "running": true, "port": 5173,
                   "routes": [{ "prefix": "/", "port": 5173, "mode": "preserve" }] },
                 { "id": "mailpit", "kind": "service", "running": true, "port": 8025,
@@ -82,9 +83,9 @@ fn the_flat_domain_tree_renders_exact_aligned_lines() {
         "  ├─ http://assets.demo.localhost\n",
         "  │  └─ /        ->  assets   s3 (public-read)  running\n",
         "  └─ support\n",
-        "     ├─ worker  service      running\n",
-        "     ├─ pg      postgres 18  running\n",
-        "     └─ cache   redis 7      running\n",
+        "     ├─ service      worker  running  python3 -m http.server 8195\n",
+        "     ├─ postgres 18  pg      running\n",
+        "     └─ redis 7      cache   running\n",
         "\n",
         "● feat-auth  ~/demo/.forks/feat-auth\n",
         "  └─ http://feat-auth--demo.localhost\n",
@@ -168,15 +169,15 @@ fn palette_roles_style_the_tree_and_plain_renders_have_zero_ansi() {
         &Options::new(true).with_home(Some(PathBuf::from("/home/me"))),
     );
     for token in [
-        "\u{1b}[2m├─ \u{1b}[0m",
+        "\u{1b}[38;5;244m├─ \u{1b}[0m",
         "\u{1b}[1;4;36mhttp://demo.localhost\u{1b}[0m",
-        "\u{1b}[1;33m/api\u{1b}[0m",
-        "\u{1b}[1;37mfront\u{1b}[0m",
+        "\u{1b}[38;5;244m/api\u{1b}[0m",
+        "\u{1b}[1mfront\u{1b}[0m",
         "\u{1b}[36ms3 (private)\u{1b}[0m",
         "\u{1b}[32mrunning\u{1b}[0m",
-        "\u{1b}[2msupport\u{1b}[0m",
-        "\u{1b}[1;37mdemo",
-        "\u{1b}[1;36m~/demo\u{1b}[0m",
+        "\u{1b}[38;5;244msupport\u{1b}[0m",
+        "\u{1b}[1mdemo",
+        "\u{1b}[38;5;244m~/demo\u{1b}[0m",
     ] {
         assert!(
             colored.contains(token),
@@ -200,12 +201,9 @@ fn orphaned_pods_render_bold_yellow_in_support() {
     }))
     .expect("payload parses");
     let text = status::render(&reply, &Options::new(false));
-    assert!(text.contains("beta  service  orphaned"), "{text}");
+    assert!(text.contains("service  beta  orphaned"), "{text}");
     let colored = status::render(&reply, &Options::new(true));
-    assert!(
-        colored.contains("\u{1b}[1;33morphaned\u{1b}[0m"),
-        "{colored}"
-    );
+    assert!(colored.contains("\u{1b}[33morphaned\u{1b}[0m"), "{colored}");
 }
 
 #[test]

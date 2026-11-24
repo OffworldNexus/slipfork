@@ -1,21 +1,23 @@
 ---
 id: M3.121
-title: "Image cache ignores Dockerfile edits: changed RUN reuses the old image"
+title: "Build-context COPY edits do not rebuild; M3.115's live test fails at HEAD"
 kind: task
-status: superseded
+status: ready
 owner: implementer
 priority: 3
-depends_on: []
+depends_on: [M3.118]
 paths:
-  - "crates/slipfork-image/src/**"
+  - "crates/slipfork-image/src/context.rs"
+  - "crates/slipfork-image/src/inputs.rs"
+  - "crates/slipfork-image/src/builder/**"
   - crates/slipfork/src/world/runtime/images.rs
-  - "crates/slipfork/src/world/runtime/images/**"
   - "crates/slipfork-image/tests/critical_dockerfile_live.rs"
+  - crates/slipfork/tests/critical_world_journey.rs
 attempts: 0
 max_attempts: 3
 escalation: none
 created: "2026-11-24T17:46"
-updated: "2026-11-24T17:47"
+updated: "2026-11-24T19:20"
 ---
 
 # Problem (found by lead during M3.117 VM capture, binary at the M3.117 tree)

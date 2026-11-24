@@ -40,6 +40,9 @@ pub struct OuterWidths {
     pub kind: usize,
     /// Widest outer target (`api`, `uv sync`, `web`).
     pub target: usize,
+    /// Widest observed lifecycle word (`running`, `ready`, `up to date`), so a row with a shorter
+    /// state never shifts the command and timing columns.
+    pub state: usize,
 }
 
 /// Measures the outer kind and target columns from the complete announced plan.
@@ -53,7 +56,11 @@ pub fn outer_widths(rows: &[(String, String)]) -> OuterWidths {
     widths
 }
 
-/// Renders one outer `[i/n]` row at column 0 in the plan's shared `kind` and `target` columns.
+/// Renders one outer `[i/n]` row at column 0 in the plan's shared columns.
+///
+/// Schema: `icon | [i/n] | keyword | target | state | command | timing`. The lifecycle `state` is
+/// always its own cell (styled by [`Palette::status`]); the `command` is plain and omitted when it
+/// equals the target, so a state word is never pushed into the command slot.
 #[expect(
     clippy::too_many_arguments,
     reason = "cohesive pure formatter over the outer row's atomic cells"
@@ -64,7 +71,8 @@ pub fn outer_row(
     count: Option<(usize, usize)>,
     verb: &str,
     target: &str,
-    detail: Option<&str>,
+    state: &str,
+    command: Option<&str>,
     millis: Option<u64>,
     widths: &OuterWidths,
     palette: Palette,
@@ -76,7 +84,7 @@ pub fn outer_row(
         && index > 0
         && total > 0
     {
-        row.push_str(&palette.dim(&format!("[{index}/{total}]")));
+        row.push_str(&palette.meta(&format!("[{index}/{total}]")));
         row.push(' ');
     }
     push_padded(
@@ -92,13 +100,25 @@ pub fn outer_row(
         target.chars().count(),
         widths.target,
     );
-    if let Some(detail) = detail.filter(|text| !text.is_empty()) {
+    let state = state.trim();
+    let state_width = widths.state.max(state.chars().count());
+    row.push_str("  ");
+    push_padded(
+        &mut row,
+        &palette.status(state),
+        state.chars().count(),
+        state_width,
+    );
+    if let Some(command) = command
+        .map(str::trim)
+        .filter(|text| !text.is_empty() && *text != target.trim())
+    {
         row.push_str("  ");
-        row.push_str(detail);
+        row.push_str(command);
     }
     if let Some(millis) = millis {
         row.push_str("  ");
-        row.push_str(&palette.dim(&elapsed_text(millis)));
+        row.push_str(&palette.meta(&elapsed_text(millis)));
     }
     while row.ends_with(' ') {
         row.pop();
@@ -120,13 +140,13 @@ pub fn running_row(
 ) -> String {
     let palette = Palette::new(true);
     let mark = spinner.to_string();
-    let state = palette.status("running");
     outer_row(
         &mark,
         (index > 0 && total > 0).then_some((index, total)),
         outer_verb(kind),
         name,
-        Some(&state),
+        "running",
+        None,
         Some(millis),
         widths,
         palette,
@@ -174,8 +194,10 @@ pub struct Node<'a> {
     pub kind: &'a str,
     /// Node name, printed bold.
     pub name: &'a str,
-    /// Raw state from the daemon; [`completed_row`] lowercases it into the plain detail cell.
+    /// Raw state from the daemon; [`completed_row`] lowercases it into the state cell.
     pub state: &'a str,
+    /// Plain command/detail for a prep row, shown only in the command column.
+    pub command: Option<&'a str>,
     /// Wall time the node took, rendered by [`elapsed_text`].
     pub millis: u64,
     /// Minted run id for a step that executed work; `None` for a cache hit.
@@ -188,10 +210,21 @@ impl<'a> Node<'a> {
     /// Projects one `finished`/`up-to-date` event frame into a row description.
     #[must_use]
     pub fn from_event(event: &'a Value) -> Option<Self> {
+        let state = event["state"].as_str().unwrap_or_default();
+        // A join/prep frame carries only a `detail` phrase, which is its command-column detail; a
+        // lifecycle frame keeps any explicit `command` and never borrows a human `detail`.
+        let command = event["command"].as_str().or_else(|| {
+            if state.is_empty() {
+                event["detail"].as_str()
+            } else {
+                None
+            }
+        });
         Some(Self {
             kind: event["kind"].as_str()?,
             name: event["name"].as_str().or_else(|| event["label"].as_str())?,
-            state: event["state"].as_str().unwrap_or_default(),
+            state,
+            command,
             millis: event["duration_ms"]
                 .as_u64()
                 .or_else(|| event["elapsed_ms"].as_u64())?,
@@ -268,13 +301,13 @@ fn assemble(
         format!(
             "[{}{}]",
             "█".repeat(filled),
-            palette.dim(&"░".repeat(cells - filled)),
+            palette.meta(&"░".repeat(cells - filled)),
         )
     };
-    let counter = palette.dim(&counter);
+    let counter = palette.meta(&counter);
     let pct = palette.tint(&pct, "1");
     let label = palette.tint(label, "1");
-    let seconds = palette.dim(&seconds);
+    let seconds = palette.meta(&seconds);
 
     if let Some(cells) = pane_geometry(width) {
         let full = format!(
@@ -316,7 +349,7 @@ pub fn ready_row(url: &str, styled: bool) -> String {
     format!(
         "{} {} {}",
         palette.tint("✓ Ready", "1;32"),
-        palette.dim("->"),
+        palette.meta("->"),
         palette.url(url),
     )
 }
@@ -329,8 +362,8 @@ pub fn forked_row(fork: &str, millis: u64, url: &str, styled: bool) -> String {
         "{} {} {} {} {}",
         palette.icon_ok(),
         palette.tint(fork, "1"),
-        palette.dim(&format!("({})", elapsed_text(millis))),
-        palette.dim("->"),
+        palette.meta(&format!("({})", elapsed_text(millis))),
+        palette.meta("->"),
         palette.url(url),
     )
 }
@@ -343,7 +376,7 @@ pub fn stopped_row(world: &str, millis: u64, styled: bool) -> String {
         "{} {} {}",
         palette.tint("✓ Stopped", "32"),
         palette.tint(world, "1"),
-        palette.dim(&format!("({})", elapsed_text(millis))),
+        palette.meta(&format!("({})", elapsed_text(millis))),
     )
 }
 
@@ -364,15 +397,21 @@ pub fn completed_row(
     let mark = if node.success {
         palette.icon_ok()
     } else {
-        palette.dim("•")
+        palette.meta("•")
     };
-    let detail = node.state.to_lowercase();
+    // A prep/join frame has no lifecycle state of its own: it settled cleanly.
+    let state = if node.state.trim().is_empty() {
+        "done"
+    } else {
+        node.state.trim()
+    };
     outer_row(
         &mark,
         (index > 0 && total > 0).then_some((index, total)),
         outer_verb(node.kind),
         node.name,
-        Some(&detail),
+        &state.to_lowercase(),
+        node.command,
         Some(node.millis),
         widths,
         palette,
@@ -381,7 +420,32 @@ pub fn completed_row(
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::{Node, OuterWidths, completed_row, outer_widths};
+
+    /// A prep frame has no lifecycle state: its `detail` is the command cell and state reads `done`.
+    #[test]
+    fn a_prep_frame_lands_its_detail_in_the_command_column() {
+        let widths = outer_widths(&[("fork".to_owned(), "snapshot".to_owned())]);
+        let snapshot = json!({
+            "event": "finished", "step": 1, "total": 5, "kind": "fork",
+            "name": "snapshot", "detail": "project + world data", "elapsed_ms": 34,
+        });
+        let node = Node::from_event(&snapshot).expect("a complete prep frame parses");
+        assert_eq!(node.command, Some("project + world data"));
+        assert_eq!(
+            completed_row(&node, 1, 5, &widths, false),
+            "✓ [1/5] fork  snapshot  done  project + world data  34ms"
+        );
+        let styled = completed_row(&node, 1, 5, &widths, true);
+        assert!(styled.contains("\u{1b}[32mdone\u{1b}[0m"), "{styled:?}");
+        assert!(
+            styled.contains("project + world data  \u{1b}[38;5;244m34ms"),
+            "{styled:?}"
+        );
+        assert!(!styled.contains("\u{1b}[2m"), "no SGR 2: {styled:?}");
+    }
 
     #[test]
     fn plan_widths_hold_every_row_in_the_same_columns() {
@@ -391,13 +455,21 @@ mod tests {
             ("service".to_owned(), "web".to_owned()),
         ];
         let widths = outer_widths(&plan);
-        assert_eq!(widths, OuterWidths { kind: 5, target: 7 });
+        assert_eq!(
+            widths,
+            OuterWidths {
+                kind: 5,
+                target: 7,
+                state: 0
+            }
+        );
         let cached = Node {
             kind: "image",
             name: "api",
             state: "cached",
             millis: 8,
             run_id: None,
+            command: None,
             success: true,
         };
         let settled = Node {
@@ -406,6 +478,7 @@ mod tests {
             state: "up to date",
             millis: 0,
             run_id: None,
+            command: None,
             success: false,
         };
         assert_eq!(
@@ -414,7 +487,7 @@ mod tests {
         );
         assert_eq!(
             completed_row(&cached, 1, 3, &widths, true),
-            "\u{1b}[32m✓\u{1b}[0m \u{1b}[2m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      cached  \u{1b}[2m8ms\u{1b}[0m"
+            "\u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      \u{1b}[32mcached\u{1b}[0m  \u{1b}[38;5;244m8ms\u{1b}[0m"
         );
         assert_eq!(
             completed_row(&settled, 2, 3, &widths, false),

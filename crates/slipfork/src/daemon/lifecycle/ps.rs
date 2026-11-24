@@ -283,6 +283,7 @@ impl WorldView {
                         routes: Vec::new(),
                         orphaned: true,
                         image: None,
+                        command: None,
                     });
                 }
             }
@@ -384,6 +385,7 @@ fn live_service(pod: &PodStatus) -> PsService {
         routes: Vec::new(),
         orphaned: false,
         image: None,
+        command: None,
     }
 }
 

@@ -74,34 +74,51 @@ impl Phase {
         if self.is_inner() {
             self.inner_row("→", None, palette)
         } else {
-            self.outer_row("→", None, None, palette)
+            self.outer_row("→", "running", Some(self.shown_args()), None, palette)
         }
     }
 
     /// The settled `✓ …` row that collapses the step.
+    ///
+    /// An inner Dockerfile step has no lifecycle cell; an outer row keeps a real state word
+    /// (`running` for the boot command that just reached it) instead of the non-lifecycle `done`.
     pub(super) fn settled_row(&self, millis: u64, palette: Palette) -> String {
         let mark = palette.icon_ok();
         if self.is_inner() {
             self.inner_row(&mark, Some(millis), palette)
         } else {
-            self.outer_row(&mark, None, Some(millis), palette)
+            self.outer_row(
+                &mark,
+                "running",
+                Some(self.shown_args()),
+                Some(millis),
+                palette,
+            )
         }
     }
 
-    /// The settled outer row for a cache hit: a dim bullet plus the `up to date` detail.
+    /// The settled outer row: its lifecycle `state` follows the frame, the command stays separate.
     pub(super) fn settled_outer(
         &self,
         millis: u64,
-        detail: Option<&str>,
+        state: &str,
+        command: Option<&str>,
         stale: bool,
         palette: Palette,
     ) -> String {
         let mark = if stale {
-            palette.dim("•")
+            palette.meta("•")
         } else {
             palette.icon_ok()
         };
-        self.outer_row(&mark, detail, Some(millis), palette)
+        // A cache hit ran no command; a live service keeps its run command in the command column,
+        // while a prep frame supplies its own `detail` phrase as the override.
+        let command = if stale {
+            None
+        } else {
+            command.or(Some(self.shown_args()))
+        };
+        self.outer_row(&mark, state, command, Some(millis), palette)
     }
 
     /// The expanded `✗ …` row printed with a failed step's output.
@@ -110,7 +127,7 @@ impl Phase {
         if self.is_inner() {
             self.inner_row(&mark, None, palette)
         } else {
-            self.outer_row(&mark, None, None, palette)
+            self.outer_row(&mark, "failed", None, None, palette)
         }
     }
 
@@ -119,7 +136,7 @@ impl Phase {
         if self.is_inner() {
             self.inner_row("→", None, palette)
         } else {
-            self.outer_row("→", Some(""), None, palette)
+            self.outer_row("→", "running", Some(self.shown_args()), None, palette)
         }
     }
 
@@ -140,7 +157,13 @@ impl Phase {
         let row = if self.is_inner() {
             self.inner_row(&mark, Some(millis), palette)
         } else {
-            self.outer_row(&mark, None, Some(millis), palette)
+            self.outer_row(
+                &mark,
+                "running",
+                Some(self.shown_args()),
+                Some(millis),
+                palette,
+            )
         };
         truncate_ansi(&row, width)
     }
@@ -151,7 +174,7 @@ impl Phase {
         row.push_str(mark);
         row.push(' ');
         if let Some((index, total)) = self.count {
-            row.push_str(&palette.dim(&format!("{index}/{total}")));
+            row.push_str(&palette.meta(&format!("{index}/{total}")));
             row.push(' ');
         }
         push_padded(
@@ -167,7 +190,7 @@ impl Phase {
         }
         if let Some(millis) = millis {
             row.push_str("  ");
-            row.push_str(&palette.dim(&elapsed_text(millis)));
+            row.push_str(&palette.meta(&elapsed_text(millis)));
         }
         while row.ends_with(' ') {
             row.pop();
@@ -175,21 +198,22 @@ impl Phase {
         row
     }
 
-    /// `[i/n] KIND  target  detail  elapsed` at column 0.
+    /// `[i/n] KIND  target  state  command  elapsed` at column 0.
     fn outer_row(
         &self,
         mark: &str,
-        detail: Option<&str>,
+        state: &str,
+        command: Option<&str>,
         millis: Option<u64>,
         palette: Palette,
     ) -> String {
-        let resolved = detail.unwrap_or_else(|| self.shown_args());
         outer_row(
             mark,
             self.count,
             &self.verb,
             &self.target,
-            Some(resolved),
+            state,
+            command,
             millis,
             &self.columns.as_outer(),
             palette,

@@ -14,14 +14,17 @@ fn instruction_and_target_columns_pad_to_the_image_wide_columns() {
     let mut columns = Columns::default();
     columns.observe("COPY", "api");
     let row = phase(columns).settled_row(1200, Palette::new(false));
-    assert!(row.starts_with("✓ [2/4] RUN   api  sh -c"), "{row}");
+    assert!(
+        row.starts_with("✓ [2/4] RUN   api  running  sh -c"),
+        "{row}"
+    );
     assert!(row.ends_with("  1.2s"), "{row}");
 }
 
 #[test]
 fn the_live_row_uses_settled_double_space_separators_and_truncates_args() {
     let row = phase(Columns::default()).live_row('⠹', 4800, 30, Palette::new(false));
-    assert_eq!(row, "⠹ [2/4] RUN  api  sh -c 'echo…");
+    assert_eq!(row, "⠹ [2/4] RUN  api  running  sh…");
     assert_eq!(row.chars().count(), 30, "{row}");
 
     let wide = phase(Columns::default()).live_row('⠹', 1200, 80, Palette::new(false));
@@ -175,7 +178,7 @@ fn twenty_line_failing_step_caps_live_region_at_eight_and_expands_all_twenty_to_
         plain,
     );
     assert!(
-        matches!(&start_actions[0], Action::Print(row) if row == "→ [1/2] image  api"),
+        matches!(&start_actions[0], Action::Print(row) if row == "→ [1/2] image  api  running"),
         "the first step opens the outer parent row once: {start_actions:?}"
     );
     for number in 1..=20 {
@@ -326,7 +329,7 @@ fn engine_notes_stay_hidden_by_default_and_dim_under_verbose_without_a_gutter() 
     };
     assert_eq!(
         row,
-        "  \u{1b}[2msealed sha256:deadbeef: reusing cache\u{1b}[0m"
+        "  \u{1b}[38;5;244msealed sha256:deadbeef: reusing cache\u{1b}[0m"
     );
     assert!(!row.contains('│') && !row.contains('┃'), "{row:?}");
 }

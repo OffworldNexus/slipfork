@@ -25,7 +25,11 @@ fn strip_ansi(text: &str) -> String {
 
 #[test]
 fn the_build_end_row_carries_outer_slot_steps_and_time() {
-    let widths = OuterWidths { kind: 5, target: 7 };
+    let widths = OuterWidths {
+        kind: 5,
+        target: 7,
+        state: 0,
+    };
     let row = image_done_row(1, 3, "api", 6, 12_300, &widths, Palette::new(false));
     assert_eq!(row, "✓ [1/3] image  api      built 6 steps  12.3s");
     assert_eq!(
@@ -35,7 +39,7 @@ fn the_build_end_row_carries_outer_slot_steps_and_time() {
     assert!(!row.contains('\u{1b}'), "plain rows stay colourless");
     assert_eq!(
         image_done_row(1, 3, "api", 6, 12_300, &widths, Palette::new(true)),
-        "\u{1b}[32m✓\u{1b}[0m \u{1b}[2m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      built 6 steps  \u{1b}[2m12.3s\u{1b}[0m"
+        "\u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      \u{1b}[32mbuilt\u{1b}[0m 6 steps  \u{1b}[38;5;244m12.3s\u{1b}[0m"
     );
 }
 
@@ -44,7 +48,7 @@ fn styled_rows_use_only_the_contract_sgr_codes_and_ban_cyan_on_steps() {
     let row = phase(Columns::default()).failed_row(Palette::new(true));
     assert!(row.contains("\u{1b}[31m✗"), "{row:?}");
     let live = phase(Columns::default()).live_row('⠹', 4800, 80, Palette::new(true));
-    for code in ["\u{1b}[1m", "\u{1b}[2m", "\u{1b}[35m"] {
+    for code in ["\u{1b}[1m", "\u{1b}[38;5;244m", "\u{1b}[35m"] {
         assert!(live.contains(code), "{live:?}");
     }
     assert!(!live.contains("\u{1b}[9"), "no bright codes: {live:?}");
@@ -67,10 +71,13 @@ fn re_anchor_rows_preserve_both_outer_and_inner_levels() {
         String::new(),
         Columns { verb: 5, target: 7 },
     );
-    assert_eq!(outer.anchor_row(Palette::new(false)), "→ [1/3] image  api");
+    assert_eq!(
+        outer.anchor_row(Palette::new(false)),
+        "→ [1/3] image  api      running"
+    );
     assert_eq!(
         outer.anchor_row(Palette::new(true)),
-        "→ \u{1b}[2m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m"
+        "→ \u{1b}[38;5;244m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      \u{1b}[32mrunning\u{1b}[0m"
     );
 
     let inner = Phase::new(
@@ -90,7 +97,7 @@ fn re_anchor_rows_preserve_both_outer_and_inner_levels() {
     );
     assert_eq!(
         inner.anchor_row(Palette::new(true)),
-        "  → \u{1b}[2m3/6\u{1b}[0m \u{1b}[35mRUN\u{1b}[0m   sh -c \"…\""
+        "  → \u{1b}[38;5;244m3/6\u{1b}[0m \u{1b}[35mRUN\u{1b}[0m   sh -c \"…\""
     );
 }
 
@@ -101,7 +108,14 @@ fn golden_two_level_rows_pin_every_styled_and_no_color_byte() {
         ("setup".to_owned(), "uv sync".to_owned()),
         ("service".to_owned(), "web".to_owned()),
     ]);
-    assert_eq!(widths, OuterWidths { kind: 5, target: 7 });
+    assert_eq!(
+        widths,
+        OuterWidths {
+            kind: 5,
+            target: 7,
+            state: 0
+        }
+    );
 
     let cached_node = Node {
         kind: "image",
@@ -109,6 +123,7 @@ fn golden_two_level_rows_pin_every_styled_and_no_color_byte() {
         state: "cached",
         millis: 8,
         run_id: None,
+        command: None,
         success: true,
     };
     let outer_start = Phase::new(
@@ -177,14 +192,14 @@ fn golden_two_level_rows_pin_every_styled_and_no_color_byte() {
     assert_eq!(
         styled_rows,
         [
-            "\u{1b}[32m✓\u{1b}[0m \u{1b}[2m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      cached  \u{1b}[2m8ms\u{1b}[0m",
-            "\u{1b}[32m✓\u{1b}[0m \u{1b}[2m[3/3]\u{1b}[0m \u{1b}[35mstart\u{1b}[0m  \u{1b}[1mweb\u{1b}[0m      @uv run blastit dev --port 8000  \u{1b}[2m195ms\u{1b}[0m",
-            "  ⠸ \u{1b}[2m3/6\u{1b}[0m \u{1b}[35mRUN\u{1b}[0m   sh -c \"…\"  \u{1b}[2m1.2s\u{1b}[0m",
-            "  \u{1b}[32m✓\u{1b}[0m \u{1b}[2m1/6\u{1b}[0m \u{1b}[35mFROM\u{1b}[0m  python:3.13-slim  \u{1b}[2m<1ms\u{1b}[0m",
-            "\u{1b}[32m✓\u{1b}[0m \u{1b}[2m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      built 6 steps  \u{1b}[2m12.3s\u{1b}[0m",
-            "\u{1b}[31m✗\u{1b}[0m \u{1b}[35mRUN\u{1b}[0m \u{1b}[1mapi\u{1b}[0m \u{1b}[31mfailed\u{1b}[0m \u{1b}[2m(exit 1)\u{1b}[0m",
-            "  \u{1b}[2mnext:\u{1b}[0m \u{1b}[36mslipfork logs -r b2ebd7\u{1b}[0m",
-            "\u{1b}[1m#b2ebd7\u{1b}[0m  \u{1b}[35mRUN\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m  sh /tmp/oni.sh …  \u{1b}[2m2026-11-24 13:00:00\u{1b}[0m",
+            "\u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      \u{1b}[32mcached\u{1b}[0m  \u{1b}[38;5;244m8ms\u{1b}[0m",
+            "\u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m[3/3]\u{1b}[0m \u{1b}[35mstart\u{1b}[0m  \u{1b}[1mweb\u{1b}[0m      \u{1b}[32mrunning\u{1b}[0m  @uv run blastit dev --port 8000  \u{1b}[38;5;244m195ms\u{1b}[0m",
+            "  ⠸ \u{1b}[38;5;244m3/6\u{1b}[0m \u{1b}[35mRUN\u{1b}[0m   sh -c \"…\"  \u{1b}[38;5;244m1.2s\u{1b}[0m",
+            "  \u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m1/6\u{1b}[0m \u{1b}[35mFROM\u{1b}[0m  python:3.13-slim  \u{1b}[38;5;244m<1ms\u{1b}[0m",
+            "\u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      \u{1b}[32mbuilt\u{1b}[0m 6 steps  \u{1b}[38;5;244m12.3s\u{1b}[0m",
+            "\u{1b}[31m✗\u{1b}[0m \u{1b}[35mRUN\u{1b}[0m \u{1b}[1mapi\u{1b}[0m \u{1b}[31mfailed\u{1b}[0m \u{1b}[38;5;244m(exit 1)\u{1b}[0m",
+            "  \u{1b}[38;5;244mnext:\u{1b}[0m \u{1b}[36mslipfork logs -r b2ebd7\u{1b}[0m",
+            "\u{1b}[1m#b2ebd7\u{1b}[0m  \u{1b}[35mRUN\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m  sh /tmp/oni.sh …  \u{1b}[38;5;244m2026-11-24 13:00:00\u{1b}[0m",
         ]
     );
 
@@ -213,7 +228,7 @@ fn golden_two_level_rows_pin_every_styled_and_no_color_byte() {
         plain_rows,
         [
             "✓ [1/3] image  api      cached  8ms",
-            "✓ [3/3] start  web      @uv run blastit dev --port 8000  195ms",
+            "✓ [3/3] start  web      running  @uv run blastit dev --port 8000  195ms",
             "  ⠸ 3/6 RUN   sh -c \"…\"  1.2s",
             "  ✓ 1/6 FROM  python:3.13-slim  <1ms",
             "✓ [1/3] image  api      built 6 steps  12.3s",
@@ -228,6 +243,14 @@ fn golden_two_level_rows_pin_every_styled_and_no_color_byte() {
     );
     for (styled_row, plain_row) in styled_rows.iter().zip(plain_rows.iter()) {
         assert_eq!(strip_ansi(styled_row), *plain_row);
+        assert!(
+            styled_row.contains("\u{1b}[38;5;244m"),
+            "every styled row keeps a neutral counter/timing cell: {styled_row:?}"
+        );
+        assert!(
+            !styled_row.contains("\u{1b}[2m"),
+            "metadata never uses SGR 2: {styled_row:?}"
+        );
     }
 
     // Inner rows never carry `[` or the parent image target.
@@ -265,15 +288,21 @@ fn identical_target_and_args_never_repeat_on_phase_settled_header_or_verdict() {
         columns,
     );
     let plain = Palette::new(false);
-    assert_eq!(setup.started_row(plain), "→ [2/3] setup    uv sync");
-    assert_eq!(setup.failed_row(plain), "✗ [2/3] setup    uv sync");
+    assert_eq!(
+        setup.started_row(plain),
+        "→ [2/3] setup    uv sync        running"
+    );
+    assert_eq!(
+        setup.failed_row(plain),
+        "✗ [2/3] setup    uv sync        failed"
+    );
     assert_eq!(
         setup.live_row('⠹', 445, 80, plain),
-        "⠹ [2/3] setup    uv sync        445ms"
+        "⠹ [2/3] setup    uv sync        running  445ms"
     );
     assert_eq!(
         setup.settled_row(445, plain),
-        "✓ [2/3] setup    uv sync        445ms"
+        "✓ [2/3] setup    uv sync        running  445ms"
     );
     assert_eq!(
         plain.header_line(

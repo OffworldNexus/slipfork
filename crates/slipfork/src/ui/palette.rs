@@ -54,10 +54,10 @@ impl Palette {
         self.tint(text, "1")
     }
 
-    /// A filesystem path: bold cyan.
+    /// A filesystem path: neutral metadata, because a location is not a command.
     #[must_use]
     pub fn path(self, text: &str) -> String {
-        self.tint(text, "1;36")
+        self.meta(text)
     }
 
     /// A primary URL: bold cyan, underlined.
@@ -66,16 +66,24 @@ impl Palette {
         self.tint(text, "1;4;36")
     }
 
-    /// A resolved value: bold white.
+    /// A resolved value or name: bold, so it reads on light and dark themes alike.
     #[must_use]
     pub fn value(self, text: &str) -> String {
-        self.tint(text, "1;37")
+        self.tint(text, "1")
     }
 
-    /// Secondary prose: dim.
+    /// Secondary metadata (counters, timings, timestamps, gutters): neutral 256-colour 244.
+    ///
+    /// Never SGR `2`: many terminals render dim as the default foreground, erasing the role.
+    #[must_use]
+    pub fn meta(self, text: &str) -> String {
+        self.tint(text, "38;5;244")
+    }
+
+    /// Thin alias kept for callers outside this node's paths; delegates to [`Self::meta`].
     #[must_use]
     pub fn dim(self, text: &str) -> String {
-        self.tint(text, "2")
+        self.meta(text)
     }
 
     /// An instruction, verb, or step kind (`RUN`, `FROM`, `start`, `image`): magenta.
@@ -93,10 +101,10 @@ impl Palette {
         self.tint(text, "36")
     }
 
-    /// A variable or secret key: bold cyan.
+    /// A variable or secret key: bold; cyan stays reserved for commands and URLs.
     #[must_use]
     pub fn key(self, text: &str) -> String {
-        self.tint(text, "1;36")
+        self.tint(text, "1")
     }
 
     /// A redacted secret: dim yellow.
@@ -119,17 +127,23 @@ impl Palette {
 
     /// A lifecycle state word, mapped to the shipped status colours.
     ///
-    /// `running`/`ready` are green, `cached`/`up to date` cyan, `built`/`pulled`/`orphaned`
-    /// yellow, and `failed`/`stopped` bold red. An unknown word stays plain.
+    /// Every settled/reached word (`cached`, `up to date`, `built`, `pulled`, `ready`, `running`,
+    /// `done`) is green; `starting`/`booting`/`stopped`/`orphaned` are yellow; `failed` is red. Cyan
+    /// stays reserved for a copyable `next:` command and primary URLs. `built 6 steps` tints only
+    /// the lifecycle word, so the plain step count never becomes a second semantic. An unknown
+    /// word stays plain.
     #[must_use]
     pub fn status(self, state: &str) -> String {
+        if let Some((word, rest)) = state.split_once(' ')
+            && word.eq_ignore_ascii_case("built")
+        {
+            return format!("{} {rest}", self.tint(word, "32"));
+        }
         let code = match state.to_ascii_lowercase().as_str() {
-            "running" | "ready" => "32",
-            "cached" | "up-to-date" | "up to date" => "36",
-            "starting" | "booting" => "33",
-            "built" | "pulled" => "33",
-            "orphaned" => "1;33",
-            "failed" | "stopped" => "1;31",
+            "cached" | "up-to-date" | "up to date" | "built" | "pulled" | "ready" | "running"
+            | "done" => "32",
+            "starting" | "booting" | "stopped" | "orphaned" => "33",
+            "failed" => "31",
             _ => return state.to_owned(),
         };
         self.tint(state, code)
@@ -175,7 +189,7 @@ impl Palette {
             fields.push(command.to_owned());
         }
         if let Some(started) = started {
-            fields.push(self.dim(started));
+            fields.push(self.meta(started));
         }
         fields.join("  ")
     }
@@ -188,7 +202,7 @@ impl Palette {
     pub fn gutter(self, stream: &str) -> String {
         match stream {
             "stderr" => self.tint("┃", "33"),
-            _ => self.tint("│", "2"),
+            _ => self.meta("│"),
         }
     }
 
@@ -218,14 +232,14 @@ impl Palette {
             );
             if let Some(code) = exit_code {
                 line.push(' ');
-                line.push_str(&self.dim(&format!("(exit {code})")));
+                line.push_str(&self.meta(&format!("(exit {code})")));
             }
             return line;
         }
         let mut line = format!("{} {subject} done", self.icon_ok());
         if let Some(millis) = duration_ms {
             line.push(' ');
-            line.push_str(&self.dim(&format!("({})", elapsed_text(*millis))));
+            line.push_str(&self.meta(&format!("({})", elapsed_text(*millis))));
         }
         line
     }

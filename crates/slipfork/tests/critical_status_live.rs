@@ -494,7 +494,7 @@ fn services(world: &serde_json::Value) -> Vec<serde_json::Value> {
 
 #[test]
 fn ansi_split_bar_halves_measure_as_one_24_cell_run() {
-    let styled = "\u{1b}[1;36m██████████████\u{1b}[0m\u{1b}[2m░░░░░░░░░░\u{1b}[0m";
+    let styled = "\u{1b}[1;36m██████████████\u{1b}[0m\u{1b}[38;5;244m░░░░░░░░░░\u{1b}[0m";
     let panel =
         format!("\u{1b}[40;1H\u{1b}[2K⠋ [{styled}]  6/10  60% · Starting api… · 1.2s\u{1b}[K");
     let readable = plain(&panel);
@@ -740,7 +740,7 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     assert!(human.contains("orphaned"), "{human}");
     let coloured = run_pty(&project, &env, &["ps"], &[], None);
     assert!(
-        coloured.output.contains("\u{1b}[1;33morphaned\u{1b}[0m"),
+        coloured.output.contains("\u{1b}[33morphaned\u{1b}[0m"),
         "`orphaned` must be bold yellow on a colour TTY: {:?}",
         coloured.output
     );

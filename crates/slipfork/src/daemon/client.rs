@@ -76,11 +76,7 @@ impl DaemonClient {
         // `NO_COLOR`/`TERM=dumb` and is false for Plain/Json, so a pipe or `--json` sees no ANSI.
         let hint = "• daemon not installed; running ephemeral — the package enables it; \
                     on a tarball run `docs/install.sh`";
-        if host.color {
-            eprintln!("{}", console::style(hint).dim());
-        } else {
-            eprintln!("{hint}");
-        }
+        eprintln!("{}", crate::ui::Palette::new(host.color).meta(hint));
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             match UnixStream::connect(&socket) {

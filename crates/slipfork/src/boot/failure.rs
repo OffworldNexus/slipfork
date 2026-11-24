@@ -47,12 +47,15 @@ pub(super) fn envelope(
         _ => palette.verdict(&verdict),
     }];
     if verbose && let Some(runtime) = event["runtime"].as_str().filter(|text| !text.is_empty()) {
-        rows.push(format!("  {}", palette.dim(&format!("runtime: {runtime}"))));
+        rows.push(format!(
+            "  {}",
+            palette.meta(&format!("runtime: {runtime}"))
+        ));
     }
     if let Some(next) = event["next"].as_str().filter(|text| !text.is_empty()) {
         rows.push(format!(
             "  {} {}",
-            palette.dim("next:"),
+            palette.meta("next:"),
             palette.tint(next, "36")
         ));
     }

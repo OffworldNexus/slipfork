@@ -45,6 +45,7 @@ fn two_started_tasks_spin_on_their_own_rows_and_finish_in_place() {
             state: "Cached",
             millis: 120,
             run_id: None,
+            command: None,
             success: true,
         },
         1,

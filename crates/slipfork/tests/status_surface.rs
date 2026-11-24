@@ -134,6 +134,7 @@ fn every_boot_row_keeps_one_start_per_role_and_carries_its_plan_counter() {
             state: "running",
             millis: 7_300,
             run_id: None,
+            command: None,
             success: true,
         },
         Node {
@@ -142,6 +143,7 @@ fn every_boot_row_keeps_one_start_per_role_and_carries_its_plan_counter() {
             state: "cached",
             millis: 812,
             run_id: None,
+            command: None,
             success: true,
         },
         Node {
@@ -150,6 +152,7 @@ fn every_boot_row_keeps_one_start_per_role_and_carries_its_plan_counter() {
             state: "running",
             millis: 3,
             run_id: None,
+            command: None,
             success: true,
         },
         Node {
@@ -158,6 +161,7 @@ fn every_boot_row_keeps_one_start_per_role_and_carries_its_plan_counter() {
             state: "starting",
             millis: 12,
             run_id: None,
+            command: None,
             success: true,
         },
         Node {
@@ -166,6 +170,7 @@ fn every_boot_row_keeps_one_start_per_role_and_carries_its_plan_counter() {
             state: "running",
             millis: 45,
             run_id: None,
+            command: None,
             success: true,
         },
         Node {
@@ -174,6 +179,7 @@ fn every_boot_row_keeps_one_start_per_role_and_carries_its_plan_counter() {
             state: "running",
             millis: 900,
             run_id: None,
+            command: None,
             success: true,
         },
         Node {
@@ -182,6 +188,7 @@ fn every_boot_row_keeps_one_start_per_role_and_carries_its_plan_counter() {
             state: "cached",
             millis: 1,
             run_id: None,
+            command: None,
             success: false,
         },
         Node {
@@ -190,6 +197,7 @@ fn every_boot_row_keeps_one_start_per_role_and_carries_its_plan_counter() {
             state: "running",
             millis: 7_300,
             run_id: None,
+            command: None,
             success: true,
         },
         Node {
@@ -198,6 +206,7 @@ fn every_boot_row_keeps_one_start_per_role_and_carries_its_plan_counter() {
             state: "up to date",
             millis: 3,
             run_id: None,
+            command: None,
             success: false,
         },
     ];
@@ -263,12 +272,13 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
         state: "Cached",
         millis: 420,
         run_id: None,
+        command: None,
         success: true,
     };
     let widths = plan_widths(&[&node]);
     assert_eq!(
         completed_row(&node, 1, 3, &widths, true),
-        "\u{1b}[32m✓\u{1b}[0m \u{1b}[2m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  cached  \u{1b}[2m420ms\u{1b}[0m"
+        "\u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  \u{1b}[32mcached\u{1b}[0m  \u{1b}[38;5;244m420ms\u{1b}[0m"
     );
     assert_eq!(
         completed_row(&node, 1, 3, &widths, false),
@@ -280,13 +290,14 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
     let cached = Node {
         state: "Up-to-date",
         run_id: None,
+        command: None,
         success: false,
         ..node
     };
     let widths = plan_widths(&[&cached]);
     assert_eq!(
         completed_row(&cached, 2, 3, &widths, true),
-        "\u{1b}[2m•\u{1b}[0m \u{1b}[2m[2/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  up-to-date  \u{1b}[2m420ms\u{1b}[0m"
+        "\u{1b}[38;5;244m•\u{1b}[0m \u{1b}[38;5;244m[2/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  \u{1b}[32mup-to-date\u{1b}[0m  \u{1b}[38;5;244m420ms\u{1b}[0m"
     );
     assert_eq!(
         completed_row(&cached, 2, 3, &widths, false),
@@ -395,7 +406,7 @@ fn orphaned_pods_render_yellow_and_serialize() {
     assert!(plain.contains("orphaned"), "{plain}");
     let coloured = status::render(&orphaned, &Options::new(true));
     assert!(
-        coloured.contains("\u{1b}[1;33morphaned\u{1b}[0m"),
+        coloured.contains("\u{1b}[33morphaned\u{1b}[0m"),
         "orphaned must be bold yellow: {coloured}"
     );
     let value = serde_json::to_value(&orphaned).expect("ps reply serializes");
@@ -503,9 +514,9 @@ fn the_tree_contract_holds_for_every_row_shape() {
         ("  ├─ http://assets.demo.localhost", ""),
         ("  │  └─ /     ->  assets   s3 (public-read)", "running"),
         ("  └─ support", ""),
-        ("     ├─ worker  service", "running"),
-        ("     ├─ pg      postgres 18", "running"),
-        ("     └─ cache   redis 7", "running"),
+        ("     ├─ service      worker", "running"),
+        ("     ├─ postgres 18  pg", "running"),
+        ("     └─ redis 7      cache", "running"),
     ] {
         let line = text
             .lines()
@@ -545,10 +556,10 @@ fn crashed_rows_render_a_bold_red_failed_state() {
         }]
     }));
     let plain = status::render(&reply, &Options::new(false));
-    assert!(plain.contains("postgres 18  failed"), "{plain}");
-    assert!(plain.contains("s3 (private)  failed"), "{plain}");
+    assert!(plain.contains("postgres 18  pg  failed"), "{plain}");
+    assert!(plain.contains("uploads  s3 (private)  failed"), "{plain}");
     let colored = status::render(&reply, &Options::new(true));
-    assert!(colored.contains("\u{1b}[1;31mfailed\u{1b}[0m"), "{colored}");
+    assert!(colored.contains("\u{1b}[31mfailed\u{1b}[0m"), "{colored}");
 }
 
 #[test]
@@ -572,7 +583,7 @@ fn mixed_short_and_long_names_keep_the_columns_aligned() {
             .unwrap_or_else(|| panic!("no running row for {needle}: {text}"))
     };
     assert_eq!(
-        state_column("─ api"),
+        state_column("service  api "),
         state_column("an-extremely-long-service-name"),
         "{text}"
     );
@@ -896,8 +907,11 @@ fn stopped_forks_and_honest_problems_render_without_fabrication() {
         "plain renders emit zero ANSI: {plain}"
     );
     let coloured = status::render(&stopped, &Options::new(true).with_home(home.clone()));
-    assert!(coloured.contains("\u{1b}[2m○ "), "{coloured}");
-    assert!(coloured.contains("\u{1b}[2mstopped\u{1b}[0m"), "{coloured}");
+    assert!(coloured.contains("\u{1b}[38;5;244m○ "), "{coloured}");
+    assert!(
+        coloured.contains("\u{1b}[33mstopped\u{1b}[0m"),
+        "{coloured}"
+    );
     // A cwd outside any project root fails closed: no legacy path match resurrects a row.
     assert!(
         status::scope(
@@ -995,7 +1009,7 @@ fn a_stopped_fork_renders_after_every_live_world_tree() {
         "  ├─ http://demo.localhost\n",
         "  │  └─ /api  ->  api  running\n",
         "  └─ support\n",
-        "     └─ worker  service  running\n",
+        "     └─ service  worker  running\n",
         "\n",
         "● feat-auth  ~/demo/.forks/feat-auth\n",
         "  └─ http://feat-auth--demo.localhost\n",

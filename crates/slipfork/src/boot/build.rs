@@ -159,6 +159,7 @@ impl Narrative {
                         Some((outer_index, outer_total)),
                         "image",
                         image,
+                        "running",
                         None,
                         None,
                         &self.outer,
@@ -267,6 +268,7 @@ impl Narrative {
                         Some(tally.outer),
                         "image",
                         &phase.target,
+                        "running",
                         None,
                         None,
                         &self.outer,
@@ -292,7 +294,7 @@ impl Narrative {
         if !self.verbose || text.is_empty() {
             return Vec::new();
         }
-        vec![Action::Print(format!("  {}", palette.dim(text)))]
+        vec![Action::Print(format!("  {}", palette.meta(text)))]
     }
 
     /// A boot `finished`/`up-to-date` frame: settle the command step that opened a phase row.
@@ -306,15 +308,18 @@ impl Narrative {
         live.phase.columns = Columns::from_outer(self.outer);
         let up_to_date = event["event"].as_str() == Some("up-to-date")
             || matches!(event["state"].as_str(), Some("up to date" | "up-to-date"));
-        let detail = up_to_date.then(|| {
-            event["state"]
-                .as_str()
-                .unwrap_or("up to date")
-                .to_lowercase()
-        });
+        let state = if up_to_date {
+            "up to date"
+        } else {
+            event["state"].as_str().unwrap_or("done")
+        }
+        .to_lowercase();
+        // The command column always holds the step's own command, registered from its
+        // plan/`started` frame. A `finished` frame's `detail` is engine narration and never a
+        // command; prep rows get their detail from `Node::from_event` instead.
         let row = live
             .phase
-            .settled_outer(millis, detail.as_deref(), up_to_date, palette);
+            .settled_outer(millis, &state, None, up_to_date, palette);
         self.retire_key(&live.phase.key);
         Some(Action::Settle(row))
     }

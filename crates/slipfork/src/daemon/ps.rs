@@ -137,6 +137,9 @@ pub struct PsService {
     /// Enclosing `image <id>` for a service row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// The service's declared `run:` command, shown in the status command column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
 }
 
 /// The closed set of `ps` row kinds.

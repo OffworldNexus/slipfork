@@ -224,6 +224,7 @@ mod tests {
             routes: Vec::new(),
             orphaned: false,
             image: None,
+            command: None,
         }
     }
 

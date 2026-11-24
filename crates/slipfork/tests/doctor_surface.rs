@@ -175,7 +175,7 @@ fn doctor_has_four_plain_rows_and_styled_roles_on_a_terminal() {
     }
 
     for (needle, styled) in [
-        ("~/demo", "\u{1b}[1;36m~/demo"),
+        ("~/demo", "\u{1b}[38;5;244m~/demo"),
         ("Btrfs", "\u{1b}[1mBtrfs"),
         ("crun ", "\u{1b}[1mcrun "),
         ("http://*.localhost", "\u{1b}[1;4;36mhttp://*.localhost"),

@@ -342,7 +342,10 @@ fn cached_image_never_emits_inner_rows_and_service_failure_expands_at_outer_inde
         }),
         Some((3, 3)),
     );
-    assert_eq!(begins(&begun), ["→ [3/3] start  web  sh -c 'exit 7'"]);
+    assert_eq!(
+        begins(&begun),
+        ["→ [3/3] start  web  running  sh -c 'exit 7'"]
+    );
     narrative.log(
         &json!({
             "event": "log",
@@ -375,10 +378,7 @@ fn cached_image_never_emits_inner_rows_and_service_failure_expands_at_outer_inde
             _ => None,
         })
         .collect();
-    assert_eq!(
-        held,
-        ["✗ [3/3] start  web  sh -c 'exit 7'", "  ┃ bind failed"]
-    );
+    assert_eq!(held, ["✗ [3/3] start  web  failed", "  ┃ bind failed"]);
     let diagnosis: Vec<&str> = failed
         .iter()
         .filter_map(|action| match action {
@@ -393,4 +393,52 @@ fn cached_image_never_emits_inner_rows_and_service_failure_expands_at_outer_inde
             "  next: slipfork logs -r 5be421",
         ]
     );
+}
+
+/// The `finished` frame's `detail` is narration, never a command: a settled service row keeps the
+/// command its `started` frame registered, in the command column after the lifecycle `ready`.
+#[test]
+fn a_settled_service_keeps_its_started_command_and_states_ready() {
+    let plain = Palette::new(false);
+    let mut narrative = Narrative::new(false);
+    let begun = narrative.started(
+        &json!({
+            "event": "started",
+            "step": 2,
+            "total": 2,
+            "kind": "service",
+            "name": "web",
+            "command": "python3 -m http.server 8195",
+        }),
+        Some((2, 2)),
+    );
+    let begins: Vec<&str> = begun
+        .iter()
+        .filter_map(|action| match action {
+            Action::Begin(phase) => Some(phase.target.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(begins, ["web"], "the service registers one live phase");
+    let settled = narrative.finished(
+        &json!({
+            "event": "finished",
+            "step": 2,
+            "total": 2,
+            "kind": "service",
+            "name": "web",
+            "state": "ready",
+            "detail": "started",
+            "duration_ms": 1200,
+        }),
+        plain,
+    );
+    let Some(Action::Settle(row)) = settled else {
+        panic!("a service finished frame settles one row, got {settled:?}");
+    };
+    assert_eq!(
+        row,
+        "✓ [2/2] start  web  ready  python3 -m http.server 8195  1.2s"
+    );
+    assert!(!row.contains('\u{1b}'));
 }

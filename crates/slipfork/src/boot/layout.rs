@@ -27,6 +27,7 @@ impl Columns {
         OuterWidths {
             kind: self.verb,
             target: self.target,
+            state: 0,
         }
     }
 
@@ -90,7 +91,8 @@ pub(super) fn image_done_row(
         (index > 0 && total > 0).then_some((index, total)),
         "image",
         image,
-        Some(&detail),
+        &detail,
+        None,
         Some(millis),
         widths,
         palette,

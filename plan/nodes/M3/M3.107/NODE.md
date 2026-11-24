@@ -36,7 +36,7 @@ See `# Visual contract` below (Opus-owned v2; supersedes every earlier role/colo
 - Real `RUN` writing to both streams: `logs -r` shows `err` for stderr, `out` for stdout, no synthetic summary, no duplicate header fields.
 - `up` failure screenshot-equivalent in a PTY shows 4+ distinct styles; `NO_COLOR`/`--json` emit zero `\x1b[`.
 - `make check`, targeted live tests; commit `[M3.107] ...`, done, no push.
-# Visual contract (Opus-owned, v3.2 — keyword magenta per owner; supersedes v1/v2 and every earlier role/colour table)
+# Visual contract (Opus-owned, v3.3 — keyword magenta, metadata 38;5;244, state colours owner-approved; supersedes v1/v2 and every earlier role/colour table)
 
 Mental model: **we're running X → here is what it said → it settled → here's what to do next.**
 The phase row is the anchor (by position + bold target); output is subordinate (indented gutter); metadata recedes (dim). No `out`/`err` words, no stream column.
@@ -47,11 +47,12 @@ The phase row is the anchor (by position + bold target); output is subordinate (
 | subject | bold `1` | the target name (`api`) — header, phase row, verdict, `✓ image` row. Never blue, never any colour |
 | content | neutral (no SGR) | command/args (phase row + header), the failure reason, every child output line, `→`, the spinner, `done` |
 | keyword | magenta `35` (`Palette::verb`) | instruction/verb/kind: `FROM`, `ADD`, `RUN`, `COPY`, `WORKDIR`, `start`, `setup`, `hook`, `image` — step rows, `logs -r` header, verdicts |
-| metadata | dim `2` | `[i/n]`, elapsed/timings, timestamps, `(exit N)`, `(N steps, Xs)`, `next:` label, stdout gutter `│` |
+| metadata | neutral `38;5;244` (never SGR 2) | `[i/n]`, elapsed/timings, timestamps, `(exit N)`, `(N steps, Xs)`, `next:` label, stdout gutter `│` |
 | stderr channel | yellow `33` | the stderr gutter glyph `┃` ONLY |
 | failure | red `31` | `✗` and the word `failed` ONLY |
-| success | green `32` | `✓`, `ready`, `running` ONLY |
-| actionable | cyan `36` | the copy-pasteable command after `next:`; URLs `36;4` |
+| success | green `32` | `✓` and every success-settled state word: `cached`, `up to date`, `built`, `pulled`, `ready`, `running`, `done` |
+| transitional | yellow `33` | state words `starting`, `stopped`, `orphaned` (and the stderr gutter `┃`) |
+| actionable | cyan `36` | ONLY the copy-pasteable command after `next:` (URLs `36;4`); no state word is ever cyan |
 
 Rule (owner, v3.2): every hue is bound to exactly one role; `palette.label`/blue and `palette.kind`/cyan are banned for verbs and targets. A golden unit test pins the exact bytes of the header, a phase row, a `✓` row and a verdict.
 
