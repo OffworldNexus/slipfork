@@ -219,10 +219,17 @@ impl Session {
     fn fail(&self, message: &str, next: &str) -> ExitCode {
         let palette = Palette::new(self.color());
         // A daemon message may already carry its own `next:` line; that remedy wins, and the
-        // renderer still prints exactly one.
+        // renderer still prints exactly one. A typed `✗` verdict keeps its glyph instead of
+        // gaining an `error:` prefix; generic failures keep the historical wording.
         let (body, embedded) = crate::world::split_remedy(message);
+        let typed = body.starts_with('✗');
         let mut emitted = false;
         for line in body.lines() {
+            let line = if emitted {
+                line
+            } else {
+                line.strip_prefix("✗ ").unwrap_or(line)
+            };
             if palette.color() {
                 if emitted {
                     eprintln!("{}", palette.value(line));
@@ -231,6 +238,8 @@ impl Session {
                 }
             } else if emitted {
                 eprintln!("{line}");
+            } else if typed {
+                eprintln!("✗ {line}");
             } else {
                 eprintln!("error: {line}");
             }
@@ -238,7 +247,7 @@ impl Session {
         }
         let next = embedded.as_deref().map_or(next, |remedy| remedy);
         if palette.color() {
-            eprintln!("{} {}", palette.kind("next:"), palette.command(next));
+            eprintln!("{} {}", palette.dim("next:"), palette.kind(next));
         } else {
             eprintln!("next: {next}");
         }
@@ -249,6 +258,7 @@ impl Session {
     pub(crate) fn report(&self, code: &str, message: &str, next: &str, json: bool) -> ExitCode {
         let (message, next) = message_and_next(message, next);
         if json {
+            let message = message.strip_prefix("✗ ").unwrap_or(&message).to_owned();
             let _ = emit(&format!(
                 "{}\n",
                 json!({ "error": { "code": code, "message": message, "next": next } })

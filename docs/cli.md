@@ -47,7 +47,7 @@ flowchart LR
 | `slipfork fork [name]` | Snapshot code and world data, boot the fork on its own URL |
 | `slipfork drop <name>` | Stop a fork and delete its snapshots; `-f` discards a dirty checkout |
 | `slipfork logs [-f] [-a] [-t] [--since <time>] [--until <time>] [targets]...` | Merged service logs; `-a` adds images and resources; several targets merge in time order |
-| `slipfork logs -r <id>\|last\|failed` | Replay one recorded step run; `--runs` lists the whole catalog |
+| `slipfork logs -r [<id>\|last\|failed]` | Replay one recorded step run; bare `-r` replays the latest failed run, and `--runs` lists the whole catalog |
 | `slipfork shell <target>` | Real PTY: `bash`/`sh`, `psql`, or `redis-cli` for one declared target |
 | `slipfork exec [-i\|--no-interactive] [service\|image] -- <cmd>` | Run any command in a pod with a real PTY on a terminal; exit code forwarded |
 | `slipfork env [component]` | Resolved runtime variables, secrets redacted |
@@ -229,12 +229,14 @@ one run catalog, so a lost id is never lost output:
 
 ```console
 $ slipfork logs app              # replays the failed image build
-$ slipfork logs -r failed        # the newest failed step run
+$ slipfork logs -r                # bare: the newest failed step run
+$ slipfork logs -r last           # the newest recorded step run
 $ slipfork logs --runs           # #run_id kind step status duration recorded
 ```
 
 `logs <target>` resolves a live pod first, then the newest catalog record whose target is that id
-(an image id, a hook, or a service), then the recorded run. `logs -r <id>|last|failed` and `--runs`
+(an image id, a hook, or a service), then the recorded run. Bare `logs -r` means `failed`; write
+`-r=<id>` next to a target (`slipfork logs -r=5be421 api`). `logs -r <id>|last|failed` and `--runs`
 read the same catalog, and all of it survives `down`: retention keeps the newest 20 successful runs
 per world and never prunes a `failed` or crashed one.
 

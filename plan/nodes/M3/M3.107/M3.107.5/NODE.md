@@ -2,13 +2,13 @@
 id: M3.107.5
 title: "Bare `logs -r` replays the latest failed run"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.107.4]
 paths:
   - crates/slipfork/src/cli/verbs.rs
-  - crates/slipfork/src/commands/streams.rs
+  - "crates/slipfork/src/commands/**"
   - crates/slipfork/src/daemon/lifecycle/logs.rs
   - crates/slipfork/src/daemon/lifecycle/replay.rs
   - "packaging/man/**"
@@ -16,11 +16,11 @@ paths:
   - docs/troubleshooting.md
   - "specs/02-cli-ux.md"
   - crates/slipfork/tests/critical_world_journey.rs
-attempts: 0
+attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-24T12:55"
-updated: "2026-11-24T12:55"
+updated: "2026-11-24T14:26"
 ---
 
 # Goal

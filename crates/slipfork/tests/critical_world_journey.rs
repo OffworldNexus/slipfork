@@ -1081,6 +1081,49 @@ fn world_up_restart_down_journey() {
         "ready line missing:\n{first_out}"
     );
     assert_ingress(&journey.runtime, "good");
+
+    // A clean, successfully booted world has no failed record: bare `-r` refuses with exactly
+    // one `✗` verdict plus one `next:` remedy, and `--json` mirrors that as `no-failed-run`.
+    let no_failed = journey.slipfork(&good, &["logs", "-r"]);
+    assert!(
+        !no_failed.status.success(),
+        "bare `logs -r` in a clean world must exit non-zero"
+    );
+    assert!(
+        stdout(&no_failed).is_empty(),
+        "a refusal must not replay a header:\n{}",
+        stdout(&no_failed)
+    );
+    let no_failed_err = stderr(&no_failed);
+    let lines: Vec<&str> = no_failed_err.lines().collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "a refusal is exactly one verdict + one remedy:\n{no_failed_err}"
+    );
+    assert!(
+        lines[0].starts_with("✗ no failed run in this world"),
+        "the verdict names the missing failed run:\n{no_failed_err}"
+    );
+    assert_eq!(lines[1], "next: slipfork up", "{no_failed_err}");
+    let no_failed_json = journey.slipfork(&good, &["logs", "-r", "--json"]);
+    assert!(!no_failed_json.status.success());
+    let no_failed_json_text = stdout(&no_failed_json);
+    let error: serde_json::Value =
+        serde_json::from_str(no_failed_json_text.trim()).unwrap_or_else(|err| {
+            panic!("clean-world `--json` is one object ({err}):\n{no_failed_json_text}")
+        });
+    assert_eq!(error["error"]["code"], "no-failed-run", "{error}");
+    assert_eq!(
+        error["error"]["message"], "no failed run in this world (see slipfork logs --runs)",
+        "{error}"
+    );
+    assert_eq!(error["error"]["next"], "slipfork up", "{error}");
+    assert!(
+        !no_failed_json_text.contains('\u{1b}'),
+        "clean-world `--json` stays ANSI-free"
+    );
+
     assert!(
         first_out.contains("→ [1/"),
         "progress lines must carry a real `→ [i/n]` prefix:\n{first_out}"
@@ -1915,6 +1958,102 @@ fn world_up_restart_down_journey() {
     assert_eq!(replay_run["source"], "Dockerfile:2", "{replay_run}");
     assert_eq!(replay_run["exit_code"], 3, "{replay_run}");
 
+    // 3c. Bare `-r` answers "what just broke"; `last` names the newest record, and `--json`
+    // mirrors every form with the same run id.
+    let bare_replay = journey.slipfork(&buildfail, &["logs", "-r"]);
+    assert!(
+        bare_replay.status.success(),
+        "bare `logs -r` must replay the failing RUN: {}",
+        stderr(&bare_replay)
+    );
+    let bare_text = stdout(&bare_replay);
+    assert!(
+        bare_text.contains(&format!("#{build_run}"))
+            && bare_text.contains("sh -c 'echo out-line; echo err-line >&2; exit 3'")
+            && bare_text.trim_end().ends_with("✗ RUN app failed (exit 3)"),
+        "bare `logs -r` must replay the failed RUN header, command and verdict:\n{bare_text}"
+    );
+    // A newer successful boot moves `last`; the failed exit-3 RUN stays the `failed` selector.
+    fs::write(buildfail.join("Dockerfile"), DOCKERFILE).expect("write the succeeding Dockerfile");
+    let rebuilt = journey.slipfork(&buildfail, &["up"]);
+    assert!(
+        rebuilt.status.success(),
+        "{}",
+        up_failure("the fixed Dockerfile must boot", &buildfail, &rebuilt)
+    );
+    let runs_json = journey.slipfork(&buildfail, &["logs", "--runs", "--json"]);
+    assert!(
+        runs_json.status.success(),
+        "`logs --runs --json`: {}",
+        stderr(&runs_json)
+    );
+    let success_run = stdout(&runs_json)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|record| record["run_id"].as_str() != Some(build_run.as_str()))
+        .max_by_key(|record| record["started_ms"].as_u64())
+        .and_then(|record| record["run_id"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| {
+            panic!(
+                "the successful boot must record a newer run:\n{}",
+                stdout(&runs_json)
+            )
+        });
+    assert_ne!(
+        success_run, build_run,
+        "`last` must be distinguishable from `failed`"
+    );
+    let last_replay = journey.slipfork(&buildfail, &["logs", "-r", "last"]);
+    assert!(
+        last_replay.status.success(),
+        "`logs -r last`: {}",
+        stderr(&last_replay)
+    );
+    assert!(
+        stdout(&last_replay).contains(&format!("#{success_run}")),
+        "`logs -r last` must return the newest successful record `{success_run}`:\n{}",
+        stdout(&last_replay)
+    );
+    let bare_after = journey.slipfork(&buildfail, &["logs", "-r"]);
+    assert!(
+        bare_after.status.success() && stdout(&bare_after).contains(&format!("#{build_run}")),
+        "bare `logs -r` must keep replaying the failed record:\n{}",
+        stderr(&bare_after)
+    );
+    for (args, expected) in [
+        (&["logs", "-r", "--json"][..], build_run.as_str()),
+        (
+            &["logs", "-r", build_run.as_str(), "--json"][..],
+            build_run.as_str(),
+        ),
+        (&["logs", "-r", "last", "--json"][..], success_run.as_str()),
+    ] {
+        let json_replay = journey.slipfork(&buildfail, args);
+        assert!(
+            json_replay.status.success(),
+            "`{args:?}`: {}",
+            stderr(&json_replay)
+        );
+        let text = stdout(&json_replay);
+        let first: serde_json::Value = serde_json::from_str(
+            text.lines()
+                .next()
+                .unwrap_or_else(|| panic!("`{args:?}` emits no record:\n{text}")),
+        )
+        .unwrap_or_else(|error| panic!("`{args:?}` first line is JSON ({error}):\n{text}"));
+        assert_eq!(
+            first["run_id"].as_str(),
+            Some(expected),
+            "`{args:?}` must mirror `{expected}`:\n{text}"
+        );
+        assert!(!text.contains('\u{1b}'), "`{args:?}` stays ANSI-free");
+    }
+    let down = journey.slipfork(&buildfail, &["down"]);
+    assert!(
+        down.status.success(),
+        "down after the successful rebuild: {}",
+        stderr(&down)
+    );
     let catalog = journey.slipfork(&buildfail, &["logs", "--runs"]);
     assert!(
         catalog.status.success(),

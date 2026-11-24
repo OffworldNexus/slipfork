@@ -227,6 +227,9 @@ pub(crate) fn refusal_next(error: &DaemonError, verb: &str) -> String {
         }
         "no-target" => "run `slipfork up` or pass a service".to_owned(),
         "no-world" => "run `slipfork up` first".to_owned(),
+        "no-failed-run" => "slipfork up".to_owned(),
+        "no-run" => "slipfork up".to_owned(),
+        "unknown-run" => "slipfork logs --runs".to_owned(),
         "world-booting" => "wait for `slipfork up` to finish, then retry".to_owned(),
         _ => "run `slipfork status` to inspect the world".to_owned(),
     }

@@ -167,8 +167,15 @@ pub enum Command {
         /// Prefix every line with a human timestamp gutter.
         #[arg(short = 't', long)]
         timestamps: bool,
-        /// Replay one recorded step run (`<id>`, `#<id>`, `last`, or `failed`).
-        #[arg(short = 'r', long = "run", value_name = "RUN", conflicts_with = "runs")]
+        /// Replay a recorded run: failed (default when bare), last, or <id>; use -r=<id> next to a target.
+        #[arg(
+            short = 'r',
+            long = "run",
+            value_name = "RUN",
+            num_args = 0..=1,
+            default_missing_value = "failed",
+            conflicts_with = "runs"
+        )]
         run: Option<String>,
         /// List every recorded step run for this world.
         #[arg(long, conflicts_with_all = ["targets", "run", "follow"])]
@@ -318,5 +325,45 @@ fn parse_shell(value: &str) -> Result<Shell, String> {
         other => Err(format!(
             "`{other}` is not a shell; expected bash, zsh, or fish"
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::{Cli, Command};
+
+    fn logs(argv: &[&str]) -> (Option<String>, Vec<String>) {
+        let cli = Cli::try_parse_from(argv).expect("the logs argv parses");
+        match cli.command.expect("logs is a command") {
+            Command::Logs { run, targets, .. } => (run, targets),
+            other => panic!("expected logs, parsed {other:?}"),
+        }
+    }
+
+    /// Bare `-r` defaults to `failed`; explicit values and `-r=<id> <target>` stay unambiguous.
+    #[test]
+    fn bare_run_defaults_to_failed_and_explicit_forms_parse_cleanly() {
+        assert_eq!(
+            logs(&["slipfork", "logs", "-r"]),
+            (Some("failed".to_owned()), Vec::new())
+        );
+        assert_eq!(
+            logs(&["slipfork", "logs", "-r", "last"]),
+            (Some("last".to_owned()), Vec::new())
+        );
+        assert_eq!(
+            logs(&["slipfork", "logs", "-r", "5be421"]),
+            (Some("5be421".to_owned()), Vec::new())
+        );
+        assert_eq!(
+            logs(&["slipfork", "logs", "-r=5be421", "api"]),
+            (Some("5be421".to_owned()), vec!["api".to_owned()])
+        );
+        assert_eq!(
+            logs(&["slipfork", "logs", "api", "-r"]),
+            (Some("failed".to_owned()), vec!["api".to_owned()])
+        );
     }
 }

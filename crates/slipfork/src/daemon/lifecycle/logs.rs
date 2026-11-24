@@ -183,11 +183,26 @@ impl Core {
         }
         if let Some(spec) = params.get("run").and_then(Value::as_str) {
             let store = log_store_of(self, &project)?;
-            let run_id = store.resolve_run(spec).map_err(|error| {
-                Failure::new(
-                    "no-run",
-                    format!("✗ {error}\nnext: list recorded runs with `slipfork logs --runs`"),
-                )
+            let run_id = store.resolve_run(spec).map_err(|_| {
+                let key = spec.trim_start_matches('#');
+                let (code, line, next) = match key {
+                    "failed" => (
+                        "no-failed-run",
+                        "✗ no failed run in this world (see slipfork logs --runs)".to_owned(),
+                        "slipfork up",
+                    ),
+                    "last" => (
+                        "no-run",
+                        "✗ no run recorded in this world".to_owned(),
+                        "slipfork up",
+                    ),
+                    _ => (
+                        "unknown-run",
+                        format!("✗ no recorded run `{key}` in this world"),
+                        "slipfork logs --runs",
+                    ),
+                };
+                Failure::new(code, format!("{line}\nnext: {next}"))
             })?;
             let record = RunIndex::load(&store)?
                 .by_id(&run_id)

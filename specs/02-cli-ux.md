@@ -179,7 +179,15 @@ A failure prints the step's message, its one `next:` replay command, then the ba
 ✗ Failed to run setup 'uv sync' (backend)
 ```
 
-`slipfork logs -r <id>` accepts `c91e04`, `#c91e04`, `last`, or `failed`, replays the run log cleanly through the indexed reader, and honours `--since`/`--until`/`-t`/`--json` exactly like service logs. `slipfork logs --runs` prints the catalog as a borderless table, so any past id can be found:
+`slipfork logs -r [<id>|last|failed]` replays one recorded step run (`c91e04`, `#c91e04`, `last`, or `failed`), honouring `--since`/`--until`/`-t`/`--json`. A bare `-r` defaults to `failed`; write `-r=<id>` next to a target (`slipfork logs -r=c91e04 api`).
+
+```console
+$ slipfork logs -r
+$ slipfork logs -r last
+$ slipfork logs -r=c91e04 api
+```
+
+With no failed record, bare `-r` prints one `✗ no failed run in this world` line plus one `next: slipfork up`, exits non-zero, and never replays an empty capture. `slipfork logs --runs` prints the borderless catalog table, so any past id can be found:
 
 ```text
 #run_id  kind   step               status  duration  recorded
@@ -195,7 +203,7 @@ Both render zero `\x1b[` bytes under `NO_COLOR`, a pipe, or `--json`.
 | `slipfork down [TARGET]` | Stop this directory's world or the named world/fork; remove run subvolumes, keep data and logs |
 | `slipfork restart [TARGET] [-s SERVICE]` | Restart one service, a world/fork, or every service here through the bottom-bar TUI |
 | `slipfork logs [-f] [-a] [-t] [--since <ms>] [--until <ms>] [targets]...` | Services by default; `-a` adds images and resources; several targets merge in timestamp order |
-| `slipfork logs -r <id>\|last\|failed` | Replay one recorded step run (`#<id>` accepted), honouring `--since`/`--until`/`-t`/`--json` |
+| `slipfork logs -r [<id>\|last\|failed]` | Replay one recorded step run (`#<id>` accepted); bare `-r` means `failed`, honouring `--since`/`--until`/`-t`/`--json` |
 | `slipfork logs --runs` | Borderless `#run_id`, kind, step, status, duration, recorded table of every executed step |
 | `slipfork shell <target>` | Required target: PTY bash/sh, `psql`, `redis-cli`; refuses `s3` and unknowns |
 | `slipfork exec [service\|image] -- <cmd>` | Ad-hoc command inside the target with a real PTY on a terminal; exit code forwarded |
