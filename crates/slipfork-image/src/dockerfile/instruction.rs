@@ -296,6 +296,8 @@ pub struct ParsedInstruction {
 /// One `FROM`-scoped build stage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stage {
+    /// 1-based line of the `FROM` that opened this stage.
+    pub line: usize,
     /// `AS` alias (lowercased) when declared.
     pub alias: Option<String>,
     /// Base image or earlier stage.

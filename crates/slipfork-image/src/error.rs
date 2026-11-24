@@ -115,109 +115,112 @@ impl Error {
             _ => None,
         }
     }
+
+    /// The engine's raw one-line cause, composed from the variant's own fields.
+    ///
+    /// No `Dockerfile:<n>:` or `\`<instruction>\` failed:` wrapper, no `next:` remedy, and no
+    /// container plumbing. A step the engine executed has no child process to print its own error,
+    /// so this line *is* that step's stderr output.
+    #[must_use]
+    pub fn cause(&self) -> String {
+        match self {
+            Self::InvalidReference { reference, reason } => {
+                format!("`{reference}` is not a valid image reference ({reason})")
+            }
+            Self::Unauthorized {
+                registry,
+                repository,
+            } => format!("registry `{registry}` rejected the pull of `{repository}`"),
+            Self::Challenge { header } => {
+                format!("registry sent an unusable auth challenge `{header}`")
+            }
+            Self::Token { realm } => format!("no bearer token in the response from `{realm}`"),
+            Self::Http { url, status } => format!("`{url}` returned HTTP {status}"),
+            Self::Transport { url, message } => format!("could not reach `{url}`: {message}"),
+            Self::Json { url, .. } => {
+                format!("`{url}` did not return a manifest or token document")
+            }
+            Self::NoMatchingPlatform { wanted, available } => {
+                format!("image has no `{wanted}` manifest (available: {available})")
+            }
+            Self::NestedIndex { url } => format!("`{url}` is a nested manifest list"),
+            Self::DigestMismatch {
+                subject,
+                expected,
+                actual,
+            } => format!("`{subject}` digest mismatch: expected `{expected}`, got `{actual}`"),
+            Self::UnsupportedLayer { media_type } => {
+                format!("unsupported layer media type `{media_type}`")
+            }
+            Self::UnsafePath { entry } => format!("layer entry `{entry}` escapes the image root"),
+            Self::UnsafeLink { entry, target } => {
+                format!("layer link `{entry}` -> `{target}` escapes the image root")
+            }
+            Self::UnsupportedEntry { entry, kind } => {
+                format!("layer entry `{entry}` is a {kind}, which a rootfs cannot carry")
+            }
+            Self::MissingMediaType { digest } => format!("layer `{digest}` has no media type"),
+            Self::Io { action, path, .. } => format!("could not {action} `{}`", path.display()),
+            Self::Dockerfile { line, message, .. } => format!("Dockerfile:{line}: {message}"),
+            Self::StepFailed { message, .. } => message.clone(),
+            Self::UnknownStage { name } => format!("no build stage named `{name}`"),
+            Self::CrunMissing { path } => {
+                format!("`RUN` needs `crun`, but `{}` is missing", path.display())
+            }
+            Self::Interrupted { message } => {
+                format!("the image pull was interrupted: {message}")
+            }
+            Self::World(err) => err.to_string(),
+        }
+    }
+
+    /// The one-line remedy for a typed failure, when the variant has one.
+    #[must_use]
+    pub fn remedy(&self) -> Option<String> {
+        let remedy = match self {
+            Self::InvalidReference { .. } => "use `<registry>/<repository>[:tag|@sha256:…>`, e.g. `postgres:18`".to_owned(),
+            Self::Unauthorized { .. } => "add credentials for that registry or pull a public image".to_owned(),
+            Self::Challenge { .. } | Self::Token { .. } => "check the registry credentials and retry".to_owned(),
+            Self::Http { status, .. } => http_remedy(*status).to_owned(),
+            Self::Transport { .. } => "check the URL and your network connection, then retry".to_owned(),
+            Self::NoMatchingPlatform { .. } => "pull an image that publishes this architecture".to_owned(),
+            Self::NestedIndex { .. } => "pull a concrete per-architecture digest".to_owned(),
+            Self::DigestMismatch { .. } => "retry the pull; tampered or truncated bytes are never cached".to_owned(),
+            Self::UnsupportedLayer { .. } => "only tar+gzip and tar+zstd OCI layers are supported".to_owned(),
+            Self::UnsafePath { .. } | Self::UnsafeLink { .. } => "refusing a malicious layer; the pull was rolled back".to_owned(),
+            Self::UnsupportedEntry { .. } => "rebuild the image without device nodes, fifos, or sparse files".to_owned(),
+            Self::MissingMediaType { .. } => "pull from a registry that labels OCI layers".to_owned(),
+            Self::Dockerfile { next, .. } => (*next).to_owned(),
+            Self::StepFailed { next, .. } => next.clone(),
+            Self::UnknownStage { name } => format!(
+                "add `FROM <image> AS {name}` above this stage or fix the `--from=` argument"
+            ),
+            Self::CrunMissing { .. } => "install crun from your distribution (`apt install crun`, `dnf install crun`, `pacman -S crun`) and retry".to_owned(),
+            Self::Interrupted { .. } => "retry `slipfork up`".to_owned(),
+            Self::Json { .. } | Self::Io { .. } | Self::World(_) => return None,
+        };
+        Some(remedy)
+    }
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidReference { reference, reason } => write!(
-                f,
-                "`{reference}` is not a valid image reference ({reason})\nnext: use `<registry>/<repository>[:tag|@sha256:…>`, e.g. `postgres:18`"
-            ),
-            Self::Unauthorized {
-                registry,
-                repository,
-            } => write!(
-                f,
-                "registry `{registry}` rejected the pull of `{repository}`\nnext: add credentials for that registry or pull a public image"
-            ),
-            Self::Challenge { header } => write!(
-                f,
-                "registry sent an unusable auth challenge `{header}`\nnext: check the registry credentials and retry"
-            ),
-            Self::Token { realm } => write!(
-                f,
-                "no bearer token in the response from `{realm}`\nnext: check the registry credentials and retry"
-            ),
-            Self::Http { url, status } => write!(
-                f,
-                "`{url}` returned HTTP {status}\nnext: {}",
-                http_remedy(*status)
-            ),
-            Self::Transport { url, message } => write!(
-                f,
-                "could not reach `{url}`: {message}\nnext: check the URL and your network connection, then retry"
-            ),
-            Self::Json { url, .. } => {
-                write!(f, "`{url}` did not return a manifest or token document")
-            }
-            Self::NoMatchingPlatform { wanted, available } => write!(
-                f,
-                "image has no `{wanted}` manifest (available: {available})\nnext: pull an image that publishes this architecture"
-            ),
-            Self::NestedIndex { url } => write!(
-                f,
-                "`{url}` is a nested manifest list\nnext: pull a concrete per-architecture digest"
-            ),
-            Self::DigestMismatch {
-                subject,
-                expected,
-                actual,
-            } => write!(
-                f,
-                "`{subject}` digest mismatch: expected `{expected}`, got `{actual}`\nnext: retry the pull; tampered or truncated bytes are never cached"
-            ),
-            Self::UnsupportedLayer { media_type } => write!(
-                f,
-                "unsupported layer media type `{media_type}`\nnext: only tar+gzip and tar+zstd OCI layers are supported"
-            ),
-            Self::UnsafePath { entry } => write!(
-                f,
-                "layer entry `{entry}` escapes the image root\nnext: refusing a malicious layer; the pull was rolled back"
-            ),
-            Self::UnsafeLink { entry, target } => write!(
-                f,
-                "layer link `{entry}` -> `{target}` escapes the image root\nnext: refusing a malicious layer; the pull was rolled back"
-            ),
-            Self::UnsupportedEntry { entry, kind } => write!(
-                f,
-                "layer entry `{entry}` is a {kind}, which a rootfs cannot carry\nnext: rebuild the image without device nodes, fifos, or sparse files"
-            ),
-            Self::MissingMediaType { digest } => write!(
-                f,
-                "layer `{digest}` has no media type\nnext: pull from a registry that labels OCI layers"
-            ),
-            Self::Io { action, path, .. } => write!(f, "could not {action} `{}`", path.display()),
-            Self::Dockerfile {
-                line,
-                message,
-                next,
-            } => write!(f, "Dockerfile:{line}: {message}\nnext: {next}"),
+            // A step failure keeps its source line and the instruction it ran; the cause itself is
+            // the raw one-line message the capture publishes.
             Self::StepFailed {
-                line,
-                instruction,
-                message,
-                next,
-                ..
+                line, instruction, ..
             } => write!(
                 f,
-                "Dockerfile:{line}: `{instruction}` failed: {message}\nnext: {next}"
-            ),
-            Self::UnknownStage { name } => write!(
-                f,
-                "no build stage named `{name}`\nnext: add `FROM <image> AS {name}` above this stage or fix the `--from=` argument"
-            ),
-            Self::CrunMissing { path } => write!(
-                f,
-                "`RUN` needs `crun`, but `{}` is missing\nnext: install crun from your distribution (`apt install crun`, `dnf install crun`, `pacman -S crun`) and retry",
-                path.display()
-            ),
-            Self::Interrupted { message } => write!(
-                f,
-                "the image pull was interrupted: {message}\nnext: retry `slipfork up`"
-            ),
-            Self::World(err) => fmt::Display::fmt(err, f),
+                "Dockerfile:{line}: `{instruction}` failed: {}",
+                self.cause()
+            )?,
+            other => f.write_str(&other.cause())?,
         }
+        if let Some(remedy) = self.remedy() {
+            write!(f, "\nnext: {remedy}")?;
+        }
+        Ok(())
     }
 }
 

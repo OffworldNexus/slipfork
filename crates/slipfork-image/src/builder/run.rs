@@ -13,6 +13,7 @@ use crate::copy;
 use crate::dockerfile::{CopySpec, Instruction, ParsedInstruction, RunSpec, Variables};
 use crate::error::{Error, Result};
 use crate::runtime::{CrunStepRuntime, StepLog};
+use crate::step_log::StepPlace;
 
 /// Mutable state of one `build` walk: stage outputs, cache counters, and the live log sink.
 pub(super) struct BuildRun<'a, 's, 'l> {
@@ -102,7 +103,7 @@ impl<'a, 's, 'l> BuildRun<'a, 's, 'l> {
             base: stage.base.clone(),
             alias: stage.alias.clone(),
         };
-        self.begin(&from);
+        self.begin(&from, stage.line);
         let started = Instant::now();
         if let Err(error) = self.ensure_context() {
             self.log.failed(started.elapsed(), None);
@@ -142,7 +143,7 @@ impl<'a, 's, 'l> BuildRun<'a, 's, 'l> {
         args: &mut BTreeMap<String, String>,
         parsed: &ParsedInstruction,
     ) -> Result<Option<bool>> {
-        self.begin(&parsed.instruction);
+        self.begin(&parsed.instruction, parsed.line);
         let started = Instant::now();
         let outcome = self
             .apply_inner(state, args, parsed)
@@ -366,11 +367,10 @@ impl<'a, 's, 'l> BuildRun<'a, 's, 'l> {
     }
 
     /// Announces the running instruction at its 1-based position.
-    fn begin(&mut self, instruction: &Instruction) {
+    fn begin(&mut self, instruction: &Instruction, line: usize) {
         self.index += 1;
         self.log.started(
-            self.index,
-            self.total,
+            StepPlace::new(self.index, self.total, line),
             instruction.keyword(),
             &instruction.command_text(),
         );

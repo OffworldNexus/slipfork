@@ -60,6 +60,10 @@ pub struct RunRecord {
     /// Child process exit code when the step knows it.
     #[serde(default)]
     pub exit_code: Option<i32>,
+    /// The engine's raw one-line cause of a non-success, so a comment-less replay still explains
+    /// itself; omitted from the wire when the step succeeded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     /// Final state (`built`, `pulled`, `ready`, `failed`).
     pub state: String,
     /// Epoch milliseconds when the step started.
@@ -88,6 +92,8 @@ pub struct RunNote {
     pub source: Option<String>,
     /// Child process exit code when the step carried one.
     pub exit_code: Option<i32>,
+    /// The engine's raw one-line cause of a non-success.
+    pub reason: Option<String>,
 }
 
 impl RunNote {
@@ -98,6 +104,7 @@ impl RunNote {
             && self.instruction.is_none()
             && self.source.is_none()
             && self.exit_code.is_none()
+            && self.reason.is_none()
     }
 }
 
@@ -180,6 +187,7 @@ impl RunCapture {
                 instruction: String::new(),
                 source: String::new(),
                 exit_code: None,
+                reason: None,
                 state: "running".to_owned(),
                 started_ms,
                 finished_ms: None,
@@ -236,6 +244,7 @@ impl RunCapture {
                 instruction: String::new(),
                 source: String::new(),
                 exit_code: None,
+                reason: None,
                 state: state.to_owned(),
                 started_ms: self.started_ms,
                 finished_ms: Some(finished_ms),

@@ -16,7 +16,7 @@ use crate::layout::ImageLayout;
 use crate::manifest::ImageManifest;
 use crate::reference::ImageReference;
 use crate::registry::{Credentials, RegistryClient, RegistryScheme};
-use crate::step_log::StepLog;
+use crate::step_log::{StepLog, StepPlace};
 use crate::unpack::LayerUnpacker;
 use crate::{Architecture, BaseImageBuilder};
 
@@ -160,7 +160,7 @@ impl OciPuller {
         args: &str,
         log: &mut StepLog<'_>,
     ) -> Result<PulledImage> {
-        log.started(1, 1, "FROM", args);
+        log.started(StepPlace::new(1, 1, 0), "FROM", args);
         let started = std::time::Instant::now();
         match self.pull_into(reference, log) {
             Ok(image) => {

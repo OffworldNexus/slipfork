@@ -3,10 +3,12 @@
 
 use std::path::{Path, PathBuf};
 
-use slipfork_image::{Error as ImageError, StepEvent, StepTrace};
+use slipfork_image::{BuildEvent, Error as ImageError, StepEvent, StepLog, StepState, StepTrace};
+use slipfork_world::LogStore;
 use slipfork_world::run_log::RunNote;
-use slipfork_world::{ImageNode, LogStore, pod_log};
+use slipfork_world::{ImageNode, pod_log};
 
+use super::record::RunNotes;
 use crate::world::runtime::capture::strip_ansi;
 use crate::world::supervise::BootSink;
 
@@ -14,18 +16,87 @@ use crate::world::supervise::BootSink;
 /// `<store>/logs/<world>/<image>.log`, so `slipfork logs <image>` reads failed-build output.
 pub(super) struct BuildLog<'a> {
     sink: &'a mut BootSink,
+    notes: RunNotes,
+    run_id: Option<String>,
     dir: PathBuf,
     id: String,
 }
 
 impl<'a> BuildLog<'a> {
-    /// Taps `store`'s world capture directory for `id`, so no caller recomputes a logs path.
-    pub(super) fn new(sink: &'a mut BootSink, store: &LogStore, id: &str) -> Self {
+    /// Taps `store`'s world capture directory for `id` and the minted `run_id` it may annotate.
+    pub(super) fn new(
+        sink: &'a mut BootSink,
+        store: &LogStore,
+        run_id: Option<&str>,
+        id: &str,
+    ) -> Self {
         Self {
             sink,
+            notes: RunNotes::new(store),
+            run_id: run_id.map(str::to_owned),
             dir: store.world_logs(),
             id: id.to_owned(),
         }
+    }
+
+    /// Runs `task` with a typed bus: child lines are teed, each step's record is published at
+    /// START, and the running instruction is remembered so an engine failure can explain itself.
+    pub(super) fn run<T>(
+        &mut self,
+        dockerfile: Option<&Path>,
+        task: impl FnOnce(&mut StepLog<'_>) -> slipfork_image::Result<T>,
+    ) -> BuildProgress<T> {
+        let mut started = None;
+        let mut captured = false;
+        let outcome = {
+            let mut bus = |event: BuildEvent<'_>| match event {
+                BuildEvent::Line { stream, text } => {
+                    captured = true;
+                    self.append_stream(stream, text);
+                }
+                BuildEvent::Note { text } => self.note(text),
+                BuildEvent::Step(step) => {
+                    if step.state == StepState::Started {
+                        let note = started_note(dockerfile, &step);
+                        let _ = self.notes.started(self.run_id.as_deref(), &note);
+                        started = Some(note);
+                        captured = false;
+                    }
+                    self.step(&step);
+                }
+            };
+            task(&mut StepLog::with_events(&mut bus))
+        };
+        BuildProgress {
+            outcome,
+            started,
+            captured,
+        }
+    }
+
+    /// Writes the engine's raw cause as the failing step's one `┃` line, when a step started and
+    /// captured nothing of its own.
+    ///
+    /// A child process that printed (or exited with a code) already explains itself; an engine-side
+    /// failure — a `FROM` pull, `COPY`, context walk, a missing `crun`, a spawn error — has no child
+    /// to do that, so its cause becomes the step's stderr line. A failure before step 1 (a parse or
+    /// stage-graph error) has no step row at all, so it writes nothing and the verdict carries the
+    /// reason instead.
+    pub(super) fn explain<T>(
+        &mut self,
+        error: &ImageError,
+        progress: &BuildProgress<T>,
+    ) -> Option<String> {
+        if progress.started.is_none()
+            || progress.captured
+            || error.exit_code().is_some()
+            || error.runtime().is_some()
+        {
+            return None;
+        }
+        let reason = error.cause();
+        self.append_stream(slipfork_image::Stream::Stderr, &reason);
+        Some(reason)
     }
 
     /// Forwards one engine narration line to the live sink; it never enters a capture.
@@ -49,39 +120,36 @@ impl<'a> BuildLog<'a> {
     }
 }
 
-/// The failing instruction named by a typed image error; the engine already carries the phase,
-/// the as-written command, and the exit code, so nothing is re-parsed here.
-pub(super) fn failed_note(dockerfile: &Path, error: &ImageError) -> RunNote {
-    let label = file_label(dockerfile);
-    match error {
-        ImageError::StepFailed {
-            line,
-            phase,
-            instruction,
-            exit_code,
-            ..
-        } if *line > 0 => RunNote {
-            phase: Some((*phase).to_owned()),
-            instruction: Some(instruction.to_string()),
-            source: Some(format!("{label}:{line}")),
-            exit_code: *exit_code,
-        },
-        _ => RunNote {
-            phase: Some(label.clone()),
-            instruction: None,
-            source: Some(label),
-            exit_code: None,
-        },
+/// The instruction a build announced at START, so a failure always leaves the right header.
+///
+/// `line` is the instruction's `Dockerfile` source line; a step with no source line (an OCI pull)
+/// keeps its phase and command and simply carries no `source`.
+pub(super) fn started_note(dockerfile: Option<&Path>, event: &StepEvent<'_>) -> RunNote {
+    RunNote {
+        phase: Some(event.instruction.to_ascii_lowercase()),
+        instruction: (!event.args.is_empty()).then(|| event.args.to_owned()),
+        source: dockerfile
+            .filter(|_| event.line > 0)
+            .map(|dockerfile| format!("{}:{}", file_label(dockerfile), event.line)),
+        ..RunNote::default()
     }
 }
 
-/// A registry pull records the reference it fetched instead of a Dockerfile line.
-pub(super) fn pull_note(reference: &str) -> RunNote {
+/// The note for a failure that ran no instruction at all: it names only the `Dockerfile`, so the
+/// verdict — never an invented step row — carries the reason.
+pub(super) fn failed_note(dockerfile: &Path) -> RunNote {
     RunNote {
-        phase: Some("pull".to_owned()),
+        source: Some(file_label(dockerfile)),
+        ..RunNote::default()
+    }
+}
+
+/// A `from:` image pull records the reference it fetched, under the one `FROM` verb.
+pub(super) fn from_note(reference: &str) -> RunNote {
+    RunNote {
+        phase: Some("from".to_owned()),
         instruction: Some(reference.to_owned()),
-        source: None,
-        exit_code: None,
+        ..RunNote::default()
     }
 }
 
@@ -92,7 +160,7 @@ pub(super) fn success_note(nodes: &[ImageNode], image: &str, last: Option<&StepT
         return RunNote::default();
     };
     if let Some(reference) = &node.from {
-        return pull_note(reference);
+        return from_note(reference);
     }
     let dockerfile = node
         .dockerfile
@@ -105,14 +173,26 @@ pub(super) fn success_note(nodes: &[ImageNode], image: &str, last: Option<&StepT
             instruction: Some(last.command.clone()),
             source: Some(format!("{label}:{}", last.line)),
             exit_code: Some(0),
+            reason: None,
         },
         None => RunNote {
             phase: Some(label.clone()),
             instruction: None,
             source: Some(label),
             exit_code: Some(0),
+            reason: None,
         },
     }
+}
+
+/// What one build produced: its own result plus the step facts a failure needs to explain itself.
+pub(super) struct BuildProgress<T> {
+    /// The build's own result.
+    pub(super) outcome: slipfork_image::Result<T>,
+    /// The note the last started step published at START, so a failure names it.
+    pub(super) started: Option<RunNote>,
+    /// Whether the running step captured any child output of its own.
+    pub(super) captured: bool,
 }
 
 /// The bare file name a source location starts with (`Dockerfile`, not `/ctx/Dockerfile`).
@@ -142,11 +222,13 @@ fn world_stream(stream: slipfork_image::Stream) -> slipfork_world::Stream {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
+    use slipfork_image::{StepEvent, StepPlace, StepState};
     use slipfork_world::{LogStore, WorldName};
 
-    use super::{BuildLog, failed_note, success_note};
+    use super::{BuildLog, failed_note, started_note, success_note};
     use crate::world::supervise::{BootSink, Emitter};
 
     fn temp(prefix: &str) -> tempfile::TempDir {
@@ -170,7 +252,7 @@ mod tests {
             "image",
             "frontend",
         );
-        let mut tee = BuildLog::new(&mut sink, &store, "frontend");
+        let mut tee = BuildLog::new(&mut sink, &store, None, "frontend");
         tee.append_stream(slipfork_image::Stream::Stdout, "step 1/2 npm ci");
         tee.append_stream(slipfork_image::Stream::Stdout, "step 2/2 npm run build");
         tee.append_stream(
@@ -203,34 +285,32 @@ mod tests {
         }
     }
 
+    /// The note a build publishes when a step STARTS names its instruction, line, and phase.
     #[test]
-    fn a_failing_run_names_its_instruction_and_source_line() {
-        let root = temp("image-note");
-        let dockerfile = root.path().join("Dockerfile");
-        fs::write(
-            &dockerfile,
-            "FROM scratch\nRUN sh -c 'echo out; exit 3'\nWORKDIR /app\n",
-        )
-        .expect("write a Dockerfile");
-        let note = failed_note(
-            &dockerfile,
-            &slipfork_image::Error::StepFailed {
-                line: 2,
-                phase: "run",
-                instruction: "sh -c 'echo out; exit 3'".into(),
-                message: "the command exited with a non-zero status".to_owned(),
-                exit_code: Some(3),
-                runtime: Some("crun exited with code 3".into()),
-                next: "fix the command".to_owned(),
-            },
+    fn a_started_step_note_names_its_instruction_and_source_line() {
+        let dockerfile = PathBuf::from("/ctx/Dockerfile");
+        let event = StepEvent::new(
+            StepPlace::new(2, 4, 7),
+            "COPY",
+            "--from=missing-stage /x /y",
+            StepState::Started,
+            std::time::Duration::ZERO,
+            None,
         );
-        assert_eq!(note.phase.as_deref(), Some("run"));
+        let note = started_note(Some(&dockerfile), &event);
+        assert_eq!(note.phase.as_deref(), Some("copy"));
         assert_eq!(
             note.instruction.as_deref(),
-            Some("sh -c 'echo out; exit 3'")
+            Some("--from=missing-stage /x /y")
         );
-        assert_eq!(note.source.as_deref(), Some("Dockerfile:2"));
-        assert_eq!(note.exit_code, Some(3));
+        assert_eq!(note.source.as_deref(), Some("Dockerfile:7"));
+        assert_eq!(note.exit_code, None);
+        assert_eq!(note.reason, None);
+
+        let step_less = failed_note(&dockerfile);
+        assert_eq!(step_less.phase, None);
+        assert_eq!(step_less.instruction, None);
+        assert_eq!(step_less.source.as_deref(), Some("Dockerfile"));
     }
 
     #[test]

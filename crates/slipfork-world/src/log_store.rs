@@ -150,6 +150,9 @@ impl LogStore {
         if note.exit_code.is_some() {
             record.exit_code = note.exit_code;
         }
+        if note.reason.is_some() {
+            record.reason.clone_from(&note.reason);
+        }
         append_record(&self.run_dir(), &record)
     }
 

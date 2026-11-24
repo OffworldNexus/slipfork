@@ -127,6 +127,11 @@ pub(crate) fn failure_facts(frame: &mut Value, record: Option<&RunRecord>, plumb
     if let Some(plumbing) = plumbing {
         frame["runtime"] = json!(plumbing);
     }
+    if let Some(reason) = record.and_then(|record| record.reason.as_deref())
+        && !reason.is_empty()
+    {
+        frame["reason"] = json!(reason);
+    }
 }
 
 /// Step wall time in whole milliseconds.

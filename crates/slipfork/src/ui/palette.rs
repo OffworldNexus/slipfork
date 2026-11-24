@@ -220,4 +220,13 @@ impl Palette {
         }
         line
     }
+
+    /// The verdict with the reason it failed, used only when no gutter line above carries it.
+    ///
+    /// `✗ image api failed: no build stage named `staging`` — the reason stays neutral, and the
+    /// verdict keeps its own styles.
+    #[must_use]
+    pub fn verdict_detail(self, verdict: &Verdict, reason: &str) -> String {
+        format!("{}: {reason}", self.verdict(verdict))
+    }
 }

@@ -11,7 +11,7 @@ use slipfork_forkfile::FeatureSet;
 use slipfork_forkfile::ast::Forkfile;
 use slipfork_image::{
     Architecture, BuildArgs, BuildRequest, Credentials, ImageLayout, ImageReference,
-    NativeImageBuilder, OciPuller, PulledImage, StepHost, StepLayout, StepLog, StepTrace,
+    NativeImageBuilder, OciPuller, PulledImage, StepHost, StepLayout, StepTrace,
 };
 use slipfork_world::run_log::RunNote;
 use slipfork_world::{
@@ -22,10 +22,11 @@ use crate::world::supervise::BootSink;
 
 mod flight;
 mod log;
+mod pull;
 pub(super) mod record;
 
 use flight::{FlightRole, FlightTable, acquire_flight, wait_flight};
-use log::{BuildLog, failed_note, pull_note, success_note};
+use log::{BuildLog, failed_note, from_note, success_note};
 
 pub(crate) use record::BuildFailure;
 
@@ -204,38 +205,45 @@ impl ImageCache {
             .iter()
             .find(|candidate| candidate.id == image)
             .cloned()
-            .ok_or_else(|| BuildFailure {
-                message: format!("unknown image `{image}`"),
-                note: RunNote::default(),
-                runtime: None,
-            })?;
+            .ok_or_else(|| plain_failure(format!("unknown image `{image}`")))?;
         if let Some(reference) = &node.from {
-            let parsed = ImageReference::parse(reference).map_err(|error| BuildFailure {
-                message: error.to_string(),
-                note: pull_note(reference),
-                runtime: None,
-            })?;
-            let mut tee = BuildLog::new(log, &self.store, image);
-            let pulled = {
-                let mut bus = |event: slipfork_image::BuildEvent<'_>| match event {
-                    slipfork_image::BuildEvent::Line { stream, text } => {
-                        tee.append_stream(stream, text);
-                    }
-                    slipfork_image::BuildEvent::Note { text } => tee.note(text),
-                    slipfork_image::BuildEvent::Step(event) => tee.step(&event),
+            let run_id = log.run_id();
+            let mut tee = BuildLog::new(log, &self.store, run_id.as_deref(), image);
+            let progress = tee.run(None, |step_log| {
+                // The `FROM` row exists before the reference is even parsed, so an invalid
+                // reference is a failure OF this step, not a step-less build failure.
+                step_log.announce("FROM", reference);
+                let started = std::time::Instant::now();
+                let outcome = match ImageReference::parse(reference) {
+                    Ok(parsed) => self.puller.pull_into(&parsed, step_log),
+                    Err(error) => Err(error),
                 };
-                let mut step_log = StepLog::with_events(&mut bus);
-                match self.puller.pull_row(&parsed, reference, &mut step_log) {
-                    Ok(pulled) => pulled,
-                    Err(error) => {
-                        let message = format!("pull `{image}` failed: {error}");
-                        return Err(BuildFailure {
-                            message,
-                            note: pull_note(reference),
-                            runtime: error.runtime().map(Into::into),
-                        });
-                    }
+                match &outcome {
+                    Ok(_) => step_log.done(started.elapsed()),
+                    Err(error) => step_log.failed(started.elapsed(), error.exit_code()),
                 }
+                outcome
+            });
+            if let Err(error) = &progress.outcome {
+                // A pull the engine executes has no child process, so its raw one-line cause is
+                // that step's stderr output rather than the wrapped summary `up` prints.
+                let reason = tee
+                    .explain(error, &progress)
+                    .unwrap_or_else(|| error.cause());
+                let message = format!("pull `{image}` failed: {reason}");
+                let mut note = progress
+                    .started
+                    .clone()
+                    .unwrap_or_else(|| from_note(reference));
+                note.reason = Some(reason);
+                return Err(BuildFailure {
+                    message,
+                    note: Box::new(note),
+                    runtime: error.runtime().map(Into::into),
+                });
+            }
+            let Ok(pulled) = progress.outcome else {
+                unreachable!("the pull failure returned above")
             };
             let state = if pulled.cached {
                 BootState::Cached
@@ -275,29 +283,32 @@ impl ImageCache {
                 args,
                 target: self.doc.eval_image_stage_with(image, &self.features),
             };
-            let mut tee = BuildLog::new(log, &self.store, image);
-            let built = {
-                let mut bus = |event: slipfork_image::BuildEvent<'_>| match event {
-                    slipfork_image::BuildEvent::Line { stream, text } => {
-                        tee.append_stream(stream, text);
-                    }
-                    slipfork_image::BuildEvent::Note { text } => tee.note(text),
-                    slipfork_image::BuildEvent::Step(event) => tee.step(&event),
-                };
-                let mut step_log = StepLog::with_events(&mut bus);
-                self.builder.build(&request, &mut step_log)
-            };
-            let report = match built {
-                Ok(report) => report,
-                Err(error) => {
-                    let message = format!("build `{image}` failed: {error}");
-                    let note = failed_note(&request.dockerfile, &error);
-                    return Err(BuildFailure {
-                        message,
-                        note,
-                        runtime: error.runtime().map(Into::into),
-                    });
-                }
+            let run_id = log.run_id();
+            let mut tee = BuildLog::new(log, &self.store, run_id.as_deref(), image);
+            let progress = tee.run(Some(&request.dockerfile), |step_log| {
+                self.builder.build(&request, step_log)
+            });
+            if let Err(error) = &progress.outcome {
+                // The engine writes its own one-line cause only when a step started and captured no
+                // child output; a `RUN` keeps its child lines and `(exit N)`, and a failure before
+                // step 1 keeps the reason for the verdict.
+                let reason = tee.explain(error, &progress);
+                let message = format!("build `{image}` failed: {}", error.cause());
+                let mut note = progress
+                    .started
+                    .clone()
+                    .unwrap_or_else(|| failed_note(&request.dockerfile));
+                note.exit_code = note.exit_code.or(error.exit_code());
+                // With no step row there is nowhere for a gutter line, so the verdict carries it.
+                note.reason = reason.or_else(|| progress.started.is_none().then(|| error.cause()));
+                return Err(BuildFailure {
+                    message,
+                    note: Box::new(note),
+                    runtime: error.runtime().map(Into::into),
+                });
+            }
+            let Ok(report) = progress.outcome else {
+                unreachable!("the build failure returned above")
             };
             if let Some(last) = &report.last
                 && let Ok(mut traces) = self.traces.lock()
@@ -326,53 +337,6 @@ impl ImageCache {
                 state,
             ))
         }
-    }
-
-    /// Pulls one resource image (`postgres:18`, `redis:7`) once and reuses it afterwards.
-    pub(super) fn pull(&self, reference: &str, log: &mut BootSink) -> Result<PulledImage, String> {
-        if let Some(image) = self
-            .pulled
-            .lock()
-            .map_err(|_| "pulled image lock poisoned".to_owned())?
-            .get(reference)
-            .cloned()
-        {
-            return Ok(image);
-        }
-        let guard = match acquire_flight(&self.inflight_pulls, reference.to_owned())? {
-            FlightRole::Wait(flight) => return wait_flight(&flight),
-            FlightRole::Lead(guard) => guard,
-        };
-        if let Some(image) = self
-            .pulled
-            .lock()
-            .map_err(|_| "pulled image lock poisoned".to_owned())?
-            .get(reference)
-            .cloned()
-        {
-            let outcome = Ok(image);
-            guard.finish(outcome.clone());
-            return outcome;
-        }
-        let outcome = ImageReference::parse(reference)
-            .map_err(|error| error.to_string())
-            .and_then(|parsed| {
-                let mut bus = |event: slipfork_image::BuildEvent<'_>| {
-                    if let slipfork_image::BuildEvent::Note { text } = event {
-                        log.engine_note(text);
-                    }
-                };
-                self.puller
-                    .pull_into(&parsed, &mut StepLog::with_events(&mut bus))
-                    .map_err(|error| error.to_string())
-            });
-        if let Ok(image) = &outcome
-            && let Ok(mut pulled) = self.pulled.lock()
-        {
-            pulled.insert(reference.to_owned(), image.clone());
-        }
-        guard.finish(outcome.clone());
-        outcome
     }
 
     /// The `-v`-only container plumbing a failed image build reported.
@@ -417,7 +381,7 @@ impl ImageCache {
 fn plain_failure(message: String) -> BuildFailure {
     BuildFailure {
         message,
-        note: RunNote::default(),
+        note: Box::new(RunNote::default()),
         runtime: None,
     }
 }
@@ -435,8 +399,8 @@ mod tests {
     use super::ImageCache;
     use crate::world::supervise::{BootSink, Emitter};
 
-    /// A build that fails before printing anything never fabricates a capture: the `up` failure
-    /// carries the summary, while `logs <image>` has only real child output.
+    /// A build the engine cannot even spawn has no child output: its raw one-line cause becomes the
+    /// capture, so `logs -r` never replays an empty block.
     #[test]
     fn a_failed_build_writes_no_synthetic_capture() {
         let root = tempfile::Builder::new()
@@ -492,9 +456,18 @@ mod tests {
             failure.message.contains("build `web` failed"),
             "{failure:?}"
         );
+        // `crun` fails before step 1, so no step row and no capture exist: the verdict carries it.
+        assert!(
+            failure
+                .note
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("`RUN` needs `crun`")),
+            "{failure:?}"
+        );
         assert!(
             !store.pod_log(&world, "web").exists(),
-            "a run with no child output leaves no synthetic capture"
+            "a step-less failure writes no capture; its verdict carries the reason"
         );
     }
 }

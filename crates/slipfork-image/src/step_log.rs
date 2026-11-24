@@ -36,6 +36,25 @@ impl StepState {
     }
 }
 
+/// Where one instruction sits: its 1-based index of the walked total, and its `Dockerfile` line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StepPlace {
+    /// 1-based instruction index within the image's `Dockerfile`.
+    pub index: usize,
+    /// Instructions in the walked `Dockerfile`.
+    pub total: usize,
+    /// 1-based `Dockerfile` line the instruction starts on; `0` when it has no source line.
+    pub line: usize,
+}
+
+impl StepPlace {
+    /// Builds the position of `index`/`total`, sourced from `line`.
+    #[must_use]
+    pub const fn new(index: usize, total: usize, line: usize) -> Self {
+        Self { index, total, line }
+    }
+}
+
 /// One instruction row: which instruction ran, where it sits, and how it settled.
 #[derive(Debug, Clone, Copy)]
 pub struct StepEvent<'a> {
@@ -47,6 +66,8 @@ pub struct StepEvent<'a> {
     pub instruction: &'a str,
     /// Arguments exactly as the author wrote them.
     pub args: &'a str,
+    /// 1-based `Dockerfile` line the instruction starts on; `0` when it has no source line.
+    pub line: usize,
     /// Lifecycle state.
     pub state: StepState,
     /// Time the instruction executed; zero while it is still running.
@@ -56,11 +77,10 @@ pub struct StepEvent<'a> {
 }
 
 impl<'a> StepEvent<'a> {
-    /// Builds one row for `instruction` at `index` of `total`.
+    /// Builds one row for `instruction` at `place`, in `state`.
     #[must_use]
     pub const fn new(
-        index: usize,
-        total: usize,
+        place: StepPlace,
         instruction: &'a str,
         args: &'a str,
         state: StepState,
@@ -68,10 +88,11 @@ impl<'a> StepEvent<'a> {
         exit_code: Option<i32>,
     ) -> Self {
         Self {
-            index,
-            total,
+            index: place.index,
+            total: place.total,
             instruction,
             args,
+            line: place.line,
             state,
             elapsed,
             exit_code,
@@ -100,8 +121,7 @@ pub enum BuildEvent<'a> {
 
 /// Identity of the instruction currently executing, so its settle row repeats it.
 struct StepIdentity {
-    index: usize,
-    total: usize,
+    place: StepPlace,
     instruction: String,
     args: String,
 }
@@ -144,10 +164,12 @@ impl<'a> StepLog<'a> {
     }
 
     /// Announces `instruction` before it executes, so a pull or context walk never looks frozen.
-    pub(crate) fn started(&mut self, index: usize, total: usize, instruction: &str, args: &str) {
+    ///
+    /// `place` carries the instruction's index and `Dockerfile` line, so the caller can publish the
+    /// step's record the moment it starts and a crash still leaves the right header behind.
+    pub(crate) fn started(&mut self, place: StepPlace, instruction: &str, args: &str) {
         self.emit(BuildEvent::Step(StepEvent::new(
-            index,
-            total,
+            place,
             instruction,
             args,
             StepState::Started,
@@ -155,20 +177,24 @@ impl<'a> StepLog<'a> {
             None,
         )));
         self.current = Some(StepIdentity {
-            index,
-            total,
+            place,
             instruction: instruction.to_owned(),
             args: args.to_owned(),
         });
     }
 
+    /// Announces one standalone step (a `from:` pull) whose total is itself, before it is tried.
+    pub fn announce(&mut self, instruction: &str, args: &str) {
+        self.started(StepPlace::new(1, 1, 0), instruction, args);
+    }
+
     /// Settles the running instruction with the wall time it took.
-    pub(crate) fn done(&mut self, elapsed: Duration) {
+    pub fn done(&mut self, elapsed: Duration) {
         self.settle(StepState::Done, elapsed, None);
     }
 
     /// Settles the running instruction as failed, keeping a typed child exit code.
-    pub(crate) fn failed(&mut self, elapsed: Duration, exit_code: Option<i32>) {
+    pub fn failed(&mut self, elapsed: Duration, exit_code: Option<i32>) {
         self.settle(StepState::Failed, elapsed, exit_code);
     }
 
@@ -181,8 +207,7 @@ impl<'a> StepLog<'a> {
             return;
         };
         self.emit(BuildEvent::Step(StepEvent::new(
-            identity.index,
-            identity.total,
+            identity.place,
             &identity.instruction,
             &identity.args,
             state,
@@ -202,7 +227,7 @@ impl<'a> StepLog<'a> {
 mod tests {
     use std::time::Duration;
 
-    use super::{BuildEvent, StepLog, StepState};
+    use super::{BuildEvent, StepLog, StepPlace, StepState};
     use crate::runtime::Stream;
 
     #[test]
@@ -218,12 +243,13 @@ mod tests {
                     steps.push((
                         step.instruction.to_owned(),
                         step.args.to_owned(),
+                        step.line,
                         step.state,
                     ));
                 }
             };
             let mut log = StepLog::with_events(&mut bus);
-            log.started(1, 1, "FROM", "python:3.13-slim");
+            log.started(StepPlace::new(1, 1, 1), "FROM", "python:3.13-slim");
             log.note("sealed sha256:deadbeef: reusing cache");
             log.line(Stream::Stdout, "child-out");
             log.done(Duration::from_millis(12));
@@ -236,18 +262,20 @@ mod tests {
                 (
                     "FROM".to_owned(),
                     "python:3.13-slim".to_owned(),
+                    1,
                     StepState::Started
                 ),
                 (
                     "FROM".to_owned(),
                     "python:3.13-slim".to_owned(),
+                    1,
                     StepState::Done
                 ),
             ]
         );
 
         let mut silent = StepLog::discard();
-        silent.started(1, 1, "FROM", "alpine:3.20");
+        silent.started(StepPlace::new(1, 1, 1), "FROM", "alpine:3.20");
         silent.note("sealed sha256:00: reusing cache");
         silent.done(Duration::ZERO);
     }

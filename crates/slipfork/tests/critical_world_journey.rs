@@ -128,6 +128,35 @@ image app . {
 }
 "#;
 
+// Engine-executed instruction failures: the instruction and its one-line cause must survive.
+const MISSING_STAGE_DOCKERFILE: &str = "\
+FROM python:3.13-slim
+COPY --from=missing-stage /x /y
+";
+
+// A `FROM` the engine cannot pull: the pull, not a child process, is the failing command.
+const UNPULLABLE_FROM_DOCKERFILE: &str = "\
+FROM 127.0.0.1:1/nope:latest
+CMD [\"true\"]
+";
+
+// An invalid `from:` reference: the Forkfile's pull is the failing step, and its record is `FROM`.
+const INVALID_FROM_FORKFILE: &str = r#"# forkfile: 0.1
+image app from /bad:latest {
+  service api {
+    port 8000
+    route /
+    run: @uv run python app.py
+  }
+}
+"#;
+
+// A failure before any instruction ran: no step row exists, so the verdict carries the reason.
+const PARSE_FAIL_DOCKERFILE: &str = "\
+COPY /x /y
+FROM scratch
+";
+
 fn fail_closed(message: &str) -> ! {
     panic!("fail closed: {message}");
 }
@@ -318,7 +347,17 @@ impl Journey {
         let data_home = run.join("data");
         let store_root = expected_store_root(&run, &data_home);
         let engine = BtrfsEngine::new(StoreLayout::at(&store_root));
-        for world in ["good", "baked", "broken", "logs", "buildfail"] {
+        for world in [
+            "good",
+            "baked",
+            "broken",
+            "logs",
+            "buildfail",
+            "stagefail",
+            "fromfail",
+            "parsefail",
+            "badfrom",
+        ] {
             if let Ok(world) = WorldName::parse(world) {
                 let _ = engine.drop_world(&world);
             }
@@ -682,7 +721,17 @@ impl Drop for Journey {
             }
         }
         let store_engine = BtrfsEngine::new(StoreLayout::at(&self.store_root));
-        for world in ["good", "baked", "broken", "logs", "buildfail"] {
+        for world in [
+            "good",
+            "baked",
+            "broken",
+            "logs",
+            "buildfail",
+            "stagefail",
+            "fromfail",
+            "parsefail",
+            "badfrom",
+        ] {
             if let Ok(world) = WorldName::parse(world) {
                 let _ = store_engine.drop_world(&world);
             }
@@ -1927,6 +1976,332 @@ fn world_up_restart_down_journey() {
         stdout(&bare_run).contains("out-line"),
         "`logs {build_run}` must replay the captured output:\n{}",
         stdout(&bare_run)
+    );
+
+    // 3c. Every failing instruction explains itself. An engine-executed step (`COPY --from` a
+    // missing stage, a `FROM` that cannot be pulled) names the instruction in the replay header,
+    // writes its raw one-line cause as that step's `┃` output, and still ends with a verdict naming
+    // the verb. A failure before any step puts the reason in the verdict instead of an empty block.
+    let stagefail = journey.project("stagefail", CATALOG_FORKFILE);
+    fs::write(stagefail.join("Dockerfile"), MISSING_STAGE_DOCKERFILE)
+        .expect("write the missing-stage Dockerfile");
+    let stage_build = journey.slipfork(&stagefail, &["up"]);
+    assert_eq!(
+        stage_build.status.code(),
+        Some(1),
+        "{}",
+        up_failure(
+            "a missing `COPY --from` stage must fail `up`",
+            &stagefail,
+            &stage_build
+        )
+    );
+    let stage_block = format!("{}{}", stdout(&stage_build), stderr(&stage_build));
+    assert_eq!(
+        stage_block.matches("next:").count(),
+        1,
+        "an engine-step failure prints exactly one `next:`:\n{stage_block}"
+    );
+    assert!(
+        stage_block.contains("✗ COPY app failed"),
+        "`up` names the failing instruction in its verdict:\n{stage_block}"
+    );
+    assert!(
+        stage_block
+            .lines()
+            .any(|line| line.contains("┃ no build stage named `missing-stage`")),
+        "`up` streams the failing step's `┃` reason line:\n{stage_block}"
+    );
+    let stage_run = stage_block
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("next: slipfork logs -r "))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| panic!("the COPY failure must name its run:\n{stage_block}"))
+        .to_owned();
+    let stage_replay = journey.slipfork(&stagefail, &["logs", "-r", &stage_run]);
+    assert!(
+        stage_replay.status.success(),
+        "`logs -r {stage_run}`: {}",
+        stderr(&stage_replay)
+    );
+    let stage_text = stdout(&stage_replay);
+    let stage_header = stage_text
+        .lines()
+        .find(|line| line.starts_with(&format!("#{stage_run}")))
+        .unwrap_or_else(|| panic!("`logs -r` must print a run header:\n{stage_text}"));
+    let stage_fields: Vec<&str> = stage_header.split("  ").collect();
+    assert!(
+        stage_fields.len() >= 5
+            && stage_fields[1] == "COPY"
+            && stage_fields[2] == "app"
+            && stage_fields[3].contains("--from=missing-stage")
+            && stage_fields[3].contains("/x /y"),
+        "the replay header names the instruction that ran:\n{stage_header:?}"
+    );
+    assert_eq!(
+        stage_text
+            .matches("┃ no build stage named `missing-stage`")
+            .count(),
+        1,
+        "the engine's reason is written exactly once:\n{stage_text}"
+    );
+    for absent in ["build `app` failed", "Dockerfile:2:", "next:", "crun"] {
+        assert!(
+            !stage_text.contains(absent),
+            "the capture never carries `{absent}`:\n{stage_text}"
+        );
+    }
+    assert!(
+        !stage_text.contains('\u{1b}'),
+        "NO_COLOR keeps the replay escape-free:\n{stage_text}"
+    );
+    assert!(
+        stage_text.trim_end().ends_with("✗ COPY app failed"),
+        "the replay verdict names the instruction:\n{stage_text}"
+    );
+
+    let stage_json = journey.slipfork(&stagefail, &["logs", "-r", &stage_run, "--json"]);
+    assert!(
+        stage_json.status.success(),
+        "`logs -r {stage_run} --json`: {}",
+        stderr(&stage_json)
+    );
+    let stage_json_text = stdout(&stage_json);
+    assert!(
+        !stage_json_text.contains('\u{1b}'),
+        "`--json` stays escape-free:\n{stage_json_text}"
+    );
+    let stage_events: Vec<serde_json::Value> = stage_json_text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    let stage_record = stage_events
+        .iter()
+        .find(|event| event["run_id"].as_str() == Some(stage_run.as_str()))
+        .unwrap_or_else(|| panic!("`logs -r --json` must emit the record: {stage_events:?}"));
+    assert_eq!(stage_record["phase"], "copy", "{stage_record}");
+    assert!(
+        stage_record["instruction"]
+            .as_str()
+            .is_some_and(|text| text.contains("--from=missing-stage")),
+        "{stage_record}"
+    );
+    assert_eq!(stage_record["source"], "Dockerfile:2", "{stage_record}");
+    assert!(
+        stage_record["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("no build stage named `missing-stage`")),
+        "{stage_record}"
+    );
+    assert_eq!(stage_record["state"], "failed", "{stage_record}");
+    assert!(
+        stage_record
+            .get("exit_code")
+            .is_none_or(serde_json::Value::is_null),
+        "an engine step carries no child exit code: {stage_record}"
+    );
+
+    // The same story for `FROM`: the pull is the step, and its failure is a `┃` line.
+    let fromfail = journey.project("fromfail", CATALOG_FORKFILE);
+    fs::write(fromfail.join("Dockerfile"), UNPULLABLE_FROM_DOCKERFILE)
+        .expect("write the unpullable FROM Dockerfile");
+    let from_build = journey.slipfork(&fromfail, &["up"]);
+    assert_eq!(
+        from_build.status.code(),
+        Some(1),
+        "{}",
+        up_failure(
+            "an unpullable `FROM` must fail `up`",
+            &fromfail,
+            &from_build
+        )
+    );
+    let from_block = format!("{}{}", stdout(&from_build), stderr(&from_build));
+    assert_eq!(
+        from_block.matches("next:").count(),
+        1,
+        "a failed `FROM` prints exactly one `next:`:\n{from_block}"
+    );
+    assert!(
+        from_block.contains("✗ FROM app failed"),
+        "`up` names the failing instruction in its verdict:\n{from_block}"
+    );
+    assert!(
+        from_block.lines().any(|line| line.contains('┃')),
+        "`up` streams the failed `FROM` step's `┃` reason line:\n{from_block}"
+    );
+    let from_run = from_block
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("next: slipfork logs -r "))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| panic!("the `FROM` failure must name its run:\n{from_block}"))
+        .to_owned();
+    let from_replay = journey.slipfork(&fromfail, &["logs", "-r", &from_run]);
+    assert!(
+        from_replay.status.success(),
+        "`logs -r {from_run}`: {}",
+        stderr(&from_replay)
+    );
+    let from_text = stdout(&from_replay);
+    let from_header = from_text
+        .lines()
+        .find(|line| line.starts_with(&format!("#{from_run}")))
+        .unwrap_or_else(|| panic!("`logs -r` must print a run header:\n{from_text}"));
+    let from_fields: Vec<&str> = from_header.split("  ").collect();
+    assert!(
+        from_fields.len() >= 5
+            && from_fields[1] == "FROM"
+            && from_fields[2] == "app"
+            && from_fields[3] == "127.0.0.1:1/nope:latest",
+        "the replay header names the `FROM` that ran:\n{from_header:?}"
+    );
+    let from_reason = from_text
+        .lines()
+        .find_map(|line| line.split_once('┃').map(|(_, reason)| reason.trim()))
+        .unwrap_or_default();
+    assert!(
+        from_reason.contains("127.0.0.1:1") || from_reason.to_ascii_lowercase().contains("refused"),
+        "the `┃` reason names the unpullable host, saw {from_reason:?}:\n{from_text}"
+    );
+    assert!(
+        !from_text.contains('\u{1b}'),
+        "NO_COLOR keeps the replay escape-free:\n{from_text}"
+    );
+    assert!(
+        from_text.trim_end().ends_with("✗ FROM app failed"),
+        "the replay verdict names the `FROM` instruction:\n{from_text}"
+    );
+
+    // An invalid `from:` reference is a failure OF the `FROM` step: the row is announced before
+    // the reference is parsed, its raw cause is the step's one `┃` line, and both surfaces read
+    // `✗ FROM app failed` — never a step-less `✗ image … failed: <reason>`, never a `PULL` verb.
+    let badfrom = journey.project("badfrom", INVALID_FROM_FORKFILE);
+    let bad_build = journey.slipfork(&badfrom, &["up"]);
+    assert_eq!(
+        bad_build.status.code(),
+        Some(1),
+        "{}",
+        up_failure(
+            "an invalid `from:` reference must fail `up`",
+            &badfrom,
+            &bad_build
+        )
+    );
+    let bad_block = format!("{}{}", stdout(&bad_build), stderr(&bad_build));
+    assert_eq!(
+        bad_block.matches("next:").count(),
+        1,
+        "an invalid `from:` prints exactly one `next:`:\n{bad_block}"
+    );
+    assert!(
+        bad_block.contains("→ [1/1] FROM"),
+        "`up` announces the `FROM` row before parsing the reference:\n{bad_block}"
+    );
+    assert!(
+        bad_block
+            .lines()
+            .any(|line| line.contains('┃') && line.contains("not a valid image reference")),
+        "`up` streams the step's one `┃` reason line:\n{bad_block}"
+    );
+    assert!(
+        bad_block.contains("✗ FROM app failed") && !bad_block.contains("✗ image app failed"),
+        "`up`'s verdict names the `FROM` step:\n{bad_block}"
+    );
+    assert!(
+        !bad_block.contains("PULL"),
+        "`from:` pulls never print a `PULL` verb:\n{bad_block}"
+    );
+    let bad_run = bad_block
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("next: slipfork logs -r "))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| panic!("the invalid `from:` must name its run:\n{bad_block}"))
+        .to_owned();
+    let bad_replay = journey.slipfork(&badfrom, &["logs", "-r", &bad_run]);
+    assert!(
+        bad_replay.status.success(),
+        "`logs -r {bad_run}`: {}",
+        stderr(&bad_replay)
+    );
+    let bad_text = stdout(&bad_replay);
+    let bad_header = bad_text
+        .lines()
+        .find(|line| line.starts_with(&format!("#{bad_run}")))
+        .unwrap_or_else(|| panic!("`logs -r` must print a run header:\n{bad_text}"));
+    let bad_fields: Vec<&str> = bad_header.split("  ").collect();
+    assert!(
+        bad_fields.len() >= 5
+            && bad_fields[1] == "FROM"
+            && bad_fields[2] == "app"
+            && bad_fields[3] == "/bad:latest",
+        "the header names the `FROM` that ran:\n{bad_header:?}"
+    );
+    assert_eq!(
+        bad_text
+            .lines()
+            .filter(|line| line.contains('┃') && line.contains("not a valid image reference"))
+            .count(),
+        1,
+        "the step's reason is written exactly once:\n{bad_text}"
+    );
+    assert!(
+        bad_text.trim_end().ends_with("✗ FROM app failed"),
+        "the replay verdict names the `FROM` step, with no `: reason` suffix:\n{bad_text}"
+    );
+    assert!(
+        !bad_text.contains("PULL") && !bad_text.contains('\u{1b}'),
+        "one `FROM` verb, zero escapes:\n{bad_text}"
+    );
+
+    // Before any step exists (a parse error), the verdict itself carries the reason.
+    let parsefail = journey.project("parsefail", CATALOG_FORKFILE);
+    fs::write(parsefail.join("Dockerfile"), PARSE_FAIL_DOCKERFILE)
+        .expect("write the parse-failing Dockerfile");
+    let parse_build = journey.slipfork(&parsefail, &["up"]);
+    assert_eq!(
+        parse_build.status.code(),
+        Some(1),
+        "{}",
+        up_failure("a parse error must fail `up`", &parsefail, &parse_build)
+    );
+    let parse_block = format!("{}{}", stdout(&parse_build), stderr(&parse_build));
+    assert_eq!(
+        parse_block.matches("next:").count(),
+        1,
+        "a step-less failure prints exactly one `next:`:\n{parse_block}"
+    );
+    assert!(
+        parse_block.contains("✗ image app failed: ")
+            && parse_block.contains("instruction appears before any `FROM`"),
+        "`up` carries the reason in the verdict when no step exists:\n{parse_block}"
+    );
+    let parse_run = parse_block
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("next: slipfork logs -r "))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| panic!("the parse failure must name its run:\n{parse_block}"))
+        .to_owned();
+    let parse_replay = journey.slipfork(&parsefail, &["logs", "-r", &parse_run]);
+    assert!(
+        parse_replay.status.success(),
+        "`logs -r {parse_run}`: {}",
+        stderr(&parse_replay)
+    );
+    let parse_text = stdout(&parse_replay);
+    assert!(
+        parse_text
+            .trim_end()
+            .ends_with("✗ image app failed: Dockerfile:1: instruction appears before any `FROM`"),
+        "`logs -r` carries the step-less reason in its verdict:\n{parse_text}"
+    );
+    assert!(
+        !parse_text.contains('\u{1b}'),
+        "NO_COLOR keeps the replay escape-free:\n{parse_text}"
     );
 
     // 4. Down and re-up: the stamped `uv sync` is skipped and named as such.

@@ -27,6 +27,11 @@ impl RunTarget {
             })
     }
 
+    /// The minted id, so the record owner can annotate the capture while it is still running.
+    pub(crate) fn run_id(&self) -> Option<&str> {
+        self.capture.as_ref().map(RunCapture::run_id)
+    }
+
     pub(crate) fn append_stream(&mut self, stream: slipfork_world::Stream, text: &str) {
         if let Some(capture) = &mut self.capture {
             let _ = capture.append_stream(stream, text);

@@ -182,6 +182,7 @@ mod tests {
             instruction: String::new(),
             source: String::new(),
             exit_code: None,
+            reason: None,
             state: "ready".to_owned(),
             started_ms: 1_764_000_000_000,
             finished_ms: Some(1_764_000_000_041),

@@ -237,12 +237,9 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
     awaited
 }
 
-/// The stamp store this boot may trust.
-///
-/// Only a checkpoint whose `world_epoch` still matches the planned DAG **and** whose PG siblings
-/// carry the same epoch is trusted; that single trusted value decides `for_fork` for every world,
-/// root or fork. A stale epoch (edited `Forkfile`, changed `PGDATA` pair) or a stale input digest
-/// (changed lockfile) therefore still re-runs `@<tool>`/`before-start`/`pre-deploy`.
+/// The stamp store this boot may trust: only a checkpoint whose `world_epoch` matches the planned
+/// DAG **and** whose PG siblings carry the same epoch decides `for_fork`, so a stale epoch or input
+/// digest still re-runs `@<tool>`/`before-start`/`pre-deploy`.
 fn stamps_for(project: &Path, store: &WorldStampStore, trusted: bool) -> StampStore {
     if trusted {
         StampStore::for_fork(project, true, store.load())
@@ -391,8 +388,7 @@ impl Emitter {
     }
 }
 
-/// Step-scoped NDJSON writer: each concurrent DAG node owns its own line buffer and step identity,
-/// locking [`Emitter`] only to flush one complete `log` frame.
+/// Step-scoped NDJSON writer: one line buffer per DAG node, locking [`Emitter`] only to flush.
 pub(super) struct BootSink {
     log: EventLog,
     mirror: std::io::Stderr,
@@ -421,8 +417,7 @@ impl BootSink {
         }
     }
 
-    /// Opens this step's run capture **before** the step executes, so a step that errors before its
-    /// first printed line still leaves a capture and a catalog record behind.
+    /// Opens this step's run capture **before** it executes, so an early error still leaves one.
     pub(super) fn capture_run(
         mut self,
         store: &LogStore,
@@ -455,8 +450,13 @@ impl BootSink {
         }
     }
 
-    /// Emits one live build row for `image`'s `index`-th instruction and pins the identity a
-    /// following child `log` line inherits.
+    /// The minted id of this step's run capture, so its record can be annotated while it runs.
+    pub(super) fn run_id(&self) -> Option<String> {
+        let run = self.log.run.as_ref()?.lock().ok()?;
+        run.run_id().map(str::to_owned)
+    }
+
+    /// Emits one live build row for `image`'s `index`-th instruction, pinning the child identity.
     pub(super) fn step_event(&mut self, image: &str, event: &slipfork_image::StepEvent<'_>) {
         self.log.image = Some(image.to_owned());
         self.log.index = Some(event.index);
@@ -653,8 +653,7 @@ mod tests {
         (store, pg_clone)
     }
 
-    /// A warm root world reuses its paired checkpoint; a changed `Forkfile`, feature set, or
-    /// lockfile re-runs it.
+    /// A warm root world reuses its checkpoint; a changed `Forkfile`, features, or lockfile re-runs.
     #[test]
     fn a_paired_world_stamp_skips_pre_deploy_and_any_change_reruns_it() {
         let root = temp("slipfork-warm-stamp");

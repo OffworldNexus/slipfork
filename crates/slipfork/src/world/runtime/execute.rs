@@ -129,7 +129,7 @@ impl WorldRuntime {
                     progress: None,
                 })
                 .map_err(|failure| {
-                    StepFailure::described(BootFailure::new(failure.message), failure.note)
+                    StepFailure::described(BootFailure::new(failure.message), *failure.note)
                 }),
             BootKind::Resource => resources::start_resource(self, &step.subject, log)
                 .map_err(|error| StepFailure::plain(BootFailure::new(error))),

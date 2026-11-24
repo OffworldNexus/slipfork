@@ -75,6 +75,7 @@ impl DockerfileParser {
             let instruction = parse_instruction(&text, line, &heredocs, &bodies, &aliases)?;
             if let Instruction::From { base, alias } = &instruction {
                 stages.push(Stage {
+                    line,
                     alias: alias.clone(),
                     base: base.clone(),
                     instructions: Vec::new(),

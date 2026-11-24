@@ -92,7 +92,7 @@ pub use puller::{OciPuller, PulledImage};
 pub use reference::ImageReference;
 pub use registry::{Credentials, RegistryClient, RegistryScheme};
 pub use runtime::{CrunStepRuntime, StepHost, Stream};
-pub use step_log::{BuildEvent, StepEvent, StepLog, StepState, exit_detail};
+pub use step_log::{BuildEvent, StepEvent, StepLog, StepPlace, StepState, exit_detail};
 pub use steps::{StepCache, StepLayout, StepRecord};
 pub use unpack::LayerUnpacker;
 

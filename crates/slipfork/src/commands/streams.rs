@@ -247,6 +247,8 @@ pub(crate) struct Renderer {
     rows: usize,
     /// The replay's verdict, assembled from the run record.
     verdict: Option<Verdict>,
+    /// The record's one-line reason, used by the verdict when no row above carries it.
+    reason: Option<String>,
 }
 
 impl Renderer {
@@ -261,6 +263,7 @@ impl Renderer {
             width: 0,
             rows: 0,
             verdict: None,
+            reason: None,
         }
     }
 
@@ -427,6 +430,10 @@ impl Renderer {
                 .and_then(|code| i32::try_from(code).ok()),
             duration_ms: run["duration_ms"].as_u64(),
         });
+        self.reason = run["reason"]
+            .as_str()
+            .filter(|reason| !reason.is_empty())
+            .map(str::to_owned);
     }
 
     pub(crate) fn finish(&self, code: i64) {
@@ -435,7 +442,13 @@ impl Renderer {
             return;
         }
         if let Some(verdict) = &self.verdict {
-            let line = self.palette.verdict(verdict);
+            // A failure with no replayable row at all explains itself in the verdict itself.
+            let line = match &self.reason {
+                Some(reason) if self.rows == 0 && verdict.exit_code.is_none() => {
+                    self.palette.verdict_detail(verdict, reason)
+                }
+                _ => self.palette.verdict(verdict),
+            };
             // Exactly one blank line separates rows from the verdict; an empty capture has none.
             let gap = if self.rows > 0 { "\n" } else { "" };
             let _ = emit(&format!("{gap}{line}\n"));

@@ -1,8 +1,9 @@
 //! Run-record owner: the instruction a step actually executed, published onto its catalog run.
 //!
-//! A capture holds command output only. The instruction that ran, its source line, and its child
-//! exit code are *record* facts: they are written once the run settles, under the catalog lock, so
-//! `logs -r` can name the `RUN` that failed without polluting the capture itself.
+//! A capture holds command output only. The instruction that ran, its source line, its child exit
+//! code, and (when no child printed the reason) the engine's one-line cause are *record* facts: they
+//! are written under the catalog lock, so `logs -r` can name the `RUN` that failed without
+//! polluting the capture itself.
 
 use slipfork_world::run_log::RunNote;
 use slipfork_world::{BootFailure, LogStore};
@@ -13,7 +14,7 @@ pub(crate) struct BuildFailure {
     /// One-line failure message, printed by `up` and never appended to the capture.
     pub(crate) message: String,
     /// The failing instruction, published onto the step's run record.
-    pub(crate) note: RunNote,
+    pub(crate) note: Box<RunNote>,
     /// Container plumbing behind a failed `RUN` (`crun exited with code 3`), `-v` only.
     pub(crate) runtime: Option<Box<str>>,
 }
@@ -40,14 +41,21 @@ impl StepFailure {
     }
 }
 
-/// Publishes the instruction that ran onto a step's already-finished catalog run.
-pub(crate) struct RunNotes<'a> {
-    store: &'a LogStore,
+/// The one writer of a step's instruction facts onto its catalog run.
+pub(crate) struct RunNotes {
+    store: LogStore,
 }
 
-impl<'a> RunNotes<'a> {
-    pub(crate) fn new(store: &'a LogStore) -> Self {
-        Self { store }
+impl RunNotes {
+    pub(crate) fn new(store: &LogStore) -> Self {
+        Self {
+            store: store.clone(),
+        }
+    }
+
+    /// The instruction a step announced when it STARTED, so a crash or engine failure still names it.
+    pub(crate) fn started(&self, run_id: Option<&str>, note: &RunNote) -> Result<(), String> {
+        self.annotate(run_id, note)
     }
 
     /// A failed run names its failing instruction and the typed exit code the step carried.

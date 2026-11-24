@@ -274,8 +274,13 @@ impl Narrative {
             .lock()
             .ok()
             .and_then(|mut steps| steps.take_failure(target, self.active.as_ref()));
+        let step_less = live.is_none();
         let verb = live.as_ref().map_or_else(
-            || phase_verb(event["phase"].as_str().unwrap_or("step")),
+            || match event["kind"].as_str() {
+                // No instruction row existed, so the envelope speaks for the image itself.
+                Some("image") => "image".to_owned(),
+                _ => phase_verb(event["phase"].as_str().unwrap_or("step")),
+            },
             |live| live.phase.verb.clone(),
         );
         if anchored_pane && let Some(live) = &live {
@@ -286,7 +291,7 @@ impl Narrative {
                 }
             }
         }
-        for row in failure::envelope(event, &verb, self.verbose, palette) {
+        for row in failure::envelope(event, &verb, self.verbose, palette, step_less) {
             actions.push(Action::Diagnose(row));
         }
         self.active = None;
@@ -348,12 +353,11 @@ fn counter(event: &Value) -> Option<(usize, usize)> {
     (step > 0 && total > 0).then_some((step, total))
 }
 
-/// The verb a failure envelope prints when no phase row is live: `run` → `RUN`.
+/// The verb a failure envelope prints when no phase row is live: `run` → `RUN`, `copy` → `COPY`.
 fn phase_verb(phase: &str) -> String {
     match phase {
-        "run" => "RUN".to_owned(),
-        "pull" => "PULL".to_owned(),
-        other => other.to_owned(),
+        "" => "step".to_owned(),
+        other => other.to_ascii_uppercase(),
     }
 }
 

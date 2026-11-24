@@ -2,7 +2,7 @@
 id: M3.107.4
 title: "Every failing instruction explains itself: step notes for all kinds + engine reason in capture/record"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.107.3]
@@ -16,15 +16,16 @@ paths:
   - "crates/slipfork-world/src/log_store.rs"
   - "crates/slipfork-world/tests/critical_log_store.rs"
   - crates/slipfork/src/commands/streams.rs
+  - crates/slipfork/src/commands/runs.rs
   - "crates/slipfork/src/ui/**"
   - "crates/slipfork/src/boot/**"
   - crates/slipfork/tests/critical_world_journey.rs
   - crates/slipfork/tests/critical_status_live.rs
-attempts: 0
+attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-24T12:54"
-updated: "2026-11-24T12:54"
+updated: "2026-11-24T14:16"
 ---
 
 # Problem (owner regression at 1157050)
