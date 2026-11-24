@@ -82,7 +82,7 @@ use std::fmt;
 
 pub use builder::{
     BuildReport, BuildRequest, ExternalFrom, ExternalImage, NativeImageBuilder, StageWalk,
-    StepTrace, external_references, stage_walk,
+    StepTrace, external_references, instruction_width, planned_instruction_width, stage_walk,
 };
 pub use context::{BuildContext, ContextEntry};
 pub use credentials::RegistryCredentials;

@@ -15,6 +15,7 @@ use slipfork_forkfile::compile;
 use slipfork_image::{
     Architecture, BuildArgs, BuildEvent, BuildRequest, ImageLayout, ImageReference,
     NativeImageBuilder, OciPuller, StepEvent, StepHost, StepLayout, StepLog, StepState, Stream,
+    planned_instruction_width,
 };
 use slipfork_world::{BtrfsEngine, StoreLayout, WorldEngine};
 
@@ -134,8 +135,8 @@ impl Session {
             "{} Pulled {} {} {}\n",
             palette.icon_ok(),
             palette.value(&parsed.to_string()),
-            palette.dim(&digest),
-            palette.dim(if pulled.cached { "cached" } else { "sealed" })
+            palette.meta(&digest),
+            palette.meta(if pulled.cached { "cached" } else { "sealed" })
         ))
     }
 
@@ -275,11 +276,14 @@ impl Session {
                 );
             }
         };
+        let planned_width =
+            planned_instruction_width(&source, request.target.as_deref()).unwrap_or(0);
         let puller = lab.puller(self);
         let mut printer = EventPrinter::new(self.ui(), args.verbose, false);
         let outcome = {
             let mut bus = |event: BuildEvent<'_>| printer.event(event);
             let mut log = StepLog::with_events(&mut bus);
+            log.plan_width(planned_width);
             let pulled = match crate::world::pull_externals(
                 &source,
                 request.target.as_deref(),
@@ -364,8 +368,8 @@ impl Session {
             "{} Built {} {} {}\n",
             palette.icon_ok(),
             palette.tint(component, "1"),
-            palette.dim(&image_id),
-            palette.dim(&format!(
+            palette.meta(&image_id),
+            palette.meta(&format!(
                 "({} hits, {} misses)",
                 report.cache_hits, report.cache_misses
             ))
@@ -413,7 +417,7 @@ impl EventPrinter {
                 if self.mode.json() {
                     out(&format!("{}\n", json!({ "event": "note", "text": text })));
                 } else if self.notes || self.verbose {
-                    out(&format!("  {}\n", self.palette.dim(text)));
+                    out(&format!("  {}\n", self.palette.meta(text)));
                 }
             }
         }
@@ -437,6 +441,7 @@ impl EventPrinter {
             return;
         }
         let header = format!("[{}/{}]", step.index, step.total);
+        let keyword = keyword_cell(self.palette, &step);
         let args = if step.args.is_empty() {
             String::new()
         } else {
@@ -448,8 +453,8 @@ impl EventPrinter {
                     out(&format!(
                         "{} {} {}{}\n",
                         self.palette.tint("→", "36"),
-                        self.palette.dim(&header),
-                        self.palette.verb(step.instruction),
+                        self.palette.meta(&header),
+                        keyword,
                         args
                     ));
                 }
@@ -468,15 +473,23 @@ impl EventPrinter {
                 out(&format!(
                     "{} {} {}{} {}{}\n",
                     icon,
-                    self.palette.dim(&header),
-                    self.palette.verb(step.instruction),
+                    self.palette.meta(&header),
+                    keyword,
                     args,
-                    self.palette.dim(&elapsed),
+                    self.palette.meta(&elapsed),
                     exit
                 ));
             }
         }
     }
+}
+
+/// The magenta instruction keyword padded, outside the tint, to the plan's widest keyword.
+fn keyword_cell(palette: Palette, step: &StepEvent<'_>) -> String {
+    let pad = step
+        .instruction_width
+        .saturating_sub(step.instruction.chars().count());
+    format!("{}{}", palette.verb(step.instruction), " ".repeat(pad))
 }
 
 fn stream_name(stream: Stream) -> &'static str {
@@ -569,4 +582,49 @@ fn record_built(
 
 fn out(text: &str) {
     let _ = emit(text);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use slipfork_image::{StepEvent, StepPlace, StepState};
+
+    use super::{Palette, keyword_cell};
+
+    fn cell(instruction: &'static str, width: usize, color: bool) -> String {
+        let mut event = StepEvent::new(
+            StepPlace::new(1, 1, 1),
+            instruction,
+            "",
+            StepState::Done,
+            Duration::ZERO,
+            None,
+        );
+        event.instruction_width = width;
+        keyword_cell(Palette::new(color), &event)
+    }
+
+    #[test]
+    fn keyword_cell_pads_outside_the_tint_to_the_plan_width() {
+        for instruction in ["FROM", "COPY", "RUN", "WORKDIR"] {
+            let plain = cell(instruction, 7, false);
+            assert_eq!(plain.len(), 7, "{plain:?}");
+            assert_eq!(
+                plain,
+                format!("{instruction}{}", " ".repeat(7 - instruction.len()))
+            );
+            assert!(!plain.contains('\u{1b}'), "plain cells are unstyled");
+        }
+
+        assert_eq!(cell("FROM", 7, true), "\u{1b}[35mFROM\u{1b}[0m   ");
+        assert_eq!(cell("COPY", 7, true), "\u{1b}[35mCOPY\u{1b}[0m   ");
+        assert_eq!(cell("RUN", 7, true), "\u{1b}[35mRUN\u{1b}[0m    ");
+        assert_eq!(cell("WORKDIR", 7, true), "\u{1b}[35mWORKDIR\u{1b}[0m");
+        let padded = cell("FROM", 7, true);
+        assert!(
+            padded.ends_with("\u{1b}[0m   "),
+            "padding is outside the tint: {padded:?}"
+        );
+    }
 }

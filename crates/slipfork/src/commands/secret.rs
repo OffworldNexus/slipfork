@@ -117,9 +117,9 @@ impl Session {
                 let value = if entry["set"].as_bool() == Some(true) {
                     palette.redacted(shown(entry))
                 } else {
-                    palette.dim(shown(entry))
+                    palette.meta(shown(entry))
                 };
-                text.push_str(&table.line(&widths, &[palette.key(key), palette.dim("="), value]));
+                text.push_str(&table.line(&widths, &[palette.key(key), palette.meta("="), value]));
                 text.push('\n');
             }
         }

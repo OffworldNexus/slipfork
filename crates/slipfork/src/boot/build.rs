@@ -143,6 +143,7 @@ impl Narrative {
         let instruction = event["instruction"].as_str().unwrap_or("RUN");
         let args = event["args"].as_str().unwrap_or_default();
         let elapsed = event["elapsed_ms"].as_u64().unwrap_or(0);
+        let width = usize_of(event["instruction_width"].as_u64());
         let key = LiveKey::Step {
             image: image.to_owned(),
             index,
@@ -151,8 +152,7 @@ impl Narrative {
             "started" => {
                 self.observe_outer("image", image);
                 let mut actions = Vec::new();
-                let (outer_open, verb_width) =
-                    self.tally(image).begin_step(index, total, instruction);
+                let (outer_open, verb_width) = self.tally(image).begin_step(index, total, width);
                 if let Some((outer_index, outer_total)) = outer_open {
                     actions.push(Action::Print(outer_row(
                         "→",
@@ -189,7 +189,7 @@ impl Narrative {
             "done" => {
                 let verb_width = {
                     let tally = self.tally(image);
-                    tally.verb_width = tally.verb_width.max(instruction.chars().count());
+                    tally.verb_width = tally.verb_width.max(width);
                     tally.verb_width
                 };
                 let phase = self

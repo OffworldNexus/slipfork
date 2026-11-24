@@ -42,12 +42,12 @@ impl ImageTally {
         &mut self,
         index: usize,
         total: usize,
-        instruction: &str,
+        instruction_width: usize,
     ) -> (Option<(usize, usize)>, usize) {
         self.total = self.total.max(total);
         // A real instruction re-announcing a provisional external-pull index wins.
         self.buffer.remove(&index);
-        self.verb_width = self.verb_width.max(instruction.chars().count());
+        self.verb_width = self.verb_width.max(instruction_width);
         let open = if !self.opened && self.outer.0 > 0 {
             self.opened = true;
             Some(self.outer)

@@ -103,6 +103,26 @@ pub fn stage_walk(stages: &[Stage], target: Option<&str>) -> Result<StageWalk> {
         })
 }
 
+/// The widest instruction keyword in `stages`, so every step row in one image shares an args
+/// column. `0` for an empty plan.
+#[must_use]
+pub fn instruction_width(stages: &[Stage]) -> usize {
+    stages
+        .iter()
+        .flat_map(|stage| &stage.instructions)
+        .map(|parsed| parsed.instruction.keyword().chars().count())
+        .max()
+        .unwrap_or(0)
+}
+
+/// The widest instruction keyword in the prefix `target` selects, using the build's own
+/// `--target` walk so the caller never re-derives stage semantics.
+pub fn planned_instruction_width(source: &str, target: Option<&str>) -> Result<usize> {
+    let stages = DockerfileParser::parse(source)?;
+    let walk = stage_walk(&stages, target)?;
+    Ok(instruction_width(&stages[..=walk.end]))
+}
+
 /// Native `Dockerfile` builder behind the [`BaseImageBuilder`] port.
 pub struct NativeImageBuilder {
     world: Arc<dyn WorldEngine>,
@@ -158,6 +178,7 @@ impl NativeImageBuilder {
         // Only the requested prefix runs, so a stage past `--target` must never force `crun` or
         // pull context files into this build.
         let walked = &stages[..=walk.end];
+        log.plan_width(instruction_width(walked));
         let runtime = CrunStepRuntime::new(self.host.clone());
         if walked
             .iter()
@@ -464,5 +485,41 @@ fn visible_path(path: &Path) -> String {
             format!("/{}", components[index + 2..].join("/"))
         }
         _ => path.display().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{instruction_width, planned_instruction_width};
+    use crate::dockerfile::DockerfileParser;
+
+    #[test]
+    fn widest_keyword_spans_mixed_from_copy_add_run_workdir() {
+        let source = "FROM python:3.14-trixie AS base\n\
+                      COPY . /app\n\
+                      ADD x /y\n\
+                      RUN echo hi\n\
+                      WORKDIR /code\n";
+        let stages = DockerfileParser::parse(source).expect("the fixture parses");
+        assert_eq!(instruction_width(&stages), "WORKDIR".len());
+    }
+
+    #[test]
+    fn planned_width_honours_the_target_prefix() {
+        let source = "FROM alpine AS base\n\
+                      COPY . /app\n\
+                      FROM alpine AS build\n\
+                      RUN true\n\
+                      FROM alpine AS later\n\
+                      WORKDIR /code\n";
+        assert_eq!(
+            planned_instruction_width(source, Some("build")).expect("the target exists"),
+            "COPY".len(),
+            "a later stage's WORKDIR never widens the requested prefix"
+        );
+        assert_eq!(
+            planned_instruction_width(source, None).expect("the final stage"),
+            "WORKDIR".len()
+        );
     }
 }

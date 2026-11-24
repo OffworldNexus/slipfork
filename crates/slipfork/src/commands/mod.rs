@@ -249,7 +249,7 @@ impl Session {
         }
         let next = embedded.as_deref().map_or(next, |remedy| remedy);
         if palette.color() {
-            eprintln!("{} {}", palette.dim("next:"), palette.kind(next));
+            eprintln!("{} {}", palette.meta("next:"), palette.kind(next));
         } else {
             eprintln!("next: {next}");
         }

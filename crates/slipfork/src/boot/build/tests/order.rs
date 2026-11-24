@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 use super::super::{Action, Narrative};
 use crate::ui::Palette;
 
+#[allow(clippy::too_many_arguments)]
 fn frame(
     image: &str,
     index: u64,
@@ -13,6 +14,7 @@ fn frame(
     args: &str,
     state: &str,
     elapsed_ms: u64,
+    instruction_width: u64,
 ) -> Value {
     json!({
         "event": "step",
@@ -23,6 +25,7 @@ fn frame(
         "args": args,
         "state": state,
         "elapsed_ms": elapsed_ms,
+        "instruction_width": instruction_width,
     })
 }
 
@@ -77,6 +80,7 @@ fn out_of_order_completions_release_once_per_index_then_the_end_row() {
             "python:3.14-trixie AS base",
             "started",
             0,
+            4,
         ),
         frame(
             "api",
@@ -86,6 +90,7 @@ fn out_of_order_completions_release_once_per_index_then_the_end_row() {
             "--from=builder /app /app",
             "started",
             0,
+            4,
         ),
     ] {
         let step = narrative.step(&event, plain);
@@ -93,8 +98,26 @@ fn out_of_order_completions_release_once_per_index_then_the_end_row() {
         actions.extend(step);
     }
     for event in [
-        frame("api", 2, 2, "COPY", "--from=builder /app /app", "done", 20),
-        frame("api", 1, 2, "FROM", "python:3.14-trixie AS base", "done", 5),
+        frame(
+            "api",
+            2,
+            2,
+            "COPY",
+            "--from=builder /app /app",
+            "done",
+            20,
+            4,
+        ),
+        frame(
+            "api",
+            1,
+            2,
+            "FROM",
+            "python:3.14-trixie AS base",
+            "done",
+            5,
+            4,
+        ),
     ] {
         actions.extend(narrative.step(&event, plain));
     }
@@ -157,7 +180,7 @@ fn a_provisional_external_pull_row_is_superseded_by_the_real_instruction() {
     let mut actions = Vec::new();
 
     // The external image pre-pull settles before instruction 1 is even announced.
-    actions.extend(narrative.step(&frame("api", 2, 2, "COPY", pre_pull, "done", 1), plain));
+    actions.extend(narrative.step(&frame("api", 2, 2, "COPY", pre_pull, "done", 1, 4), plain));
     actions.extend(narrative.step(
         &frame(
             "api",
@@ -167,16 +190,26 @@ fn a_provisional_external_pull_row_is_superseded_by_the_real_instruction() {
             "python:3.14-trixie AS base",
             "started",
             0,
+            4,
         ),
         plain,
     ));
     actions.extend(narrative.step(
-        &frame("api", 1, 2, "FROM", "python:3.14-trixie AS base", "done", 2),
+        &frame(
+            "api",
+            1,
+            2,
+            "FROM",
+            "python:3.14-trixie AS base",
+            "done",
+            2,
+            4,
+        ),
         plain,
     ));
     // The real COPY re-announces index 2: the provisional row must be dropped, not printed.
-    actions.extend(narrative.step(&frame("api", 2, 2, "COPY", real, "started", 0), plain));
-    actions.extend(narrative.step(&frame("api", 2, 2, "COPY", real, "done", 26), plain));
+    actions.extend(narrative.step(&frame("api", 2, 2, "COPY", real, "started", 0, 4), plain));
+    actions.extend(narrative.step(&frame("api", 2, 2, "COPY", real, "done", 26, 4), plain));
     let tail = narrative.finish_node("image", "api", &finished_frame(), plain);
     let tail = tail.expect("the image settles");
     let mut rows = settled_rows(&actions);
@@ -209,7 +242,16 @@ fn a_failed_image_drops_every_buffered_row_and_tally() {
     let plain = Palette::new(false);
     let mut narrative = Narrative::new(false);
     narrative.step(
-        &frame("api", 1, 2, "FROM", "python:3.14-trixie AS base", "done", 5),
+        &frame(
+            "api",
+            1,
+            2,
+            "FROM",
+            "python:3.14-trixie AS base",
+            "done",
+            5,
+            4,
+        ),
         plain,
     );
     let verdict = narrative.failed(
@@ -238,10 +280,13 @@ fn a_buffered_hole_still_releases_ascending_with_the_instruction_total() {
     let plain = Palette::new(false);
     let mut narrative = Narrative::new(false);
     narrative.step(
-        &frame("api", 1, 3, "FROM", "python:3.14-trixie", "done", 5),
+        &frame("api", 1, 3, "FROM", "python:3.14-trixie", "done", 5, 4),
         plain,
     );
-    narrative.step(&frame("api", 3, 3, "RUN", "echo last", "done", 20), plain);
+    narrative.step(
+        &frame("api", 3, 3, "RUN", "echo last", "done", 20, 3),
+        plain,
+    );
     let tail = narrative.finish_node("image", "api", &finished_frame(), plain);
     let tail = tail.expect("the image settles");
     let rows = settled_rows(&tail);
@@ -268,11 +313,12 @@ fn image_first_finish_releases_buffered_rows_with_an_in_flight_step() {
             "--from=builder /app /app",
             "started",
             0,
+            4,
         ),
         plain,
     );
     narrative.step(
-        &frame("api", 1, 3, "FROM", "python:3.14-trixie", "done", 5),
+        &frame("api", 1, 3, "FROM", "python:3.14-trixie", "done", 5, 4),
         plain,
     );
     let actions = narrative
@@ -441,4 +487,71 @@ fn a_settled_service_keeps_its_started_command_and_states_ready() {
         "✓ [2/2] start  web  ready  python3 -m http.server 8195  1.2s"
     );
     assert!(!row.contains('\u{1b}'));
+}
+
+/// The keyword column is the widest keyword in the image's whole walked plan, so FROM/COPY rows
+/// keep the same args column even though WORKDIR appears later.
+#[test]
+fn every_inner_row_shares_one_instruction_column_from_the_first_step() {
+    let steps = [
+        ("FROM", "python:3.14-trixie AS base", 1u64),
+        ("COPY", ". /app", 2),
+        ("ADD", "x /y", 3),
+        ("RUN", "echo hi", 4),
+        ("WORKDIR", "/code", 46),
+    ];
+    let expected_plain = [
+        "  ✓ 1/5 FROM     python:3.14-trixie AS base  1ms",
+        "  ✓ 2/5 COPY     . /app  2ms",
+        "  ✓ 3/5 ADD      x /y  3ms",
+        "  ✓ 4/5 RUN      echo hi  4ms",
+        "  ✓ 5/5 WORKDIR  /code  46ms",
+    ];
+    let expected_styled = [
+        "  \u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m1/5\u{1b}[0m \u{1b}[35mFROM\u{1b}[0m     python:3.14-trixie AS base  \u{1b}[38;5;244m1ms\u{1b}[0m",
+        "  \u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m2/5\u{1b}[0m \u{1b}[35mCOPY\u{1b}[0m     . /app  \u{1b}[38;5;244m2ms\u{1b}[0m",
+        "  \u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m3/5\u{1b}[0m \u{1b}[35mADD\u{1b}[0m      x /y  \u{1b}[38;5;244m3ms\u{1b}[0m",
+        "  \u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m4/5\u{1b}[0m \u{1b}[35mRUN\u{1b}[0m      echo hi  \u{1b}[38;5;244m4ms\u{1b}[0m",
+        "  \u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m5/5\u{1b}[0m \u{1b}[35mWORKDIR\u{1b}[0m  /code  \u{1b}[38;5;244m46ms\u{1b}[0m",
+    ];
+
+    for styled in [false, true] {
+        let palette = Palette::new(styled);
+        let mut narrative = Narrative::new(false);
+        let mut actions = Vec::new();
+        for (position, (instruction, args, millis)) in steps.iter().enumerate() {
+            let index = u64::try_from(position + 1).expect("tiny index");
+            actions.extend(narrative.step(
+                &frame("api", index, 5, instruction, args, "started", 0, 7),
+                palette,
+            ));
+            actions.extend(narrative.step(
+                &frame("api", index, 5, instruction, args, "done", *millis, 7),
+                palette,
+            ));
+        }
+        let tail = narrative
+            .finish_node("image", "api", &finished_frame(), palette)
+            .expect("the image settles");
+        actions.extend(tail);
+        let rows = settled_rows(&actions);
+        assert_eq!(rows.len(), steps.len(), "one row per instruction: {rows:?}");
+
+        let mut previous: Option<usize> = None;
+        for (position, (row, (instruction, args, _))) in rows.iter().zip(steps.iter()).enumerate() {
+            let expected = if styled {
+                expected_styled[position]
+            } else {
+                expected_plain[position]
+            };
+            assert_eq!(row, expected, "row is byte-exact: {row:?}");
+            assert!(row.contains(instruction), "the keyword survives: {row:?}");
+
+            let column = row.find(args).expect("args are present");
+            if let Some(previous) = previous {
+                assert_eq!(column, previous, "args start at one column: {row:?}");
+            }
+            previous = Some(column);
+        }
+    }
 }

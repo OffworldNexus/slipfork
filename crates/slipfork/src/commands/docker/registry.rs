@@ -178,7 +178,7 @@ impl Session {
         );
         let widths = table.widths(&rows);
         let mut text = String::new();
-        text.push_str(&table.line(&widths, &[palette.dim("HOST"), palette.dim("USERNAME")]));
+        text.push_str(&table.line(&widths, &[palette.meta("HOST"), palette.meta("USERNAME")]));
         text.push('\n');
         for row in rows.iter().skip(1) {
             text.push_str(&table.line(&widths, row));
@@ -270,15 +270,15 @@ impl Session {
         let palette = Palette::new(self.color());
         let table = Table::new(&IMAGE_COLUMNS).gap("  ");
         let mut measured = vec![vec![
-            palette.dim("SOURCE"),
-            palette.dim("NAME"),
-            palette.dim("IMAGE"),
+            palette.meta("SOURCE"),
+            palette.meta("NAME"),
+            palette.meta("IMAGE"),
         ]];
         measured.extend(rows.iter().skip(1).map(|row| {
             vec![
-                palette.dim(&row[0]),
+                palette.meta(&row[0]),
                 palette.value(&row[1]),
-                palette.dim(&row[2]),
+                palette.meta(&row[2]),
             ]
         }));
         let widths = table.widths(&measured);

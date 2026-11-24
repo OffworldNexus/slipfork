@@ -178,7 +178,7 @@ fn golden_two_level_rows_pin_every_styled_and_no_color_byte() {
         styled.verdict(&verdict_model),
         format!(
             "  {} {}",
-            styled.dim("next:"),
+            styled.meta("next:"),
             styled.tint("slipfork logs -r b2ebd7", "36")
         ),
         styled.header_line(
@@ -213,7 +213,7 @@ fn golden_two_level_rows_pin_every_styled_and_no_color_byte() {
         plain.verdict(&verdict_model),
         format!(
             "  {} {}",
-            plain.dim("next:"),
+            plain.meta("next:"),
             plain.tint("slipfork logs -r b2ebd7", "36")
         ),
         plain.header_line(

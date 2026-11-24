@@ -148,7 +148,7 @@ impl Session {
         let palette = Palette::new(self.color());
         let table = Table::new(&COLUMNS);
         let mut plain: Vec<Vec<String>> = vec![HEADER.map(str::to_owned).to_vec()];
-        let mut styled: Vec<Vec<String>> = vec![HEADER.map(|cell| palette.dim(cell)).to_vec()];
+        let mut styled: Vec<Vec<String>> = vec![HEADER.map(|cell| palette.meta(cell)).to_vec()];
         for name in resolved.available() {
             let active = resolved.contains(name);
             let implies = implies_cell(&implications, name);
@@ -166,14 +166,14 @@ impl Session {
                 if active {
                     palette.label(name)
                 } else {
-                    palette.dim(name)
+                    palette.meta(name)
                 },
                 if active {
                     palette.tint("active", "32")
                 } else {
-                    palette.dim("inactive")
+                    palette.meta("inactive")
                 },
-                palette.dim(&implies),
+                palette.meta(&implies),
             ]);
         }
         let widths = table.widths(&plain);
@@ -183,7 +183,7 @@ impl Session {
             text.push('\n');
         }
         if !config.is_default() {
-            text.push_str(&format!("{}\n", palette.dim(&summary(&config))));
+            text.push_str(&format!("{}\n", palette.meta(&summary(&config))));
         }
         if changed {
             text.push_str(&format!(

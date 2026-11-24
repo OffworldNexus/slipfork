@@ -83,7 +83,7 @@ pub fn run(host: &HostEnv, cwd: &std::path::Path, json: bool, color: bool) -> Ex
         out.push_str(&palette.tint(&format!("✗ {failed} issue(s) found"), "31;1"));
         out.push('\n');
     }
-    let separator = palette.dim("·");
+    let separator = palette.meta("·");
     let widths = widths(&doctor);
     let table = Table::new(&CHECK).indent("  ");
     for check in doctor.checks() {
@@ -152,7 +152,7 @@ mod tests {
                 true,
                 vec![
                     Part::Bold("Btrfs".to_owned()),
-                    Part::Dim("on ~/demo".to_owned()),
+                    Part::Meta("on ~/demo".to_owned()),
                 ],
                 None,
             ),
@@ -161,14 +161,14 @@ mod tests {
                 false,
                 vec![
                     Part::Bold("crun".to_owned()),
-                    Part::Dim("not installed".to_owned()),
+                    Part::Meta("not installed".to_owned()),
                 ],
                 Some("install crun".to_owned()),
             ),
             daemon: Check::new(
                 "Daemon",
                 true,
-                vec![Part::Dim("socket present".to_owned())],
+                vec![Part::Meta("socket present".to_owned())],
                 None,
             ),
             domains: Check::new(

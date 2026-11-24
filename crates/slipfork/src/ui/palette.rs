@@ -80,12 +80,6 @@ impl Palette {
         self.tint(text, "38;5;244")
     }
 
-    /// Thin alias kept for callers outside this node's paths; delegates to [`Self::meta`].
-    #[must_use]
-    pub fn dim(self, text: &str) -> String {
-        self.meta(text)
-    }
-
     /// An instruction, verb, or step kind (`RUN`, `FROM`, `start`, `image`): magenta.
     ///
     /// The one hue bound to the keyword role on every surface — phase rows, the `logs -r` header,
@@ -251,5 +245,52 @@ impl Palette {
     #[must_use]
     pub fn verdict_detail(self, verdict: &Verdict, reason: &str) -> String {
         format!("{}: {reason}", self.verdict(verdict))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    /// Literal source patterns that must never reappear: the retired alias would otherwise creep
+    /// back as a second metadata role. Split literals keep this file from matching itself.
+    const FORBIDDEN: [&str; 3] = [
+        concat!("palette.", "dim("),
+        concat!("self.", "dim("),
+        concat!("fn ", "dim("),
+    ];
+
+    #[test]
+    fn no_dim_alias_survives_in_the_crate() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut violations = Vec::new();
+        scan(&src, &mut violations);
+        assert!(
+            violations.is_empty(),
+            "retired `dim` alias still present:\n{}",
+            violations.join("\n")
+        );
+    }
+
+    fn scan(dir: &Path, violations: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+        paths.sort();
+        for path in paths {
+            if path.is_dir() {
+                scan(&path, violations);
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                for (index, line) in text.lines().enumerate() {
+                    if FORBIDDEN.iter().any(|needle| line.contains(needle)) {
+                        violations.push(format!("{}:{}: {line}", path.display(), index + 1));
+                    }
+                }
+            }
+        }
     }
 }

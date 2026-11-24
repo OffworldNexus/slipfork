@@ -75,6 +75,7 @@ pub(crate) fn step_frame(image: &str, event: &StepEvent<'_>) -> Value {
         "total": event.total,
         "instruction": event.instruction,
         "args": event.args,
+        "instruction_width": event.instruction_width,
         "state": event.state.as_str(),
         "elapsed_ms": millis(event.elapsed),
     });

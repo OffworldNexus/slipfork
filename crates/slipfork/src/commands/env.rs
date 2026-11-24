@@ -114,11 +114,11 @@ impl Session {
                 let shown = if is_secret(info) && info["set"].as_bool() == Some(true) {
                     palette.redacted(&value)
                 } else if value == "<unset>" {
-                    palette.dim(&value)
+                    palette.meta(&value)
                 } else {
                     palette.value(&value)
                 };
-                text.push_str(&table.line(&widths, &[palette.key(key), palette.dim("="), shown]));
+                text.push_str(&table.line(&widths, &[palette.key(key), palette.meta("="), shown]));
                 text.push('\n');
             }
         }

@@ -74,12 +74,17 @@ pub struct StepEvent<'a> {
     pub elapsed: Duration,
     /// Child process exit code, when a failed `RUN` carried one.
     pub exit_code: Option<i32>,
+    /// Widest instruction keyword in the image's whole walked plan, so every args cell aligns.
+    pub instruction_width: usize,
 }
 
 impl<'a> StepEvent<'a> {
     /// Builds one row for `instruction` at `place`, in `state`.
+    ///
+    /// `instruction_width` defaults to this keyword's own width; a [`StepLog`] with a planned
+    /// width overrides it so every row in one image shares the args column.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         place: StepPlace,
         instruction: &'a str,
         args: &'a str,
@@ -96,6 +101,7 @@ impl<'a> StepEvent<'a> {
             state,
             elapsed,
             exit_code,
+            instruction_width: instruction.chars().count(),
         }
     }
 }
@@ -131,6 +137,7 @@ struct StepIdentity {
 pub struct StepLog<'a> {
     events: Option<&'a mut dyn FnMut(BuildEvent<'_>)>,
     current: Option<StepIdentity>,
+    planned_width: usize,
 }
 
 impl StepLog<'static> {
@@ -140,6 +147,7 @@ impl StepLog<'static> {
         Self {
             events: None,
             current: None,
+            planned_width: 0,
         }
     }
 }
@@ -150,7 +158,14 @@ impl<'a> StepLog<'a> {
         Self {
             events: Some(events),
             current: None,
+            planned_width: 0,
         }
+    }
+
+    /// Pins the widest instruction keyword in the image's walked plan so every row shares one
+    /// args column; `0` keeps each row at its own keyword width.
+    pub fn plan_width(&mut self, width: usize) {
+        self.planned_width = width;
     }
 
     /// Emits one child line tagged with the stream that produced it.
@@ -168,14 +183,16 @@ impl<'a> StepLog<'a> {
     /// `place` carries the instruction's index and `Dockerfile` line, so the caller can publish the
     /// step's record the moment it starts and a crash still leaves the right header behind.
     pub(crate) fn started(&mut self, place: StepPlace, instruction: &str, args: &str) {
-        self.emit(BuildEvent::Step(StepEvent::new(
+        let mut event = StepEvent::new(
             place,
             instruction,
             args,
             StepState::Started,
             Duration::ZERO,
             None,
-        )));
+        );
+        event.instruction_width = event.instruction_width.max(self.planned_width);
+        self.emit(BuildEvent::Step(event));
         self.current = Some(StepIdentity {
             place,
             instruction: instruction.to_owned(),
@@ -212,14 +229,16 @@ impl<'a> StepLog<'a> {
         let Some(identity) = self.current.take() else {
             return;
         };
-        self.emit(BuildEvent::Step(StepEvent::new(
+        let mut event = StepEvent::new(
             identity.place,
             &identity.instruction,
             &identity.args,
             state,
             elapsed,
             exit_code,
-        )));
+        );
+        event.instruction_width = event.instruction_width.max(self.planned_width);
+        self.emit(BuildEvent::Step(event));
     }
 
     fn emit(&mut self, event: BuildEvent<'_>) {
