@@ -127,23 +127,32 @@ impl Session {
             Ok(Some(mut client)) => match client.call_streaming("ps", json!({}), &mut |_| {}) {
                 Ok(value) => value,
                 Err(error) => {
-                    return self.fail(&error.to_string(), "start it with `slipfork up` and retry");
+                    return self.report(
+                        &error.code,
+                        &error.message,
+                        "start it with `slipfork up` and retry",
+                        json,
+                    );
                 }
             },
             Ok(None) => json!({ "worlds": [] }),
             Err(error) => {
-                return self.fail(
-                    &error.to_string(),
+                return self.report(
+                    &error.code,
+                    &error.message,
                     "check that XDG_RUNTIME_DIR is readable and retry",
+                    json,
                 );
             }
         };
         let reply = match status::parse(&value) {
             Ok(reply) => reply,
             Err(error) => {
-                return self.fail(
+                return self.report(
+                    "status-reply",
                     &format!("cannot decode the daemon's ps reply: {error}"),
                     "run `slipfork status --json` and report the payload",
+                    json,
                 );
             }
         };
@@ -238,6 +247,7 @@ impl Session {
 
     /// One failure renderer: a JSON object under `--json`, `error:`/`next:` lines otherwise.
     pub(crate) fn report(&self, code: &str, message: &str, next: &str, json: bool) -> ExitCode {
+        let (message, next) = message_and_next(message, next);
         if json {
             let _ = emit(&format!(
                 "{}\n",
@@ -245,7 +255,7 @@ impl Session {
             ));
             return ExitCode::FAILURE;
         }
-        self.fail(message, next)
+        self.fail(&message, &next)
     }
 
     /// Renders one feature diagnostic as `Forkfile:<line>: <message>`, plus its single `next:`.
@@ -275,6 +285,7 @@ impl Session {
         next: &str,
         json: bool,
     ) -> ExitCode {
+        let (message, next) = message_and_next(message, next);
         if json {
             let mut error = json!({ "code": code, "message": message, "next": next });
             if let Some(details) = details {
@@ -283,8 +294,14 @@ impl Session {
             let _ = emit(&format!("{}\n", json!({ "error": error })));
             return ExitCode::FAILURE;
         }
-        self.fail(message, next)
+        self.fail(&message, &next)
     }
+}
+
+/// Splits a daemon message at its trailing `next: …` line; the message's own remedy wins.
+pub(crate) fn message_and_next(message: &str, fallback: &str) -> (String, String) {
+    let (body, embedded) = crate::world::split_remedy(message);
+    (body, embedded.unwrap_or_else(|| fallback.to_owned()))
 }
 
 /// Writes one already-rendered chunk to stdout without panicking on a closed pipe.

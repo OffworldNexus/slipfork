@@ -111,6 +111,45 @@ fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+/// Reads one typed JSON refusal, proving the message and the remedy never duplicate.
+fn refusal(output: &Output, verb: &str) -> serde_json::Value {
+    let stderr = text(&output.stderr);
+    assert!(!output.status.success(), "`{verb}` must refuse: {stderr}");
+    assert!(
+        stderr.is_empty(),
+        "`{verb}` writes no prose to stderr: {stderr}"
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "`{verb}` emits one JSON document ({error}): {:?}",
+            text(&output.stdout)
+        )
+    });
+    let error = &value["error"];
+    assert_eq!(error["code"], "daemon-skew", "{value}");
+    let message = error["message"].as_str().expect("a message string");
+    assert!(
+        !message.contains("next:"),
+        "`{verb}` embeds a remedy in its message: {message}"
+    );
+    let next = error["next"].as_str().expect("a next string");
+    assert_eq!(
+        next.matches("next:").count(),
+        0,
+        "`{verb}` embeds a remedy in its next: {next}"
+    );
+    assert!(
+        next.contains("systemctl --user stop slipfork"),
+        "`{verb}` keeps the daemon's own remedy: {next}"
+    );
+    assert_eq!(
+        error.as_object().map_or(0, serde_json::Map::len),
+        3,
+        "`{verb}` carries one code, one message, one next: {value}"
+    );
+    value
+}
+
 /// Kills every `__daemon` whose environment names this scratch runtime directory.
 struct Daemons {
     runtime: PathBuf,
@@ -177,25 +216,18 @@ fn a_stale_daemon_is_refused_and_an_auto_spawned_one_matches() {
         serde_json::from_slice(&same.stdout).expect("`status --json` emits one JSON document");
     assert_eq!(reply["worlds"], serde_json::json!([]));
 
-    let skewed = client(&beta, &runtime, &state, root, &["status", "--json"]);
-    let stderr = text(&skewed.stderr);
+    // Human `status` keeps one sentence and exactly one remedy line.
+    let human = client(&beta, &runtime, &state, root, &["status"]);
+    let stderr = text(&human.stderr);
+    assert!(!human.status.success(), "a skewed client must fail");
     assert!(
-        !skewed.status.success(),
-        "a skewed client must fail: {stderr}"
-    );
-    assert!(
-        stderr.contains("the running daemon is"),
+        stderr.starts_with("error: the running daemon is"),
         "the refusal names the daemon: {stderr}"
     );
     assert!(
-        stderr.contains(&alpha.display().to_string()),
-        "expected `{}` in {stderr}",
-        alpha.display()
-    );
-    assert!(
-        stderr.contains(&beta.display().to_string()),
-        "expected `{}` in {stderr}",
-        beta.display()
+        stderr.contains(&alpha.display().to_string())
+            && stderr.contains(&beta.display().to_string()),
+        "both binaries are named: {stderr}"
     );
     assert_eq!(
         stderr
@@ -213,6 +245,24 @@ fn a_stale_daemon_is_refused_and_an_auto_spawned_one_matches() {
         !stderr.contains('\u{1b}'),
         "a piped client is plain: {stderr:?}"
     );
+
+    // Every machine verb carries the daemon's remedy exactly once, as pure JSON.
+    for verb in [
+        &["status", "--json"][..],
+        &["env", "--json"][..],
+        &["logs", "--json"][..],
+    ] {
+        let output = client(&beta, &runtime, &state, root, verb);
+        let value = refusal(&output, verb[0]);
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(&alpha.display().to_string()),
+            "`{}` names the stale daemon: {value}",
+            verb[0]
+        );
+    }
 
     // The packaged daemon keeps serving its own client while the stranger is refused.
     let still = client(&alpha, &runtime, &state, root, &["status", "--json"]);

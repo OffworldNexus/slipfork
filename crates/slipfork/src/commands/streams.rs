@@ -189,8 +189,8 @@ impl Session {
             }
             Err(error) => {
                 let _ = self.report(
-                    "daemon",
-                    &error.to_string(),
+                    &error.code,
+                    &error.message,
                     "check that XDG_RUNTIME_DIR is readable and retry",
                     json,
                 );
