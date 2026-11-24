@@ -172,6 +172,21 @@ $ curl -fsSL https://offworldnexus.github.io/slipfork/install.sh | sh -s -- --us
 $ ~/.local/bin/slipfork doctor
 ```
 
+## Development builds
+
+Branch builds install into their own prefix, because the default `~/.local/bin` is exactly where
+`install.sh --user` puts the same binaries. The targets refuse to overwrite or delete files they did
+not install, tracked by a receipt at `<prefix>/bin/.slipfork-dev-install`:
+
+```console
+$ make install PREFIX="$HOME/.local/opt/slipfork"
+$ "$HOME/.local/opt/slipfork/bin/slipfork" doctor
+$ make uninstall PREFIX="$HOME/.local/opt/slipfork"
+```
+
+Both targets refuse any `BINDIR` under `/usr`, `/bin`, or `/sbin`; keep the prefix ahead of
+`/usr/bin` in `PATH` so the branch build wins.
+
 ## On ext4 or XFS? Mount a Btrfs Workspace Image in Your Home Folder
 
 You do not have to repartition your disk. A sparse Btrfs image, mounted by a systemd `.mount` unit,
