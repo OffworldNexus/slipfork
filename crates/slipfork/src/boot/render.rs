@@ -9,6 +9,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::ui::Palette;
+pub use crate::ui::elapsed_text;
 use crate::ui::table::{Column, ColumnWidths, Table, visible_width};
 
 /// The six fixed boot-row columns: icon, kind, name, state, duration (6), run id (7).
@@ -517,18 +518,6 @@ pub fn completed_row(node: &Node<'_>, widths: &ColumnWidths, styled: bool) -> St
             run_id,
         ],
     )
-}
-
-/// `18ms`, `1.2s`, or `<1ms`, as the whole CLI spells durations.
-#[must_use]
-pub fn elapsed_text(millis: u64) -> String {
-    if millis == 0 {
-        "<1ms".to_owned()
-    } else if millis < 1000 {
-        format!("{millis}ms")
-    } else {
-        format!("{:.1}s", millis as f64 / 1000.0)
-    }
 }
 
 #[cfg(test)]

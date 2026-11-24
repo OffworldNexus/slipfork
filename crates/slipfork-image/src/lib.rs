@@ -75,7 +75,9 @@ mod unpack;
 
 use std::fmt;
 
-pub use builder::{BuildReport, BuildRequest, NativeImageBuilder, StageWalk, stage_walk};
+pub use builder::{
+    BuildReport, BuildRequest, NativeImageBuilder, StageWalk, StepTrace, stage_walk,
+};
 pub use context::{BuildContext, ContextEntry};
 pub use dockerfile::{
     BuildArgs, CacheMount, Command, CopySpec, DockerfileParser, ImageConfig, Instruction, Owner,

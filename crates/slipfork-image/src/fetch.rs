@@ -209,8 +209,11 @@ fn transfer(url: &str, error: ureq::Error) -> Error {
 fn step(message: String, next: &str) -> Error {
     Error::StepFailed {
         line: 0,
-        instruction: "ADD".to_owned(),
+        phase: "add",
+        instruction: String::new().into(),
         message,
+        exit_code: None,
+        runtime: None,
         next: next.to_owned(),
     }
 }

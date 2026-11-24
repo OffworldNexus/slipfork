@@ -4,7 +4,24 @@
 //! every method degrades to the exact input text when colour is off. No caller formats an SGR code
 //! by hand, so `NO_COLOR`, `TERM=dumb`, a pipe, and `--json` all emit zero `ESC[` bytes.
 
+use super::elapsed_text;
+
 use super::paint;
+
+/// One settled run's verdict inputs, shared by every surface that prints the result line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Verdict {
+    /// Instruction or step verb (`RUN`, `start`).
+    pub verb: String,
+    /// The thing that ran (`api`).
+    pub target: String,
+    /// Final state (`failed`, `ready`, …).
+    pub state: String,
+    /// Child exit code when the run carried one.
+    pub exit_code: Option<i32>,
+    /// Wall time of the run in milliseconds.
+    pub duration_ms: u64,
+}
 
 /// The shipped visual roles: one method per thing a human reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,9 +144,77 @@ impl Palette {
         self.tint("•", "36")
     }
 
-    /// The dim cyan gutter divider used by merged logs.
+    /// The `logs -r` header row.
+    ///
+    /// `#id` dim, verb dim, target bold, command bold (omitted when it equals the target), started
+    /// dim. The caller formats the started clock so `ui` stays below `commands`.
     #[must_use]
-    pub fn divider(self) -> String {
-        self.tint("│", "2;36")
+    pub fn header_line(
+        self,
+        run_id: &str,
+        verb: &str,
+        target: &str,
+        command: &str,
+        started: Option<&str>,
+    ) -> String {
+        let mut fields = vec![
+            self.dim(&format!("#{run_id}")),
+            self.dim(verb),
+            self.label(target),
+        ];
+        if !command.is_empty() && command != target {
+            fields.push(self.label(command));
+        }
+        if let Some(started) = started {
+            fields.push(self.dim(started));
+        }
+        fields.join("  ")
+    }
+
+    /// The capture gutter glyph for one wire stream: stdout `│` dim, stderr `┃` yellow.
+    ///
+    /// The glyphs differ only by weight, so `NO_COLOR` and a pipe keep the streams unambiguous
+    /// with zero escapes and no words.
+    #[must_use]
+    pub fn gutter(self, stream: &str) -> String {
+        match stream {
+            "stderr" => self.tint("┃", "33"),
+            _ => self.tint("│", "2"),
+        }
+    }
+
+    /// The one verdict line for a settled run.
+    ///
+    /// `✗ RUN api failed (exit 3)` or `✓ RUN api done (0.8s)`; `next:` is never part of it.
+    #[must_use]
+    pub fn verdict(self, verdict: &Verdict) -> String {
+        let Verdict {
+            verb,
+            target,
+            state,
+            exit_code,
+            duration_ms,
+        } = verdict;
+        if state == "failed" {
+            let mut line = format!(
+                "{} {} {} {}",
+                self.tint("✗", "31"),
+                self.dim(verb),
+                self.label(target),
+                self.tint("failed", "31"),
+            );
+            if let Some(code) = exit_code {
+                line.push(' ');
+                line.push_str(&self.dim(&format!("(exit {code})")));
+            }
+            return line;
+        }
+        format!(
+            "{} {} {} done {}",
+            self.icon_ok(),
+            self.dim(verb),
+            self.label(target),
+            self.dim(&format!("({})", elapsed_text(*duration_ms))),
+        )
     }
 }

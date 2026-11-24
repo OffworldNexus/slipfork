@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use super::{
-    BuildRequest, NativeImageBuilder, Stage, StageState, at_line, expand_command, expand_spec,
-    state_key,
+    BuildRequest, NativeImageBuilder, Stage, StageState, StepTrace, at_line, expand_command,
+    expand_spec, state_key,
 };
 use crate::context::BuildContext;
 use crate::copy;
@@ -23,6 +23,7 @@ pub(super) struct BuildRun<'a, 's, 'l> {
     log: &'l mut StepLog<'s>,
     stages: &'a [Stage],
     built: Vec<(Option<String>, StageState)>,
+    last: Option<StepTrace>,
     hits: usize,
     misses: usize,
 }
@@ -47,6 +48,7 @@ impl<'a, 's, 'l> BuildRun<'a, 's, 'l> {
             log,
             stages,
             built: Vec::new(),
+            last: None,
             hits: 0,
             misses: 0,
         }
@@ -60,6 +62,11 @@ impl<'a, 's, 'l> BuildRun<'a, 's, 'l> {
     /// Cache misses accumulated so far.
     pub(super) fn cache_misses(&self) -> usize {
         self.misses
+    }
+
+    /// The last instruction this walk applied, as the author wrote it.
+    pub(super) fn last_instruction(&self) -> Option<StepTrace> {
+        self.last.clone()
     }
 
     /// Records a finished stage so later `COPY --from` and `FROM <stage>` can reuse it.
@@ -95,9 +102,15 @@ impl<'a, 's, 'l> BuildRun<'a, 's, 'l> {
         args: &mut BTreeMap<String, String>,
         parsed: &ParsedInstruction,
     ) -> Result<Option<bool>> {
-        let label = parsed.instruction.render();
-        self.apply_inner(state, args, parsed)
-            .map_err(|err| at_line(err, parsed.line, &label))
+        let outcome = self
+            .apply_inner(state, args, parsed)
+            .map_err(|err| at_line(err, parsed.line, &parsed.instruction))?;
+        self.last = Some(StepTrace {
+            phase: parsed.instruction.phase(),
+            command: parsed.instruction.command_text(),
+            line: parsed.line,
+        });
+        Ok(outcome)
     }
 
     fn apply_inner(

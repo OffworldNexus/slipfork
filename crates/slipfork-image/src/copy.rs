@@ -332,8 +332,11 @@ fn step(message: String) -> Error {
 fn step_next(message: String, next: impl Into<String>) -> Error {
     Error::StepFailed {
         line: 0,
-        instruction: "COPY/ADD".to_owned(),
+        phase: "copy",
+        instruction: String::new().into(),
         message,
+        exit_code: None,
+        runtime: None,
         next: next.into(),
     }
 }

@@ -174,12 +174,18 @@ impl CrunStepRuntime {
         } else {
             Err(Error::StepFailed {
                 line,
-                instruction: run.command.render(),
-                message: format!(
-                    "`crun` exited with {}",
-                    status
-                        .code()
-                        .map_or_else(|| "a signal".to_owned(), |code| format!("code {code}"))
+                phase: "run",
+                instruction: run.command.as_written().into(),
+                message: "the command exited with a non-zero status".to_owned(),
+                exit_code: status.code(),
+                runtime: Some(
+                    format!(
+                        "`crun` exited with {}",
+                        status
+                            .code()
+                            .map_or_else(|| "a signal".to_owned(), |code| format!("code {code}"))
+                    )
+                    .into(),
                 ),
                 next: "fix the command above; its output was streamed while it ran".to_owned(),
             })

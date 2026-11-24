@@ -5,12 +5,14 @@
 //! role API, `paint` stays the raw SGR primitive, and [`boot`] is the only live pane the world
 //! verbs draw.
 
+mod elapsed;
 mod paint;
 mod palette;
 pub mod table;
 
+pub use elapsed::elapsed_text;
 pub use paint::paint;
-pub use palette::Palette;
+pub use palette::{Palette, Verdict};
 
 /// How this invocation renders its result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

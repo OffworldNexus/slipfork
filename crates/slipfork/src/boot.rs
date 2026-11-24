@@ -31,7 +31,7 @@ use self::pane::{Pane, Screen, Ticker};
 use self::render as text;
 use self::render::{Node, completed_row};
 
-pub use self::render::elapsed_text;
+pub use crate::ui::elapsed_text;
 
 /// One live boot pane; drop it (via [`BootTui::finish`]) before printing the final result.
 pub struct BootTui {

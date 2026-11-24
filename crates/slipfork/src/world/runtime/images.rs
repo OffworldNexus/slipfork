@@ -1,28 +1,34 @@
 //! Image collaborator: `from` pulls and `Dockerfile` builds into sealed, read-only rootfs clones.
 //!
 //! Independent images pull and build concurrently with no global lock; per-key singleflight slots
-//! deduplicate concurrent requests for the same image id or OCI reference.
+//! ([`flight`]) deduplicate concurrent requests for the same image id or OCI reference.
 
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 
 use slipfork_forkfile::FeatureSet;
 use slipfork_forkfile::ast::Forkfile;
 use slipfork_image::{
     Architecture, BuildArgs, BuildRequest, Credentials, ImageLayout, ImageReference,
-    NativeImageBuilder, OciPuller, PulledImage, StepHost, StepLayout, StepLog,
+    NativeImageBuilder, OciPuller, PulledImage, StepHost, StepLayout, StepLog, StepTrace,
 };
+use slipfork_world::run_log::RunNote;
 use slipfork_world::{
     BootState, ImageNode, ImageStamp, LogStore, StoreLayout, WorldEngine, WorldName,
 };
 
 use crate::world::supervise::BootSink;
 
+mod flight;
 mod log;
+pub(super) mod record;
 
-use log::BuildLog;
+use flight::{FlightRole, FlightTable, acquire_flight, wait_flight};
+use log::{BuildLog, failed_note, pull_note, success_note};
+
+pub(crate) use record::BuildFailure;
 
 /// One sealed image plus the OCI metadata every pod derived from it inherits.
 #[derive(Debug, Clone)]
@@ -35,51 +41,6 @@ pub(super) struct BuiltImage {
     pub(super) argv: Vec<String>,
     /// Image `config.WorkingDir`.
     pub(super) workdir: String,
-}
-
-enum FlightState<T> {
-    Running,
-    Done(Result<T, String>),
-}
-
-type Flight<T> = Arc<(Mutex<FlightState<T>>, Condvar)>;
-type FlightTable<T> = Arc<Mutex<BTreeMap<String, Flight<T>>>>;
-
-struct FlightGuard<T: Clone> {
-    key: String,
-    table: FlightTable<T>,
-    flight: Flight<T>,
-    completed: bool,
-}
-
-impl<T: Clone> FlightGuard<T> {
-    fn finish(mut self, outcome: Result<T, String>) {
-        self.completed = true;
-        if let Ok(mut table) = self.table.lock() {
-            table.remove(&self.key);
-        }
-        let (lock, cvar) = &*self.flight;
-        if let Ok(mut slot) = lock.lock() {
-            *slot = FlightState::Done(outcome);
-            cvar.notify_all();
-        }
-    }
-}
-
-impl<T: Clone> Drop for FlightGuard<T> {
-    fn drop(&mut self) {
-        if self.completed {
-            return;
-        }
-        if let Ok(mut table) = self.table.lock() {
-            table.remove(&self.key);
-        }
-        let (lock, cvar) = &*self.flight;
-        if let Ok(mut slot) = lock.lock() {
-            *slot = FlightState::Done(Err("an image worker panicked".to_owned()));
-            cvar.notify_all();
-        }
-    }
 }
 
 /// The sealed-image cache plus its puller and native builder.
@@ -95,6 +56,8 @@ pub(super) struct ImageCache {
     store: LogStore,
     sealed: Mutex<BTreeMap<String, BuiltImage>>,
     pulled: Mutex<BTreeMap<String, PulledImage>>,
+    /// The last instruction each image build applied, for the run record it publishes.
+    traces: Mutex<BTreeMap<String, StepTrace>>,
     inflight_builds: FlightTable<(BuiltImage, BootState)>,
     inflight_pulls: FlightTable<PulledImage>,
 }
@@ -173,6 +136,7 @@ impl ImageCache {
             store,
             sealed: Mutex::new(sealed),
             pulled: Mutex::new(BTreeMap::new()),
+            traces: Mutex::new(BTreeMap::new()),
             inflight_builds: Arc::new(Mutex::new(BTreeMap::new())),
             inflight_pulls: Arc::new(Mutex::new(BTreeMap::new())),
         }
@@ -183,32 +147,33 @@ impl ImageCache {
         &self,
         image: &str,
         log: &mut BootSink,
-    ) -> Result<(BuiltImage, BootState), String> {
+    ) -> Result<(BuiltImage, BootState), BuildFailure> {
         if let Some(built) = self
             .sealed
             .lock()
-            .map_err(|_| "image cache lock poisoned".to_owned())?
+            .map_err(|_| plain_failure("image cache lock poisoned".to_owned()))?
             .get(image)
             .cloned()
         {
             return Ok((built, BootState::Cached));
         }
-        let guard = match acquire_flight(&self.inflight_builds, image.to_owned())? {
-            FlightRole::Wait(flight) => {
-                // A waiter inherits the leader's real state: a singleflight hit is not a build.
-                return wait_flight(&flight);
-            }
-            FlightRole::Lead(guard) => guard,
-        };
+        let guard =
+            match acquire_flight(&self.inflight_builds, image.to_owned()).map_err(plain_failure)? {
+                FlightRole::Wait(flight) => {
+                    // A waiter inherits the leader's real state: a singleflight hit is not a build.
+                    return wait_flight(&flight).map_err(plain_failure);
+                }
+                FlightRole::Lead(guard) => guard,
+            };
         if let Some(built) = self
             .sealed
             .lock()
-            .map_err(|_| "image cache lock poisoned".to_owned())?
+            .map_err(|_| plain_failure("image cache lock poisoned".to_owned()))?
             .get(image)
             .cloned()
         {
-            let outcome = Ok((built, BootState::Cached));
-            guard.finish(outcome.clone());
+            let outcome: Result<_, BuildFailure> = Ok((built, BootState::Cached));
+            guard.finish(outcome.clone().map_err(|failure| failure.message));
             return outcome;
         }
         let outcome = self.build_uncached(image, log);
@@ -217,7 +182,7 @@ impl ImageCache {
         {
             sealed.insert(image.to_owned(), built.clone());
         }
-        guard.finish(outcome.clone());
+        guard.finish(outcome.clone().map_err(|failure| failure.message));
         outcome
     }
 
@@ -225,15 +190,21 @@ impl ImageCache {
         &self,
         image: &str,
         log: &mut BootSink,
-    ) -> Result<(BuiltImage, BootState), String> {
+    ) -> Result<(BuiltImage, BootState), BuildFailure> {
         let node = self
             .images
             .iter()
             .find(|candidate| candidate.id == image)
             .cloned()
-            .ok_or_else(|| format!("unknown image `{image}`"))?;
+            .ok_or_else(|| BuildFailure {
+                message: format!("unknown image `{image}`"),
+                note: RunNote::default(),
+            })?;
         if let Some(reference) = &node.from {
-            let parsed = ImageReference::parse(reference).map_err(|error| error.to_string())?;
+            let parsed = ImageReference::parse(reference).map_err(|error| BuildFailure {
+                message: error.to_string(),
+                note: pull_note(reference),
+            })?;
             let mut tee = BuildLog::new(log, &self.store, image);
             let pulled = match self.puller.pull_into(&parsed, &mut tee) {
                 Ok(pulled) => {
@@ -242,8 +213,11 @@ impl ImageCache {
                 }
                 Err(error) => {
                     let message = format!("pull `{image}` failed: {error}");
-                    tee.fail(&message);
-                    return Err(message);
+                    tee.finish();
+                    return Err(BuildFailure {
+                        message,
+                        note: pull_note(reference),
+                    });
                 }
             };
             let state = if pulled.cached {
@@ -298,14 +272,20 @@ impl ImageCache {
                     report
                 }
                 Err(error) => {
-                    // A `RUN` writes its output line by line, but its last unterminated tail
-                    // (and pull/`COPY` failures with no output) would otherwise never reach the
-                    // capture, leaving `slipfork logs <image>` empty exactly when it matters.
+                    // Keep only real child output: flush a trailing unterminated tail, then record
+                    // the failing instruction on the run record. The summary line stays in the
+                    // `up` failure, never in the capture.
                     let message = format!("build `{image}` failed: {error}");
-                    tee.fail(&message);
-                    return Err(message);
+                    let note = failed_note(&request.dockerfile, &error);
+                    tee.finish();
+                    return Err(BuildFailure { message, note });
                 }
             };
+            if let Some(last) = &report.last
+                && let Ok(mut traces) = self.traces.lock()
+            {
+                traces.insert(image.to_owned(), last.clone());
+            }
             let _ = writeln!(
                 log,
                 "dockerfile {image}: {} cached, {} built",
@@ -378,6 +358,16 @@ impl ImageCache {
         outcome
     }
 
+    /// The instruction a successful build leaves on its run record.
+    pub(super) fn success_note(&self, image: &str) -> RunNote {
+        let last = self
+            .traces
+            .lock()
+            .ok()
+            .and_then(|traces| traces.get(image).cloned());
+        success_note(&self.images, image, last.as_ref())
+    }
+
     /// Resolved rootfs + runtime facts per image id, recorded in the world stamp.
     pub(super) fn stamps(&self) -> BTreeMap<String, ImageStamp> {
         self.sealed
@@ -402,42 +392,11 @@ impl ImageCache {
     }
 }
 
-enum FlightRole<T: Clone> {
-    Lead(FlightGuard<T>),
-    Wait(Flight<T>),
-}
-
-fn acquire_flight<T: Clone>(table: &FlightTable<T>, key: String) -> Result<FlightRole<T>, String> {
-    let mut guard = table
-        .lock()
-        .map_err(|_| "singleflight lock poisoned".to_owned())?;
-    if let Some(existing) = guard.get(&key) {
-        return Ok(FlightRole::Wait(Arc::clone(existing)));
-    }
-    let flight = Arc::new((Mutex::new(FlightState::Running), Condvar::new()));
-    guard.insert(key.clone(), Arc::clone(&flight));
-    Ok(FlightRole::Lead(FlightGuard {
-        key,
-        table: Arc::clone(table),
-        flight,
-        completed: false,
-    }))
-}
-
-fn wait_flight<T: Clone>(flight: &Flight<T>) -> Result<T, String> {
-    let (lock, cvar) = &**flight;
-    let mut guard = lock
-        .lock()
-        .map_err(|_| "singleflight state poisoned".to_owned())?;
-    loop {
-        match &*guard {
-            FlightState::Running => {
-                guard = cvar
-                    .wait(guard)
-                    .map_err(|_| "singleflight wait poisoned".to_owned())?;
-            }
-            FlightState::Done(outcome) => return outcome.clone(),
-        }
+/// A failure with no executed instruction to name.
+fn plain_failure(message: String) -> BuildFailure {
+    BuildFailure {
+        message,
+        note: RunNote::default(),
     }
 }
 
@@ -454,10 +413,10 @@ mod tests {
     use super::ImageCache;
     use crate::world::supervise::{BootSink, Emitter};
 
-    /// A real failing build reaches `<store>/logs/<world>/<image>.log` through the cache's own
-    /// error wiring: deleting `tee.fail(&message)` leaves the capture empty when it matters.
+    /// A build that fails before printing anything never fabricates a capture: the `up` failure
+    /// carries the summary, while `logs <image>` has only real child output.
     #[test]
-    fn a_failed_build_lands_in_the_world_image_log() {
+    fn a_failed_build_writes_no_synthetic_capture() {
         let root = tempfile::Builder::new()
             .prefix("image-cache-log")
             .tempdir_in("/var/tmp")
@@ -504,21 +463,16 @@ mod tests {
             "image",
             "web",
         );
-        let error = cache
+        let failure = cache
             .build("web", &mut sink)
             .expect_err("a missing crun must fail the image build");
-        assert!(error.contains("build `web` failed"), "{error}");
-        let captured = std::fs::read_to_string(store.pod_log(&world, "web"))
-            .expect("the failed build must leave a log capture");
-        assert!(captured.contains("build `web` failed"), "{captured}");
         assert!(
-            !captured.contains("slipfork logs web"),
-            "the failed build names no obsolete log hint:\n{captured}"
+            failure.message.contains("build `web` failed"),
+            "{failure:?}"
         );
-        assert_eq!(
-            captured.matches("next:").count(),
-            0,
-            "a remedy is not captured output:\n{captured}"
+        assert!(
+            !store.pod_log(&world, "web").exists(),
+            "a run with no child output leaves no synthetic capture"
         );
     }
 }

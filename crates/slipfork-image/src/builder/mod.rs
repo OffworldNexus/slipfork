@@ -39,6 +39,17 @@ pub struct BuildRequest {
     pub target: Option<String>,
 }
 
+/// The last instruction a build applied, named exactly as the author wrote it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepTrace {
+    /// Instruction keyword (`run`, `copy`, …).
+    pub phase: &'static str,
+    /// Command text without the keyword, as written in the `Dockerfile`.
+    pub command: String,
+    /// Source line in the `Dockerfile`.
+    pub line: usize,
+}
+
 /// One finished image plus cache statistics.
 #[derive(Debug, Clone)]
 pub struct BuildReport {
@@ -54,6 +65,8 @@ pub struct BuildReport {
     pub cache_misses: usize,
     /// Wall time spent inside the builder.
     pub build_time: Duration,
+    /// The last instruction this walk applied; `None` when the `Dockerfile` applied none.
+    pub last: Option<StepTrace>,
 }
 
 /// Declaration-ordered span of stages one build must evaluate.
@@ -181,6 +194,7 @@ impl NativeImageBuilder {
             cache_hits: run.cache_hits(),
             cache_misses: run.cache_misses(),
             build_time: started.elapsed(),
+            last: run.last_instruction(),
         })
     }
 
@@ -296,7 +310,7 @@ impl NativeImageBuilder {
                     line,
                 },
             )
-            .map_err(|err| at_line(err, line, &instruction.render()))?;
+            .map_err(|err| at_line(err, line, instruction))?;
         Ok((
             StageState {
                 rootfs,
@@ -361,23 +375,25 @@ fn expand_command(command: &Command, variables: &Variables) -> Command {
     }
 }
 
-/// Folds a step failure into a line-decorated `StepFailed` with a user-facing path.
-fn at_line(err: Error, line: usize, label: &str) -> Error {
+/// Folds a step failure into a line-decorated `StepFailed` naming the instruction as written.
+fn at_line(err: Error, line: usize, instruction: &Instruction) -> Error {
+    let phase = instruction.phase();
+    let command = instruction.command_text();
     match err {
         Error::Dockerfile { .. } => err,
         Error::StepFailed {
-            line: 0,
-            instruction,
             message,
+            exit_code,
+            runtime,
             next,
+            ..
         } => Error::StepFailed {
             line,
-            instruction: if instruction.is_empty() {
-                label.to_owned()
-            } else {
-                instruction
-            },
+            phase,
+            instruction: command.into(),
             message,
+            exit_code,
+            runtime,
             next,
         },
         Error::Io {
@@ -386,34 +402,49 @@ fn at_line(err: Error, line: usize, label: &str) -> Error {
             source,
         } => Error::StepFailed {
             line,
-            instruction: label.to_owned(),
+            phase,
+            instruction: command.into(),
             message: format!("could not {action} `{}`: {source}", visible_path(&path)),
+            exit_code: None,
+            runtime: None,
             next: "check the build context permissions and free disk space, then retry".to_owned(),
         },
         Error::Http { url, status } => Error::StepFailed {
             line,
-            instruction: label.to_owned(),
+            phase,
+            instruction: command.into(),
             message: format!("`{url}` returned HTTP {status}"),
+            exit_code: None,
+            runtime: None,
             next: "check the URL or the registry reference, then retry".to_owned(),
         },
         Error::Transport { url, message } => Error::StepFailed {
             line,
-            instruction: label.to_owned(),
+            phase,
+            instruction: command.into(),
             message: format!("could not reach `{url}`: {message}"),
+            exit_code: None,
+            runtime: None,
             next: "check the URL and your network connection, then retry".to_owned(),
         },
         Error::CrunMissing { path } => Error::StepFailed {
             line,
-            instruction: label.to_owned(),
+            phase,
+            instruction: command.into(),
             message: format!("`RUN` needs `crun`, but `{}` is missing", path.display()),
+            exit_code: None,
+            runtime: None,
             next:
                 "install crun (`apt install crun`, `dnf install crun`, `pacman -S crun`) and retry"
                     .to_owned(),
         },
         Error::UnknownStage { name } => Error::StepFailed {
             line,
-            instruction: label.to_owned(),
+            phase,
+            instruction: command.into(),
             message: format!("no build stage named `{name}`"),
+            exit_code: None,
+            runtime: None,
             next: "declare it above this stage with `FROM <image> AS <name>`".to_owned(),
         },
         other => other,

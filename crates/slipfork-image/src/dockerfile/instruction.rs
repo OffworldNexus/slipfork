@@ -72,6 +72,16 @@ impl Command {
         }
     }
 
+    /// The command as the `Dockerfile` author wrote it: shell scripts verbatim, exec argv joined by
+    /// spaces. Never wrapped in an extra `sh -c`.
+    #[must_use]
+    pub fn as_written(&self) -> String {
+        match self {
+            Self::Shell(script) => script.clone(),
+            Self::Exec(argv) => argv.join(" "),
+        }
+    }
+
     /// The argv this command expands to at exec time; shell form runs through `/bin/sh -c`.
     #[must_use]
     pub fn to_argv(&self) -> Vec<String> {
@@ -149,6 +159,37 @@ pub enum Instruction {
 }
 
 impl Instruction {
+    /// The instruction keyword, used as a run-record phase (`run`, `copy`, `from`, …).
+    #[must_use]
+    pub fn phase(&self) -> &'static str {
+        match self {
+            Self::From { .. } => "from",
+            Self::Arg { .. } => "arg",
+            Self::Env(_) => "env",
+            Self::Workdir(_) => "workdir",
+            Self::Copy(_) => "copy",
+            Self::Add(_) => "add",
+            Self::Run(_) => "run",
+            Self::User(_) => "user",
+            Self::Expose(_) => "expose",
+            Self::Cmd(_) => "cmd",
+            Self::Entrypoint(_) => "entrypoint",
+        }
+    }
+
+    /// The instruction text without its keyword, exactly as the author wrote it.
+    #[must_use]
+    pub fn command_text(&self) -> String {
+        match self {
+            Self::Run(run) => run.command.as_written(),
+            Self::Cmd(command) | Self::Entrypoint(command) => command.as_written(),
+            _ => self
+                .render()
+                .split_once(' ')
+                .map_or_else(String::new, |(_, rest)| rest.to_owned()),
+        }
+    }
+
     /// Canonical text used in cache keys and failure messages.
     #[must_use]
     pub fn render(&self) -> String {

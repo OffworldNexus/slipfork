@@ -48,6 +48,18 @@ pub struct RunRecord {
     pub target: String,
     /// The command the step ran (`uv sync`), or the image id for a build.
     pub command: String,
+    /// Phase of the last instruction that ran (`run`, `pull`, or the Dockerfile path).
+    #[serde(default)]
+    pub phase: String,
+    /// Rendered command of that instruction (`sh -c "…"`); empty when none executed.
+    #[serde(default)]
+    pub instruction: String,
+    /// Source location of that instruction (`Dockerfile:12`); empty when none applies.
+    #[serde(default)]
+    pub source: String,
+    /// Child process exit code when the step knows it.
+    #[serde(default)]
+    pub exit_code: Option<i32>,
     /// Final state (`built`, `pulled`, `ready`, `failed`).
     pub state: String,
     /// Epoch milliseconds when the step started.
@@ -60,6 +72,33 @@ pub struct RunRecord {
     pub project: String,
     /// World id the step ran in.
     pub world: String,
+}
+
+/// The instruction a step executed, patched onto its [`RunRecord`] once the run settles.
+///
+/// Every field is optional: [`crate::LogStore::annotate_run`] writes only what the step actually
+/// knows, so a later annotation can never blank an earlier fact with an empty-string sentinel.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunNote {
+    /// Instruction keyword (`run`, `copy`, `pull`, or the Dockerfile path).
+    pub phase: Option<String>,
+    /// Command text as the author wrote it (`sh -c 'echo hi'`), never re-wrapped.
+    pub instruction: Option<String>,
+    /// Source location (`Dockerfile:12`).
+    pub source: Option<String>,
+    /// Child process exit code when the step carried one.
+    pub exit_code: Option<i32>,
+}
+
+impl RunNote {
+    /// Whether the note would write anything at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.phase.is_none()
+            && self.instruction.is_none()
+            && self.source.is_none()
+            && self.exit_code.is_none()
+    }
 }
 
 /// One catalog read: every valid record plus how many lines were skipped.
@@ -137,6 +176,10 @@ impl RunCapture {
                 kind: kind.to_owned(),
                 target: target.to_owned(),
                 command: command.to_owned(),
+                phase: String::new(),
+                instruction: String::new(),
+                source: String::new(),
+                exit_code: None,
                 state: "running".to_owned(),
                 started_ms,
                 finished_ms: None,
@@ -189,6 +232,10 @@ impl RunCapture {
                 kind: self.kind.clone(),
                 target: self.target.clone(),
                 command: self.command.clone(),
+                phase: String::new(),
+                instruction: String::new(),
+                source: String::new(),
+                exit_code: None,
                 state: state.to_owned(),
                 started_ms: self.started_ms,
                 finished_ms: Some(finished_ms),

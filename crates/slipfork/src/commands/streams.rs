@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 
 use crate::commands::{Session, emit};
 use crate::daemon::{DaemonClient, DaemonError};
-use crate::ui::Palette;
 use crate::ui::table::{Column, Table};
+use crate::ui::{Palette, Verdict};
 
 use super::runs::{RunRow, render_runs};
 use super::timeparse::format_clock;
@@ -89,7 +89,7 @@ impl Session {
             "since_ms": args.since_ms,
             "until_ms": args.until_ms,
         });
-        let mut renderer = Renderer::new(self.color(), args.json, args.timestamps, args.follow);
+        let mut renderer = Renderer::new(self.color(), args.json, args.timestamps);
         match client.call_streaming("logs", params, &mut |event| renderer.event(event)) {
             Ok(_) => {
                 renderer.finish(0);
@@ -237,14 +237,6 @@ pub(crate) fn refusal_next(error: &DaemonError, verb: &str) -> String {
     }
 }
 
-/// The short human stream label: `out` for stdout and merged captures, `err` for stderr.
-fn stream_label(stream: &str) -> &'static str {
-    match stream {
-        "stderr" => "err",
-        _ => "out",
-    }
-}
-
 /// Renders typed daemon events as gutters, dividers, or NDJSON.
 pub(crate) struct Renderer {
     palette: Palette,
@@ -253,54 +245,44 @@ pub(crate) struct Renderer {
     gutter: bool,
     /// Prefix a human timestamp before the pod gutter (`-t`).
     timestamps: bool,
-    /// Replay rows carry a `HH:MM:SS.mmm` clock.
+    /// Replay rows carry a `HH:MM:SS.mmm` clock and the v3 stream gutter.
     clock: bool,
-    /// Human rows carry an `out`/`err` label.
-    stream_labels: bool,
     pods: BTreeMap<String, &'static str>,
     width: usize,
+    /// Human rows emitted in this replay, so an empty capture prints no double blank line.
+    rows: usize,
+    /// The replay's verdict, assembled from the run record.
+    verdict: Option<Verdict>,
 }
 
 impl Renderer {
-    fn new(color: bool, json: bool, timestamps: bool, follow: bool) -> Self {
+    /// One renderer with only the mode flags set; every constructor narrows it.
+    fn blank(color: bool, json: bool, gutter: bool, timestamps: bool, clock: bool) -> Self {
         Self {
             palette: Palette::new(color),
             json,
-            gutter: true,
+            gutter,
             timestamps,
-            clock: false,
-            stream_labels: follow,
+            clock,
             pods: BTreeMap::new(),
             width: 0,
+            rows: 0,
+            verdict: None,
         }
+    }
+
+    fn new(color: bool, json: bool, timestamps: bool) -> Self {
+        Self::blank(color, json, true, timestamps, false)
     }
 
     /// The `exec`/`shell` renderer: the command's own stdout and stderr, byte for byte.
     pub(crate) fn exec(color: bool, json: bool) -> Self {
-        Self {
-            palette: Palette::new(color),
-            json,
-            gutter: false,
-            timestamps: false,
-            clock: false,
-            stream_labels: false,
-            pods: BTreeMap::new(),
-            width: 0,
-        }
+        Self::blank(color, json, false, false, false)
     }
 
-    /// The `logs -r <id>` renderer: one recorded run's timestamped, stream-labeled lines.
+    /// The `logs -r <id>` renderer: one recorded run's clocked stream-gutter rows.
     fn replay(color: bool, json: bool, timestamps: bool) -> Self {
-        Self {
-            palette: Palette::new(color),
-            json,
-            gutter: false,
-            timestamps,
-            clock: true,
-            stream_labels: true,
-            pods: BTreeMap::new(),
-            width: 0,
-        }
+        Self::blank(color, json, false, timestamps, true)
     }
 
     pub(crate) fn event(&mut self, event: &Value) {
@@ -343,27 +325,32 @@ impl Renderer {
             "divider" => {
                 let _ = emit(&format!("{}\n", self.palette.tint(line, "2;36")));
             }
+            _ if self.clock => {
+                // The v3 replay row: 2-space indent, a dim clock in the gutter, then the glyph.
+                let glyph = self.palette.gutter(stream);
+                let row = ts_ms.map_or_else(
+                    || format!("  {glyph} {line}"),
+                    |ts| {
+                        let clock = if self.timestamps {
+                            self.palette.dim(&format_ts(ts))
+                        } else {
+                            self.palette.dim(&format_clock(ts))
+                        };
+                        format!("  {clock} {glyph} {line}")
+                    },
+                );
+                self.rows += 1;
+                let _ = emit(&format!("{row}\n"));
+            }
             _ if !self.gutter => {
-                if self.clock {
-                    let stamp = ts_ms.map_or_else(String::new, |ts| {
-                        format!("{}  ", self.palette.dim(&format_clock(ts)))
-                    });
-                    let label = if self.stream_labels {
-                        format!("{}  ", self.palette.dim(stream_label(stream)))
-                    } else {
-                        String::new()
-                    };
-                    let _ = emit(&format!("{stamp}{label}{line}\n"));
+                let stamp = if self.timestamps {
+                    ts_ms
+                        .map(|ts| format!("{} ", self.palette.dim(&format_ts(ts))))
+                        .unwrap_or_default()
                 } else {
-                    let stamp = if self.timestamps {
-                        ts_ms
-                            .map(|ts| format!("{} ", self.palette.dim(&format_ts(ts))))
-                            .unwrap_or_default()
-                    } else {
-                        String::new()
-                    };
-                    let _ = emit(&format!("{stamp}{line}\n"));
-                }
+                    String::new()
+                };
+                let _ = emit(&format!("{stamp}{line}\n"));
             }
             _ => {
                 let stamp = if self.timestamps {
@@ -378,18 +365,11 @@ impl Renderer {
                     Column::left().at_least(self.width),
                     Column::left(),
                     Column::left(),
-                    Column::left(),
                 ];
                 let gutter = Table::new(&columns).gap(" ").indent(&stamp);
-                let label = if self.stream_labels {
-                    self.palette.dim(stream_label(stream))
-                } else {
-                    String::new()
-                };
                 let cells = [
                     self.palette.tint(pod, code),
-                    self.palette.divider(),
-                    label,
+                    self.palette.gutter(stream),
                     line.to_owned(),
                 ];
                 // Measure the real row, line included: the table engine skips a zero-width column,
@@ -420,37 +400,56 @@ impl Renderer {
             let _ = self.color_for(pod);
         }
         if let Some(run) = event.get("run") {
-            // A roster carrying a catalog record is a capture replay, so every following line takes
-            // the same clock-stamped `out`/`err` path as `logs -r`.
+            // A roster carrying a catalog record is a capture replay, so every following row takes
+            // the clocked v3 stream-gutter path.
             self.gutter = false;
             self.clock = true;
-            self.stream_labels = true;
             self.print_header(run);
         }
     }
 
-    /// One replay header row: `#<run_id>  <kind>  <target>  <command>  <started_at>`.
-    fn print_header(&self, run: &Value) {
+    /// One replay header row: `#<run_id>  <RUN|kind>  <target>  <command>  <started_at>`.
+    fn print_header(&mut self, run: &Value) {
         let run_id = run["run_id"].as_str().unwrap_or_default();
         let kind = run["kind"].as_str().unwrap_or_default();
+        let phase = run["phase"].as_str().filter(|phase| !phase.is_empty());
+        // The header names the instruction that ran: `RUN` for an image, the record kind otherwise.
+        let verb = match phase {
+            Some(phase) if kind == "image" => phase.to_ascii_uppercase(),
+            _ => kind.to_owned(),
+        };
         let target = run["target"].as_str().unwrap_or_default();
-        let command = run["command"].as_str().unwrap_or_default();
-        let mut row = format!(
-            "{}  {}  {}  {}",
-            self.palette.key(&format!("#{run_id}")),
-            self.palette.dim(kind),
-            self.palette.label(target),
-            self.palette.dim(command),
-        );
-        if let Some(started) = run["started_ms"].as_u64() {
-            row.push_str(&format!("  {}", self.palette.dim(&format_ts(started))));
-        }
-        let _ = emit(&format!("{row}\n"));
+        let command = run["instruction"]
+            .as_str()
+            .filter(|instruction| !instruction.is_empty())
+            .or_else(|| run["command"].as_str())
+            .unwrap_or_default();
+        let started = run["started_ms"].as_u64().map(format_ts);
+        let header = self
+            .palette
+            .header_line(run_id, &verb, target, command, started.as_deref());
+        let _ = emit(&format!("{header}\n\n"));
+        self.verdict = Some(Verdict {
+            verb,
+            target: target.to_owned(),
+            state: run["state"].as_str().unwrap_or_default().to_owned(),
+            exit_code: run["exit_code"]
+                .as_i64()
+                .and_then(|code| i32::try_from(code).ok()),
+            duration_ms: run["duration_ms"].as_u64().unwrap_or(0),
+        });
     }
 
     pub(crate) fn finish(&self, code: i64) {
         if self.json {
             let _ = emit(&format!("{}\n", json!({ "exit": code })));
+            return;
+        }
+        if let Some(verdict) = &self.verdict {
+            let line = self.palette.verdict(verdict);
+            // Exactly one blank line separates rows from the verdict; an empty capture has none.
+            let gap = if self.rows > 0 { "\n" } else { "" };
+            let _ = emit(&format!("{gap}{line}\n"));
         }
     }
 

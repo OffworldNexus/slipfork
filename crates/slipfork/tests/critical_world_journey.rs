@@ -112,7 +112,7 @@ image app . {
 // The run-catalog journey: one image whose `RUN` fails before any pod can start.
 const FAIL_BUILD_DOCKERFILE: &str = "\
 FROM python:3.13-slim
-RUN sh -c 'echo failed-run-marker; echo failed-run-error >&2; exit 9'
+RUN sh -c 'echo out-line; echo err-line >&2; exit 3'
 WORKDIR /project
 CMD [\"python3\", \"--version\"]
 ";
@@ -1688,7 +1688,7 @@ fn world_up_restart_down_journey() {
         stderr(&by_image)
     );
     assert!(
-        stdout(&by_image).contains("failed-run-marker"),
+        stdout(&by_image).contains("out-line"),
         "`logs app` must replay the failed RUN output:\n{}",
         stdout(&by_image)
     );
@@ -1699,12 +1699,12 @@ fn world_up_restart_down_journey() {
         stderr(&by_run)
     );
     assert!(
-        stdout(&by_run).contains("failed-run-marker"),
+        stdout(&by_run).contains("out-line"),
         "`logs -r {build_run}` must replay the failed RUN output:\n{}",
         stdout(&by_run)
     );
-    // The replay is a real capture view: a `#<id>  image  app  …  <started>` header, then labeled
-    // `out`/`err` lines with a UTC clock — and never the failure summary itself.
+    // The replay is a real capture view: a `#<id>  RUN  app  sh -c …  <started>` header, then the
+    // v3 stream gutter (`│` stdout, `┃` stderr) with a UTC clock, then the record's verdict.
     let is_clock = |text: &str| {
         let bytes = text.as_bytes();
         bytes.len() == 12
@@ -1727,25 +1727,33 @@ fn world_up_restart_down_journey() {
         assert!(
             fields.len() >= 5
                 && fields[0] == format!("#{build_run}")
-                && fields[1] == "image"
-                && fields[2] == "app",
-            "`{label}` header must name `#<id>  image  app` in >=5 fields:\n{header:?}"
+                && fields[1] == "RUN"
+                && fields[2] == "app"
+                && fields[3] == "sh -c 'echo out-line; echo err-line >&2; exit 3'",
+            "`{label}` header must name `#<id>  RUN  app  <command as written>`:\n{header:?}"
+        );
+        assert_eq!(
+            header.matches("app").count(),
+            1,
+            "`{label}` must never print the image id twice:\n{header:?}"
         );
         let started = fields.last().copied().unwrap_or_default();
         assert!(
             started.contains('-') && started.contains(':'),
             "`{label}` header must end with a date+time, saw {started:?}:\n{header:?}"
         );
-        let clocked = |needle: &str, stream: &str| {
+        let gutter_clock = |needle: &str, glyph: char| {
             output.lines().find_map(|line| {
-                let (clock, rest) = line.split_once("  ")?;
-                (rest.starts_with(stream) && rest.contains(needle)).then_some(clock)
+                let (clock, rest) = line.trim_start().split_once(' ')?;
+                (rest.starts_with(glyph) && rest.contains(needle)).then_some(clock)
             })
         };
-        let out_clock = clocked("failed-run-marker", "out")
-            .unwrap_or_else(|| panic!("`{label}` must replay labeled stdout:\n{output}"));
-        let err_clock = clocked("failed-run-error", "err")
-            .unwrap_or_else(|| panic!("`{label}` must replay labeled stderr:\n{output}"));
+        let out_clock = gutter_clock("out-line", '│').unwrap_or_else(|| {
+            panic!("`{label}` must replay stdout under the `│` gutter:\n{output}")
+        });
+        let err_clock = gutter_clock("err-line", '┃').unwrap_or_else(|| {
+            panic!("`{label}` must replay stderr under the `┃` gutter:\n{output}")
+        });
         for clock in [out_clock, err_clock] {
             assert!(
                 is_clock(clock),
@@ -1757,8 +1765,20 @@ fn world_up_restart_down_journey() {
             "`{label}` stays ANSI-free:\n{output}"
         );
         assert!(
-            !output.contains("✗ Failed") && !output.contains("next:"),
+            !output.contains("out out-line") && !output.contains("err err-line"),
+            "`{label}` never prints the removed `out`/`err` words:\n{output}"
+        );
+        assert!(
+            !output.contains("build `app` failed")
+                && !output.contains("failed:")
+                && !output.contains("next:")
+                && !output.contains("✗ Failed")
+                && !output.contains("Failed to "),
             "the failure summary stays outside the capture:\n{output}"
+        );
+        assert!(
+            output.trim_end().ends_with("✗ RUN app failed (exit 3)"),
+            "`{label}` must end with the record's verdict:\n{output}"
         );
     }
 
@@ -1784,20 +1804,40 @@ fn world_up_restart_down_journey() {
     );
     assert!(
         replay_events.iter().any(|event| {
-            event["line"] == "failed-run-marker"
-                && event["stream"] == "stdout"
-                && event["ts_ms"].is_u64()
+            event["line"] == "out-line" && event["stream"] == "stdout" && event["ts_ms"].is_u64()
         }),
         "`--json` must carry the stdout stream and its timestamp: {replay_events:?}"
     );
     assert!(
         replay_events.iter().any(|event| {
-            event["line"] == "failed-run-error"
-                && event["stream"] == "stderr"
-                && event["ts_ms"].is_u64()
+            event["line"] == "err-line" && event["stream"] == "stderr" && event["ts_ms"].is_u64()
         }),
         "`--json` must carry the stderr stream and its timestamp: {replay_events:?}"
     );
+    assert!(
+        replay_json_text.contains("\"stream\":\"stderr\""),
+        "`logs -r --json` must carry the stderr stream: {replay_json_text}"
+    );
+    let replay_run = replay_events
+        .iter()
+        .find(|event| event["run_id"].as_str() == Some(build_run.as_str()))
+        .unwrap_or_else(|| {
+            panic!("`logs -r --json` must emit the run record bare: {replay_events:?}")
+        });
+    assert_eq!(
+        replay_events
+            .first()
+            .and_then(|event| event["run_id"].as_str()),
+        Some(build_run.as_str()),
+        "`logs -r --json` emits the record bare as its first line: {replay_events:?}"
+    );
+    assert_eq!(replay_run["phase"], "run", "{replay_run}");
+    assert_eq!(
+        replay_run["instruction"], "sh -c 'echo out-line; echo err-line >&2; exit 3'",
+        "{replay_run}"
+    );
+    assert_eq!(replay_run["source"], "Dockerfile:2", "{replay_run}");
+    assert_eq!(replay_run["exit_code"], 3, "{replay_run}");
 
     let catalog = journey.slipfork(&buildfail, &["logs", "--runs"]);
     assert!(
@@ -1831,6 +1871,13 @@ fn world_up_restart_down_journey() {
     assert_eq!(record["kind"], "image", "{record}");
     assert_eq!(record["target"], "app", "{record}");
     assert_eq!(record["state"], "failed", "{record}");
+    assert_eq!(record["phase"], "run", "{record}");
+    assert_eq!(
+        record["instruction"], "sh -c 'echo out-line; echo err-line >&2; exit 3'",
+        "{record}"
+    );
+    assert_eq!(record["source"], "Dockerfile:2", "{record}");
+    assert_eq!(record["exit_code"], 3, "{record}");
     assert!(record["started_ms"].is_u64(), "{record}");
     assert!(record["finished_ms"].is_u64(), "{record}");
     assert!(record["duration_ms"].is_u64(), "{record}");
@@ -1850,7 +1897,7 @@ fn world_up_restart_down_journey() {
         stderr(&bare_run)
     );
     assert!(
-        stdout(&bare_run).contains("failed-run-marker"),
+        stdout(&bare_run).contains("out-line"),
         "`logs {build_run}` must replay the captured output:\n{}",
         stdout(&bare_run)
     );

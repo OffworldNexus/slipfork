@@ -111,7 +111,7 @@ enum TargetPlan {
     /// `<store>/logs/<world>/<id>.log` replays through the window reader.
     Capture,
     /// No pod capture exists, but this catalog run does.
-    Run(RunRecord),
+    Run(Box<RunRecord>),
     /// Neither a live pod, a capture, nor a recorded run.
     Unknown,
 }
@@ -134,18 +134,18 @@ impl TargetPlan {
             return Self::Capture;
         }
         if let Some(record) = index.newest_for_target(target) {
-            return Self::Run(record.clone());
+            return Self::Run(Box::new(record.clone()));
         }
         // A bare run id (or `last`/`failed`) is a documented target of its own.
         let bare = target.trim_start_matches('#');
         if let Some(record) = index.by_id(bare) {
-            return Self::Run(record.clone());
+            return Self::Run(Box::new(record.clone()));
         }
         if matches!(bare, "last" | "failed")
             && let Ok(run_id) = store.resolve_run(bare)
             && let Some(record) = index.by_id(&run_id)
         {
-            return Self::Run(record.clone());
+            return Self::Run(Box::new(record.clone()));
         }
         // A declared-but-stopped pod still owns the id, so a capture read fails with its one remedy.
         if live.iter().any(|(_, id, _)| id == target) {
@@ -281,7 +281,7 @@ impl Core {
                 TargetPlan::Run(record) => Ok(LogStream::run_replay(
                     store,
                     record.run_id.clone(),
-                    Some(Box::new(record)),
+                    Some(record),
                     since_ms,
                     until_ms,
                 )),
@@ -389,7 +389,7 @@ impl Core {
                     return Ok(LogStream::run_replay(
                         store,
                         record.run_id.clone(),
-                        Some(Box::new(record)),
+                        Some(record),
                         since_ms,
                         until_ms,
                     ));

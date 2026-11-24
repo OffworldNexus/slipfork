@@ -3,7 +3,6 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,15 +12,16 @@ use slipfork_forkfile::{FeatureSet, ast::Forkfile};
 use slipfork_image::{Architecture, StepHost};
 use slipfork_ospp::FileSecretVault;
 use slipfork_world::{
-    BootFailure, BootKind, BootState, BootStep, BtrfsEngine, Dirtiness, ImageStamp, PodEnv,
-    PodHost, PodSpec, PostgresLauncher, ResourceKind, ResourceNode, ServiceNode, StepOutcome,
-    StoreLayout, Stream, WorldEngine, WorldHost, WorldName, WorldPlan, WorldStampStore,
-    WorldSupervisor, WorldTools, control, write_bundle,
+    BootFailure, BootState, BootStep, BtrfsEngine, Dirtiness, ImageStamp, PodEnv, PodHost, PodSpec,
+    PostgresLauncher, ResourceKind, ResourceNode, ServiceNode, StoreLayout, Stream, WorldEngine,
+    WorldHost, WorldName, WorldPlan, WorldStampStore, WorldSupervisor, WorldTools, control,
+    write_bundle,
 };
 
 use super::HostEnv;
 use super::supervise::{BootSink, Emitter};
 
+mod execute;
 mod helpers;
 mod images;
 mod ready;
@@ -34,6 +34,7 @@ use helpers::{ServiceLaunch, merge_env, merge_path, project_binds, shell_command
 pub(crate) fn exit_line(command: &str, code: i32) -> String {
     format!("`{command}` exited with {code}")
 }
+
 use images::{BuiltImage, ImageCache};
 use ready::{Ready, Staged};
 
@@ -225,97 +226,6 @@ impl WorldRuntime {
         })
     }
 
-    /// Executes one DAG node with zero global lock: staging uses narrow collaborator scopes and
-    /// [`Staged::await_ready`] polls sockets outside all locks.
-    ///
-    /// Every step opens its run capture eagerly, before it executes anything; a `cached`/`up to
-    /// date` outcome discards it. A capture that cannot be opened fails the step instead of
-    /// silently running it unrecorded.
-    pub(super) fn execute(
-        &self,
-        index: usize,
-        step: &BootStep,
-    ) -> Result<StepOutcome, BootFailure> {
-        let mut log = BootSink::for_step(
-            Arc::clone(&self.emitter),
-            index + 1,
-            self.total_steps,
-            &step.label,
-            &step.node_name(),
-        );
-        // Armed for every kind: a pod that dies inside `launch_pod` must still leave a record and a
-        // readable capture, and only a cached outcome throws it away.
-        let command = step.command.clone().unwrap_or_else(|| step.subject.clone());
-        let store = slipfork_world::LogStore::at(self.layout.store_root(), self.world.clone());
-        log = log.capture_run(
-            &store,
-            &self.project,
-            step.kind.as_str(),
-            &step.node_name(),
-            &command,
-        )?;
-        let started = std::time::Instant::now();
-        let mut staged = match self.execute_step(step, &mut log) {
-            Ok(staged) => staged,
-            Err(mut error) => {
-                error.run_id = log.finish_run("failed", elapsed_ms(started));
-                let _ = log.flush();
-                return Err(error);
-            }
-        };
-        let _ = log.flush();
-        staged.attach_progress(log.clone());
-        let outcome = staged.await_ready();
-        let duration = elapsed_ms(started);
-        let run_id = match &outcome {
-            // A no-op step executed zero commands: its capture is removed and no id is shown.
-            Ok(done) if matches!(done.state, BootState::Cached | BootState::UpToDate) => {
-                log.discard_run();
-                None
-            }
-            Ok(done) => log.finish_run(done.state.as_str(), duration),
-            Err(_) => log.finish_run("failed", duration),
-        };
-        let _ = log.flush();
-        let mut done = match outcome {
-            Ok(done) => done,
-            Err(mut error) => {
-                error.run_id = run_id;
-                return Err(error);
-            }
-        };
-        done.run_id = run_id;
-        Ok(done)
-    }
-
-    fn execute_step(&self, step: &BootStep, log: &mut BootSink) -> Result<Staged, BootFailure> {
-        match step.kind {
-            BootKind::Image => self
-                .images
-                .build(&step.subject, log)
-                .map(|(_, state)| Staged {
-                    state,
-                    detail: state.as_str().to_owned(),
-                    ready: Ready::None,
-                    progress: None,
-                })
-                .map_err(BootFailure::new),
-            BootKind::Resource => {
-                resources::start_resource(self, &step.subject, log).map_err(BootFailure::new)
-            }
-            BootKind::Setup | BootKind::Hook => {
-                let detail = self.run_once(step, log)?;
-                Ok(Staged {
-                    state: BootState::Ready,
-                    detail,
-                    ready: Ready::None,
-                    progress: None,
-                })
-            }
-            BootKind::Service => self.start_service(step, log).map_err(BootFailure::new),
-        }
-    }
-
     pub(super) fn pods_dir(&self) -> &Path {
         &self.pods_dir
     }
@@ -408,7 +318,10 @@ impl WorldRuntime {
 
     fn built_for(&self, image: Option<&String>, log: &mut BootSink) -> Result<BuiltImage, String> {
         let image = image.ok_or_else(|| "step has no enclosing image".to_owned())?;
-        self.images.build(image, log).map(|(built, _)| built)
+        self.images
+            .build(image, log)
+            .map(|(built, _)| built)
+            .map_err(|failure| failure.message)
     }
 
     /// Merges image-level and subject-level runtime `env`, plus the declared `PORT`.
@@ -472,7 +385,7 @@ impl WorldRuntime {
                 message.push_str("\n  ");
                 message.push_str(&line);
             }
-            Err(BootFailure::new(message))
+            Err(BootFailure::new(message).with_exit_code(code))
         }
     }
 

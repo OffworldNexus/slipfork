@@ -61,6 +61,8 @@ pub struct StepOutcome {
 pub struct BootFailure {
     /// One human line; never contains secret values.
     pub message: String,
+    /// Typed child exit code when the step's source knows it; never re-parsed from `message`.
+    pub exit_code: Option<i32>,
     /// Concrete next action when the step's `Forkfile` line is not the thing to fix.
     pub remedy: Option<String>,
     /// Run id of the step's capture, so the failure line can name `slipfork logs -r <id>`.
@@ -73,6 +75,7 @@ impl BootFailure {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            exit_code: None,
             remedy: None,
             run_id: None,
         }
@@ -83,9 +86,17 @@ impl BootFailure {
     pub fn with_remedy(message: impl Into<String>, remedy: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            exit_code: None,
             remedy: Some(remedy.into()),
             run_id: None,
         }
+    }
+
+    /// Attaches the child exit code the caller's process status carried.
+    #[must_use]
+    pub fn with_exit_code(mut self, code: i32) -> Self {
+        self.exit_code = Some(code);
+        self
     }
 }
 

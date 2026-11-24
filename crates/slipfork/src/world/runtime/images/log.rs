@@ -2,9 +2,11 @@
 //! `<store>/logs/<world>/<image>.log`, so `slipfork logs <image>` reads failed-build output.
 
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use slipfork_world::{LogStore, pod_log};
+use slipfork_image::{Error as ImageError, StepTrace};
+use slipfork_world::run_log::RunNote;
+use slipfork_world::{ImageNode, LogStore, pod_log};
 
 use crate::world::supervise::{BootSink, strip_ansi};
 
@@ -52,19 +54,6 @@ impl<'a> BuildLog<'a> {
         let pending = std::mem::take(&mut self.pending);
         let _ = self.emit(&pending);
     }
-
-    /// Flushes the buffered tail and appends every line of a failed build's error, so the run
-    /// capture is never empty after a failure. A `next:` remedy is not captured output: skipping it
-    /// keeps `logs <image>` from printing a second, circular hint.
-    pub(super) fn fail(&mut self, error: &str) {
-        self.finish();
-        for line in error.lines() {
-            if line.trim_start().starts_with("next:") {
-                continue;
-            }
-            let _ = self.emit(line.as_bytes());
-        }
-    }
 }
 
 impl Write for BuildLog<'_> {
@@ -86,6 +75,80 @@ impl Write for BuildLog<'_> {
     fn flush(&mut self) -> io::Result<()> {
         self.sink.flush()
     }
+}
+
+/// The failing instruction named by a typed image error; the engine already carries the phase,
+/// the as-written command, and the exit code, so nothing is re-parsed here.
+pub(super) fn failed_note(dockerfile: &Path, error: &ImageError) -> RunNote {
+    let label = file_label(dockerfile);
+    match error {
+        ImageError::StepFailed {
+            line,
+            phase,
+            instruction,
+            exit_code,
+            ..
+        } if *line > 0 => RunNote {
+            phase: Some((*phase).to_owned()),
+            instruction: Some(instruction.to_string()),
+            source: Some(format!("{label}:{line}")),
+            exit_code: *exit_code,
+        },
+        _ => RunNote {
+            phase: Some(label.clone()),
+            instruction: None,
+            source: Some(label),
+            exit_code: None,
+        },
+    }
+}
+
+/// A registry pull records the reference it fetched instead of a Dockerfile line.
+pub(super) fn pull_note(reference: &str) -> RunNote {
+    RunNote {
+        phase: Some("pull".to_owned()),
+        instruction: Some(reference.to_owned()),
+        source: None,
+        exit_code: None,
+    }
+}
+
+/// A successful build names the last instruction it applied, or its Dockerfile when it applied
+/// none, or the pulled reference.
+pub(super) fn success_note(nodes: &[ImageNode], image: &str, last: Option<&StepTrace>) -> RunNote {
+    let Some(node) = nodes.iter().find(|node| node.id == image) else {
+        return RunNote::default();
+    };
+    if let Some(reference) = &node.from {
+        return pull_note(reference);
+    }
+    let dockerfile = node
+        .dockerfile
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("Dockerfile"));
+    let label = file_label(&dockerfile);
+    match last {
+        Some(last) => RunNote {
+            phase: Some(last.phase.to_owned()),
+            instruction: Some(last.command.clone()),
+            source: Some(format!("{label}:{}", last.line)),
+            exit_code: Some(0),
+        },
+        None => RunNote {
+            phase: Some(label.clone()),
+            instruction: None,
+            source: Some(label),
+            exit_code: Some(0),
+        },
+    }
+}
+
+/// The bare file name a source location starts with (`Dockerfile`, not `/ctx/Dockerfile`).
+fn file_label(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
 }
 
 /// Strips CSI escapes and bare `\r` progress from one raw child line, so neither the `--json`
@@ -111,7 +174,7 @@ mod tests {
 
     use slipfork_world::{LogStore, WorldName};
 
-    use super::BuildLog;
+    use super::{BuildLog, failed_note, success_note};
     use crate::world::supervise::{BootSink, Emitter};
 
     fn temp(prefix: &str) -> tempfile::TempDir {
@@ -122,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_run_tees_its_streams_and_error_into_the_image_log() {
+    fn a_run_capture_keeps_only_the_streams_it_saw() {
         let root = temp("image-log");
         let store = LogStore::at(
             root.path(),
@@ -142,19 +205,12 @@ mod tests {
             slipfork_image::Stream::Stderr,
             "npm ERR! missing script: build",
         );
-        tee.fail(
-            "build `frontend` failed: Dockerfile:12: `RUN npm run build` failed: `crun` exited with code 1\nnext: fix the command above; then rerun `slipfork up`",
-        );
-
+        tee.finish();
         drop(tee);
 
         let captured = fs::read_to_string(store.world_logs().join("frontend.log"))
             .expect("the failed build must leave a log capture");
-        for fragment in [
-            "step 2/2 npm run build",
-            "npm ERR! missing script: build",
-            "Dockerfile:12: `RUN npm run build` failed",
-        ] {
+        for fragment in ["step 2/2 npm run build", "npm ERR! missing script: build"] {
             assert!(
                 captured.contains(fragment),
                 "missing `{fragment}` in:\n{captured}"
@@ -168,18 +224,67 @@ mod tests {
             captured.contains("\tE\tnpm ERR! missing script: build"),
             "stderr rows keep their `E` marker:\n{captured}"
         );
-        assert!(
-            !captured.contains("next:"),
-            "the capture carries no embedded remedy:\n{captured}"
+        for absent in ["failed:", "next:", "Dockerfile:"] {
+            assert!(
+                !captured.contains(absent),
+                "a capture is command output only, saw `{absent}`:\n{captured}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failing_run_names_its_instruction_and_source_line() {
+        let root = temp("image-note");
+        let dockerfile = root.path().join("Dockerfile");
+        fs::write(
+            &dockerfile,
+            "FROM scratch\nRUN sh -c 'echo out; exit 3'\nWORKDIR /app\n",
+        )
+        .expect("write a Dockerfile");
+        let note = failed_note(
+            &dockerfile,
+            &slipfork_image::Error::StepFailed {
+                line: 2,
+                phase: "run",
+                instruction: "sh -c 'echo out; exit 3'".into(),
+                message: "the command exited with a non-zero status".to_owned(),
+                exit_code: Some(3),
+                runtime: Some("`crun` exited with code 3".into()),
+                next: "fix the command".to_owned(),
+            },
         );
+        assert_eq!(note.phase.as_deref(), Some("run"));
         assert_eq!(
-            captured.matches("Dockerfile:12").count(),
-            1,
-            "the error lands once:\n{captured}"
+            note.instruction.as_deref(),
+            Some("sh -c 'echo out; exit 3'")
         );
-        assert!(
-            !captured.trim().is_empty(),
-            "the capture is never empty after a failure"
-        );
+        assert_eq!(note.source.as_deref(), Some("Dockerfile:2"));
+        assert_eq!(note.exit_code, Some(3));
+    }
+
+    #[test]
+    fn a_successful_build_names_its_last_instruction_not_the_dockerfile_label() {
+        let node = slipfork_world::ImageNode {
+            id: "web".to_owned(),
+            directory: std::path::PathBuf::from("."),
+            dockerfile: Some(std::path::PathBuf::from("docker/Dockerfile")),
+            from: None,
+            line: 3,
+        };
+        let last = slipfork_image::StepTrace {
+            phase: "run",
+            command: "npm run build".to_owned(),
+            line: 7,
+        };
+        let note = success_note(std::slice::from_ref(&node), "web", Some(&last));
+        assert_eq!(note.phase.as_deref(), Some("run"));
+        assert_eq!(note.instruction.as_deref(), Some("npm run build"));
+        assert_eq!(note.source.as_deref(), Some("Dockerfile:7"));
+        assert_eq!(note.exit_code, Some(0));
+
+        let unused = success_note(std::slice::from_ref(&node), "web", None);
+        assert_eq!(unused.phase.as_deref(), Some("Dockerfile"));
+        assert_eq!(unused.source.as_deref(), Some("Dockerfile"));
+        assert_eq!(unused.instruction, None);
     }
 }

@@ -66,8 +66,16 @@ pub enum Error {
     /// A build instruction failed at `line` (bad source path, failed `RUN`, …).
     StepFailed {
         line: usize,
-        instruction: String,
+        /// Instruction keyword (`run`, `copy`, `add`, …).
+        phase: &'static str,
+        /// The command exactly as the author wrote it, never re-wrapped.
+        instruction: Box<str>,
+        /// One-line human cause, without container-plumbing detail.
         message: String,
+        /// Child process exit code when the failure carried one.
+        exit_code: Option<i32>,
+        /// Container-runtime plumbing (`crun exited with code 3`); shown only under `-v`.
+        runtime: Option<Box<str>>,
         next: String,
     },
     /// A `--from` stage or `stage <name>` target does not exist.
@@ -86,6 +94,16 @@ impl Error {
             action,
             path: path.to_path_buf(),
             source,
+        }
+    }
+
+    /// The container-runtime plumbing behind a failed `RUN`; `up -v` shows it, the default view
+    /// stays a single human line.
+    #[must_use]
+    pub fn runtime(&self) -> Option<&str> {
+        match self {
+            Self::StepFailed { runtime, .. } => runtime.as_deref(),
+            _ => None,
         }
     }
 }
@@ -171,6 +189,7 @@ impl fmt::Display for Error {
                 instruction,
                 message,
                 next,
+                ..
             } => write!(
                 f,
                 "Dockerfile:{line}: `{instruction}` failed: {message}\nnext: {next}"

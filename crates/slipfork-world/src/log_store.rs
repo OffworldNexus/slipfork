@@ -24,7 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::error::{Error, Result};
 use crate::layout::{STORE_DIR, StoreLayout, WorldName};
 use crate::pod_log;
-use crate::run_log::{self, INDEX_FILE, LAST_FAILED_FILE, LAST_FILE, RunRecord};
+use crate::run_log::{self, INDEX_FILE, LAST_FAILED_FILE, LAST_FILE, RunNote, RunRecord};
 
 /// How many terminal-successful run captures one world keeps after a teardown.
 ///
@@ -122,6 +122,35 @@ impl LogStore {
     /// Appends one catalog line for a finished run.
     pub fn record(&self, record: &RunRecord) -> Result<()> {
         append_record(&self.run_dir(), record)
+    }
+
+    /// Re-publishes one recorded run with the instruction it actually executed.
+    ///
+    /// The catalog keeps the newest line per `run_id`, so annotating after a run finishes leaves
+    /// exactly one terminal record. Only the fields `note` carries are patched; an unknown run id
+    /// is an explicit error instead of a silent no-op.
+    pub fn annotate_run(&self, run_id: &str, note: &RunNote) -> Result<()> {
+        let mut record = self
+            .records()?
+            .records
+            .into_iter()
+            .find(|record| record.run_id == run_id)
+            .ok_or_else(|| Error::Protocol {
+                message: format!("no recorded run `{run_id}` to annotate"),
+            })?;
+        if let Some(phase) = &note.phase {
+            record.phase.clone_from(phase);
+        }
+        if let Some(instruction) = &note.instruction {
+            record.instruction.clone_from(instruction);
+        }
+        if let Some(source) = &note.source {
+            record.source.clone_from(source);
+        }
+        if note.exit_code.is_some() {
+            record.exit_code = note.exit_code;
+        }
+        append_record(&self.run_dir(), &record)
     }
 
     /// Every recorded run, newest-wins per `run_id`, oldest first, with skipped-line count.
