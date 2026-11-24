@@ -1,6 +1,14 @@
 use super::rows::{Slot, TaskRows};
 use crate::boot::render::{Node, completed_row, plan_widths};
 
+/// A three-line block places its phase row on top and its two output lines below it, in order.
+#[test]
+fn a_block_places_the_phase_row_on_top_and_output_oldest_first_downward() {
+    assert_eq!(super::block_slots(31, 3), vec![29, 30, 31]);
+    assert_eq!(super::block_slots(31, 1), vec![31]);
+    assert_eq!(super::block_slots(2, 0), Vec::<usize>::new());
+}
+
 /// Two `Started` events in one tick own two distinct rows, spin together, and finish in place.
 #[test]
 fn two_started_tasks_spin_on_their_own_rows_and_finish_in_place() {

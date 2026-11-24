@@ -61,7 +61,7 @@ pub fn plan_widths(rows: &[(String, String)]) -> ColumnWidths {
     boot_widths(&cells)
 }
 
-/// One live task row: cyan Braille spinner in the icon cell, dim kind, bold name, green
+/// One live task row: neutral Braille spinner in the icon cell, magenta kind, bold name, green
 /// `running`, right-aligned live elapsed, and the reserved run-id slot.
 #[must_use]
 pub fn running_row(
@@ -76,7 +76,7 @@ pub fn running_row(
         widths,
         &[
             spinner.to_string(),
-            palette.dim(kind),
+            palette.verb(kind),
             palette.tint(name, "1"),
             palette.status("running"),
             palette.dim(&elapsed_text(millis)),
@@ -102,7 +102,7 @@ pub const BAR_CELLS: usize = 24;
 /// than inventing a `step`/`ready`/`0` row, so a broken event stream can never print fiction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Node<'a> {
-    /// Node kind (`image`, `service`, `postgres`, …), dimmed and padded to 8 cells.
+    /// Node kind (`image`, `service`, `postgres`, …), magenta and padded to 8 cells.
     pub kind: &'a str,
     /// Node name, printed bold.
     pub name: &'a str,
@@ -201,24 +201,22 @@ fn assemble(
     let counter = format!("{done}/{total}");
     let pct = format!("{}%", percent(done, total));
     let seconds = format!("{:.1}s", elapsed.as_secs_f64());
-    let spin = if colour {
-        palette.kind(&spinner.to_string())
-    } else {
-        spinner.to_string()
-    };
+    // The spinner is content, never a keyword or a copyable command: neutral on every surface.
+    let spin = spinner.to_string();
     let bar = |cells: usize| -> String {
         let filled = filled(done, total, cells);
         if !colour {
             return format!("[{}{}]", "#".repeat(filled), ".".repeat(cells - filled));
         }
+        // The bar fill is content: neutral, never a hue. Only the empty cells recede to dim.
         format!(
             "[{}{}]",
-            palette.tint(&"█".repeat(filled), "1;36"),
+            "█".repeat(filled),
             palette.dim(&"░".repeat(cells - filled)),
         )
     };
-    let counter = palette.value(&counter);
-    let pct = palette.value(&pct);
+    let counter = palette.tint(&counter, "1");
+    let pct = palette.tint(&pct, "1");
     let summary = palette.tint(summary, "1");
     let seconds = palette.dim(&seconds);
 
@@ -293,7 +291,7 @@ pub fn stopped_row(world: &str, millis: u64, styled: bool) -> String {
     )
 }
 
-/// `✓  image  base  cached   420ms` on a pipe, or the styled check, dim kind, bold name,
+/// `✓  image  base  cached   420ms` on a pipe, or the styled check, magenta kind, bold name,
 /// lowercase state, right-aligned dim duration, and the reserved run-id slot on a colour terminal.
 ///
 /// `widths` comes from [`boot_widths`] over the complete boot plan, so a row printed while the boot
@@ -322,7 +320,7 @@ pub fn completed_row(node: &Node<'_>, widths: &ColumnWidths, styled: bool) -> St
         widths,
         &[
             mark,
-            palette.dim(node.kind),
+            palette.verb(node.kind),
             palette.tint(node.name, "1"),
             state,
             palette.dim(&elapsed_text(node.millis)),

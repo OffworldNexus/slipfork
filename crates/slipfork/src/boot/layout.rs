@@ -47,7 +47,7 @@ pub(super) fn image_done_row(image: &str, steps: usize, millis: u64, palette: Pa
     format!(
         "{} {} {} {}",
         palette.icon_ok(),
-        palette.dim("image"),
+        palette.verb("image"),
         palette.tint(image, "1"),
         palette.dim(&format!("({steps} {plural}, {})", elapsed_text(millis))),
     )
@@ -60,6 +60,49 @@ pub(super) fn pad(text: &str, width: usize) -> String {
         return text.to_owned();
     }
     format!("{text}{}", " ".repeat(width - length))
+}
+
+/// Truncates an already styled row to `width` visible cells, ending in `…` when it was cut.
+///
+/// SGR sequences are copied whole and never counted, and a clipped row carries one final reset so
+/// a colour can never bleed into the next line of the live region.
+pub(super) fn truncate_ansi(row: &str, width: usize) -> String {
+    if console::measure_text_width(row) <= width {
+        return row.to_owned();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut visible = 0usize;
+    let mut styled = false;
+    let mut chars = row.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            styled = true;
+            out.push(ch);
+            if let Some('[') = chars.next() {
+                out.push('[');
+                for ch in chars.by_ref() {
+                    out.push(ch);
+                    if ('@'..='~').contains(&ch) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        if visible == width - 1 {
+            break;
+        }
+        out.push(ch);
+        visible += 1;
+    }
+    out.push('…');
+    if styled {
+        out.push_str("\u{1b}[0m");
+    }
+    out
 }
 
 /// Truncates `text` to at most `max` visible characters, ending in `…` when it was cut.

@@ -284,11 +284,8 @@ impl Narrative {
             |live| live.phase.verb.clone(),
         );
         if anchored_pane && let Some(live) = &live {
-            actions.push(Action::Hold(live.phase.failed_row(palette)));
-            for (stream, text) in &live.output {
-                for row in wrap_gutter(stream, text, width, palette) {
-                    actions.push(Action::Hold(row));
-                }
+            for row in live.expansion_rows(width, palette) {
+                actions.push(Action::Hold(row));
             }
         }
         for row in failure::envelope(event, &verb, self.verbose, palette, step_less) {

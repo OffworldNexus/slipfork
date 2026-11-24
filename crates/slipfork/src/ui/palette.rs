@@ -78,6 +78,15 @@ impl Palette {
         self.tint(text, "2")
     }
 
+    /// An instruction, verb, or step kind (`RUN`, `FROM`, `start`, `image`): magenta.
+    ///
+    /// The one hue bound to the keyword role on every surface — phase rows, the `logs -r` header,
+    /// verdicts, and the build-end row.
+    #[must_use]
+    pub fn verb(self, text: &str) -> String {
+        self.tint(text, "35")
+    }
+
     /// A component kind or identifier: cyan.
     #[must_use]
     pub fn kind(self, text: &str) -> String {
@@ -146,8 +155,8 @@ impl Palette {
 
     /// The `logs -r` header row.
     ///
-    /// `#id` dim, verb dim, target bold, command bold (omitted when it equals the target), started
-    /// dim. The caller formats the started clock so `ui` stays below `commands`.
+    /// `#id` bold, verb magenta, target bold, command neutral (omitted when it equals the
+    /// target), started dim. The caller formats the started clock so `ui` stays below `commands`.
     #[must_use]
     pub fn header_line(
         self,
@@ -159,7 +168,7 @@ impl Palette {
     ) -> String {
         let mut fields = vec![
             self.tint(&format!("#{run_id}"), "1"),
-            self.dim(verb),
+            self.verb(verb),
             self.tint(target, "1"),
         ];
         if !command.trim().is_empty() && command.trim() != target.trim() {
@@ -199,7 +208,7 @@ impl Palette {
         let subject = if verb.trim().is_empty() || verb.trim() == target.trim() {
             self.tint(target, "1")
         } else {
-            format!("{} {}", self.dim(verb), self.tint(target, "1"))
+            format!("{} {}", self.verb(verb), self.tint(target, "1"))
         };
         if state == "failed" {
             let mut line = format!(

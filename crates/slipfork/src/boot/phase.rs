@@ -10,7 +10,7 @@ use std::time::Instant;
 use crate::ui::Palette;
 use crate::ui::elapsed_text;
 
-use super::layout::{Columns, gutter_line, pad, truncate_visible};
+use super::layout::{Columns, gutter_line, pad, truncate_ansi, truncate_visible, wrap_gutter};
 
 /// The tail of streamed output painted inside the anchored region while a step runs.
 pub(super) const LIVE_LINES: usize = 8;
@@ -69,9 +69,19 @@ impl Phase {
         self.assemble(palette.tint("✗", "31"), None, palette)
     }
 
-    /// The dim re-anchor an append-only stream prints before output from another step.
+    /// The re-anchor an append-only stream prints before output from another step.
+    ///
+    /// Content stays neutral (`→`), the counter is dim, the verb magenta, and the target bold.
     pub(super) fn anchor_row(&self, palette: Palette) -> String {
-        palette.dim(&format!("→ {}", self.identity()))
+        let mut row = String::from("→ ");
+        if let Some((index, total)) = self.count {
+            row.push_str(&palette.dim(&format!("[{index}/{total}]")));
+            row.push(' ');
+        }
+        row.push_str(&palette.verb(&self.verb));
+        row.push(' ');
+        row.push_str(&palette.tint(&self.target, "1"));
+        row
     }
 
     /// Wall time since the step started, for the live spinner row.
@@ -101,7 +111,7 @@ impl Phase {
         }
         row.push_str("  ");
         row.push_str(&palette.dim(&elapsed));
-        row
+        truncate_ansi(&row, width)
     }
 
     fn assemble(&self, mark: String, elapsed: Option<u64>, palette: Palette) -> String {
@@ -134,7 +144,7 @@ impl Phase {
             row.push_str(&palette.dim(&format!("[{index}/{total}]")));
             row.push(' ');
         }
-        row.push_str(&palette.dim(&pad(&self.verb, self.columns.verb)));
+        row.push_str(&palette.verb(&pad(&self.verb, self.columns.verb)));
         row.push(' ');
         let target = if pad_target {
             pad(&self.target, self.columns.target)
@@ -144,23 +154,29 @@ impl Phase {
         row.push_str(&palette.tint(&target, "1"));
         row
     }
-
-    fn identity(&self) -> String {
-        let mut identity = String::new();
-        if let Some((index, total)) = self.count {
-            identity.push_str(&format!("[{index}/{total}] "));
-        }
-        identity.push_str(&format!("{} {}", self.verb, self.target));
-        identity
-    }
 }
 
 /// One running step in [`LiveSteps`]: its phase row, full child output, and activity stamp.
 #[derive(Debug)]
 pub(super) struct LiveStep {
     pub(super) phase: Phase,
+    /// Every captured line in arrival order, across both streams.
     pub(super) output: Vec<(String, String)>,
     pub(super) touched: u64,
+}
+
+impl LiveStep {
+    /// The failed step's full scrollback block: its phase row, then every line in arrival order.
+    ///
+    /// The one ordered `output` vector is the contract: an interleaved `out`/`err`/`out` step
+    /// expands in exactly that order, matching `slipfork logs -r` and the run capture.
+    pub(super) fn expansion_rows(&self, width: usize, palette: Palette) -> Vec<String> {
+        let mut rows = vec![self.phase.failed_row(palette)];
+        for (stream, text) in &self.output {
+            rows.extend(wrap_gutter(stream, text, width, palette));
+        }
+        rows
+    }
 }
 
 /// The single live-step registry: owns every running phase and every child line it produced.

@@ -451,6 +451,8 @@ impl BootTui {
 
     fn failed_node(&mut self, event: &Value, palette: Palette) {
         self.failed = true;
+        // Stop the repaint thread first, so no tick can restore the live block after it clears.
+        self.ticker = None;
         let anchored = self.pane.is_some();
         let actions = self.narrative.failed(event, self.width, palette, anchored);
         if let Some(pane) = &self.pane

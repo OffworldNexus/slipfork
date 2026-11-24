@@ -9,10 +9,12 @@ mod elapsed;
 mod paint;
 mod palette;
 pub mod table;
+mod terminal;
 
 pub use elapsed::elapsed_text;
 pub use paint::paint;
 pub use palette::{Palette, Verdict};
+pub use terminal::normalize_size;
 
 /// How this invocation renders its result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,7 +1,7 @@
 //! Pod launch and run-to-completion: `crun run`, log pumps, and abort-safe teardown.
 
 use std::fs;
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::{self, Read};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Stdio;
@@ -151,22 +151,13 @@ pub(crate) fn run_once_on_shared(
     let child_pid = i32::try_from(child.id()).unwrap_or_default();
     shared.register_exec(child_pid);
     let (sender, receiver) = mpsc::channel::<(slipfork_world::Stream, String)>();
-    let mut readers = Vec::new();
-    if let Some(stdout) = child.stdout.take() {
-        readers.push(spawn_line_reader(
-            stdout,
-            slipfork_world::Stream::Stdout,
-            sender.clone(),
-        ));
-    }
-    if let Some(stderr) = child.stderr.take() {
-        readers.push(spawn_line_reader(
-            stderr,
-            slipfork_world::Stream::Stderr,
-            sender.clone(),
-        ));
-    }
-    drop(sender);
+    // One reader owns both pipes: two threads racing separate pipes reorder a single child's
+    // stdout/stderr (the PTY regression), so the merged reader drains them deterministically.
+    let mut readers = vec![spawn_merged_reader(
+        child.stdout.take(),
+        child.stderr.take(),
+        sender,
+    )];
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -318,16 +309,110 @@ pub(super) fn crun_run(
         .map_err(|source| Fault::cause(action, REMEDY_CRUN, source))
 }
 
-fn spawn_line_reader<R: Read + Send + 'static>(
-    pipe: R,
-    kind: slipfork_world::Stream,
+/// Reads both child pipes from one thread, in one deterministic order.
+///
+/// Two byte streams on separate pipes carry no global order, and two reader threads make the
+/// interleaving depend on scheduler luck. Polling both descriptors in one thread and draining
+/// stdout first when both are ready keeps a sequential child's `echo` order intact.
+fn spawn_merged_reader(
+    stdout: Option<std::process::ChildStdout>,
+    stderr: Option<std::process::ChildStderr>,
     sender: mpsc::Sender<(slipfork_world::Stream, String)>,
 ) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        for line in BufReader::new(pipe).lines().map_while(Result::ok) {
-            let _ = sender.send((kind, line));
+    thread::spawn(move || merged_lines(stdout, stderr, sender))
+}
+
+fn merged_lines(
+    mut stdout: Option<std::process::ChildStdout>,
+    mut stderr: Option<std::process::ChildStderr>,
+    sender: mpsc::Sender<(slipfork_world::Stream, String)>,
+) {
+    use std::os::fd::{AsRawFd, RawFd};
+
+    fn poll_fd(fd: Option<RawFd>) -> libc::pollfd {
+        libc::pollfd {
+            fd: fd.unwrap_or(-1),
+            events: libc::POLLIN,
+            revents: 0,
         }
-    })
+    }
+
+    let mut out_pending = Vec::new();
+    let mut err_pending = Vec::new();
+    loop {
+        if stdout.is_none() && stderr.is_none() {
+            break;
+        }
+        let mut fds = [
+            poll_fd(stdout.as_ref().map(AsRawFd::as_raw_fd)),
+            poll_fd(stderr.as_ref().map(AsRawFd::as_raw_fd)),
+        ];
+        // SAFETY: both descriptors in `fds` are valid for the call, and the 100ms bound keeps
+        // this thread responsive to teardown while the child stays quiet.
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, 100) };
+        if ready < 0 {
+            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            break;
+        }
+        if ready == 0 {
+            continue;
+        }
+        if fds[0].revents != 0 {
+            pump_lines(
+                &mut stdout,
+                &mut out_pending,
+                slipfork_world::Stream::Stdout,
+                &sender,
+            );
+        }
+        if fds[1].revents != 0 {
+            pump_lines(
+                &mut stderr,
+                &mut err_pending,
+                slipfork_world::Stream::Stderr,
+                &sender,
+            );
+        }
+    }
+}
+
+fn pump_lines<R: Read>(
+    pipe: &mut Option<R>,
+    pending: &mut Vec<u8>,
+    stream: slipfork_world::Stream,
+    sender: &mpsc::Sender<(slipfork_world::Stream, String)>,
+) {
+    let Some(reader) = pipe.as_mut() else {
+        return;
+    };
+    let mut chunk = [0_u8; 8192];
+    match reader.read(&mut chunk) {
+        Ok(0) => {
+            *pipe = None;
+            if !pending.is_empty() {
+                let text = String::from_utf8_lossy(pending)
+                    .trim_end_matches('\r')
+                    .to_owned();
+                pending.clear();
+                if !text.is_empty() {
+                    let _ = sender.send((stream, text));
+                }
+            }
+        }
+        Ok(read) => {
+            pending.extend_from_slice(&chunk[..read]);
+            while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+                let line: Vec<u8> = pending.drain(..=end).collect();
+                let text = String::from_utf8_lossy(&line);
+                let text = text.trim_end_matches(['\n', '\r']).to_owned();
+                let _ = sender.send((stream, text));
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+        Err(_) => *pipe = None,
+    }
 }
 
 fn spawn_pump<R: Read + Send + 'static>(

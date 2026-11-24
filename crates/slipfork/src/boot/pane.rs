@@ -61,7 +61,7 @@ impl Pane {
         steps: Arc<Mutex<LiveSteps>>,
     ) -> Self {
         let (width, rows) = terminal_size();
-        let cols = cols.max(width);
+        let cols = crate::ui::normalize_size(cols.max(width), rows).0;
         let title = title.to_owned();
         let region_bottom = if rows >= 3 { rows - 1 } else { 0 };
         let mut pane = Self {
@@ -330,7 +330,7 @@ impl Pane {
             for (slot, row) in live {
                 let _ = write!(stdout, "\x1b[{slot};1H\r\x1b[2K{row}");
             }
-            // Paint the block bottom-up and clear any rows a previous, longer block owned.
+            // Clear every row a previous, longer block owned...
             let span = self.block_rows.max(block.len());
             for offset in 0..span {
                 let Some(row) = self.region_bottom.checked_sub(offset) else {
@@ -339,11 +339,13 @@ impl Pane {
                 if row == 0 {
                     break;
                 }
-                let text = block
-                    .len()
-                    .checked_sub(offset + 1)
-                    .and_then(|index| block.get(index))
-                    .map_or("", String::as_str);
+                let _ = write!(stdout, "\x1b[{row};1H\r\x1b[2K");
+            }
+            // ...then paint top-down: the phase row sits above its output, oldest line first.
+            for (text, row) in block
+                .iter()
+                .zip(block_slots(self.region_bottom, block.len()))
+            {
                 let _ = write!(stdout, "\x1b[{row};1H\r\x1b[2K{text}");
             }
             self.block_rows = block.len();
@@ -373,8 +375,14 @@ impl Pane {
     }
 }
 
+/// The screen row each block line owns: phase row on top, output oldest→newest downward.
+fn block_slots(bottom: usize, len: usize) -> Vec<usize> {
+    let top = bottom.saturating_sub(len.saturating_sub(1)).max(1);
+    (0..len).map(|index| top + index).collect()
+}
+
 fn terminal_size() -> (usize, usize) {
     crossterm::terminal::size().map_or((80, 0), |(cols, rows)| {
-        (usize::from(cols), usize::from(rows))
+        crate::ui::normalize_size(usize::from(cols), usize::from(rows))
     })
 }

@@ -1063,24 +1063,24 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
 
     let bare = run(&project, &env, &["logs"]);
     assert!(bare.status.success(), "{bare:?}");
+    let bare_text = String::from_utf8_lossy(&bare.stdout).into_owned();
     assert!(
-        String::from_utf8_lossy(&bare.stdout).contains("alpha │"),
-        "{:?}",
-        String::from_utf8_lossy(&bare.stdout)
+        bare_text.contains("alpha │") || bare_text.contains("alpha ┃"),
+        "{bare_text:?}"
     );
     let windowed = run(&project, &env, &["logs", "--since", "5m"]);
     assert!(windowed.status.success(), "{windowed:?}");
+    let windowed_text = String::from_utf8_lossy(&windowed.stdout).into_owned();
     assert!(
-        String::from_utf8_lossy(&windowed.stdout).contains("alpha │"),
-        "{:?}",
-        String::from_utf8_lossy(&windowed.stdout)
+        windowed_text.contains("alpha │") || windowed_text.contains("alpha ┃"),
+        "{windowed_text:?}"
     );
     let all = run(&project, &env, &["logs", "-a"]);
     assert!(all.status.success(), "{all:?}");
     assert!(
         String::from_utf8_lossy(&all.stdout)
             .lines()
-            .any(|line| line.contains("alpha") && line.contains('│')),
+            .any(|line| line.contains("alpha") && (line.contains('│') || line.contains('┃'))),
         "{:?}",
         String::from_utf8_lossy(&all.stdout)
     );

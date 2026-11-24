@@ -27,7 +27,9 @@ pub struct Terminal {
 pub fn terminal(args: &[OsString]) -> Terminal {
     let mode = detect_ui(args);
     let width = if mode.interactive() {
-        crossterm::terminal::size().map_or(80, |(width, _)| usize::from(width))
+        crossterm::terminal::size().map_or(80, |(width, rows)| {
+            crate::ui::normalize_size(usize::from(width), usize::from(rows)).0
+        })
     } else {
         80
     };

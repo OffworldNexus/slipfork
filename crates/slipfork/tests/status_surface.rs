@@ -271,7 +271,7 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
     let widths = plan_widths(&[&node]);
     assert_eq!(
         completed_row(&node, &widths, true),
-        "\u{1b}[32m✓\u{1b}[0m  \u{1b}[2mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  \u{1b}[36mcached\u{1b}[0m   \u{1b}[2m420ms\u{1b}[0m"
+        "\u{1b}[32m✓\u{1b}[0m  \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  \u{1b}[36mcached\u{1b}[0m   \u{1b}[2m420ms\u{1b}[0m"
     );
     assert_eq!(
         completed_row(&node, &widths, false),
@@ -289,7 +289,7 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
     let widths = plan_widths(&[&cached]);
     assert_eq!(
         completed_row(&cached, &widths, true),
-        "\u{1b}[2m•\u{1b}[0m  \u{1b}[2mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  \u{1b}[36mup-to-date\u{1b}[0m   \u{1b}[2m420ms\u{1b}[0m"
+        "\u{1b}[2m•\u{1b}[0m  \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  \u{1b}[36mup-to-date\u{1b}[0m   \u{1b}[2m420ms\u{1b}[0m"
     );
     assert_eq!(
         completed_row(&cached, &widths, false),
