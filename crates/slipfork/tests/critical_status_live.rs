@@ -62,6 +62,10 @@ const BUILD_FORKFILE: &str = "# forkfile: 0.1\n\
 image web . {\n  dockerfile Dockerfile\n\
 \x20 service api {\n    port 8103\n    run: python3 -m http.server 8103\n  }\n}\n";
 
+const FAIL_SERVICE_FORKFILE: &str = "# forkfile: 0.1\n\
+image box from python:3.13-slim {\n\
+\x20 service web {\n    port 8104\n    run: sh -c 'echo starting web; echo boom: missing DATABASE_URL >&2; exit 7'\n  }\n}\n";
+
 const BRAILLE: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
 /// Isolated daemon runtime (`tmpfs`, short `< 107`-byte `AF_UNIX` path) and state directory
@@ -603,10 +607,12 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         "at least one complete panel draw must be measured: {readable}"
     );
     for (filled, done, total) in fills {
-        let expected = (done * BAR_CELLS + total / 2) / total;
-        assert_eq!(
-            filled, expected,
-            "filled cells must be round({done}/{total}*{BAR_CELLS}) = {expected}: {readable}"
+        let low = (done * BAR_CELLS + total / 2) / total;
+        let high = ((done + 1).min(total) * BAR_CELLS + total / 2) / total;
+        assert!(
+            done <= total && filled >= low && filled <= high,
+            "filled cells {filled} must lie within outer slot [{done}/{total}..={}/{total}] = [{low}..={high}]: {readable}",
+            (done + 1).min(total)
         );
     }
     let boot_rows: Vec<&str> = readable
@@ -1400,8 +1406,9 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         "no crun text in the primary copy: {failed}"
     );
 
-    // 7. The owner-visible narrative under a real colour PTY: a spinner phase row with live gutter
-    //    output while the child sleeps, collapsed settled rows, one expanded failure, and a single
+    // 7. The owner-visible two-level narrative under a real colour PTY: outer `→ [1/2] image web`,
+    //    indented `n/N` spinner phase row with indent-4 live gutter output + level-2 bar label
+    //    while the child sleeps, collapsed settled inner rows, one expanded failure, and a single
     //    verdict + remedy. Fresh stamp so step 3 executes live rather than hitting step cache.
     let pty_stamp = unique_suffix();
     fs::write(
@@ -1422,35 +1429,51 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     let repaints: Vec<String> = narrative.output.split("\u{1b}7").map(plain).collect();
     assert!(
         repaints.iter().any(|frame| {
-            frame.contains("[3/4] RUN")
+            frame.contains("3/4 RUN")
+                && !frame.contains("[3/4]")
                 && frame.chars().any(|glyph| BRAILLE.contains(glyph))
-                && frame.contains(&format!("│ a-{pty_stamp}"))
+                && frame.contains(&format!("    │ a-{pty_stamp}"))
                 && !frame.contains(&format!("b-{pty_stamp}"))
+                && frame.contains("0/2  25% · [1/2] image web · step 3/4 RUN")
         }),
-        "at least one repaint during `sleep 1` must paint `[3/4] RUN` + spinner + `│ a-{pty_stamp}` before `b-{pty_stamp}` exists:\n{repaints:#?}"
+        "at least one repaint during `sleep 1` must paint indented `3/4 RUN` + spinner + indent-4 `│ a-{pty_stamp}` + `0/2  25% · [1/2] image web · step 3/4 RUN` before `b-{pty_stamp}` exists:\n{repaints:#?}"
     );
     let shown = plain(&narrative.output);
     assert!(
-        shown.contains("✓ [1/4] FROM")
+        !shown.contains("2/8"),
+        "internal `outer_total * inner_total` counter `2/8` must never leak into the bar: {shown}"
+    );
+    assert!(
+        shown.contains("→ [1/2] image  web"),
+        "a fresh build must open with `→ [1/2] image  web`: {shown}"
+    );
+    assert!(
+        shown.contains("  ✓ 1/4 FROM")
             && shown.contains("python:3.13-slim")
             && !shown.contains("registry-1.docker.io"),
         "`FROM` row must carry `python:3.13-slim` as written: {shown}"
     );
-    for settled in ["✓ [1/4] FROM", "✓ [2/4] COPY", "✓ [3/4] RUN"] {
+    for settled in ["  ✓ 1/4 FROM", "  ✓ 2/4 COPY", "  ✓ 3/4 RUN"] {
         assert!(
             shown.contains(settled),
-            "a settled step must collapse to one `{settled}` row: {shown}"
+            "a settled inner step must collapse to one indented `{settled}` row: {shown}"
+        );
+    }
+    for bracketed in ["[1/4]", "[2/4]", "[3/4]", "[4/4]"] {
+        assert!(
+            !shown.contains(bracketed),
+            "inner Dockerfile rows must never carry `{bracketed}` brackets: {shown}"
         );
     }
     assert!(
-        !shown.contains("✓ image web ("),
-        "a failed build must never print the `✓ image web (` success end-row: {shown}"
+        !shown.contains("built ") && !shown.contains("✓ image web"),
+        "a failed build must never print the build-end success row: {shown}"
     );
-    assert!(shown.contains(&format!("│ out-{pty_stamp}")), "{shown}");
-    assert!(shown.contains(&format!("┃ err-{pty_stamp}")), "{shown}");
+    assert!(shown.contains(&format!("    │ out-{pty_stamp}")), "{shown}");
+    assert!(shown.contains(&format!("    ┃ err-{pty_stamp}")), "{shown}");
     assert!(
-        shown.contains("✗ [4/4] RUN"),
-        "the failing step stays expanded: {shown}"
+        shown.contains("  ✗ 4/4 RUN"),
+        "the failing inner step stays expanded at indent 2: {shown}"
     );
     assert_eq!(
         shown.matches("✗ RUN web failed (exit 3)").count(),
@@ -1495,7 +1518,7 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         "runtime sits between verdict and next: {verbose}"
     );
 
-    // 9. `NO_COLOR` on a pipe is append-only: `→`, gutter output, `✓`, one verdict, zero escapes.
+    // 9. `NO_COLOR` on a pipe is append-only: two levels, indent-4 gutter, zero escapes.
     let pipe_stamp = unique_suffix();
     fs::write(
         project.join("Dockerfile"),
@@ -1517,30 +1540,41 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         !BRAILLE.chars().any(|glyph| piped_all.contains(glyph)),
         "no spinner frames: {piped_all}"
     );
-    assert!(piped_out.contains("✓ [1/4] FROM"), "{piped_out}");
+    assert!(piped_out.contains("→ [1/2] image  web"), "{piped_out}");
+    assert!(piped_out.contains("  ✓ 1/4 FROM"), "{piped_out}");
     assert!(piped_out.contains("python:3.13-slim"), "{piped_out}");
-    assert!(piped_out.contains("→ [3/4] RUN"), "{piped_out}");
+    assert!(piped_out.contains("  → 3/4 RUN"), "{piped_out}");
+    for bracketed in ["[1/4]", "[2/4]", "[3/4]", "[4/4]"] {
+        assert!(
+            !piped_all.contains(bracketed),
+            "append-only inner rows must never carry `{bracketed}`: {piped_all}"
+        );
+    }
     assert!(
-        piped_out.contains(&format!("  │ a-{pipe_stamp}")),
+        piped_out.contains(&format!("    │ a-{pipe_stamp}")),
         "{piped_out}"
     );
     assert!(
-        piped_out.contains(&format!("  ┃ b-{pipe_stamp}")),
+        piped_out.contains(&format!("    ┃ b-{pipe_stamp}")),
         "{piped_out}"
     );
     assert_eq!(
-        piped_out.matches(&format!("  │ out-{pipe_stamp}")).count(),
+        piped_out
+            .matches(&format!("    │ out-{pipe_stamp}"))
+            .count(),
         1,
         "append-only must not repeat child output on failure: {piped_out}"
     );
     assert_eq!(
-        piped_out.matches(&format!("  ┃ err-{pipe_stamp}")).count(),
+        piped_out
+            .matches(&format!("    ┃ err-{pipe_stamp}"))
+            .count(),
         1,
         "append-only must not repeat stderr output on failure: {piped_out}"
     );
     assert!(
-        !piped_all.contains("✓ image web ("),
-        "a failed build must never print `✓ image web (`: {piped_all}"
+        !piped_all.contains("built ") && !piped_all.contains("✓ image web"),
+        "a failed build must never print a build-end row: {piped_all}"
     );
     assert_eq!(
         piped_err.matches("✗ RUN web failed (exit 3)").count(),
@@ -1566,7 +1600,9 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         );
     }
 
-    // 9b. A succeeding multi-step Dockerfile prints `✓ image web (3 steps, Xs)` on build end.
+    // 9b. A succeeding multi-step Dockerfile nests `n/N` inner rows under `→ [1/2] image web`,
+    //     switches the bottom bar label from `step i/N` to `[2/2] start api`, and settles with
+    //     `✓ [1/2] image  web  built 3 steps  Xs`.
     fs::write(
         project.join("Dockerfile"),
         "FROM python:3.13-slim\nCOPY . /app\nWORKDIR /app\n",
@@ -1584,21 +1620,48 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     assert!(
         ok_fills
             .iter()
-            .any(|(_, done, total)| *done > 0 && *total >= 2),
-        "the bottom bar must latch `total >= 2` and advance `done` when narrated steps finish: {ok_fills:?}\n{ok_shown}"
+            .any(|(filled, _, total)| *filled > 0 && *total == 2),
+        "the bottom bar must keep outer `total == 2` and advance fractional fill as steps settle: {ok_fills:?}\n{ok_shown}"
     );
-    for settled in ["✓ [1/3] FROM", "✓ [2/3] COPY", "✓ [3/3] WORKDIR"] {
+    assert!(
+        ok_shown.contains("[1/2] image web · step ") && ok_shown.contains("[2/2] start api"),
+        "the bottom bar label must switch from the inner build step to the outer step:\n{ok_shown}"
+    );
+    assert!(
+        ok_screen.contains("→ [1/2] image  web"),
+        "the parent outer row must stay above the settled inner steps:\n{ok_screen}"
+    );
+    for settled in ["  ✓ 1/3 FROM", "  ✓ 2/3 COPY", "  ✓ 3/3 WORKDIR"] {
         assert!(
             ok_screen.contains(settled),
             "settled step `{settled}` must stay visible in scrollback:\n{ok_screen}"
         );
     }
+    for bracketed in ["[1/3]", "[2/3]", "[3/3]"] {
+        assert!(
+            !ok_shown.contains(bracketed),
+            "inner rows must never carry `{bracketed}`:\n{ok_shown}"
+        );
+    }
+    assert!(
+        ok_screen
+            .lines()
+            .filter(|line| line.starts_with("  ✓ "))
+            .all(|line| !line.contains('[')),
+        "no settled inner row may contain `[`:\n{ok_screen}"
+    );
     assert!(
         ok_screen.lines().any(|line| {
             let trimmed = line.trim();
-            trimmed.starts_with("✓ image web (3 steps, ") && trimmed.ends_with("s)")
+            trimmed.starts_with("✓ [1/2] image  web") && trimmed.contains("built 3 steps")
         }),
-        "a succeeding build must keep `✓ image web (3 steps, Xs)` on screen:\n{ok_screen}"
+        "a succeeding build must keep `✓ [1/2] image  web  built 3 steps  Xs` on screen:\n{ok_screen}"
+    );
+    assert!(
+        ok_screen
+            .lines()
+            .any(|line| line.trim().starts_with("✓ [2/2] start  api")),
+        "the outer service row must carry `[2/2]`:\n{ok_screen}"
     );
     for forbidden in [
         "sha256",
@@ -1615,6 +1678,71 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     }
     let stopped = run(&project, &env, &["down"]);
     assert!(stopped.status.success(), "{stopped:?}");
+
+    // 9c. Warm re-up on the cached world: `✓ [1/2] image  web  cached` and ZERO inner rows.
+    let cached_up = run_pty(&project, &env, &["up"], &[], None);
+    assert!(
+        cached_up.status.success(),
+        "warm cached `up` must boot cleanly: {:?}",
+        cached_up.output
+    );
+    let cached_shown = plain(&cached_up.output);
+    let cached_screen = cached_up.screen.text();
+    assert!(
+        cached_screen.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed.starts_with("✓ [1/2] image  web") && trimmed.contains("cached")
+        }),
+        "a cached image must settle as `✓ [1/2] image  web  cached`:\n{cached_screen}"
+    );
+    for inner_token in ["FROM", "COPY", "WORKDIR", "built "] {
+        assert!(
+            !cached_shown.contains(inner_token),
+            "a cached image must emit zero inner rows (`{inner_token}`):\n{cached_shown}"
+        );
+    }
+    let stopped = run(&project, &env, &["down"]);
+    assert!(stopped.status.success(), "{stopped:?}");
+
+    // 9d. Boot-time service failure on the colour PTY: outer `✗ [2/2] start  web`, indent-2
+    //     gutter in arrival order (`│ starting web` above `┃ boom`), one verdict, and one `next:`.
+    fs::write(project.join("Forkfile"), FAIL_SERVICE_FORKFILE)
+        .expect("write the failing-service Forkfile");
+    let svc_failed = run_pty(&project, &env, &["up"], &[], None);
+    assert!(
+        !svc_failed.status.success(),
+        "a failing service must fail `up`: {:?}",
+        svc_failed.output
+    );
+    let svc_shown = plain(&svc_failed.output);
+    let svc_screen = svc_failed.screen.text();
+    assert!(
+        svc_screen
+            .lines()
+            .any(|line| line.starts_with("✗ [2/2] start  web")),
+        "the failing service expands its outer `[2/2] start  web` row:\n{svc_screen}"
+    );
+    let out_pos = svc_screen
+        .find("  │ starting web")
+        .unwrap_or_else(|| panic!("missing indent-2 stdout gutter line:\n{svc_screen}"));
+    let err_pos = svc_screen
+        .find("  ┃ boom: missing DATABASE_URL")
+        .unwrap_or_else(|| panic!("missing indent-2 stderr gutter line:\n{svc_screen}"));
+    assert!(
+        out_pos < err_pos,
+        "`│ starting web` must render above `┃ boom: missing DATABASE_URL`:\n{svc_screen}"
+    );
+    assert_eq!(
+        svc_shown.matches("✗ start web failed (exit 7)").count(),
+        1,
+        "service failure prints exactly one verdict:\n{svc_shown}"
+    );
+    assert_eq!(
+        svc_shown.matches("next: slipfork logs -r ").count(),
+        1,
+        "service failure prints exactly one `next:`:\n{svc_shown}"
+    );
+    let _ = run(&project, &env, &["down"]);
 }
 
 #[test]

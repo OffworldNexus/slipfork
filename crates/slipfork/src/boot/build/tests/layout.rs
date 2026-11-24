@@ -2,7 +2,7 @@
 
 use serde_json::json;
 
-use super::super::super::layout::{pad, truncate_visible};
+use super::super::super::layout::truncate_visible;
 use super::super::{
     Action, Columns, LiveKey, LiveSteps, Narrative, Phase, gutter_line, wrap_gutter,
 };
@@ -14,17 +14,15 @@ fn instruction_and_target_columns_pad_to_the_image_wide_columns() {
     let mut columns = Columns::default();
     columns.observe("COPY", "api");
     let row = phase(columns).settled_row(1200, Palette::new(false));
-    assert!(row.starts_with("✓ [2/4] RUN  api  sh -c"), "{row}");
+    assert!(row.starts_with("✓ [2/4] RUN   api  sh -c"), "{row}");
     assert!(row.ends_with("  1.2s"), "{row}");
-    assert_eq!(pad("RUN", 4), "RUN ");
-    assert_eq!(pad("FROM", 4), "FROM");
 }
 
 #[test]
 fn the_live_row_uses_settled_double_space_separators_and_truncates_args() {
     let row = phase(Columns::default()).live_row('⠹', 4800, 30, Palette::new(false));
-    assert_eq!(row, "⠹ [2/4] RUN api  sh -c …  4.8s");
-    assert!(row.chars().count() <= 30, "{row}");
+    assert_eq!(row, "⠹ [2/4] RUN  api  sh -c 'echo…");
+    assert_eq!(row.chars().count(), 30, "{row}");
 
     let wide = phase(Columns::default()).live_row('⠹', 1200, 80, Palette::new(false));
     let settled = phase(Columns::default()).settled_row(1200, Palette::new(false));
@@ -37,18 +35,25 @@ fn the_live_row_uses_settled_double_space_separators_and_truncates_args() {
 }
 
 #[test]
-fn gutter_lines_truncate_and_wrap_with_the_same_glyph() {
+fn gutter_lines_truncate_and_wrap_at_both_outer_and_inner_indents() {
     let palette = Palette::new(false);
-    let row = gutter_line("stdout", "0123456789", 10, palette);
-    assert_eq!(row, "  │ 01234…");
-    let row = gutter_line("stderr", "abc", 10, palette);
-    assert_eq!(row, "  ┃ abc");
-    let rows = wrap_gutter("stdout", "abcdefghijklmnopqrstuvwxyz", 14, palette);
+    assert_eq!(
+        gutter_line("stdout", "0123456789", 10, palette, 2),
+        "  │ 01234…"
+    );
+    assert_eq!(gutter_line("stderr", "abc", 10, palette, 2), "  ┃ abc");
+    assert_eq!(
+        gutter_line("stdout", "fetching installer", 40, palette, 4),
+        "    │ fetching installer"
+    );
+    let rows = wrap_gutter("stdout", "abcdefghijklmnopqrstuvwxyz", 14, palette, 2);
     assert_eq!(rows.len(), 3, "{rows:?}");
     for row in &rows {
         assert!(row.starts_with("  │ "), "{row}");
         assert!(row.chars().count() <= 14, "{row}");
     }
+    let inner_rows = wrap_gutter("stderr", "0123456789abcdef", 14, palette, 4);
+    assert_eq!(inner_rows, ["    ┃ 01234567", "    ┃ 89abcdef"]);
 }
 
 #[test]
@@ -60,7 +65,7 @@ fn block_rows_stack_every_phase_and_show_only_the_most_recent_tail() {
             kind: "service".to_owned(),
             name: "worker".to_owned(),
         },
-        None,
+        Some((3, 3)),
         "start".to_owned(),
         "worker".to_owned(),
         "sleep 3600".to_owned(),
@@ -75,8 +80,8 @@ fn block_rows_stack_every_phase_and_show_only_the_most_recent_tail() {
     steps.append_output(&second_key, "stderr".to_owned(), "fresh-2".to_owned());
 
     let rows = steps.block_rows('⠹', 80, Palette::new(false));
-    assert!(rows[0].starts_with("⠹ [2/4] RUN api  "), "{rows:?}");
-    assert!(rows[1].starts_with("⠹ start worker  "), "{rows:?}");
+    assert!(rows[0].starts_with("⠹ [2/4] RUN  api  "), "{rows:?}");
+    assert!(rows[1].starts_with("⠹ [3/3] start  worker  "), "{rows:?}");
     assert!(rows.iter().any(|row| row.contains("│ fresh-1")), "{rows:?}");
     assert!(rows.iter().any(|row| row.contains("┃ fresh-2")), "{rows:?}");
     assert!(
@@ -106,7 +111,7 @@ fn a_failed_step_expands_both_streams_in_arrival_order() {
     }
     let live = steps.take(&key).expect("the failed step is still live");
     let rows = live.expansion_rows(80, plain);
-    assert!(rows[0].starts_with("✗ [2/4] RUN api"), "{rows:?}");
+    assert!(rows[0].starts_with("✗ [2/4] RUN  api"), "{rows:?}");
     let lines: Vec<&str> = rows[1..].iter().map(String::as_str).collect();
     assert_eq!(
         lines,
@@ -146,7 +151,17 @@ fn a_live_row_is_ansi_truncated_at_the_width_with_an_ellipsis() {
 fn twenty_line_failing_step_caps_live_region_at_eight_and_expands_all_twenty_to_scrollback() {
     let plain = Palette::new(false);
     let mut narrative = Narrative::new(false);
-    narrative.step(
+    narrative.started(
+        &json!({
+            "event": "started",
+            "step": 1,
+            "total": 2,
+            "kind": "image",
+            "name": "api",
+        }),
+        Some((1, 2)),
+    );
+    let start_actions = narrative.step(
         &json!({
             "event": "step",
             "image": "api",
@@ -158,6 +173,10 @@ fn twenty_line_failing_step_caps_live_region_at_eight_and_expands_all_twenty_to_
             "elapsed_ms": 0,
         }),
         plain,
+    );
+    assert!(
+        matches!(&start_actions[0], Action::Print(row) if row == "→ [1/2] image  api"),
+        "the first step opens the outer parent row once: {start_actions:?}"
     );
     for number in 1..=20 {
         let stream = if number % 2 == 0 { "stderr" } else { "stdout" };
@@ -175,18 +194,20 @@ fn twenty_line_failing_step_caps_live_region_at_eight_and_expands_all_twenty_to_
         );
     }
 
-    // While running, the region paint caps the visible tail at 8 lines (1 phase row + 8 gutter).
+    // While running, the region paint caps the visible tail at 8 lines (1 inner phase + 8 gutter).
     let live_paint = narrative
         .steps()
         .lock()
         .expect("live steps lock")
         .block_rows('⠹', 80, plain);
     assert_eq!(live_paint.len(), 9, "{live_paint:?}");
+    assert!(live_paint[0].starts_with("  ⠹ 1/2 RUN  sh -c 'burst'"));
+    assert!(!live_paint[0].contains('['), "{live_paint:?}");
     assert!(!live_paint.iter().any(|row| row.contains("line-12")));
-    assert!(live_paint.iter().any(|row| row.contains("line-13")));
-    assert!(live_paint.iter().any(|row| row.contains("line-20")));
+    assert!(live_paint.iter().any(|row| row.contains("    │ line-13")));
+    assert!(live_paint.iter().any(|row| row.contains("    ┃ line-20")));
 
-    // On failure, all 20 captured lines expand into scrollback after the `✗` phase row.
+    // On failure, all 20 captured lines expand into scrollback at indent 4 after `  ✗ 1/2 RUN …`.
     let failed_actions = narrative.failed(
         &json!({
             "event": "failed",
@@ -210,13 +231,27 @@ fn twenty_line_failing_step_caps_live_region_at_eight_and_expands_all_twenty_to_
     assert_eq!(
         held.len(),
         21,
-        "1 failed phase row + 20 gutter lines: {held:?}"
+        "1 failed inner phase row + 20 gutter lines: {held:?}"
     );
-    assert_eq!(held[0], "✗ [1/2] RUN api  sh -c 'burst'");
+    assert_eq!(held[0], "  ✗ 1/2 RUN  sh -c 'burst'");
     for (number, row) in held.iter().enumerate().skip(1) {
         let glyph = if number % 2 == 0 { '┃' } else { '│' };
-        assert_eq!(row, &format!("  {glyph} line-{number:02}"));
+        assert_eq!(row, &format!("    {glyph} line-{number:02}"));
     }
+    let diagnosis: Vec<&str> = failed_actions
+        .iter()
+        .filter_map(|action| match action {
+            Action::Diagnose(row) => Some(row.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        diagnosis,
+        [
+            "✗ RUN api failed (exit 1)",
+            "  next: slipfork logs -r 5be421"
+        ]
+    );
 
     // Append-only (`!anchored_pane`) already streamed every line live, so `failed` never repeats it.
     let mut append = Narrative::new(false);

@@ -1,5 +1,5 @@
 use super::rows::{Slot, TaskRows};
-use crate::boot::render::{Node, completed_row, plan_widths};
+use crate::boot::render::{Node, completed_row, outer_widths, running_row};
 
 /// A three-line block places its phase row on top and its two output lines below it, in order.
 #[test]
@@ -17,16 +17,17 @@ fn two_started_tasks_spin_on_their_own_rows_and_finish_in_place() {
     assert_eq!(tasks.begin("service", "front"), Slot::Row(5));
     assert_eq!(tasks.running(), ["base", "front"]);
 
-    let widths = plan_widths(&[
+    let widths = outer_widths(&[
         ("image".to_owned(), "base".to_owned()),
         ("service".to_owned(), "front".to_owned()),
     ]);
     let spinning: Vec<(usize, String)> = tasks
         .live()
-        .map(|task| {
+        .enumerate()
+        .map(|(offset, task)| {
             (
                 task.slot,
-                crate::boot::render::running_row(&task.kind, &task.name, '⠋', 900, &widths),
+                running_row(&task.kind, &task.name, offset + 1, 2, '⠋', 900, &widths),
             )
         })
         .collect();
@@ -46,10 +47,12 @@ fn two_started_tasks_spin_on_their_own_rows_and_finish_in_place() {
             run_id: None,
             success: true,
         },
+        1,
+        2,
         &widths,
         false,
     );
-    assert!(finished.contains('✓'));
+    assert_eq!(finished, "✓ [1/2] image  base   cached  120ms");
     assert_eq!(
         tasks.complete("image", "base"),
         Some(4),

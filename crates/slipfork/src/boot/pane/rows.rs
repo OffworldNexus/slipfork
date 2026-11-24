@@ -90,6 +90,7 @@ impl TaskRows {
     }
 
     /// The names of every running task, in slot order.
+    #[cfg(test)]
     pub(super) fn running(&self) -> Vec<&str> {
         self.live().map(|task| task.name.as_str()).collect()
     }

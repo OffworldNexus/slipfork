@@ -4,13 +4,18 @@
 //! the moment it is announced until it settles. Every child output line is retained in full so a
 //! failed step always expands its complete output into scrollback; the [`LIVE_LINES`] cap applies
 //! strictly inside [`LiveSteps::block_rows`] when painting the anchored region.
+//!
+//! Two levels share one phase: an outer boot row at column 0 (`[i/n] KIND target detail`) and an
+//! indented inner Dockerfile row (`  n/N INSTRUCTION args`, no target, no brackets). The level is
+//! carried by the [`LiveKey`], so a caller never re-scans strings to decide the shape.
 
 use std::time::Instant;
 
 use crate::ui::Palette;
 use crate::ui::elapsed_text;
 
-use super::layout::{Columns, gutter_line, pad, truncate_ansi, truncate_visible, wrap_gutter};
+use super::layout::{Columns, gutter_line, truncate_ansi, wrap_gutter};
+use super::render::{outer_row, push_padded};
 
 /// The tail of streamed output painted inside the anchored region while a step runs.
 pub(super) const LIVE_LINES: usize = 8;
@@ -22,7 +27,7 @@ pub(super) enum LiveKey {
     Boot { kind: String, name: String },
 }
 
-/// One phase row: what runs, its `[i/n]`, and the clock a spinner reads.
+/// One phase row: what runs, its counter, and the clock a spinner reads.
 #[derive(Debug, Clone)]
 pub(super) struct Phase {
     pub(super) key: LiveKey,
@@ -54,34 +59,68 @@ impl Phase {
         }
     }
 
-    /// The plain `→ [i/n] VERB target  args` row an append-only stream receives when a step starts.
+    /// Whether this is an inner Dockerfile step (indented, `n/N`, no target).
+    pub(super) fn is_inner(&self) -> bool {
+        matches!(self.key, LiveKey::Step { .. })
+    }
+
+    /// The gutter indent owned by this row's child output: `4` inside a build, `2` under a step.
+    pub(super) fn gutter_indent(&self) -> usize {
+        if self.is_inner() { 4 } else { 2 }
+    }
+
+    /// The plain `→ …` row an append-only stream receives when a step starts.
     pub(super) fn started_row(&self, palette: Palette) -> String {
-        self.assemble("→".to_owned(), None, palette)
+        if self.is_inner() {
+            self.inner_row("→", None, palette)
+        } else {
+            self.outer_row("→", None, None, palette)
+        }
     }
 
-    /// The settled `✓ [i/n] VERB target  args  elapsed` row that collapses the step.
+    /// The settled `✓ …` row that collapses the step.
     pub(super) fn settled_row(&self, millis: u64, palette: Palette) -> String {
-        self.assemble(palette.icon_ok(), Some(millis), palette)
+        let mark = palette.icon_ok();
+        if self.is_inner() {
+            self.inner_row(&mark, Some(millis), palette)
+        } else {
+            self.outer_row(&mark, None, Some(millis), palette)
+        }
     }
 
-    /// The expanded `✗ [i/n] VERB target  args` row printed with a failed step's output.
+    /// The settled outer row for a cache hit: a dim bullet plus the `up to date` detail.
+    pub(super) fn settled_outer(
+        &self,
+        millis: u64,
+        detail: Option<&str>,
+        stale: bool,
+        palette: Palette,
+    ) -> String {
+        let mark = if stale {
+            palette.dim("•")
+        } else {
+            palette.icon_ok()
+        };
+        self.outer_row(&mark, detail, Some(millis), palette)
+    }
+
+    /// The expanded `✗ …` row printed with a failed step's output.
     pub(super) fn failed_row(&self, palette: Palette) -> String {
-        self.assemble(palette.tint("✗", "31"), None, palette)
+        let mark = palette.tint("✗", "31");
+        if self.is_inner() {
+            self.inner_row(&mark, None, palette)
+        } else {
+            self.outer_row(&mark, None, None, palette)
+        }
     }
 
     /// The re-anchor an append-only stream prints before output from another step.
-    ///
-    /// Content stays neutral (`→`), the counter is dim, the verb magenta, and the target bold.
     pub(super) fn anchor_row(&self, palette: Palette) -> String {
-        let mut row = String::from("→ ");
-        if let Some((index, total)) = self.count {
-            row.push_str(&palette.dim(&format!("[{index}/{total}]")));
-            row.push(' ');
+        if self.is_inner() {
+            self.inner_row("→", None, palette)
+        } else {
+            self.outer_row("→", Some(""), None, palette)
         }
-        row.push_str(&palette.verb(&self.verb));
-        row.push(' ');
-        row.push_str(&palette.tint(&self.target, "1"));
-        row
     }
 
     /// Wall time since the step started, for the live spinner row.
@@ -89,10 +128,7 @@ impl Phase {
         u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
-    /// The anchored live row: neutral spinner, ticking dim elapsed, args truncated to `width`.
-    ///
-    /// Uses [`Self::head`] and `"  "` separators identical to [`Self::assemble`], so collapsing a
-    /// running row to its settled form never shifts a column.
+    /// The anchored live row, truncated to `width`.
     pub(super) fn live_row(
         &self,
         spinner: char,
@@ -100,33 +136,64 @@ impl Phase {
         width: usize,
         palette: Palette,
     ) -> String {
-        let mut row = self.head(&spinner.to_string(), true, palette);
-        let elapsed = elapsed_text(millis);
-        let head = console::measure_text_width(&row);
-        let budget = width.saturating_sub(head + elapsed.chars().count() + 4);
-        let args = truncate_visible(self.shown_args(), budget);
-        if !args.is_empty() {
-            row.push_str("  ");
-            row.push_str(&args);
-        }
-        row.push_str("  ");
-        row.push_str(&palette.dim(&elapsed));
+        let mark = spinner.to_string();
+        let row = if self.is_inner() {
+            self.inner_row(&mark, Some(millis), palette)
+        } else {
+            self.outer_row(&mark, None, Some(millis), palette)
+        };
         truncate_ansi(&row, width)
     }
 
-    fn assemble(&self, mark: String, elapsed: Option<u64>, palette: Palette) -> String {
-        let args = self.shown_args();
-        let has_tail = !args.is_empty() || elapsed.is_some();
-        let mut row = self.head(&mark, has_tail, palette);
+    /// `  ✓ n/N INSTRUCTION  args  elapsed` — no target, no brackets, indent 2.
+    fn inner_row(&self, mark: &str, millis: Option<u64>, palette: Palette) -> String {
+        let mut row = String::from("  ");
+        row.push_str(mark);
+        row.push(' ');
+        if let Some((index, total)) = self.count {
+            row.push_str(&palette.dim(&format!("{index}/{total}")));
+            row.push(' ');
+        }
+        push_padded(
+            &mut row,
+            &palette.verb(&self.verb),
+            self.verb.chars().count(),
+            self.columns.verb,
+        );
+        let args = self.args.trim();
         if !args.is_empty() {
             row.push_str("  ");
             row.push_str(args);
         }
-        if let Some(millis) = elapsed {
+        if let Some(millis) = millis {
             row.push_str("  ");
             row.push_str(&palette.dim(&elapsed_text(millis)));
         }
+        while row.ends_with(' ') {
+            row.pop();
+        }
         row
+    }
+
+    /// `[i/n] KIND  target  detail  elapsed` at column 0.
+    fn outer_row(
+        &self,
+        mark: &str,
+        detail: Option<&str>,
+        millis: Option<u64>,
+        palette: Palette,
+    ) -> String {
+        let resolved = detail.unwrap_or_else(|| self.shown_args());
+        outer_row(
+            mark,
+            self.count,
+            &self.verb,
+            &self.target,
+            Some(resolved),
+            millis,
+            &self.columns.as_outer(),
+            palette,
+        )
     }
 
     fn shown_args(&self) -> &str {
@@ -136,23 +203,6 @@ impl Phase {
         } else {
             &self.args
         }
-    }
-
-    fn head(&self, mark: &str, pad_target: bool, palette: Palette) -> String {
-        let mut row = format!("{mark} ");
-        if let Some((index, total)) = self.count {
-            row.push_str(&palette.dim(&format!("[{index}/{total}]")));
-            row.push(' ');
-        }
-        row.push_str(&palette.verb(&pad(&self.verb, self.columns.verb)));
-        row.push(' ');
-        let target = if pad_target {
-            pad(&self.target, self.columns.target)
-        } else {
-            self.target.clone()
-        };
-        row.push_str(&palette.tint(&target, "1"));
-        row
     }
 }
 
@@ -172,8 +222,9 @@ impl LiveStep {
     /// expands in exactly that order, matching `slipfork logs -r` and the run capture.
     pub(super) fn expansion_rows(&self, width: usize, palette: Palette) -> Vec<String> {
         let mut rows = vec![self.phase.failed_row(palette)];
+        let indent = self.phase.gutter_indent();
         for (stream, text) in &self.output {
-            rows.extend(wrap_gutter(stream, text, width, palette));
+            rows.extend(wrap_gutter(stream, text, width, palette, indent));
         }
         rows
     }
@@ -229,7 +280,11 @@ impl LiveSteps {
             }
         }
         if let Some(target) = target
-            && let Some(step) = self.steps.iter().find(|step| step.phase.target == target)
+            && let Some(step) = self
+                .steps
+                .iter()
+                .rev()
+                .find(|step| step.phase.target == target)
         {
             return Some(step.phase.key.clone());
         }
@@ -275,10 +330,10 @@ impl LiveSteps {
             .and_then(|target| {
                 self.steps
                     .iter()
-                    .position(|step| step.phase.target == target)
+                    .rposition(|step| step.phase.target == target)
             })
             .or_else(|| {
-                active.and_then(|key| self.steps.iter().position(|step| &step.phase.key == key))
+                active.and_then(|key| self.steps.iter().rposition(|step| &step.phase.key == key))
             })
             .or_else(|| self.steps.len().checked_sub(1));
         let removed = position.map(|index| self.steps.remove(index));
@@ -308,10 +363,11 @@ impl LiveSteps {
             .collect();
         if let Some(tail) = self.steps.iter().max_by_key(|step| step.touched) {
             let start = tail.output.len().saturating_sub(LIVE_LINES);
+            let indent = tail.phase.gutter_indent();
             rows.extend(
                 tail.output[start..]
                     .iter()
-                    .map(|(stream, text)| gutter_line(stream, text, width, palette)),
+                    .map(|(stream, text)| gutter_line(stream, text, width, palette, indent)),
             );
         }
         rows

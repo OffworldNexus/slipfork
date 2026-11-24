@@ -1,125 +1,206 @@
-//! Byte-exact role pins: the golden SGR/`NO_COLOR` lines the visual contract promises.
+//! Byte-exact role pins: the golden SGR/`NO_COLOR` lines the two-level visual contract promises.
 
 use super::super::{Columns, LiveKey, Phase, image_done_row};
 use super::phase;
+use crate::boot::render::{Node, OuterWidths, completed_row, outer_widths};
 use crate::ui::{Palette, Verdict};
 
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for ch in chars.by_ref() {
+                if ('@'..='~').contains(&ch) {
+                    break;
+                }
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 #[test]
-fn the_build_end_row_counts_steps_and_sums_time() {
-    let row = image_done_row("api", 4, 12300, Palette::new(false));
-    assert_eq!(row, "✓ image api (4 steps, 12.3s)");
+fn the_build_end_row_carries_outer_slot_steps_and_time() {
+    let widths = OuterWidths { kind: 5, target: 7 };
+    let row = image_done_row(1, 3, "api", 6, 12_300, &widths, Palette::new(false));
+    assert_eq!(row, "✓ [1/3] image  api      built 6 steps  12.3s");
     assert_eq!(
-        image_done_row("api", 1, 80, Palette::new(false)),
-        "✓ image api (1 step, 80ms)"
+        image_done_row(1, 3, "api", 1, 80, &widths, Palette::new(false)),
+        "✓ [1/3] image  api      built 1 step  80ms"
     );
     assert!(!row.contains('\u{1b}'), "plain rows stay colourless");
     assert_eq!(
-        image_done_row("api", 4, 12300, Palette::new(true)),
-        "\u{1b}[32m✓\u{1b}[0m \u{1b}[35mimage\u{1b}[0m \u{1b}[1mapi\u{1b}[0m \u{1b}[2m(4 steps, 12.3s)\u{1b}[0m"
+        image_done_row(1, 3, "api", 6, 12_300, &widths, Palette::new(true)),
+        "\u{1b}[32m✓\u{1b}[0m \u{1b}[2m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      built 6 steps  \u{1b}[2m12.3s\u{1b}[0m"
     );
 }
 
 #[test]
-fn styled_rows_use_only_the_contract_sgr_codes() {
+fn styled_rows_use_only_the_contract_sgr_codes_and_ban_cyan_on_steps() {
     let row = phase(Columns::default()).failed_row(Palette::new(true));
     assert!(row.contains("\u{1b}[31m✗"), "{row:?}");
     let live = phase(Columns::default()).live_row('⠹', 4800, 80, Palette::new(true));
-    for code in ["\u{1b}[1m", "\u{1b}[2m"] {
+    for code in ["\u{1b}[1m", "\u{1b}[2m", "\u{1b}[35m"] {
         assert!(live.contains(code), "{live:?}");
     }
     assert!(!live.contains("\u{1b}[9"), "no bright codes: {live:?}");
-}
-
-#[test]
-fn the_anchor_is_dim_and_names_the_instruction_and_target() {
-    let row = phase(Columns::default()).anchor_row(Palette::new(false));
-    assert_eq!(row, "→ [2/4] RUN api");
-    let row = phase(Columns::default()).anchor_row(Palette::new(true));
-    assert_eq!(
-        row,
-        "→ \u{1b}[2m[2/4]\u{1b}[0m \u{1b}[35mRUN\u{1b}[0m \u{1b}[1mapi\u{1b}[0m"
+    assert!(
+        !live.contains("\u{1b}[36m"),
+        "no cyan on step rows: {live:?}"
     );
 }
 
 #[test]
-fn the_v3_role_table_pins_every_wire_byte() {
-    let mut columns = Columns::default();
-    columns.observe("FROM", "api");
-    let running = Phase::new(
+fn re_anchor_rows_preserve_both_outer_and_inner_levels() {
+    let outer = Phase::new(
+        LiveKey::Boot {
+            kind: "image".to_owned(),
+            name: "api".to_owned(),
+        },
+        Some((1, 3)),
+        "image".to_owned(),
+        "api".to_owned(),
+        String::new(),
+        Columns { verb: 5, target: 7 },
+    );
+    assert_eq!(outer.anchor_row(Palette::new(false)), "→ [1/3] image  api");
+    assert_eq!(
+        outer.anchor_row(Palette::new(true)),
+        "→ \u{1b}[2m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m"
+    );
+
+    let inner = Phase::new(
         LiveKey::Step {
             image: "api".to_owned(),
             index: 3,
         },
-        Some((3, 5)),
+        Some((3, 6)),
         "RUN".to_owned(),
         "api".to_owned(),
-        "sh /tmp/oni.sh && apt-get install -y blastit".to_owned(),
-        columns,
+        "sh -c \"…\"".to_owned(),
+        Columns { verb: 4, target: 0 },
     );
-    let settled = Phase::new(
+    assert_eq!(
+        inner.anchor_row(Palette::new(false)),
+        "  → 3/6 RUN   sh -c \"…\""
+    );
+    assert_eq!(
+        inner.anchor_row(Palette::new(true)),
+        "  → \u{1b}[2m3/6\u{1b}[0m \u{1b}[35mRUN\u{1b}[0m   sh -c \"…\""
+    );
+}
+
+#[test]
+fn golden_two_level_rows_pin_every_styled_and_no_color_byte() {
+    let widths = outer_widths(&[
+        ("image".to_owned(), "api".to_owned()),
+        ("setup".to_owned(), "uv sync".to_owned()),
+        ("service".to_owned(), "web".to_owned()),
+    ]);
+    assert_eq!(widths, OuterWidths { kind: 5, target: 7 });
+
+    let cached_node = Node {
+        kind: "image",
+        name: "api",
+        state: "cached",
+        millis: 8,
+        run_id: None,
+        success: true,
+    };
+    let outer_start = Phase::new(
+        LiveKey::Boot {
+            kind: "service".to_owned(),
+            name: "web".to_owned(),
+        },
+        Some((3, 3)),
+        "start".to_owned(),
+        "web".to_owned(),
+        "@uv run blastit dev --port 8000".to_owned(),
+        Columns::from_outer(widths),
+    );
+    let inner_cols = Columns { verb: 4, target: 0 };
+    let inner_running = Phase::new(
+        LiveKey::Step {
+            image: "api".to_owned(),
+            index: 3,
+        },
+        Some((3, 6)),
+        "RUN".to_owned(),
+        "api".to_owned(),
+        "sh -c \"…\"".to_owned(),
+        inner_cols,
+    );
+    let inner_settled = Phase::new(
         LiveKey::Step {
             image: "api".to_owned(),
             index: 1,
         },
-        Some((1, 5)),
+        Some((1, 6)),
         "FROM".to_owned(),
         "api".to_owned(),
-        "python:3.14-trixie AS base".to_owned(),
-        columns,
+        "python:3.13-slim".to_owned(),
+        inner_cols,
     );
-
-    let styled = Palette::new(true);
-    assert_eq!(
-        running.live_row('⠋', 1200, 200, styled),
-        "⠋ \u{1b}[2m[3/5]\u{1b}[0m \u{1b}[35mRUN \u{1b}[0m \u{1b}[1mapi\u{1b}[0m  sh /tmp/oni.sh && apt-get install -y blastit  \u{1b}[2m1.2s\u{1b}[0m"
-    );
-    assert_eq!(
-        settled.settled_row(0, styled),
-        "\u{1b}[32m✓\u{1b}[0m \u{1b}[2m[1/5]\u{1b}[0m \u{1b}[35mFROM\u{1b}[0m \u{1b}[1mapi\u{1b}[0m  python:3.14-trixie AS base  \u{1b}[2m<1ms\u{1b}[0m"
-    );
-    let verdict = styled.verdict(&Verdict {
+    let verdict_model = Verdict {
         verb: "RUN".to_owned(),
         target: "api".to_owned(),
         state: "failed".to_owned(),
         exit_code: Some(1),
         duration_ms: None,
-    });
+    };
+
+    let styled = Palette::new(true);
+    let styled_rows = [
+        completed_row(&cached_node, 1, 3, &widths, true),
+        outer_start.settled_row(195, styled),
+        inner_running.live_row('⠸', 1200, 200, styled),
+        inner_settled.settled_row(0, styled),
+        image_done_row(1, 3, "api", 6, 12_300, &widths, styled),
+        styled.verdict(&verdict_model),
+        format!(
+            "  {} {}",
+            styled.dim("next:"),
+            styled.tint("slipfork logs -r b2ebd7", "36")
+        ),
+        styled.header_line(
+            "b2ebd7",
+            "RUN",
+            "api",
+            "sh /tmp/oni.sh …",
+            Some("2026-11-24 13:00:00"),
+        ),
+    ];
     assert_eq!(
-        verdict,
-        "\u{1b}[31m✗\u{1b}[0m \u{1b}[35mRUN\u{1b}[0m \u{1b}[1mapi\u{1b}[0m \u{1b}[31mfailed\u{1b}[0m \u{1b}[2m(exit 1)\u{1b}[0m"
-    );
-    let header = styled.header_line(
-        "b2ebd7",
-        "RUN",
-        "api",
-        "sh /tmp/oni.sh …",
-        Some("2026-11-24 13:00:00"),
-    );
-    assert_eq!(
-        header,
-        "\u{1b}[1m#b2ebd7\u{1b}[0m  \u{1b}[35mRUN\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m  sh /tmp/oni.sh …  \u{1b}[2m2026-11-24 13:00:00\u{1b}[0m"
-    );
-    let next = format!(
-        "  {} {}",
-        styled.dim("next:"),
-        styled.tint("slipfork logs -r b2ebd7", "36")
-    );
-    assert_eq!(
-        next,
-        "  \u{1b}[2mnext:\u{1b}[0m \u{1b}[36mslipfork logs -r b2ebd7\u{1b}[0m"
+        styled_rows,
+        [
+            "\u{1b}[32m✓\u{1b}[0m \u{1b}[2m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      cached  \u{1b}[2m8ms\u{1b}[0m",
+            "\u{1b}[32m✓\u{1b}[0m \u{1b}[2m[3/3]\u{1b}[0m \u{1b}[35mstart\u{1b}[0m  \u{1b}[1mweb\u{1b}[0m      @uv run blastit dev --port 8000  \u{1b}[2m195ms\u{1b}[0m",
+            "  ⠸ \u{1b}[2m3/6\u{1b}[0m \u{1b}[35mRUN\u{1b}[0m   sh -c \"…\"  \u{1b}[2m1.2s\u{1b}[0m",
+            "  \u{1b}[32m✓\u{1b}[0m \u{1b}[2m1/6\u{1b}[0m \u{1b}[35mFROM\u{1b}[0m  python:3.13-slim  \u{1b}[2m<1ms\u{1b}[0m",
+            "\u{1b}[32m✓\u{1b}[0m \u{1b}[2m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      built 6 steps  \u{1b}[2m12.3s\u{1b}[0m",
+            "\u{1b}[31m✗\u{1b}[0m \u{1b}[35mRUN\u{1b}[0m \u{1b}[1mapi\u{1b}[0m \u{1b}[31mfailed\u{1b}[0m \u{1b}[2m(exit 1)\u{1b}[0m",
+            "  \u{1b}[2mnext:\u{1b}[0m \u{1b}[36mslipfork logs -r b2ebd7\u{1b}[0m",
+            "\u{1b}[1m#b2ebd7\u{1b}[0m  \u{1b}[35mRUN\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m  sh /tmp/oni.sh …  \u{1b}[2m2026-11-24 13:00:00\u{1b}[0m",
+        ]
     );
 
     let plain = Palette::new(false);
-    let rows = [
-        running.live_row('⠋', 1200, 200, plain),
-        settled.settled_row(0, plain),
-        plain.verdict(&Verdict {
-            verb: "RUN".to_owned(),
-            target: "api".to_owned(),
-            state: "failed".to_owned(),
-            exit_code: Some(1),
-            duration_ms: None,
-        }),
+    let plain_rows = [
+        completed_row(&cached_node, 1, 3, &widths, false),
+        outer_start.settled_row(195, plain),
+        inner_running.live_row('⠸', 1200, 200, plain),
+        inner_settled.settled_row(0, plain),
+        image_done_row(1, 3, "api", 6, 12_300, &widths, plain),
+        plain.verdict(&verdict_model),
+        format!(
+            "  {} {}",
+            plain.dim("next:"),
+            plain.tint("slipfork logs -r b2ebd7", "36")
+        ),
         plain.header_line(
             "b2ebd7",
             "RUN",
@@ -127,23 +208,44 @@ fn the_v3_role_table_pins_every_wire_byte() {
             "sh /tmp/oni.sh …",
             Some("2026-11-24 13:00:00"),
         ),
-        format!(
-            "  {} {}",
-            plain.dim("next:"),
-            plain.tint("slipfork logs -r b2ebd7", "36")
-        ),
     ];
     assert_eq!(
-        rows,
+        plain_rows,
         [
-            "⠋ [3/5] RUN  api  sh /tmp/oni.sh && apt-get install -y blastit  1.2s",
-            "✓ [1/5] FROM api  python:3.14-trixie AS base  <1ms",
+            "✓ [1/3] image  api      cached  8ms",
+            "✓ [3/3] start  web      @uv run blastit dev --port 8000  195ms",
+            "  ⠸ 3/6 RUN   sh -c \"…\"  1.2s",
+            "  ✓ 1/6 FROM  python:3.13-slim  <1ms",
+            "✓ [1/3] image  api      built 6 steps  12.3s",
             "✗ RUN api failed (exit 1)",
-            "#b2ebd7  RUN  api  sh /tmp/oni.sh …  2026-11-24 13:00:00",
             "  next: slipfork logs -r b2ebd7",
+            "#b2ebd7  RUN  api  sh /tmp/oni.sh …  2026-11-24 13:00:00",
         ]
     );
-    assert!(rows.iter().all(|row| !row.contains("\u{1b}[")), "{rows:?}");
+    assert!(
+        plain_rows.iter().all(|row| !row.contains("\u{1b}[")),
+        "{plain_rows:?}"
+    );
+    for (styled_row, plain_row) in styled_rows.iter().zip(plain_rows.iter()) {
+        assert_eq!(strip_ansi(styled_row), *plain_row);
+    }
+
+    // Inner rows never carry `[` or the parent image target.
+    for inner in [
+        inner_running.started_row(plain),
+        inner_running.live_row('⠸', 1200, 200, plain),
+        inner_settled.settled_row(0, plain),
+        inner_running.failed_row(plain),
+        inner_running.anchor_row(plain),
+        strip_ansi(&inner_running.live_row('⠸', 1200, 200, styled)),
+        strip_ansi(&inner_settled.settled_row(0, styled)),
+    ] {
+        assert!(!inner.contains('['), "inner row carried `[`: {inner:?}");
+        assert!(
+            !inner.contains("api"),
+            "inner row carried target: {inner:?}"
+        );
+    }
 }
 
 #[test]
@@ -163,15 +265,15 @@ fn identical_target_and_args_never_repeat_on_phase_settled_header_or_verdict() {
         columns,
     );
     let plain = Palette::new(false);
-    assert_eq!(setup.started_row(plain), "→ [2/3] setup   uv sync");
-    assert_eq!(setup.failed_row(plain), "✗ [2/3] setup   uv sync");
+    assert_eq!(setup.started_row(plain), "→ [2/3] setup    uv sync");
+    assert_eq!(setup.failed_row(plain), "✗ [2/3] setup    uv sync");
     assert_eq!(
         setup.live_row('⠹', 445, 80, plain),
-        "⠹ [2/3] setup   uv sync        445ms"
+        "⠹ [2/3] setup    uv sync        445ms"
     );
     assert_eq!(
         setup.settled_row(445, plain),
-        "✓ [2/3] setup   uv sync        445ms"
+        "✓ [2/3] setup    uv sync        445ms"
     );
     assert_eq!(
         plain.header_line(

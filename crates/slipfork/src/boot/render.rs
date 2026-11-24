@@ -11,84 +11,126 @@ use serde_json::Value;
 
 use crate::ui::Palette;
 pub use crate::ui::elapsed_text;
-use crate::ui::table::{Column, ColumnWidths, Table, visible_width};
+use crate::ui::table::visible_width;
 
-/// The six fixed boot-row columns: icon, kind, name, state, duration (6), run id (7).
-const BOOT: [Column; 6] = [
-    Column::left().at_least(1),
-    Column::left(),
-    Column::left(),
-    Column::left(),
-    Column::right().at_least(6),
-    Column::left().at_least(7),
-];
-
-/// The one boot row grid: six borderless columns with two-space gaps.
-#[must_use]
-pub fn boot_table() -> Table<'static> {
-    Table::new(&BOOT)
-}
-
-/// Precomputes the six boot columns from a complete known row or plan set.
-#[must_use]
-pub fn boot_widths(rows: &[Vec<String>]) -> ColumnWidths {
-    boot_table().widths(rows)
-}
-
-/// The widest state any finished row can carry.
+/// Appends `styled` followed by enough plain spaces to occupy `width` visible cells.
 ///
-/// A plan reserves this many cells for the state column, so a later `up to date` never widens it
-/// under a row that is already printed.
-const WIDEST_STATE: &str = "up to date";
-
-/// Measures the six boot columns from the complete announced plan: icon, kind, name, state,
-/// duration (>=6, right), and the reserved run-id slot (>=7).
-#[must_use]
-pub fn plan_widths(rows: &[(String, String)]) -> ColumnWidths {
-    let cells: Vec<Vec<String>> = rows
-        .iter()
-        .map(|(kind, name)| {
-            vec![
-                String::new(),
-                kind.clone(),
-                name.clone(),
-                WIDEST_STATE.to_owned(),
-                String::new(),
-                String::new(),
-            ]
-        })
-        .collect();
-    boot_widths(&cells)
+/// Keeping pad spaces outside the SGR sequence guarantees `trim_end()` behaves identically on
+/// styled and `NO_COLOR` rows, so `strip_ansi(&styled) == plain` holds on every row.
+pub(crate) fn push_padded(out: &mut String, styled: &str, plain_len: usize, width: usize) {
+    out.push_str(styled);
+    for _ in 0..width.saturating_sub(plain_len) {
+        out.push(' ');
+    }
 }
 
-/// One live task row: neutral Braille spinner in the icon cell, magenta kind, bold name, green
-/// `running`, right-aligned live elapsed, and the reserved run-id slot.
+/// The outer boot verb for one planned `kind` (`"service"` renders as `"start"`).
+#[must_use]
+pub fn outer_verb(kind: &str) -> &str {
+    match kind {
+        "service" => "start",
+        other => other,
+    }
+}
+
+/// The plan-derived kind and target widths of the outer `[i/n]` rows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OuterWidths {
+    /// Widest outer verb (`image`, `setup`, `start`, `hook`, `resource`).
+    pub kind: usize,
+    /// Widest outer target (`api`, `uv sync`, `web`).
+    pub target: usize,
+}
+
+/// Measures the outer kind and target columns from the complete announced plan.
+#[must_use]
+pub fn outer_widths(rows: &[(String, String)]) -> OuterWidths {
+    let mut widths = OuterWidths::default();
+    for (kind, name) in rows {
+        widths.kind = widths.kind.max(outer_verb(kind).chars().count());
+        widths.target = widths.target.max(name.chars().count());
+    }
+    widths
+}
+
+/// Renders one outer `[i/n]` row at column 0 in the plan's shared `kind` and `target` columns.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "cohesive pure formatter over the outer row's atomic cells"
+)]
+#[must_use]
+pub fn outer_row(
+    mark: &str,
+    count: Option<(usize, usize)>,
+    verb: &str,
+    target: &str,
+    detail: Option<&str>,
+    millis: Option<u64>,
+    widths: &OuterWidths,
+    palette: Palette,
+) -> String {
+    let mut row = String::new();
+    row.push_str(mark);
+    row.push(' ');
+    if let Some((index, total)) = count
+        && index > 0
+        && total > 0
+    {
+        row.push_str(&palette.dim(&format!("[{index}/{total}]")));
+        row.push(' ');
+    }
+    push_padded(
+        &mut row,
+        &palette.verb(verb),
+        verb.chars().count(),
+        widths.kind,
+    );
+    row.push_str("  ");
+    push_padded(
+        &mut row,
+        &palette.tint(target, "1"),
+        target.chars().count(),
+        widths.target,
+    );
+    if let Some(detail) = detail.filter(|text| !text.is_empty()) {
+        row.push_str("  ");
+        row.push_str(detail);
+    }
+    if let Some(millis) = millis {
+        row.push_str("  ");
+        row.push_str(&palette.dim(&elapsed_text(millis)));
+    }
+    while row.ends_with(' ') {
+        row.pop();
+    }
+    row
+}
+
+/// One live outer task row: neutral Braille spinner, dim `[i/n]`, magenta kind, bold target,
+/// green `running`, and dim live elapsed in the same columns [`completed_row`] settles into.
 #[must_use]
 pub fn running_row(
     kind: &str,
     name: &str,
+    index: usize,
+    total: usize,
     spinner: char,
     millis: u64,
-    widths: &ColumnWidths,
+    widths: &OuterWidths,
 ) -> String {
     let palette = Palette::new(true);
-    boot_table().line(
+    let mark = spinner.to_string();
+    let state = palette.status("running");
+    outer_row(
+        &mark,
+        (index > 0 && total > 0).then_some((index, total)),
+        outer_verb(kind),
+        name,
+        Some(&state),
+        Some(millis),
         widths,
-        &[
-            spinner.to_string(),
-            palette.verb(kind),
-            palette.tint(name, "1"),
-            palette.status("running"),
-            palette.dim(&elapsed_text(millis)),
-            String::new(),
-        ],
+        palette,
     )
-}
-
-/// The panel's active summary when several tasks run at once: `4 running (pg, front, worker, api)`.
-#[must_use]
-pub fn running_summary(names: &[&str]) -> String {
-    format!("{} running ({})", names.len(), names.join(", "))
 }
 
 /// Below this many columns the anchored bar is dropped for the counter/percent/elapsed panel.
@@ -96,17 +138,43 @@ pub const NARROW: usize = 80;
 /// The panel bar is exactly this many cells wide (`specs/02` §3).
 pub const BAR_CELLS: usize = 24;
 
+/// Outer plan counter (`done/total`) paired with the exact fractional fill (`num/den`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BarProgress {
+    /// Settled outer plan slots shown in the `done/total` counter cell.
+    pub done: usize,
+    /// Total outer plan slots shown in the `done/total` counter cell.
+    pub total: usize,
+    /// Fractional numerator driving the 24-cell bar fill and percentage.
+    pub num: u64,
+    /// Fractional denominator driving the 24-cell bar fill and percentage.
+    pub den: u64,
+}
+
+impl BarProgress {
+    /// Uniform outer-only progress (`done/total` drives both the counter cell and the fill).
+    #[must_use]
+    pub const fn outer(done: usize, total: usize) -> Self {
+        Self {
+            done,
+            total,
+            num: done as u64,
+            den: total as u64,
+        }
+    }
+}
+
 /// One finished boot node, already parsed out of a typed daemon `event` frame.
 ///
 /// A frame without a kind, a name/label, or a duration is malformed: parsing yields `None` rather
 /// than inventing a `step`/`ready`/`0` row, so a broken event stream can never print fiction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Node<'a> {
-    /// Node kind (`image`, `service`, `postgres`, …), magenta and padded to 8 cells.
+    /// Node kind (`image`, `service`, `postgres`, …), rendered via [`outer_verb`] in magenta.
     pub kind: &'a str,
     /// Node name, printed bold.
     pub name: &'a str,
-    /// Raw state from the daemon; [`completed_row`] lowercases it.
+    /// Raw state from the daemon; [`completed_row`] lowercases it into the plain detail cell.
     pub state: &'a str,
     /// Wall time the node took, rendered by [`elapsed_text`].
     pub millis: u64,
@@ -139,49 +207,38 @@ pub fn pane_geometry(width: usize) -> Option<usize> {
     (width >= NARROW).then_some(BAR_CELLS)
 }
 
-/// `round(done / total * 100)`, clamped to `100`.
+/// `round(num / den * 100)`, clamped to `100`; zero when no plan total is known yet.
 #[must_use]
-pub fn percent(done: usize, total: usize) -> usize {
-    filled(done, total, 100)
+pub fn percent_of(num: u64, den: u64) -> usize {
+    usize::try_from(filled(num, den, 100)).unwrap_or(100)
 }
 
-/// The fully styled live panel for one colour TTY: spinner, 24-cell bar, counters, percent,
-/// active summary, and elapsed time, clamped to `width` columns.
+/// The fully styled live panel for one colour TTY: spinner, 24-cell bar, outer `done/total`
+/// counter, fractional percent, active label, and elapsed time, clamped to `width` columns.
 #[must_use]
 pub fn panel_line(
     spinner: char,
-    done: usize,
-    total: usize,
-    summary: &str,
+    progress: BarProgress,
+    label: &str,
     elapsed: Duration,
     width: usize,
 ) -> String {
-    assemble(
-        spinner,
-        done,
-        total,
-        summary,
-        elapsed,
-        width,
-        Palette::new(true),
-    )
+    assemble(spinner, progress, label, elapsed, width, Palette::new(true))
 }
 
 /// One `\r`-rewritten colourless status line; carries zero escapes and zero carriage returns.
 #[must_use]
 pub fn status_line(
     spinner: char,
-    done: usize,
-    total: usize,
-    summary: &str,
+    progress: BarProgress,
+    label: &str,
     elapsed: Duration,
     width: usize,
 ) -> String {
     assemble(
         spinner,
-        done,
-        total,
-        summary,
+        progress,
+        label,
         elapsed,
         width,
         Palette::new(false),
@@ -190,21 +247,20 @@ pub fn status_line(
 
 fn assemble(
     spinner: char,
-    done: usize,
-    total: usize,
-    summary: &str,
+    progress: BarProgress,
+    label: &str,
     elapsed: Duration,
     width: usize,
     palette: Palette,
 ) -> String {
     let colour = palette.color();
-    let counter = format!("{done}/{total}");
-    let pct = format!("{}%", percent(done, total));
+    let counter = format!("{}/{}", progress.done, progress.total);
+    let pct = format!("{}%", percent_of(progress.num, progress.den));
     let seconds = format!("{:.1}s", elapsed.as_secs_f64());
     // The spinner is content, never a keyword or a copyable command: neutral on every surface.
     let spin = spinner.to_string();
     let bar = |cells: usize| -> String {
-        let filled = filled(done, total, cells);
+        let filled = filled(progress.num, progress.den, cells as u64) as usize;
         if !colour {
             return format!("[{}{}]", "#".repeat(filled), ".".repeat(cells - filled));
         }
@@ -215,42 +271,42 @@ fn assemble(
             palette.dim(&"░".repeat(cells - filled)),
         )
     };
-    let counter = palette.tint(&counter, "1");
+    let counter = palette.dim(&counter);
     let pct = palette.tint(&pct, "1");
-    let summary = palette.tint(summary, "1");
+    let label = palette.tint(label, "1");
     let seconds = palette.dim(&seconds);
 
     if let Some(cells) = pane_geometry(width) {
         let full = format!(
-            "{spin} {}  {counter}  {pct} · {summary} · {seconds}",
+            "{spin} {}  {counter}  {pct} · {label} · {seconds}",
             bar(cells)
         );
         if visible_width(&full) <= width {
             return full;
         }
-        let without_summary = format!("{spin} {}  {counter}  {pct} · {seconds}", bar(cells));
-        if visible_width(&without_summary) <= width {
-            return without_summary;
+        let without_label = format!("{spin} {}  {counter}  {pct} · {seconds}", bar(cells));
+        if visible_width(&without_label) <= width {
+            return without_label;
         }
     }
-    let with_summary = format!("{spin} {counter}  {pct} · {summary} · {seconds}");
-    if visible_width(&with_summary) <= width {
-        return with_summary;
+    let with_label = format!("{spin} {counter}  {pct} · {label} · {seconds}");
+    if visible_width(&with_label) <= width {
+        return with_label;
     }
     format!("{spin} {counter}  {pct} · {seconds}")
 }
 
-fn filled(done: usize, total: usize, cells: usize) -> usize {
-    if total == 0 {
+fn filled(num: u64, den: u64, cells: u64) -> u64 {
+    if den == 0 {
         return 0;
     }
-    (done.saturating_mul(cells) + total / 2) / total
+    (num.saturating_mul(cells) + den / 2) / den
 }
 
-/// The pipe header for a node that just started: `→ [4/12] image base`.
+/// The pipe header for a node that just started: `→ [4/12] resource pg`.
 #[must_use]
 pub fn header_row(step: u64, total: u64, kind: &str, name: &str) -> String {
-    format!("→ [{step}/{total}] {kind} {name}")
+    format!("→ [{step}/{total}] {} {name}", outer_verb(kind))
 }
 
 /// The world-ready verdict, with the primary URL always bold cyan and underlined.
@@ -291,113 +347,79 @@ pub fn stopped_row(world: &str, millis: u64, styled: bool) -> String {
     )
 }
 
-/// `✓  image  base  cached   420ms` on a pipe, or the styled check, magenta kind, bold name,
-/// lowercase state, right-aligned dim duration, and the reserved run-id slot on a colour terminal.
+/// One outer boot row, always carrying its `[i/n]` plan counter:
+/// `✓ [1/3] image  api      cached  8ms` or `• [2/3] setup  uv sync  up to date  <1ms`.
 ///
-/// `widths` comes from [`boot_widths`] over the complete boot plan, so a row printed while the boot
-/// is still streaming lands in the same grid a batch render would produce.
+/// `widths` comes from [`outer_widths`] over the complete boot plan, so a row printed while the
+/// boot is still streaming lands in the same kind/target columns a batch render would produce.
 #[must_use]
-pub fn completed_row(node: &Node<'_>, widths: &ColumnWidths, styled: bool) -> String {
+pub fn completed_row(
+    node: &Node<'_>,
+    index: usize,
+    total: usize,
+    widths: &OuterWidths,
+    styled: bool,
+) -> String {
     let palette = Palette::new(styled);
-    let state = node.state.to_lowercase();
     let mark = if node.success {
         palette.icon_ok()
     } else {
         palette.dim("•")
     };
-    let state = if state.is_empty() {
-        String::new()
-    } else {
-        palette.status(&state)
-    };
-    // The run-id slot reserves seven cells in `BOOT` and shows a dim `#id` only for a step that
-    // really executed; a `cached` row leaves it empty so earlier columns never move.
-    let run_id = node
-        .run_id
-        .map(|id| palette.dim(&format!("#{id}")))
-        .unwrap_or_default();
-    boot_table().line(
+    let detail = node.state.to_lowercase();
+    outer_row(
+        &mark,
+        (index > 0 && total > 0).then_some((index, total)),
+        outer_verb(node.kind),
+        node.name,
+        Some(&detail),
+        Some(node.millis),
         widths,
-        &[
-            mark,
-            palette.verb(node.kind),
-            palette.tint(node.name, "1"),
-            state,
-            palette.dim(&elapsed_text(node.millis)),
-            run_id,
-        ],
+        palette,
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Node, completed_row, plan_widths};
+    use super::{Node, OuterWidths, completed_row, outer_widths};
 
-    /// Plan-derived widths keep every row in the same columns, even when a later row carries a
-    /// much longer name and an `up to date` state.
     #[test]
     fn plan_widths_hold_every_row_in_the_same_columns() {
         let plan = vec![
-            ("resource".to_owned(), "pg".to_owned()),
-            ("service".to_owned(), "a-very-long-service-name".to_owned()),
+            ("image".to_owned(), "api".to_owned()),
+            ("setup".to_owned(), "uv sync".to_owned()),
+            ("service".to_owned(), "web".to_owned()),
         ];
-        let widths = plan_widths(&plan);
-        let short = Node {
-            kind: "resource",
-            name: "pg",
-            state: "Ready",
-            millis: 420,
-            run_id: Some("b7f2a1"),
+        let widths = outer_widths(&plan);
+        assert_eq!(widths, OuterWidths { kind: 5, target: 7 });
+        let cached = Node {
+            kind: "image",
+            name: "api",
+            state: "cached",
+            millis: 8,
+            run_id: None,
             success: true,
         };
-        let long = Node {
-            kind: "service",
-            name: "a-very-long-service-name",
+        let settled = Node {
+            kind: "setup",
+            name: "uv sync",
             state: "up to date",
             millis: 0,
             run_id: None,
             success: false,
         };
-        let rows = [
-            completed_row(&short, &widths, false),
-            completed_row(&long, &widths, false),
-        ];
-
-        // Byte offsets (`✓` is three UTF-8 bytes): icon at 0, gap, kind at 5; kind 8 + gap =
-        // name at 15; name 24 + gap = state at 41; state 10 + gap + duration 6 ends at 59.
-        const KIND: usize = 5;
-        const NAME: usize = 15;
-        const STATE: usize = 41;
-        const DURATION_END: usize = 59;
-        assert_eq!(rows[0].find("resource"), Some(KIND), "{:?}", rows[0]);
-        assert_eq!(rows[1].find("service"), Some(KIND), "{:?}", rows[1]);
-        assert_eq!(rows[0].find("pg"), Some(NAME), "{:?}", rows[0]);
         assert_eq!(
-            rows[1].find("a-very-long-service-name"),
-            Some(NAME),
-            "{:?}",
-            rows[1]
+            completed_row(&cached, 1, 3, &widths, false),
+            "✓ [1/3] image  api      cached  8ms"
         );
-        assert_eq!(rows[0].find("ready"), Some(STATE), "{:?}", rows[0]);
-        assert_eq!(rows[1].find("up to date"), Some(STATE), "{:?}", rows[1]);
-        // The duration column is right-aligned, so its final byte lands on `DURATION_END` in every
-        // row — with or without a run id after it.
-        for (row, duration) in [(&rows[0], "420ms"), (&rows[1], "<1ms")] {
-            let end = row.find(duration).expect("duration cell") + duration.len();
-            assert_eq!(end, DURATION_END, "duration right edge: {row:?}");
-        }
-        // Filled slot: exactly `GAP + 7` cells after the duration edge.
         assert_eq!(
-            rows[0].find("#b7f2a1"),
-            Some(DURATION_END + 2),
-            "run-id column start: {:?}",
-            rows[0]
+            completed_row(&cached, 1, 3, &widths, true),
+            "\u{1b}[32m✓\u{1b}[0m \u{1b}[2m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      cached  \u{1b}[2m8ms\u{1b}[0m"
         );
-        assert_eq!(rows[0].trim_end().len(), DURATION_END + 2 + 7);
-        // Empty slot: the seven-cell column stays reserved in the shared grid; only this row's
-        // trailing padding is trimmed, and no `#` is invented for a cache hit.
-        assert!(!rows[1].contains('#'), "{:?}", rows[1]);
-        assert_eq!(rows[1].trim_end().len(), DURATION_END);
-        assert!(!rows[1].contains('\u{1b}'), "plain rows stay colourless");
+        assert_eq!(
+            completed_row(&settled, 2, 3, &widths, false),
+            "• [2/3] setup  uv sync  up to date  <1ms"
+        );
+        assert!(!completed_row(&cached, 1, 3, &widths, false).contains('\u{1b}'));
     }
 }

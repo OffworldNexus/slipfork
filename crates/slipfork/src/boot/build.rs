@@ -6,14 +6,17 @@
 //! [`Action`] to the anchored region (a colour TTY) or straight to stdout/stderr (a pipe /
 //! `NO_COLOR`), so both shapes tell the same story and `--json` never reaches here at all.
 
-use std::collections::BTreeMap;
+mod tally;
+
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
 use crate::ui::Palette;
 
+use self::tally::ImageTally;
 use super::failure;
+use super::render::{OuterWidths, outer_row, outer_verb};
 
 pub(super) use super::layout::{Columns, gutter_line, image_done_row, wrap_gutter};
 pub(super) use super::phase::{LiveKey, LiveSteps, Phase};
@@ -23,64 +26,21 @@ pub(super) use super::phase::{LiveKey, LiveSteps, Phase};
 pub(super) enum Action {
     /// A step started running in [`LiveSteps`]: repaint the region (TTY) or print `→` (append).
     Begin(Phase),
-    /// One child line was recorded in [`LiveSteps`]: repaint the region (TTY) or print wrapped.
-    Output { stream: String, text: String },
+    /// One child line was recorded in [`LiveSteps`]: repaint the region (TTY) or print wrapped at
+    /// the owning row's gutter indent (`2` under an outer step, `4` under an inner build step).
+    Output {
+        stream: String,
+        text: String,
+        indent: usize,
+    },
     /// One step settled: repaint the region to release its block rows, then print the settled row.
     Settle(String),
-    /// Print this row immediately (the build-end row, `-v` engine note, or unpinned output).
+    /// Print this row immediately (the outer image opener, build-end row, `-v` note, or gutter).
     Print(String),
     /// Narrative scrollback printed on stdout once the scroll region is restored.
     Hold(String),
     /// The verdict envelope (`✗ …`, optional `runtime:`, one `next:`), printed on stderr.
     Diagnose(String),
-}
-
-/// One image's running totals, so the build-end row can count steps and sum wall time.
-///
-/// Finished rows are buffered by instruction index and released strictly from `next` upward, so
-/// rows print once, in instruction order; a provisional external-pull row is superseded when the
-/// real instruction at that index starts.
-#[derive(Debug, Clone)]
-struct ImageTally {
-    image: String,
-    total: usize,
-    millis: u64,
-    buffer: BTreeMap<usize, String>,
-    next: usize,
-}
-
-impl ImageTally {
-    fn new(image: &str) -> Self {
-        Self {
-            image: image.to_owned(),
-            total: 0,
-            millis: 0,
-            buffer: BTreeMap::new(),
-            next: 1,
-        }
-    }
-
-    /// Releases every buffered row contiguous from `next` upward; a hole stops the release.
-    fn release(&mut self) -> Vec<String> {
-        let mut rows = Vec::new();
-        while let Some(row) = self.buffer.remove(&self.next) {
-            rows.push(row);
-            self.next += 1;
-        }
-        rows
-    }
-
-    /// Drains the contiguous rows, any residual rows, and the instruction count and wall time.
-    fn settle(&mut self) -> (Vec<String>, usize, u64) {
-        let mut rows = self.release();
-        rows.extend(std::mem::take(&mut self.buffer).into_values());
-        let steps = if self.total > 0 {
-            self.total
-        } else {
-            rows.len()
-        };
-        (rows, steps, self.millis)
-    }
 }
 
 /// The one boot narrative: shares [`LiveSteps`] with [`super::pane::Pane`] and tracks image totals.
@@ -89,7 +49,7 @@ pub(super) struct Narrative {
     steps: Arc<Mutex<LiveSteps>>,
     images: Vec<ImageTally>,
     streamed: Vec<String>,
-    columns: Columns,
+    outer: OuterWidths,
     verbose: bool,
     /// Append-only: the step the previous printed line belonged to.
     last_printed: Option<LiveKey>,
@@ -103,7 +63,7 @@ impl Narrative {
             steps: Arc::new(Mutex::new(LiveSteps::new())),
             images: Vec::new(),
             streamed: Vec::new(),
-            columns: Columns::default(),
+            outer: OuterWidths::default(),
             verbose,
             last_printed: None,
             active: None,
@@ -115,38 +75,57 @@ impl Narrative {
         Arc::clone(&self.steps)
     }
 
-    /// A `started` boot frame for a command-carrying step (service, hook, setup).
+    /// Pins the plan-derived outer `kind` and `target` column widths.
+    pub(super) fn set_outer(&mut self, widths: OuterWidths) {
+        self.outer.kind = self.outer.kind.max(widths.kind);
+        self.outer.target = self.outer.target.max(widths.target);
+    }
+
+    fn observe_outer(&mut self, verb: &str, target: &str) {
+        self.outer.kind = self.outer.kind.max(verb.chars().count());
+        self.outer.target = self.outer.target.max(target.chars().count());
+    }
+
+    /// A `started` boot frame for an outer step (image slot registration, service, hook, setup).
     ///
-    /// Image builds announce their instructions through `step` frames instead of their container
-    /// command, so they never open a phase row here.
-    pub(super) fn started(&mut self, event: &Value) -> Vec<Action> {
+    /// Image builds announce their instructions through `step` frames, so a cached image prints
+    /// zero inner rows while a fresh build opens `→ [i/n] image <id>` on its first `step` frame.
+    pub(super) fn started(
+        &mut self,
+        event: &Value,
+        position: Option<(usize, usize)>,
+    ) -> Vec<Action> {
         let kind = event["kind"].as_str().unwrap_or("step");
-        if kind == "image" {
-            return Vec::new();
-        }
-        let Some(command) = event["command"].as_str().filter(|text| !text.is_empty()) else {
-            return Vec::new();
-        };
         let name = event["name"]
             .as_str()
             .or_else(|| event["label"].as_str())
             .unwrap_or("step");
-        let verb = match kind {
-            "service" => "start".to_owned(),
-            other => other.to_owned(),
+        let count = position.or_else(|| counter(event));
+        if kind == "image" {
+            self.observe_outer("image", name);
+            if let Some(count) = count {
+                self.tally(name).outer = count;
+            }
+            return Vec::new();
+        }
+        let command = match event["command"].as_str().filter(|text| !text.is_empty()) {
+            Some(command) => command.to_owned(),
+            None if kind == "service" => String::new(),
+            None => return Vec::new(),
         };
-        self.columns.observe(&verb, name);
+        let verb = outer_verb(kind).to_owned();
+        self.observe_outer(&verb, name);
         let key = LiveKey::Boot {
             kind: kind.to_owned(),
             name: name.to_owned(),
         };
         let phase = Phase::new(
             key.clone(),
-            counter(event),
+            count,
             verb,
             name.to_owned(),
-            command.to_owned(),
-            self.columns,
+            command,
+            Columns::from_outer(self.outer),
         );
         if let Ok(mut steps) = self.steps.lock() {
             steps.begin(phase.clone());
@@ -170,25 +149,33 @@ impl Narrative {
         };
         match event["state"].as_str().unwrap_or_default() {
             "started" => {
-                let mut actions = {
-                    let tally = self.tally(image);
-                    tally.total = total;
-                    // A real instruction re-announcing a provisional external-pull index wins.
-                    tally.buffer.remove(&index);
-                    tally
-                        .release()
-                        .into_iter()
-                        .map(Action::Settle)
-                        .collect::<Vec<_>>()
-                };
-                self.columns.observe(instruction, image);
+                self.observe_outer("image", image);
+                let mut actions = Vec::new();
+                let (outer_open, verb_width) =
+                    self.tally(image).begin_step(index, total, instruction);
+                if let Some((outer_index, outer_total)) = outer_open {
+                    actions.push(Action::Print(outer_row(
+                        "→",
+                        Some((outer_index, outer_total)),
+                        "image",
+                        image,
+                        None,
+                        None,
+                        &self.outer,
+                        palette,
+                    )));
+                }
+                actions.extend(self.tally(image).release().into_iter().map(Action::Settle));
                 let phase = Phase::new(
                     key.clone(),
                     (index > 0 && total > 0).then_some((index, total)),
                     instruction.to_owned(),
                     image.to_owned(),
                     args.to_owned(),
-                    self.columns,
+                    Columns {
+                        verb: verb_width,
+                        target: 0,
+                    },
                 );
                 if let Ok(mut steps) = self.steps.lock() {
                     steps.begin(phase.clone());
@@ -199,6 +186,11 @@ impl Narrative {
                 actions
             }
             "done" => {
+                let verb_width = {
+                    let tally = self.tally(image);
+                    tally.verb_width = tally.verb_width.max(instruction.chars().count());
+                    tally.verb_width
+                };
                 let phase = self
                     .steps
                     .lock()
@@ -211,7 +203,10 @@ impl Narrative {
                             instruction.to_owned(),
                             image.to_owned(),
                             args.to_owned(),
-                            self.columns,
+                            Columns {
+                                verb: verb_width,
+                                target: 0,
+                            },
                         )
                     });
                 let settled = phase.settled_row(elapsed, palette);
@@ -250,12 +245,35 @@ impl Narrative {
         });
         let Some((key, phase)) = matched else {
             if candidates.is_empty() && target.is_none() {
-                return vec![Action::Print(gutter_line(stream, text, width, palette))];
+                return vec![Action::Print(gutter_line(stream, text, width, palette, 2))];
             }
             return Vec::new();
         };
         let mut actions = Vec::new();
         if !anchored_pane && self.last_printed.as_ref() != Some(&key) {
+            if phase.is_inner() {
+                let same_image = matches!(
+                    &self.last_printed,
+                    Some(LiveKey::Step { image, .. }) if image == &phase.target
+                );
+                if !same_image
+                    && let Some(tally) = self
+                        .images
+                        .iter()
+                        .find(|tally| tally.image == phase.target && tally.outer.0 > 0)
+                {
+                    actions.push(Action::Print(outer_row(
+                        "→",
+                        Some(tally.outer),
+                        "image",
+                        &phase.target,
+                        None,
+                        None,
+                        &self.outer,
+                        palette,
+                    )));
+                }
+            }
             actions.push(Action::Print(phase.anchor_row(palette)));
         }
         self.active = Some(key.clone());
@@ -263,6 +281,7 @@ impl Narrative {
         actions.push(Action::Output {
             stream: stream.to_owned(),
             text: text.to_owned(),
+            indent: phase.gutter_indent(),
         });
         actions
     }
@@ -283,8 +302,19 @@ impl Narrative {
         let millis = event["duration_ms"]
             .as_u64()
             .or_else(|| event["elapsed_ms"].as_u64())?;
-        let live = self.steps.lock().ok()?.take_boot(kind, name)?;
-        let row = live.phase.settled_row(millis, palette);
+        let mut live = self.steps.lock().ok()?.take_boot(kind, name)?;
+        live.phase.columns = Columns::from_outer(self.outer);
+        let up_to_date = event["event"].as_str() == Some("up-to-date")
+            || matches!(event["state"].as_str(), Some("up to date" | "up-to-date"));
+        let detail = up_to_date.then(|| {
+            event["state"]
+                .as_str()
+                .unwrap_or("up to date")
+                .to_lowercase()
+        });
+        let row = live
+            .phase
+            .settled_outer(millis, detail.as_deref(), up_to_date, palette);
         self.retire_key(&live.phase.key);
         Some(Action::Settle(row))
     }
@@ -300,9 +330,22 @@ impl Narrative {
             return Vec::new();
         };
         let mut tally = self.images.remove(position);
+        if tally.is_unused() {
+            return Vec::new();
+        }
+        self.observe_outer("image", image);
         let (rows, steps, millis) = tally.settle();
+        let outer = tally.outer;
         let mut actions: Vec<Action> = rows.into_iter().map(Action::Settle).collect();
-        actions.push(Action::Print(image_done_row(image, steps, millis, palette)));
+        actions.push(Action::Print(image_done_row(
+            outer.0,
+            outer.1,
+            image,
+            steps,
+            millis,
+            &self.outer,
+            palette,
+        )));
         self.streamed.push(image.to_owned());
         actions
     }
@@ -411,7 +454,7 @@ fn keys_for(event: &Value) -> Vec<LiveKey> {
 }
 
 /// `[step/total]` for a boot step frame, when both are known.
-fn counter(event: &Value) -> Option<(usize, usize)> {
+pub(super) fn counter(event: &Value) -> Option<(usize, usize)> {
     let step = usize_of(event["step"].as_u64());
     let total = usize_of(event["total"].as_u64());
     (step > 0 && total > 0).then_some((step, total))

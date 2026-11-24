@@ -8,11 +8,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::ui::Palette;
-use crate::ui::table::ColumnWidths;
 
 use super::build::LiveSteps;
+use super::progress::BootProgress;
 use super::region::ScrollRegionGuard;
-use super::render::{panel_line, running_row, status_line};
+use super::render::{OuterWidths, panel_line, running_row, status_line};
 
 use self::rows::{Slot, TaskRows};
 
@@ -34,17 +34,15 @@ pub(super) struct Pane {
     cols: usize,
     rows: usize,
     guard: Option<ScrollRegionGuard>,
-    total: usize,
-    done: usize,
-    title: String,
-    summary: String,
+    /// Two-level outer/inner completion and the bar label.
+    progress: BootProgress,
     started: Instant,
     frame: usize,
     line_len: usize,
     tasks: TaskRows,
     /// The region's own bottom row (`rows - 1`), independent of the narrative block.
     region_bottom: usize,
-    widths: ColumnWidths,
+    widths: OuterWidths,
     /// The grid was full, so the next paint must scroll the region one line first.
     pending_scroll: bool,
     /// Shared single source of truth for running build/hook steps and their output lines.
@@ -55,29 +53,25 @@ pub(super) struct Pane {
 
 impl Pane {
     pub(super) fn new(
-        title: &str,
+        progress: BootProgress,
         cols: usize,
         prompt_row: Option<usize>,
         steps: Arc<Mutex<LiveSteps>>,
     ) -> Self {
         let (width, rows) = terminal_size();
         let cols = crate::ui::normalize_size(cols.max(width), rows).0;
-        let title = title.to_owned();
         let region_bottom = if rows >= 3 { rows - 1 } else { 0 };
         let mut pane = Self {
             cols,
             rows,
             guard: None,
-            total: 0,
-            done: 0,
-            summary: title.clone(),
-            title,
+            progress,
             started: Instant::now(),
             frame: 0,
             line_len: 0,
             tasks: TaskRows::new(0, 0),
             region_bottom,
-            widths: ColumnWidths::default(),
+            widths: OuterWidths::default(),
             pending_scroll: false,
             steps,
             block_rows: 0,
@@ -117,32 +111,27 @@ impl Pane {
         self.draw();
     }
 
-    /// Pins the six-column grid the running and finished rows share.
-    pub(super) fn set_widths(&mut self, widths: ColumnWidths) {
+    /// Pins the plan-derived outer `kind` and `target` columns shared by running and settled rows.
+    pub(super) fn set_widths(&mut self, widths: OuterWidths) {
         self.widths = widths;
     }
 
-    /// Latches `done` and `total` onto the bottom bar, including for narrated image/hook/service steps.
-    pub(super) fn set_progress(&mut self, done: usize, total: usize) {
-        self.done = done;
-        self.total = self.total.max(total).max(done);
-        self.refresh_summary();
+    /// Replaces the two-level progress the bar paints on the next draw.
+    pub(super) fn set_progress(&mut self, progress: BootProgress) {
+        self.progress = progress;
     }
 
     /// Allocates a fixed row for one started task and paints its first spinner frame.
-    pub(super) fn start(&mut self, kind: &str, name: &str, total: usize, live: bool) {
-        self.total = self.total.max(total);
+    pub(super) fn start(&mut self, kind: &str, name: &str, live: bool) {
         if live {
             let slot = self.tasks.begin(kind, name);
             self.pending_scroll |= slot.scrolled();
         }
-        self.refresh_summary();
         self.draw();
     }
 
     /// Rewrites one finished task's own slot in place and never moves another row.
-    pub(super) fn complete(&mut self, kind: &str, name: &str, row: &str, done: usize) {
-        self.set_progress(done, self.total);
+    pub(super) fn complete(&mut self, kind: &str, name: &str, row: &str) {
         // A finished row that never allocated a live slot (a phase header the plan did not
         // announce, such as `restart`'s) still prints once, at the next free row.
         let slot = match self.tasks.complete(kind, name) {
@@ -259,15 +248,6 @@ impl Pane {
         flow
     }
 
-    fn refresh_summary(&mut self) {
-        let running = self.tasks.running();
-        self.summary = match running.as_slice() {
-            [] => self.title.clone(),
-            [only] => format!("Starting {only}…"),
-            names => super::render::running_summary(names),
-        };
-    }
-
     fn clear_line(&mut self) {
         if self.line_len > 0 {
             print!("\r{}\r", " ".repeat(self.line_len));
@@ -297,15 +277,9 @@ impl Pane {
         } else {
             self.tasks.reserve_below(new_bottom)
         };
-        let summary = self.summary.clone();
-        let line = panel_line(
-            spinner,
-            self.done,
-            self.total,
-            &summary,
-            self.started.elapsed(),
-            self.cols,
-        );
+        let bar = self.progress.bar();
+        let label = self.progress.label();
+        let line = panel_line(spinner, bar, &label, self.started.elapsed(), self.cols);
         let mut stdout = std::io::stdout().lock();
         if self.guard.is_some() {
             let _ = write!(stdout, "\x1b7");
@@ -315,11 +289,14 @@ impl Pane {
                 .tasks
                 .live()
                 .map(|task| {
+                    let (index, total) = self.progress.position(&task.kind, &task.name);
                     (
                         task.slot,
                         running_row(
                             &task.kind,
                             &task.name,
+                            index,
+                            total,
                             spinner,
                             u64::try_from(task.started.elapsed().as_millis()).unwrap_or(u64::MAX),
                             &self.widths,
@@ -355,14 +332,7 @@ impl Pane {
         } else {
             // No region (a terminal shorter than three rows): degrade to one `\r` line, the one
             // colourless shape that never assumes cursor addressing.
-            let line = status_line(
-                spinner,
-                self.done,
-                self.total,
-                &self.summary,
-                self.started.elapsed(),
-                self.cols,
-            );
+            let line = status_line(spinner, bar, &label, self.started.elapsed(), self.cols);
             let visible = console::measure_text_width(&line);
             if visible < self.line_len {
                 let _ = write!(stdout, "\r{line}{}", " ".repeat(self.line_len - visible));

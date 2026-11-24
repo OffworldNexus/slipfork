@@ -1150,6 +1150,21 @@ fn world_up_restart_down_journey() {
         "progress lines must carry a real `→ [i/n]` prefix:\n{first_out}"
     );
     assert!(
+        first_out
+            .lines()
+            .any(|line| line.starts_with("  ✓ 1/") && line.contains("FROM") && !line.contains('[')),
+        "inner Dockerfile steps render indented `n/N` without brackets:\n{first_out}"
+    );
+    assert!(
+        first_out.lines().any(|line| {
+            line.starts_with("✓ [")
+                && line.contains("image")
+                && line.contains("app")
+                && line.contains("built ")
+        }),
+        "settled image builds render the outer `✓ [i/n] image app built N steps` row:\n{first_out}"
+    );
+    assert!(
         !first_err.contains("error:"),
         "a successful boot must print no error tail:\n{first_err}"
     );
@@ -2471,9 +2486,16 @@ fn world_up_restart_down_journey() {
         1,
         "an invalid `from:` prints exactly one `next:`:\n{bad_block}"
     );
+    let bad_doc = slipfork_forkfile::parse(INVALID_FROM_FORKFILE).expect("parse badfrom");
+    let bad_total = slipfork_world::world_plan(&bad_doc, &badfrom)
+        .expect("plan badfrom")
+        .steps
+        .len();
     assert!(
-        bad_block.contains("→ [1/1] FROM"),
-        "`up` announces the `FROM` row before parsing the reference:\n{bad_block}"
+        bad_block.contains(&format!("→ [1/{bad_total}] image"))
+            && bad_block.contains("  → 1/1 FROM")
+            && !bad_block.contains("[1/1] FROM"),
+        "`up` opens the outer `[1/{bad_total}] image` row then the indented `1/1 FROM` row before parsing:\n{bad_block}"
     );
     assert!(
         bad_block

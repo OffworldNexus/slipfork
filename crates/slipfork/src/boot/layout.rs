@@ -5,9 +5,10 @@
 //! these same strings with zero escapes.
 
 use crate::ui::Palette;
-use crate::ui::elapsed_text;
 
-/// The widest instruction and target column painted so far for the running image.
+use super::render::{OuterWidths, outer_row};
+
+/// The widest instruction/verb and target column painted for a build or outer boot step.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct Columns {
     pub(super) verb: usize,
@@ -15,51 +16,85 @@ pub(super) struct Columns {
 }
 
 impl Columns {
+    pub(super) const fn from_outer(widths: OuterWidths) -> Self {
+        Self {
+            verb: widths.kind,
+            target: widths.target,
+        }
+    }
+
+    pub(super) const fn as_outer(self) -> OuterWidths {
+        OuterWidths {
+            kind: self.verb,
+            target: self.target,
+        }
+    }
+
+    #[cfg(test)]
     pub(super) fn observe(&mut self, verb: &str, target: &str) {
         self.verb = self.verb.max(verb.chars().count());
         self.target = self.target.max(target.chars().count());
     }
 }
 
-/// One streamed child line in the gutter shape: `  │ text` (stdout) / `  ┃ text` (stderr).
-pub(super) fn gutter_line(stream: &str, text: &str, width: usize, palette: Palette) -> String {
-    let text = truncate_visible(text, width.saturating_sub(4));
-    format!("  {} {text}", palette.gutter(stream))
+/// One streamed child line in the gutter shape: `{indent}│ text` / `{indent}┃ text`.
+///
+/// The indent follows the level of the row that owns the output: `2` under an outer boot step,
+/// `4` under an indented inner Dockerfile step.
+pub(super) fn gutter_line(
+    stream: &str,
+    text: &str,
+    width: usize,
+    palette: Palette,
+    indent: usize,
+) -> String {
+    let text = truncate_visible(text, width.saturating_sub(indent + 2));
+    format!("{}{} {text}", " ".repeat(indent), palette.gutter(stream))
 }
 
 /// A scrollback line in full: wrapped at `width`, the gutter glyph repeated on every row.
-pub(super) fn wrap_gutter(stream: &str, text: &str, width: usize, palette: Palette) -> Vec<String> {
-    let budget = width.saturating_sub(4).max(8);
+pub(super) fn wrap_gutter(
+    stream: &str,
+    text: &str,
+    width: usize,
+    palette: Palette,
+    indent: usize,
+) -> Vec<String> {
+    let budget = width.saturating_sub(indent + 2).max(8);
     let glyph = palette.gutter(stream);
+    let lead = " ".repeat(indent);
     if text.is_empty() {
-        return vec![format!("  {glyph} ")];
+        return vec![format!("{lead}{glyph} ")];
     }
     text.chars()
         .collect::<Vec<_>>()
         .chunks(budget)
-        .map(|chunk| format!("  {glyph} {}", chunk.iter().collect::<String>()))
+        .map(|chunk| format!("{lead}{glyph} {}", chunk.iter().collect::<String>()))
         .collect()
 }
 
-/// The build-end row: `✓ image web (4 steps, 1.2s)`.
-pub(super) fn image_done_row(image: &str, steps: usize, millis: u64, palette: Palette) -> String {
+/// The build-end outer row: `✓ [1/3] image  api      built 6 steps  12.3s`.
+pub(super) fn image_done_row(
+    index: usize,
+    total: usize,
+    image: &str,
+    steps: usize,
+    millis: u64,
+    widths: &OuterWidths,
+    palette: Palette,
+) -> String {
     let plural = if steps == 1 { "step" } else { "steps" };
-    format!(
-        "{} {} {} {}",
-        palette.icon_ok(),
-        palette.verb("image"),
-        palette.tint(image, "1"),
-        palette.dim(&format!("({steps} {plural}, {})", elapsed_text(millis))),
+    let detail = format!("built {steps} {plural}");
+    outer_row(
+        &palette.icon_ok(),
+        (index > 0 && total > 0).then_some((index, total)),
+        "image",
+        image,
+        Some(&detail),
+        Some(millis),
+        widths,
+        palette,
     )
-}
-
-/// Pads `text` on the right to `width` plain characters.
-pub(super) fn pad(text: &str, width: usize) -> String {
-    let length = text.chars().count();
-    if length >= width {
-        return text.to_owned();
-    }
-    format!("{text}{}", " ".repeat(width - length))
 }
 
 /// Truncates an already styled row to `width` visible cells, ending in `…` when it was cut.

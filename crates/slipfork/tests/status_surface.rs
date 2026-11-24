@@ -9,9 +9,12 @@ use std::process::{Command, Output};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use slipfork::boot::{Node, boot_widths, completed_row, elapsed_text, pane_geometry, status_line};
+use slipfork::boot::{
+    BarProgress, Node, completed_row, elapsed_text, outer_verb, outer_widths, pane_geometry,
+    status_line,
+};
 use slipfork::status::{self, Options};
-use slipfork::ui::table::{ColumnWidths, visible_width};
+use slipfork::ui::table::visible_width;
 use slipfork_world::LogStore;
 
 #[test]
@@ -84,20 +87,13 @@ fn mountinfo_unescapes_octal_and_picks_the_longest_containing_mount() {
 
 const ANSI: &str = "\u{1b}[";
 
-/// Measures the six boot columns over the same four leading cells the live plan carries.
-fn plan_widths(nodes: &[&Node<'_>]) -> ColumnWidths {
-    let rows: Vec<Vec<String>> = nodes
+/// Measures the outer kind and target columns over the complete planned node set.
+fn plan_widths(nodes: &[&Node<'_>]) -> slipfork::boot::OuterWidths {
+    let rows: Vec<(String, String)> = nodes
         .iter()
-        .map(|node| {
-            vec![
-                String::new(),
-                node.kind.to_owned(),
-                node.name.to_owned(),
-                node.state.to_lowercase(),
-            ]
-        })
+        .map(|node| (node.kind.to_owned(), node.name.to_owned()))
         .collect();
-    boot_widths(&rows)
+    outer_widths(&rows)
 }
 
 /// Removes every `ESC[ … m` sequence, leaving the visible cells.
@@ -128,7 +124,7 @@ fn column_start(line: &str, needle: &str) -> usize {
 }
 
 #[test]
-fn every_boot_row_keeps_one_start_per_role_and_one_right_edge() {
+fn every_boot_row_keeps_one_start_per_role_and_carries_its_plan_counter() {
     let long = format!("service-{}", "x".repeat(20));
     assert_eq!(long.chars().count(), 28);
     let nodes = vec![
@@ -181,8 +177,8 @@ fn every_boot_row_keeps_one_start_per_role_and_one_right_edge() {
             success: true,
         },
         Node {
-            kind: "service",
-            name: "worker",
+            kind: "hook",
+            name: "worker:pre-deploy",
             state: "cached",
             millis: 1,
             run_id: None,
@@ -197,7 +193,7 @@ fn every_boot_row_keeps_one_start_per_role_and_one_right_edge() {
             success: true,
         },
         Node {
-            kind: "service",
+            kind: "setup",
             name: "docs",
             state: "up to date",
             millis: 3,
@@ -205,14 +201,17 @@ fn every_boot_row_keeps_one_start_per_role_and_one_right_edge() {
             success: false,
         },
     ];
+    let total = nodes.len();
     let widths = plan_widths(&nodes.iter().collect::<Vec<_>>());
     let plain: Vec<String> = nodes
         .iter()
-        .map(|node| completed_row(node, &widths, false))
+        .enumerate()
+        .map(|(offset, node)| completed_row(node, offset + 1, total, &widths, false))
         .collect();
     let styled: Vec<String> = nodes
         .iter()
-        .map(|node| completed_row(node, &widths, true))
+        .enumerate()
+        .map(|(offset, node)| completed_row(node, offset + 1, total, &widths, true))
         .collect();
 
     for (index, node) in nodes.iter().enumerate() {
@@ -231,9 +230,12 @@ fn every_boot_row_keeps_one_start_per_role_and_one_right_edge() {
             visible, plain[index],
             "row {index} styles without moving a cell"
         );
+        let counter = format!("[{}/{total}]", index + 1);
+        let verb = outer_verb(node.kind);
         for line in [&plain[index], &visible] {
+            assert!(line.contains(&counter), "missing `{counter}` on `{line}`");
             assert_eq!(
-                column_start(line, node.kind),
+                column_start(line, verb),
                 column_start(&plain[0], "pg"),
                 "kind start drifts on `{line}`"
             );
@@ -246,11 +248,6 @@ fn every_boot_row_keeps_one_start_per_role_and_one_right_edge() {
                 column_start(line, node.state),
                 column_start(&plain[1], "cached"),
                 "state start drifts on `{line}`"
-            );
-            assert_eq!(
-                visible_width(line.trim_end()),
-                visible_width(plain[1].trim_end()),
-                "duration right edge drifts on `{line}`"
             );
         }
     }
@@ -270,15 +267,15 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
     };
     let widths = plan_widths(&[&node]);
     assert_eq!(
-        completed_row(&node, &widths, true),
-        "\u{1b}[32m✓\u{1b}[0m  \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  \u{1b}[36mcached\u{1b}[0m   \u{1b}[2m420ms\u{1b}[0m"
+        completed_row(&node, 1, 3, &widths, true),
+        "\u{1b}[32m✓\u{1b}[0m \u{1b}[2m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  cached  \u{1b}[2m420ms\u{1b}[0m"
     );
     assert_eq!(
-        completed_row(&node, &widths, false),
-        "✓  image  base  cached   420ms"
+        completed_row(&node, 1, 3, &widths, false),
+        "✓ [1/3] image  base  cached  420ms"
     );
-    assert!(!completed_row(&node, &widths, false).contains(ANSI));
-    assert!(!completed_row(&node, &widths, false).contains('\r'));
+    assert!(!completed_row(&node, 1, 3, &widths, false).contains(ANSI));
+    assert!(!completed_row(&node, 1, 3, &widths, false).contains('\r'));
 
     let cached = Node {
         state: "Up-to-date",
@@ -288,12 +285,12 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
     };
     let widths = plan_widths(&[&cached]);
     assert_eq!(
-        completed_row(&cached, &widths, true),
-        "\u{1b}[2m•\u{1b}[0m  \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  \u{1b}[36mup-to-date\u{1b}[0m   \u{1b}[2m420ms\u{1b}[0m"
+        completed_row(&cached, 2, 3, &widths, true),
+        "\u{1b}[2m•\u{1b}[0m \u{1b}[2m[2/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  up-to-date  \u{1b}[2m420ms\u{1b}[0m"
     );
     assert_eq!(
-        completed_row(&cached, &widths, false),
-        "•  image  base  up-to-date   420ms"
+        completed_row(&cached, 2, 3, &widths, false),
+        "• [2/3] image  base  up-to-date  420ms"
     );
 
     // A malformed frame fails closed instead of inventing `step`/`ready`/`0` fiction.
@@ -317,7 +314,8 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
     assert_eq!(pane_geometry(79), None);
 
     let elapsed = Duration::from_millis(1_200);
-    let panel = status_line('-', 6, 10, "Starting api…", elapsed, 120);
+    let six_of_ten = BarProgress::outer(6, 10);
+    let panel = status_line('-', six_of_ten, "Starting api…", elapsed, 120);
     assert_eq!(
         panel,
         "- [##############..........]  6/10  60% · Starting api… · 1.2s"
@@ -330,21 +328,37 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
     assert_eq!(cells.chars().count(), 24, "{panel}");
     assert_eq!(cells.matches('#').count(), 14, "{panel}");
     assert_eq!(
-        status_line('-', 6, 10, "Starting api…", elapsed, 40),
+        status_line('-', six_of_ten, "Starting api…", elapsed, 40),
         "- 6/10  60% · Starting api… · 1.2s"
     );
     assert_eq!(
-        status_line('-', 6, 10, "Starting api…", elapsed, 79),
+        status_line('-', six_of_ten, "Starting api…", elapsed, 79),
         "- 6/10  60% · Starting api… · 1.2s"
     );
     assert!(!panel.contains(ANSI), "{panel}");
     assert!(!panel.contains('\r'), "{panel}");
 
+    let mid_build = status_line(
+        '⠸',
+        BarProgress {
+            done: 0,
+            total: 2,
+            num: 2,
+            den: 8,
+        },
+        "[1/2] image api · step 3/4 RUN",
+        Duration::from_millis(200),
+        110,
+    );
+    assert_eq!(
+        mid_build,
+        "⠸ [######..................]  0/2  25% · [1/2] image api · step 3/4 RUN · 0.2s"
+    );
+
     for spinner in ['|', '/', '-', '\\'] {
         let line = status_line(
             spinner,
-            3,
-            10,
+            BarProgress::outer(3, 10),
             "Restarting api…",
             Duration::from_millis(50),
             80,

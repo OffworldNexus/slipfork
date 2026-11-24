@@ -28,10 +28,10 @@ const PORTLESS_WINDOW: Duration = Duration::from_millis(650);
 const EXIT_PROBE_INTERVAL: Duration = Duration::from_millis(25);
 
 /// Consecutive quiet tail polls that end the post-exit drain.
-const SETTLE_QUIET_POLLS: u32 = 2;
+const SETTLE_QUIET_POLLS: u32 = 3;
 
-/// Spacing between the two quiet-drain polls, so the last pumped pod-log lines land first.
-const SETTLE_INTERVAL: Duration = Duration::from_millis(3);
+/// Spacing between quiet-drain polls, so the merged pod-log pump lands its last lines first.
+const SETTLE_INTERVAL: Duration = Duration::from_millis(5);
 
 /// Ceiling on the post-exit drain, so a half-written capture can never stall `up`.
 const SETTLE_BUDGET: Duration = Duration::from_millis(100);

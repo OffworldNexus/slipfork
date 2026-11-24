@@ -3,16 +3,17 @@
 //! Two drivers, one event model: a colour terminal establishes a `DECSTBM` scroll region where a
 //! running build step owns the bottom block (spinner phase row plus its streaming output) and every
 //! settled step collapses to one scrollback row; a pipe or a `NO_COLOR` terminal is append-only —
-//! `→ [i/n] INSTR target  args`, every output line in the gutter shape, `✓` when it settles, zero
-//! `ESC[` bytes and no spinner frames.
+//! `→ [i/n] KIND target`, then indented `n/N` inner Dockerfile rows, every output line in the
+//! gutter shape, `✓` when it settles, zero `ESC[` bytes and no spinner frames.
 //!
-//! The daemon's `plan` frame latches the six-column grid before row 1; `--json` passes through.
+//! The daemon's `plan` frame latches the plan positions before row 1; `--json` passes through.
 
 mod build;
 mod failure;
 mod layout;
 mod pane;
 mod phase;
+mod progress;
 mod region;
 mod render;
 
@@ -24,12 +25,12 @@ use serde_json::Value;
 
 use crate::ui::Palette;
 use crate::ui::UiMode;
-use crate::ui::table::ColumnWidths;
 
 use self::build::Narrative;
 use self::pane::{Pane, Ticker};
+use self::progress::BootProgress;
 use self::render as text;
-use self::render::{Node, completed_row};
+use self::render::{Node, OuterWidths, completed_row};
 
 pub use crate::ui::elapsed_text;
 
@@ -37,8 +38,6 @@ pub use crate::ui::elapsed_text;
 pub struct BootTui {
     mode: UiMode,
     width: usize,
-    total: usize,
-    done: usize,
     started: Instant,
     pane: Option<Arc<Mutex<Pane>>>,
     ticker: Option<Ticker>,
@@ -47,15 +46,10 @@ pub struct BootTui {
     verdict: Vec<String>,
     /// The verdict envelope held for stderr: `✗ …`, optional `runtime:`, one `next:`.
     diagnosis: Vec<String>,
-    /// The announced boot plan as raw `[icon, kind, name, state, duration, run-id]` cells, used
-    /// only when a stream arrives without a `plan` frame.
-    plan: Vec<Vec<String>>,
-    /// Whether the `plan` frame already latched the grid and the operation count.
-    announced: bool,
-    /// Every announced `(kind, name)`, so a `Started` row only allocates a slot when it was planned.
-    announced_rows: Vec<(String, String)>,
-    /// The precomputed six-column grid shared by every running and completed row.
-    widths: ColumnWidths,
+    /// The plan-derived outer `kind` and `target` column widths.
+    widths: OuterWidths,
+    /// The announced plan, both progress levels, and the bar label.
+    progress: BootProgress,
     /// The live build/hook narrative: phase rows, output tails, collapse, and the failure block.
     narrative: Narrative,
 }
@@ -148,12 +142,13 @@ impl BootTui {
     fn new(mode: UiMode, width: usize, title: &str, summary: bool, verbose: bool) -> Self {
         // The only ambient-terminal probe lives here, at the composition root: a bounded 60ms
         // `DSR` ask so the anchored pane can seed its flow cursor from the shell prompt's row.
+        let progress = BootProgress::new(title);
         let narrative = Narrative::new(verbose);
         let live = summary && mode.color();
         let prompt_row = if live { probe_cursor_row() } else { None };
         let pane = live.then(|| {
             Arc::new(Mutex::new(Pane::new(
-                title,
+                progress.clone(),
                 width,
                 prompt_row,
                 narrative.steps(),
@@ -163,18 +158,14 @@ impl BootTui {
         Self {
             mode,
             width,
-            total: 0,
-            done: 0,
             started: Instant::now(),
             pane,
             ticker,
             failed: false,
             verdict: Vec::new(),
             diagnosis: Vec::new(),
-            plan: Vec::new(),
-            announced: false,
-            announced_rows: Vec::new(),
-            widths: text::boot_widths(&[]),
+            widths: OuterWidths::default(),
+            progress,
             narrative,
         }
     }
@@ -193,9 +184,11 @@ impl BootTui {
         let palette = Palette::new(self.mode.color());
         match event["event"].as_str().unwrap_or_default() {
             "plan" => self.plan_event(event),
-            "started" => self.started_node(event),
+            "started" => self.started_node(event, palette),
             "step" => {
+                self.progress.observe_step(event);
                 let actions = self.narrative.step(event, palette);
+                self.sync_pane(actions.is_empty());
                 self.apply(actions, palette);
             }
             "log" => {
@@ -266,13 +259,17 @@ impl BootTui {
                         println!("{}", phase.started_row(palette));
                     }
                 }
-                build::Action::Output { stream, text } => {
+                build::Action::Output {
+                    stream,
+                    text,
+                    indent,
+                } => {
                     if let Some(pane) = &self.pane {
                         if let Ok(mut pane) = pane.lock() {
                             pane.draw();
                         }
                     } else {
-                        for row in build::wrap_gutter(&stream, &text, self.width, palette) {
+                        for row in build::wrap_gutter(&stream, &text, self.width, palette, indent) {
                             println!("{row}");
                         }
                     }
@@ -314,9 +311,9 @@ impl BootTui {
         }
     }
 
-    /// Latches the six-column grid and the operation count from the one `plan` frame.
+    /// Latches the announced rows and their plan positions from the one `plan` frame.
     fn plan_event(&mut self, event: &Value) {
-        if self.announced {
+        if self.progress.announced() {
             return;
         }
         let Some(rows) = event["rows"].as_array() else {
@@ -334,30 +331,33 @@ impl BootTui {
         if announced.is_empty() {
             return;
         }
-        self.announced = true;
-        self.widths = text::plan_widths(&announced);
         let total = event["total"]
             .as_u64()
             .and_then(|total| usize::try_from(total).ok())
             .unwrap_or(announced.len());
-        self.total = self.total.max(total);
-        self.announced_rows = announced;
+        self.progress.announce(&announced, total);
+        self.refresh_widths();
         self.sync_pane(true);
+    }
+
+    fn refresh_widths(&mut self) {
+        self.widths = text::outer_widths(self.progress.plan());
+        self.narrative.set_outer(self.widths);
     }
 
     fn sync_pane(&self, redraw: bool) {
         if let Some(pane) = &self.pane
             && let Ok(mut pane) = pane.lock()
         {
-            pane.set_widths(self.widths.clone());
-            pane.set_progress(self.done, self.total);
+            pane.set_widths(self.widths);
+            pane.set_progress(self.progress.clone());
             if redraw {
                 pane.draw();
             }
         }
     }
 
-    fn started_node(&mut self, event: &Value) {
+    fn started_node(&mut self, event: &Value, palette: Palette) {
         let kind = event["kind"].as_str().unwrap_or("step").to_owned();
         let name = event["name"]
             .as_str()
@@ -366,41 +366,39 @@ impl BootTui {
             .to_owned();
         let step = event["step"].as_u64().unwrap_or(0);
         let total = event["total"].as_u64().unwrap_or(0);
-        self.total = self.total.max(total as usize).max(step as usize);
-        let live = !self.announced
-            || self
-                .announced_rows
-                .iter()
-                .any(|(planned_kind, planned_name)| planned_kind == &kind && planned_name == &name);
-        if !self.announced {
-            self.plan.push(vec![
-                String::new(),
-                kind.clone(),
-                name.clone(),
-                String::new(),
-                String::new(),
-                String::new(),
-            ]);
-            self.widths = text::boot_widths(&self.plan);
+        if !self.progress.announced() {
+            self.progress.remember(&kind, &name);
+            self.refresh_widths();
         }
-        let actions = self.narrative.started(event);
+        let live = !self.progress.announced() || self.progress.planned(&kind, &name);
+        let (index, outer_total) = self.progress.position(&kind, &name);
+        let position = (index > 0 && outer_total > 0).then_some((index, outer_total));
+        if kind != "image" && index > 0 {
+            self.progress
+                .set_active(index, outer_total, text::outer_verb(&kind), &name);
+        }
+        let actions = self.narrative.started(event, position);
         let narrated = !actions.is_empty();
         // An image announces its instructions through `step` frames; it never needs its own row.
         let spinning = !narrated && kind != "image";
         if let Some(pane) = &self.pane {
             if let Ok(mut pane) = pane.lock() {
-                pane.set_widths(self.widths.clone());
-                pane.set_progress(self.done, self.total);
+                pane.set_widths(self.widths);
+                pane.set_progress(self.progress.clone());
                 if spinning {
-                    pane.start(&kind, &name, self.total, live);
+                    pane.start(&kind, &name, live);
                 } else if !narrated {
                     pane.draw();
                 }
             }
         } else if spinning {
-            println!("{}", text::header_row(step, total, &kind, &name));
+            let (shown_step, shown_total) =
+                position.map_or((step, total), |(idx, tot)| (idx as u64, tot as u64));
+            println!(
+                "{}",
+                text::header_row(shown_step, shown_total, &kind, &name)
+            );
         }
-        let palette = Palette::new(self.mode.color());
         self.apply(actions, palette);
     }
 
@@ -408,26 +406,15 @@ impl BootTui {
         let Some(node) = Node::from_event(event) else {
             return;
         };
-        self.done += 1;
-        if !self.announced {
-            let state = node.state.to_lowercase();
-            match self
-                .plan
-                .iter_mut()
-                .rev()
-                .find(|row| row[1].as_str() == node.kind && row[2].as_str() == node.name)
-            {
-                Some(row) => row[3].clone_from(&state),
-                None => self.plan.push(vec![
-                    String::new(),
-                    node.kind.to_owned(),
-                    node.name.to_owned(),
-                    state,
-                    String::new(),
-                    String::new(),
-                ]),
-            }
-            self.widths = text::boot_widths(&self.plan);
+        self.progress.advance();
+        if node.kind == "image" {
+            self.progress.finish_build();
+        } else {
+            self.progress.clear_active();
+        }
+        if !self.progress.announced() {
+            self.progress.remember(node.kind, node.name);
+            self.refresh_widths();
         }
         if let Some(actions) = self
             .narrative
@@ -437,12 +424,15 @@ impl BootTui {
             self.apply(actions, palette);
             return;
         }
-        let row = completed_row(&node, &self.widths, self.mode.color());
+        let (index, total) =
+            build::counter(event).unwrap_or_else(|| self.progress.position(node.kind, node.name));
+        let row = completed_row(&node, index, total, &self.widths, self.mode.color());
         if let Some(pane) = &self.pane
             && let Ok(mut pane) = pane.lock()
         {
-            pane.set_widths(self.widths.clone());
-            pane.complete(node.kind, node.name, &row, self.done);
+            pane.set_widths(self.widths);
+            pane.set_progress(self.progress.clone());
+            pane.complete(node.kind, node.name, &row);
             return;
         }
         println!("{row}");
@@ -452,13 +442,11 @@ impl BootTui {
         self.failed = true;
         // Stop the repaint thread first, so no tick can restore the live block after it clears.
         self.ticker = None;
+        self.progress.clear_active();
+        self.progress.finish_build();
         let anchored = self.pane.is_some();
         let actions = self.narrative.failed(event, self.width, palette, anchored);
-        if let Some(pane) = &self.pane
-            && let Ok(mut pane) = pane.lock()
-        {
-            pane.draw();
-        }
+        self.sync_pane(true);
         self.apply(actions, palette);
     }
 
