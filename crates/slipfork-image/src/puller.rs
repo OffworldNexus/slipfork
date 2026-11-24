@@ -151,6 +151,26 @@ impl OciPuller {
         self.pull_into(reference, &mut io::sink())
     }
 
+    /// Pulls `reference` as one live `FROM` row (1 of 1) for an image that is a bare `from:`.
+    pub fn pull_row(
+        &self,
+        reference: &ImageReference,
+        log: &mut crate::step_log::StepLog<'_>,
+    ) -> Result<PulledImage> {
+        log.started(1, 1, "FROM", &reference.to_string());
+        let started = std::time::Instant::now();
+        match self.pull_into(reference, log) {
+            Ok(image) => {
+                log.done(started.elapsed());
+                Ok(image)
+            }
+            Err(error) => {
+                log.failed(started.elapsed(), error.exit_code());
+                Err(error)
+            }
+        }
+    }
+
     /// Pulls `reference`, flushing one progress line per registry phase into `log`.
     ///
     /// The caller supplies the sink: the CLI forwards each line as a typed boot event, tests

@@ -10,11 +10,13 @@ use serde_json::{Value, json};
 use slipfork_world::{
     BootEvent, BootFailure, BootScheduler, BootState, BootStep, LogStore, ResourceKind, StampStore,
     StepOutcome, WorldName, WorldStamp, WorldStampStore, control, is_btrfs_path, plan_epoch,
-    run_log::RunCapture, world_plan_with, write_pg_checkpoints,
+    world_plan_with, write_pg_checkpoints,
 };
 
 use crate::commands::Session;
 use crate::world::features::WorldFeatures;
+use crate::world::runtime::capture::{RunTarget, strip_ansi};
+use crate::world::runtime::frames::{StepPin, failure_facts, log_frame, step_frame};
 
 use super::{HostEnv, SuperviseArgs, WorldState, fail, runtime::WorldRuntime, state_path};
 
@@ -91,11 +93,21 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
     // instead of re-running `pg` -> `pre-deploy` -> `api` serially.
     let stamps = stamps_for(project, &stamp_store, trusted);
 
+    let step_commands: Arc<Vec<Option<String>>> =
+        Arc::new(plan.steps.iter().map(|step| step.command.clone()).collect());
     let failed_frame: Arc<Mutex<Option<(usize, Value)>>> = Arc::new(Mutex::new(None));
     let sink_emitter = Arc::clone(&emitter);
     let sink_failed = Arc::clone(&failed_frame);
+    let sink_commands = Arc::clone(&step_commands);
     let sink: Arc<slipfork_world::EventSink> = Arc::new(move |event: BootEvent| {
-        let frame = boot_event_json(&event);
+        let mut frame = boot_event_json(&event);
+        // The plan owns every step's command; the typed event only names the step index.
+        if let Some(command) = step_index(&event)
+            .and_then(|index| sink_commands.get(index))
+            .and_then(Option::as_deref)
+        {
+            frame["command"] = json!(command);
+        }
         if let BootEvent::Failed { step, .. } = event {
             if let Ok(mut slot) = sink_failed.lock()
                 && slot.as_ref().is_none_or(|(existing, _)| step < *existing)
@@ -172,6 +184,18 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
                         "message": error.to_string().lines().next().unwrap_or_default(),
                     })
                 });
+            let record = frame["run_id"].as_str().and_then(|run_id| {
+                LogStore::at(runtime.store_layout().store_root(), world.clone())
+                    .records()
+                    .ok()?
+                    .records
+                    .into_iter()
+                    .find(|record| record.run_id == run_id)
+            });
+            let plumbing = frame["name"]
+                .as_str()
+                .and_then(|name| runtime.image_plumbing(name));
+            failure_facts(&mut frame, record.as_ref(), plumbing.as_deref());
             if !runtime.has_live_world() {
                 // Zero resources or services entered the world (a cold image `RUN` or pre-pod
                 // setup/hook failed): reap `unshare`/`slipfork-world-init`/`slirp4netns` and drop
@@ -298,6 +322,14 @@ fn boot_event_json(event: &BootEvent) -> Value {
     }
 }
 
+/// The plan index a boot event names, when it names one.
+fn step_index(event: &BootEvent) -> Option<usize> {
+    match event {
+        BootEvent::Started { step, .. } | BootEvent::Failed { step, .. } => Some(*step),
+        _ => None,
+    }
+}
+
 fn write_state(project: &Path, world: &WorldName, socket: &Path) -> Result<(), String> {
     let state = WorldState {
         world: world.as_str().to_owned(),
@@ -406,6 +438,20 @@ impl BootSink {
         }
     }
 
+    /// Emits one live build row for `image`'s `index`-th instruction and pins the identity a
+    /// following child `log` line inherits.
+    pub(super) fn step_event(&mut self, image: &str, event: &slipfork_image::StepEvent<'_>) {
+        self.log.image = Some(image.to_owned());
+        self.log.index = Some(event.index);
+        self.log.send(step_frame(image, event));
+    }
+
+    /// Writes one human note to the supervisor's stderr mirror only: never a `log` frame, never a
+    /// capture, because a capture is command output only.
+    pub(super) fn note(&mut self, message: &str) {
+        let _ = writeln!(self.mirror, "{message}");
+    }
+
     /// Emits one readiness frame pinned to this step.
     pub(super) fn progress(&mut self, message: &str) {
         let _ = writeln!(self.log, "{message}");
@@ -444,49 +490,9 @@ struct EventLog {
     total: usize,
     label: String,
     name: String,
+    image: Option<String>,
+    index: Option<usize>,
     run: Option<Arc<Mutex<RunTarget>>>,
-}
-
-/// One step's run capture: opened before the step runs, finished with its final state.
-struct RunTarget {
-    capture: Option<RunCapture>,
-}
-
-impl RunTarget {
-    fn open(
-        store: &LogStore,
-        project: &Path,
-        kind: &str,
-        name: &str,
-        command: &str,
-    ) -> Result<Self, BootFailure> {
-        RunCapture::begin(store, project, kind, name, command)
-            .map(|capture| Self {
-                capture: Some(capture),
-            })
-            .map_err(|error| {
-                BootFailure::new(format!("cannot open a run capture for `{name}`: {error}"))
-            })
-    }
-
-    fn append_stream(&mut self, stream: slipfork_world::Stream, text: &str) {
-        if let Some(capture) = &mut self.capture {
-            let _ = capture.append_stream(stream, text);
-        }
-    }
-
-    fn finish(&mut self, state: &str, duration_ms: u64) -> Option<String> {
-        let mut capture = self.capture.take()?;
-        let run_id = capture.run_id().to_owned();
-        let _ = capture.finish(state, duration_ms);
-        Some(run_id)
-    }
-
-    fn discard(&mut self) {
-        if let Some(capture) = self.capture.take() {
-            capture.discard();
-        }
-    }
 }
 
 impl EventLog {
@@ -504,6 +510,8 @@ impl EventLog {
             total,
             label: label.to_owned(),
             name: name.to_owned(),
+            image: None,
+            index: None,
             run: None,
         }
     }
@@ -528,49 +536,23 @@ impl EventLog {
         {
             target.append_stream(stream, text);
         }
-        let frame = json!({
-            "event": "log",
-            "line": text,
-            "step": self.step,
-            "total": self.total,
-            "label": self.label,
-            "name": self.name,
-            "stream": stream.as_str(),
-        });
+        let pin = StepPin {
+            step: self.step,
+            total: self.total,
+            label: &self.label,
+            name: &self.name,
+            image: self.image.as_deref(),
+            index: self.index,
+        };
+        self.send(log_frame(&pin, stream.as_str(), text));
+    }
+
+    /// Flushes one complete frame through the shared emitter, immediately.
+    fn send(&self, frame: Value) {
         if let Ok(mut emitter) = self.emitter.lock() {
             emitter.send(frame);
         }
     }
-}
-
-/// Strips CSI escape sequences from a child's raw line, so a `log` frame never carries ANSI.
-pub(super) fn strip_ansi(text: &str) -> std::borrow::Cow<'_, str> {
-    if !text.contains('\u{1b}') {
-        return std::borrow::Cow::Borrowed(text);
-    }
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch != '\u{1b}' {
-            out.push(ch);
-            continue;
-        }
-        match chars.peek() {
-            Some('[') => {
-                chars.next();
-                for ch in chars.by_ref() {
-                    if ('@'..='~').contains(&ch) {
-                        break;
-                    }
-                }
-            }
-            Some(_) => {
-                chars.next();
-            }
-            None => {}
-        }
-    }
-    std::borrow::Cow::Owned(out)
 }
 
 impl Write for EventLog {

@@ -4,7 +4,6 @@
 //! ([`flight`]) deduplicate concurrent requests for the same image id or OCI reference.
 
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -58,6 +57,8 @@ pub(super) struct ImageCache {
     pulled: Mutex<BTreeMap<String, PulledImage>>,
     /// The last instruction each image build applied, for the run record it publishes.
     traces: Mutex<BTreeMap<String, StepTrace>>,
+    /// Container plumbing of the last failed build per image id, for the `-v`-only frame field.
+    plumbing: Mutex<BTreeMap<String, String>>,
     inflight_builds: FlightTable<(BuiltImage, BootState)>,
     inflight_pulls: FlightTable<PulledImage>,
 }
@@ -137,6 +138,7 @@ impl ImageCache {
             sealed: Mutex::new(sealed),
             pulled: Mutex::new(BTreeMap::new()),
             traces: Mutex::new(BTreeMap::new()),
+            plumbing: Mutex::new(BTreeMap::new()),
             inflight_builds: Arc::new(Mutex::new(BTreeMap::new())),
             inflight_pulls: Arc::new(Mutex::new(BTreeMap::new())),
         }
@@ -177,6 +179,12 @@ impl ImageCache {
             return outcome;
         }
         let outcome = self.build_uncached(image, log);
+        if let Err(failure) = &outcome
+            && let Some(plumbing) = &failure.runtime
+            && let Ok(mut ledger) = self.plumbing.lock()
+        {
+            ledger.insert(image.to_owned(), plumbing.to_string());
+        }
         if let Ok((built, _)) = &outcome
             && let Ok(mut sealed) = self.sealed.lock()
         {
@@ -199,25 +207,33 @@ impl ImageCache {
             .ok_or_else(|| BuildFailure {
                 message: format!("unknown image `{image}`"),
                 note: RunNote::default(),
+                runtime: None,
             })?;
         if let Some(reference) = &node.from {
             let parsed = ImageReference::parse(reference).map_err(|error| BuildFailure {
                 message: error.to_string(),
                 note: pull_note(reference),
+                runtime: None,
             })?;
             let mut tee = BuildLog::new(log, &self.store, image);
-            let pulled = match self.puller.pull_into(&parsed, &mut tee) {
-                Ok(pulled) => {
-                    tee.finish();
-                    pulled
-                }
-                Err(error) => {
-                    let message = format!("pull `{image}` failed: {error}");
-                    tee.finish();
-                    return Err(BuildFailure {
-                        message,
-                        note: pull_note(reference),
-                    });
+            let pulled = {
+                let mut bus = |event: slipfork_image::BuildEvent<'_>| match event {
+                    slipfork_image::BuildEvent::Line { stream, text } => {
+                        tee.append_stream(stream, text);
+                    }
+                    slipfork_image::BuildEvent::Step(event) => tee.step(&event),
+                };
+                let mut step_log = StepLog::with_events(&mut bus);
+                match self.puller.pull_row(&parsed, &mut step_log) {
+                    Ok(pulled) => pulled,
+                    Err(error) => {
+                        let message = format!("pull `{image}` failed: {error}");
+                        return Err(BuildFailure {
+                            message,
+                            note: pull_note(reference),
+                            runtime: error.runtime().map(Into::into),
+                        });
+                    }
                 }
             };
             let state = if pulled.cached {
@@ -260,25 +276,28 @@ impl ImageCache {
             };
             let mut tee = BuildLog::new(log, &self.store, image);
             let built = {
-                let mut sink = |stream: slipfork_image::Stream, line: &str| {
-                    tee.append_stream(stream, line);
+                let mut bus = |event: slipfork_image::BuildEvent<'_>| match event {
+                    slipfork_image::BuildEvent::Line { stream, text } => {
+                        tee.append_stream(stream, text);
+                    }
+                    slipfork_image::BuildEvent::Step(event) => tee.step(&event),
                 };
-                let mut step_log = StepLog::new(&mut sink);
+                let mut step_log = StepLog::with_events(&mut bus);
                 self.builder.build(&request, &mut step_log)
             };
             let report = match built {
-                Ok(report) => {
-                    tee.finish();
-                    report
-                }
+                Ok(report) => report,
                 Err(error) => {
                     // Keep only real child output: flush a trailing unterminated tail, then record
                     // the failing instruction on the run record. The summary line stays in the
                     // `up` failure, never in the capture.
                     let message = format!("build `{image}` failed: {error}");
                     let note = failed_note(&request.dockerfile, &error);
-                    tee.finish();
-                    return Err(BuildFailure { message, note });
+                    return Err(BuildFailure {
+                        message,
+                        note,
+                        runtime: error.runtime().map(Into::into),
+                    });
                 }
             };
             if let Some(last) = &report.last
@@ -286,12 +305,10 @@ impl ImageCache {
             {
                 traces.insert(image.to_owned(), last.clone());
             }
-            let _ = writeln!(
-                log,
+            log.note(&format!(
                 "dockerfile {image}: {} cached, {} built",
                 report.cache_hits, report.cache_misses
-            );
-            let _ = log.flush();
+            ));
             // A sealed step cache hit is `cached`; only an actually applied step is `built`. A
             // metadata-only `FROM`+`ENV` Dockerfile has zero hits, so it is still a real build.
             let state = if report.cache_hits > 0 && report.cache_misses == 0 {
@@ -358,6 +375,11 @@ impl ImageCache {
         outcome
     }
 
+    /// The `-v`-only container plumbing a failed image build reported.
+    pub(super) fn plumbing(&self, image: &str) -> Option<String> {
+        self.plumbing.lock().ok()?.get(image).cloned()
+    }
+
     /// The instruction a successful build leaves on its run record.
     pub(super) fn success_note(&self, image: &str) -> RunNote {
         let last = self
@@ -391,12 +413,12 @@ impl ImageCache {
             .unwrap_or_default()
     }
 }
-
 /// A failure with no executed instruction to name.
 fn plain_failure(message: String) -> BuildFailure {
     BuildFailure {
         message,
         note: RunNote::default(),
+        runtime: None,
     }
 }
 

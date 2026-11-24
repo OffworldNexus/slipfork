@@ -10,6 +10,8 @@ use std::thread;
 
 use crate::dockerfile::{CacheMount, Command as StepCommand, ImageConfig, Owner, RunSpec};
 use crate::error::{Error, Result};
+pub(crate) use crate::step_log::StepLog;
+use crate::step_log::exit_detail;
 
 const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
@@ -20,23 +22,6 @@ pub enum Stream {
     Stdout,
     /// The `RUN` command's standard error.
     Stderr,
-}
-
-/// Typed sink for one step's live child output: every line keeps its stream and its order.
-pub struct StepLog<'a> {
-    sink: &'a mut dyn FnMut(Stream, &str),
-}
-
-impl<'a> StepLog<'a> {
-    /// Wraps the caller's line sink.
-    pub fn new(sink: &'a mut dyn FnMut(Stream, &str)) -> Self {
-        Self { sink }
-    }
-
-    /// Emits one line tagged with the stream that produced it.
-    pub fn line(&mut self, stream: Stream, text: &str) {
-        (self.sink)(stream, text);
-    }
 }
 
 /// Plain host values `crun` needs; the composition root injects all of them.
@@ -178,15 +163,7 @@ impl CrunStepRuntime {
                 instruction: run.command.as_written().into(),
                 message: "the command exited with a non-zero status".to_owned(),
                 exit_code: status.code(),
-                runtime: Some(
-                    format!(
-                        "`crun` exited with {}",
-                        status
-                            .code()
-                            .map_or_else(|| "a signal".to_owned(), |code| format!("code {code}"))
-                    )
-                    .into(),
-                ),
+                runtime: Some(exit_detail(status.code()).into()),
                 next: "fix the command above; its output was streamed while it ran".to_owned(),
             })
         }

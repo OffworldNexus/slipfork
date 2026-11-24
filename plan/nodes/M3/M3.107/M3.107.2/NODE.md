@@ -2,22 +2,22 @@
 id: M3.107.2
 title: "Live build events: per-instruction step/log frames + failure facts from the daemon"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.107.1]
 paths:
   - "crates/slipfork-image/src/**"
+  - "crates/slipfork-image/tests/**"
   - crates/slipfork/src/world/supervise.rs
   - crates/slipfork/src/world/runtime.rs
-  - crates/slipfork/src/world/runtime/images/log.rs
-  - crates/slipfork/src/world/runtime/images.rs
+  - "crates/slipfork/src/world/runtime/**"
   - crates/slipfork/tests/critical_status_live.rs
-attempts: 0
+attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-24T12:04"
-updated: "2026-11-24T12:12"
+updated: "2026-11-24T12:45"
 ---
 
 # Goal

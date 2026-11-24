@@ -14,6 +14,8 @@ pub(crate) struct BuildFailure {
     pub(crate) message: String,
     /// The failing instruction, published onto the step's run record.
     pub(crate) note: RunNote,
+    /// Container plumbing behind a failed `RUN` (`crun exited with code 3`), `-v` only.
+    pub(crate) runtime: Option<Box<str>>,
 }
 
 /// One failed step plus the instruction detail its run record still needs.

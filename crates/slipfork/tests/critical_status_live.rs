@@ -9,7 +9,7 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -57,6 +57,10 @@ s3 uploads {\n  policy public-read\n  cdn assets-cdn\n}\n\
 image box from python:3.13-slim {\n\
 \x20 service alpha {\n    port 8101\n    route /alpha\n    run: python3 -m http.server 8101\n  }\n\
 }\n";
+
+const BUILD_FORKFILE: &str = "# forkfile: 0.1\n\
+image web . {\n  dockerfile Dockerfile\n\
+\x20 service api {\n    port 8103\n    run: python3 -m http.server 8103\n  }\n}\n";
 
 const BRAILLE: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
@@ -1121,6 +1125,230 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
                 && !text.contains("\"state\":\"live\"")
         },
     );
+
+    // 6. A real multi-step Dockerfile streams one row per instruction as it happens; the failing
+    //    `RUN` frame carries typed facts, and its `crun` plumbing never reaches `message`.
+    let stamp = unique_suffix();
+    fs::write(project.join("Forkfile"), BUILD_FORKFILE).expect("write the build Forkfile");
+    fs::write(
+        project.join("Dockerfile"),
+        format!(
+            "FROM python:3.13-slim\nCOPY . /app\n\
+             RUN sh -c 'echo a-{stamp}; sleep 1; echo b-{stamp} >&2'\n\
+             RUN sh -c 'echo out-{stamp}; echo err-{stamp} >&2; exit 3'\n"
+        ),
+    )
+    .expect("write the multi-step Dockerfile");
+    // Stamp each stdout line as it arrives, so a batched read cannot fake the live gap.
+    let arrived = Arc::new(std::sync::Mutex::new(Vec::<(Instant, String)>::new()));
+    let mut child = Command::new(binary())
+        .args(["up", "--json"])
+        .current_dir(&project)
+        .env("XDG_RUNTIME_DIR", &env.runtime)
+        .env("XDG_STATE_HOME", &env.state)
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the slipfork binary must run");
+    let pipe = child.stdout.take().expect("piped stdout");
+    let sink = Arc::clone(&arrived);
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(pipe).lines() {
+            let Ok(line) = line else { break };
+            if let Ok(mut lines) = sink.lock() {
+                lines.push((Instant::now(), line));
+            }
+        }
+    });
+    let mut errors = child.stderr.take().expect("piped stderr");
+    let stderr_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = errors.read_to_end(&mut bytes);
+        bytes
+    });
+    let status = wait_bounded(&mut child, &["up", "--json"]);
+    let _ = reader.join();
+    let stderr =
+        String::from_utf8_lossy(&stderr_reader.join().expect("stderr reader")).into_owned();
+    let arrived = arrived
+        .lock()
+        .map(|lines| lines.clone())
+        .unwrap_or_default();
+    let stdout = arrived
+        .iter()
+        .map(|(_, line)| line.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let detail = format!("stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        !status.success(),
+        "a failing `RUN` must fail `up`: {detail}"
+    );
+    for text in [&stdout, &stderr] {
+        assert!(
+            !text.contains("\u{1b}["),
+            "`up --json` build frames stay escape-free: {text}"
+        );
+    }
+    let frames: Vec<serde_json::Value> = stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            serde_json::from_str(line)
+                .unwrap_or_else(|error| panic!("`{line}` is not NDJSON: {error}\n{detail}"))
+        })
+        .collect();
+    let from_rows: Vec<&serde_json::Value> = frames
+        .iter()
+        .filter(|frame| {
+            frame["event"] == "step" && frame["image"] == "web" && frame["instruction"] == "FROM"
+        })
+        .collect();
+    assert_eq!(
+        from_rows
+            .iter()
+            .filter(|frame| frame["state"] == "started")
+            .count(),
+        1,
+        "exactly one `FROM` row per image: {stdout}\n{detail}"
+    );
+    assert!(
+        from_rows
+            .iter()
+            .any(|frame| frame["state"] != "started" && frame["elapsed_ms"].as_u64().is_some()),
+        "the `FROM` row settles with its elapsed time: {stdout}\n{detail}"
+    );
+    let started: Vec<&serde_json::Value> = frames
+        .iter()
+        .filter(|frame| {
+            frame["event"] == "step" && frame["image"] == "web" && frame["state"] == "started"
+        })
+        .collect();
+    assert_eq!(
+        started
+            .iter()
+            .map(|frame| frame["instruction"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        ["FROM", "COPY", "RUN", "RUN"],
+        "one `started` row per instruction, in order: {stdout}\n{detail}"
+    );
+    assert!(
+        started
+            .iter()
+            .enumerate()
+            .all(|(offset, frame)| frame["index"] == offset + 1),
+        "the rows count 1..n in declaration order: {started:?}\n{detail}"
+    );
+    let position = |index: i64, state: &str| {
+        frames
+            .iter()
+            .position(|frame| {
+                frame["event"] == "step" && frame["index"] == index && frame["state"] == state
+            })
+            .unwrap_or_else(|| {
+                panic!("instruction {index} has no `{state}` row: {stdout}\n{detail}")
+            })
+    };
+    let line_position = |marker: &str| {
+        frames
+            .iter()
+            .position(|frame| {
+                frame["event"] == "log"
+                    && frame["line"]
+                        .as_str()
+                        .is_some_and(|line| line.starts_with(marker))
+            })
+            .unwrap_or_else(|| panic!("no log frame for `{marker}`: {stdout}\n{detail}"))
+    };
+    for frame in frames.iter().filter(|frame| frame["event"] == "log") {
+        assert!(
+            matches!(frame["stream"].as_str(), Some("stdout" | "stderr"))
+                && frame["ts_ms"].as_u64().is_some(),
+            "every log frame carries its stream and timestamp: {frame}"
+        );
+    }
+    let a = line_position(&format!("a-{stamp}"));
+    let b = line_position(&format!("b-{stamp}"));
+    assert_eq!(frames[a]["stream"], "stdout");
+    assert_eq!(frames[b]["stream"], "stderr");
+    let gap = frames[b]["ts_ms"]
+        .as_u64()
+        .unwrap_or_default()
+        .saturating_sub(frames[a]["ts_ms"].as_u64().unwrap_or_default());
+    assert!(
+        gap >= 900,
+        "the `sleep 1` lines must arrive a second apart, saw {gap}ms: {stdout}"
+    );
+    // The reader stamped each line as it arrived: the frames really were live, not batched.
+    // Match the child `line` field of a `log` frame only: the RUN row's `args` carries both
+    // markers, so a substring scan would stamp both arrivals from the same pre-execution row.
+    let arrival = |marker: &str| {
+        let needle = format!("\"line\":\"{marker}\",");
+        arrived
+            .iter()
+            .find(|(_, line)| line.contains("\"event\":\"log\"") && line.contains(&needle))
+            .map(|(at, _)| *at)
+            .unwrap_or_else(|| panic!("no `log` frame carried `{marker}`: {stdout}"))
+    };
+    let live_gap = arrival(&format!("b-{stamp}")).duration_since(arrival(&format!("a-{stamp}")));
+    assert!(
+        live_gap >= Duration::from_millis(900),
+        "the `a` and `b` lines must reach the client a second apart, saw {live_gap:?}: {stdout}"
+    );
+    assert!(
+        position(3, "started") < a && a < b && b < position(3, "done"),
+        "step 3 must be live while its output streams: {stdout}"
+    );
+    assert_eq!(
+        frames[position(4, "failed")]["exit_code"],
+        3,
+        "the exit-3 `RUN` row keeps its code: {stdout}"
+    );
+    let failed = frames
+        .iter()
+        .rev()
+        .find(|frame| frame["event"] == "failed")
+        .unwrap_or_else(|| panic!("no `failed` boot frame: {stdout}\n{detail}"));
+    assert_eq!(failed["phase"], "run", "{failed}");
+    assert_eq!(failed["exit_code"], 3, "{failed}");
+    assert_eq!(failed["source"], "Dockerfile:4", "{failed}");
+    assert!(
+        failed["instruction"]
+            .as_str()
+            .is_some_and(|instruction| instruction.contains(&format!("out-{stamp}"))),
+        "the failure names the instruction as written: {failed}"
+    );
+    assert_eq!(
+        failed["next"],
+        format!(
+            "slipfork logs -r {}",
+            failed["run_id"].as_str().unwrap_or_default()
+        ),
+        "exactly one copy-pasteable remedy: {failed}"
+    );
+    assert!(
+        !failed["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("next:"),
+        "the frame's message never repeats a remedy: {failed}"
+    );
+    assert!(
+        failed["runtime"]
+            .as_str()
+            .is_some_and(|text| text.contains("crun")),
+        "the `-v`-only plumbing rides in `runtime`: {failed}"
+    );
+    assert!(
+        !failed["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("crun"),
+        "no crun text in the primary copy: {failed}"
+    );
+    let _ = run(&project, &env, &["down"]);
 }
 
 #[test]

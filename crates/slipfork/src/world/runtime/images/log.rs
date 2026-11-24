@@ -1,14 +1,14 @@
 //! Build-log tee: every image build line reaches the live boot sink **and**
 //! `<store>/logs/<world>/<image>.log`, so `slipfork logs <image>` reads failed-build output.
 
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use slipfork_image::{Error as ImageError, StepTrace};
+use slipfork_image::{Error as ImageError, StepEvent, StepTrace};
 use slipfork_world::run_log::RunNote;
 use slipfork_world::{ImageNode, LogStore, pod_log};
 
-use crate::world::supervise::{BootSink, strip_ansi};
+use crate::world::runtime::capture::strip_ansi;
+use crate::world::supervise::BootSink;
 
 /// A build-log tee: build progress goes to the live boot sink **and** to
 /// `<store>/logs/<world>/<image>.log`, so `slipfork logs <image>` reads failed-build output.
@@ -16,7 +16,6 @@ pub(super) struct BuildLog<'a> {
     sink: &'a mut BootSink,
     dir: PathBuf,
     id: String,
-    pending: Vec<u8>,
 }
 
 impl<'a> BuildLog<'a> {
@@ -26,8 +25,12 @@ impl<'a> BuildLog<'a> {
             sink,
             dir: store.world_logs(),
             id: id.to_owned(),
-            pending: Vec::new(),
         }
+    }
+
+    /// Forwards one instruction transition to the live sink, pinned to this image id.
+    pub(super) fn step(&mut self, event: &StepEvent<'_>) {
+        self.sink.step_event(&self.id, event);
     }
 
     /// Writes one cleaned line tagged with its `crun` stream to the live sink and the capture.
@@ -38,42 +41,6 @@ impl<'a> BuildLog<'a> {
         let stream = world_stream(stream);
         self.sink.append_stream(stream, &text);
         let _ = pod_log::append_stream(&self.dir, &self.id, stream, text.as_bytes());
-    }
-
-    /// Writes one untagged line as stdout; the `Write` path keeps piping raw bytes.
-    fn emit(&mut self, line: &[u8]) -> io::Result<()> {
-        self.append_stream(
-            slipfork_image::Stream::Stdout,
-            &String::from_utf8_lossy(line),
-        );
-        Ok(())
-    }
-
-    /// Flushes a trailing unterminated line into the capture file.
-    pub(super) fn finish(&mut self) {
-        let pending = std::mem::take(&mut self.pending);
-        let _ = self.emit(&pending);
-    }
-}
-
-impl Write for BuildLog<'_> {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.pending.extend_from_slice(buffer);
-        let mut start = 0;
-        while let Some(offset) = self.pending[start..].iter().position(|byte| *byte == b'\n') {
-            let end = start + offset;
-            let line = self.pending[start..end].to_vec();
-            self.emit(&line)?;
-            start = end + 1;
-        }
-        if start > 0 {
-            self.pending.drain(..start);
-        }
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.sink.flush()
     }
 }
 
@@ -205,7 +172,6 @@ mod tests {
             slipfork_image::Stream::Stderr,
             "npm ERR! missing script: build",
         );
-        tee.finish();
         drop(tee);
 
         let captured = fs::read_to_string(store.world_logs().join("frontend.log"))
@@ -249,7 +215,7 @@ mod tests {
                 instruction: "sh -c 'echo out; exit 3'".into(),
                 message: "the command exited with a non-zero status".to_owned(),
                 exit_code: Some(3),
-                runtime: Some("`crun` exited with code 3".into()),
+                runtime: Some("crun exited with code 3".into()),
                 next: "fix the command".to_owned(),
             },
         );

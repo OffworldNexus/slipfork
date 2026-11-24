@@ -13,7 +13,6 @@ use slipfork_world::WorldEngine;
 
 use crate::Architecture;
 use crate::BaseImageBuilder;
-use crate::context::BuildContext;
 use crate::digest::hex;
 use crate::dockerfile::{
     BuildArgs, Command, CopySpec, DockerfileParser, ImageConfig, Instruction, Stage, StageBase,
@@ -161,31 +160,8 @@ impl NativeImageBuilder {
         {
             runtime.ensure_crun()?;
         }
-        let needs_context = walked
-            .iter()
-            .flat_map(|stage| &stage.instructions)
-            .any(|parsed| {
-                matches!(
-                    &parsed.instruction,
-                    Instruction::Copy(spec) | Instruction::Add(spec) if spec.from.is_none()
-                )
-            });
-        let context = if needs_context {
-            BuildContext::load(&request.context)?
-        } else {
-            BuildContext::empty(&request.context)
-        };
-        let context_hash = context.hash()?;
         self.layout.ensure()?;
-        let mut run = BuildRun::new(
-            self,
-            request,
-            &context,
-            &context_hash,
-            &runtime,
-            log,
-            &stages,
-        );
+        let mut run = BuildRun::new(self, request, &runtime, log, walked);
         let state = self.build_stages(&mut run, &stages, walk.end)?;
         Ok(BuildReport {
             rootfs: state.rootfs,

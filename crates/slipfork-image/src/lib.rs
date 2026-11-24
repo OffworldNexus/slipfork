@@ -43,8 +43,8 @@
 //!     Architecture::X86_64,
 //!     host,
 //! );
-//! let mut sink = |_: slipfork_image::Stream, _: &str| {};
-//! let mut log = StepLog::new(&mut sink);
+//! let mut events = |_: slipfork_image::BuildEvent<'_>| {};
+//! let mut log = StepLog::with_events(&mut events);
 //! let report = builder.build(&BuildRequest {
 //!     context: "/mnt/btrfs/projects/demo".into(),
 //!     dockerfile: "/mnt/btrfs/projects/demo/Dockerfile".into(),
@@ -70,6 +70,7 @@ mod puller;
 mod reference;
 mod registry;
 mod runtime;
+mod step_log;
 mod steps;
 mod unpack;
 
@@ -90,7 +91,8 @@ pub use manifest::{Descriptor, ImageIndex, ImageManifest, Platform};
 pub use puller::{OciPuller, PulledImage};
 pub use reference::ImageReference;
 pub use registry::{Credentials, RegistryClient, RegistryScheme};
-pub use runtime::{CrunStepRuntime, StepHost, StepLog, Stream};
+pub use runtime::{CrunStepRuntime, StepHost, Stream};
+pub use step_log::{BuildEvent, StepEvent, StepLog, StepState, exit_detail};
 pub use steps::{StepCache, StepLayout, StepRecord};
 pub use unpack::LayerUnpacker;
 

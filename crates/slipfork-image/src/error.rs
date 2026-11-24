@@ -97,6 +97,15 @@ impl Error {
         }
     }
 
+    /// The child exit code a failed instruction carried, when it carried one.
+    #[must_use]
+    pub fn exit_code(&self) -> Option<i32> {
+        match self {
+            Self::StepFailed { exit_code, .. } => *exit_code,
+            _ => None,
+        }
+    }
+
     /// The container-runtime plumbing behind a failed `RUN`; `up -v` shows it, the default view
     /// stays a single human line.
     #[must_use]

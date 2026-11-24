@@ -20,9 +20,9 @@ use std::thread;
 use std::time::Duration;
 
 use slipfork_image::{
-    BuildArgs, BuildRequest, Command, Credentials, CrunStepRuntime, ImageConfig, ImageLayout,
-    NativeImageBuilder, OciPuller, Port, Protocol, RegistryScheme, RunSpec, StepHost, StepLayout,
-    StepLog, Stream,
+    BuildArgs, BuildEvent, BuildRequest, Command, Credentials, CrunStepRuntime, ImageConfig,
+    ImageLayout, NativeImageBuilder, OciPuller, Port, Protocol, RegistryScheme, RunSpec, StepHost,
+    StepLayout, StepLog, Stream,
 };
 use slipfork_world::{BtrfsEngine, Dirtiness, StoreLayout, WorldEngine, is_subvolume_path};
 
@@ -48,8 +48,12 @@ fn build_capture(
 ) {
     let mut streamed: Vec<(Stream, String)> = Vec::new();
     let outcome = {
-        let mut sink = |stream: Stream, line: &str| streamed.push((stream, line.to_owned()));
-        let mut log = StepLog::new(&mut sink);
+        let mut events = |event: BuildEvent<'_>| {
+            if let BuildEvent::Line { stream, text } = event {
+                streamed.push((stream, text.to_owned()));
+            }
+        };
+        let mut log = StepLog::with_events(&mut events);
         builder.build(request, &mut log)
     };
     (outcome, streamed)
@@ -462,8 +466,12 @@ fn a_target_stage_never_reaches_a_later_failing_stage() {
             CrunStepRuntime::new(StepHost::new(&crun, "/etc/resolv.conf", &scratch, uid, gid));
         let mut step_log: Vec<(Stream, String)> = Vec::new();
         let outcome = {
-            let mut sink = |stream: Stream, line: &str| step_log.push((stream, line.to_owned()));
-            let mut log = StepLog::new(&mut sink);
+            let mut events = |event: BuildEvent<'_>| {
+                if let BuildEvent::Line { stream, text } = event {
+                    step_log.push((stream, text.to_owned()));
+                }
+            };
+            let mut log = StepLog::with_events(&mut events);
             step_runtime.run(
                 &stale_id,
                 &step_rootfs,

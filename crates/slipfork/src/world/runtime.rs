@@ -21,13 +21,14 @@ use slipfork_world::{
 use super::HostEnv;
 use super::supervise::{BootSink, Emitter};
 
+pub(crate) mod capture;
 mod execute;
+pub(crate) mod frames;
 mod helpers;
 mod images;
 mod ready;
 mod resources;
 mod rootfs;
-
 use helpers::{ServiceLaunch, merge_env, merge_path, project_binds, shell_command, upsert_env};
 
 /// The one line a non-zero pod exit writes into both the capture and the failure message.
@@ -499,7 +500,6 @@ impl WorldRuntime {
         let _ = fs::remove_dir(self.layout.pods_root());
     }
 }
-
 /// Step wall time in whole milliseconds, clamped for a pathological clock jump.
 fn elapsed_ms(started: std::time::Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)

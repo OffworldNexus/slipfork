@@ -113,6 +113,11 @@ impl WorldRuntime {
         Ok(done)
     }
 
+    /// The `-v`-only container plumbing a failed image build reported, keyed by image id.
+    pub(crate) fn image_plumbing(&self, image: &str) -> Option<String> {
+        self.images.plumbing(image)
+    }
+
     fn execute_step(&self, step: &BootStep, log: &mut BootSink) -> Result<Staged, StepFailure> {
         match step.kind {
             BootKind::Image => self

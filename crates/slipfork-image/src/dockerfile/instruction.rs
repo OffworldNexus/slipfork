@@ -177,6 +177,24 @@ impl Instruction {
         }
     }
 
+    /// The uppercase instruction keyword (`RUN`, `COPY`, …) for live build rows.
+    #[must_use]
+    pub fn keyword(&self) -> &'static str {
+        match self {
+            Self::From { .. } => "FROM",
+            Self::Arg { .. } => "ARG",
+            Self::Env(_) => "ENV",
+            Self::Workdir(_) => "WORKDIR",
+            Self::Copy(_) => "COPY",
+            Self::Add(_) => "ADD",
+            Self::Run(_) => "RUN",
+            Self::User(_) => "USER",
+            Self::Expose(_) => "EXPOSE",
+            Self::Cmd(_) => "CMD",
+            Self::Entrypoint(_) => "ENTRYPOINT",
+        }
+    }
+
     /// The instruction text without its keyword, exactly as the author wrote it.
     #[must_use]
     pub fn command_text(&self) -> String {

@@ -8,9 +8,10 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use slipfork_image::{
-    Architecture, BuildArgs, BuildContext, BuildRequest, Command, Credentials, DockerfileParser,
-    Dockerignore, ImageConfig, ImageLayout, ImageReference, Instruction, LayerUnpacker,
-    NativeImageBuilder, OciPuller, StepHost, StepLayout, StepLog, Stream, Variables, stage_walk,
+    Architecture, BuildArgs, BuildContext, BuildEvent, BuildRequest, Command, Credentials,
+    DockerfileParser, Dockerignore, ImageConfig, ImageLayout, ImageReference, Instruction,
+    LayerUnpacker, NativeImageBuilder, OciPuller, StepHost, StepLayout, StepLog, Variables,
+    stage_walk,
 };
 use slipfork_world::{BtrfsEngine, StoreLayout, WorldEngine};
 
@@ -224,8 +225,8 @@ fn a_missing_crun_fails_typed_before_any_step_runs() {
         args: BuildArgs::new(),
         target: None,
     };
-    let mut sink = |_: Stream, _: &str| {};
-    let mut log = StepLog::new(&mut sink);
+    let mut events = |_: BuildEvent<'_>| {};
+    let mut log = StepLog::with_events(&mut events);
     let error = builder
         .build(&request, &mut log)
         .expect_err("a missing crun must fail closed");
@@ -362,8 +363,8 @@ fn an_absent_target_alias_fails_before_any_build_work() {
         args: BuildArgs::new(),
         target: Some("staging".to_owned()),
     };
-    let mut sink = |_: Stream, _: &str| {};
-    let mut log = StepLog::new(&mut sink);
+    let mut events = |_: BuildEvent<'_>| {};
+    let mut log = StepLog::with_events(&mut events);
     let error = builder
         .build(&request, &mut log)
         .expect_err("an absent target alias must fail closed");
