@@ -180,7 +180,8 @@ fn wait_portless(pods_dir: &Path, service: &str) -> Result<(), BootFailure> {
                 ServiceHealth::Exited(code) => Err(BootFailure::with_remedy(
                     format!("service `{service}` exited with code {code} during boot"),
                     format!("run `slipfork logs {service}`"),
-                )),
+                )
+                .with_exit_code(code)),
                 ServiceHealth::Running => Err(BootFailure::with_remedy(
                     format!("service `{service}` exited during boot"),
                     format!("run `slipfork logs {service}`"),

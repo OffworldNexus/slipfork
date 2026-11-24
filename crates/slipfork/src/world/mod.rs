@@ -140,6 +140,8 @@ pub struct UpArgs {
     pub features: Vec<FeatureEdit>,
     /// Start from an empty base instead of the built-in `dev` default.
     pub no_default_features: bool,
+    /// `-v`: add the dim `runtime:` plumbing row between a boot verdict and its `next:`.
+    pub verbose: bool,
 }
 
 /// Parsed `slipfork down [target]` arguments.
@@ -160,6 +162,8 @@ pub struct RestartArgs {
     pub service: Option<String>,
     /// Emit `{"restarted": n}` instead of the human line.
     pub json: bool,
+    /// `-v`: show engine narration and runtime plumbing rows.
+    pub verbose: bool,
 }
 
 /// Parsed `slipfork fork [name]` arguments.
@@ -173,6 +177,8 @@ pub struct ForkArgs {
     pub features: Vec<FeatureEdit>,
     /// Start the fork from an empty feature base instead of the inherited configuration.
     pub no_default_features: bool,
+    /// `-v`: add the dim `runtime:` plumbing row between a boot verdict and its `next:`.
+    pub verbose: bool,
 }
 
 /// Parsed `slipfork drop <name> [-f]` arguments.

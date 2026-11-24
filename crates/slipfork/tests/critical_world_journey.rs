@@ -1523,18 +1523,45 @@ fn world_up_restart_down_journey() {
         failed_out.contains("→ [") || failed_out.contains('✗'),
         "failure must keep a phase header or the ✗ tail:\nstdout={failed_out}\nstderr={failed_err}"
     );
-    // A service failure prints its crisp sentence on `stderr` plus exactly one catalog-derived
-    // remedy (`boot::render::failure_sentence`) on the stream that carries the boot rows: no
-    // `error:`, no numbered `Forkfile:` line, no second hint.
+    // v3 splits the failure copy: the narrative (`✗ start broken …` phase row and its gutter
+    // output) stays on stdout, while the verdict and the one catalog-derived remedy go to stderr.
+    // `BROKEN_FORKFILE` exits 7, so the verdict carries that exact code.
     let stderr_lines: Vec<&str> = failed_err
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .collect();
     assert_eq!(
-        stderr_lines,
-        ["✗ Failed to start service broken"],
-        "a service failure prints exactly one sentence on stderr:\nstdout={failed_out}\nstderr={failed_err}"
+        stderr_lines.len(),
+        2,
+        "a service failure prints one verdict and one remedy on stderr:\nstdout={failed_out}\nstderr={failed_err}"
+    );
+    assert_eq!(
+        stderr_lines[0], "✗ start broken failed (exit 7)",
+        "the verdict names the phase verb, target, and exit code:\nstderr={failed_err}"
+    );
+    assert!(
+        stderr_lines[1].starts_with("next: slipfork logs -r ")
+            && stderr_lines[1].len() > "next: slipfork logs -r ".len(),
+        "the one remedy replays a catalog run:\nstderr={failed_err}"
+    );
+    let has_start_broken = failed_out.lines().any(|line| {
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        tokens.len() >= 4
+            && matches!(tokens[0], "→" | "✗")
+            && tokens[1].starts_with('[')
+            && tokens[2] == "start"
+            && tokens[3] == "broken"
+    });
+    assert!(
+        has_start_broken && !failed_out.contains("failed (exit 7)"),
+        "the narrative stays on stdout and the verdict does not repeat there:\nstdout={failed_out}"
+    );
+    assert!(
+        !failed_out
+            .lines()
+            .any(|line| line.matches("uv sync").count() > 1),
+        "a `setup` row whose command equals its target must never repeat `uv sync`:\nstdout={failed_out}"
     );
     let failure_copy = format!("{failed_out}\n{failed_err}");
     let remedies: Vec<&str> = failure_copy

@@ -4,7 +4,6 @@
 //! Captures stay pure command output. [`RunNotes`] publishes the executed instruction onto the
 //! step's catalog run once it settles, so the replay header never has to guess.
 
-use std::io::Write;
 use std::sync::Arc;
 
 use slipfork_world::{BootFailure, BootKind, BootState, BootStep, StepOutcome};
@@ -60,11 +59,11 @@ impl WorldRuntime {
                         .message
                         .push_str(&format!("\ncould not annotate run: {annotate}"));
                 }
-                let _ = log.flush();
+                log.flush();
                 return Err(failure);
             }
         };
-        let _ = log.flush();
+        log.flush();
         staged.attach_progress(log.clone());
         let outcome = staged.await_ready();
         let duration = elapsed_ms(started);
@@ -93,7 +92,7 @@ impl WorldRuntime {
                 run_id
             }
         };
-        let _ = log.flush();
+        log.flush();
         let mut done = match outcome {
             Ok(done) => done,
             Err(mut error) => {

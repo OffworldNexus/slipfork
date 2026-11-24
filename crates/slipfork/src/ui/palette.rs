@@ -19,8 +19,8 @@ pub struct Verdict {
     pub state: String,
     /// Child exit code when the run carried one.
     pub exit_code: Option<i32>,
-    /// Wall time of the run in milliseconds.
-    pub duration_ms: u64,
+    /// Wall time of the run in milliseconds, when the run settled to completion.
+    pub duration_ms: Option<u64>,
 }
 
 /// The shipped visual roles: one method per thing a human reads.
@@ -158,12 +158,12 @@ impl Palette {
         started: Option<&str>,
     ) -> String {
         let mut fields = vec![
-            self.dim(&format!("#{run_id}")),
+            self.tint(&format!("#{run_id}"), "1"),
             self.dim(verb),
-            self.label(target),
+            self.tint(target, "1"),
         ];
-        if !command.is_empty() && command != target {
-            fields.push(self.label(command));
+        if !command.trim().is_empty() && command.trim() != target.trim() {
+            fields.push(command.to_owned());
         }
         if let Some(started) = started {
             fields.push(self.dim(started));
@@ -185,7 +185,8 @@ impl Palette {
 
     /// The one verdict line for a settled run.
     ///
-    /// `✗ RUN api failed (exit 3)` or `✓ RUN api done (0.8s)`; `next:` is never part of it.
+    /// `✗ RUN api failed (exit 3)` or `✓ RUN api done (0.8s)`; `next:` is never part of it, and
+    /// `verb` is omitted if empty or equal to `target`.
     #[must_use]
     pub fn verdict(self, verdict: &Verdict) -> String {
         let Verdict {
@@ -195,13 +196,16 @@ impl Palette {
             exit_code,
             duration_ms,
         } = verdict;
+        let subject = if verb.trim().is_empty() || verb.trim() == target.trim() {
+            self.tint(target, "1")
+        } else {
+            format!("{} {}", self.dim(verb), self.tint(target, "1"))
+        };
         if state == "failed" {
             let mut line = format!(
-                "{} {} {} {}",
+                "{} {subject} {}",
                 self.tint("✗", "31"),
-                self.dim(verb),
-                self.label(target),
-                self.tint("failed", "31"),
+                self.tint("failed", "31")
             );
             if let Some(code) = exit_code {
                 line.push(' ');
@@ -209,12 +213,11 @@ impl Palette {
             }
             return line;
         }
-        format!(
-            "{} {} {} done {}",
-            self.icon_ok(),
-            self.dim(verb),
-            self.label(target),
-            self.dim(&format!("({})", elapsed_text(*duration_ms))),
-        )
+        let mut line = format!("{} {subject} done", self.icon_ok());
+        if let Some(millis) = duration_ms {
+            line.push(' ');
+            line.push_str(&self.dim(&format!("({})", elapsed_text(*millis))));
+        }
+        line
     }
 }

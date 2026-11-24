@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -16,6 +16,7 @@ use crate::layout::ImageLayout;
 use crate::manifest::ImageManifest;
 use crate::reference::ImageReference;
 use crate::registry::{Credentials, RegistryClient, RegistryScheme};
+use crate::step_log::StepLog;
 use crate::unpack::LayerUnpacker;
 use crate::{Architecture, BaseImageBuilder};
 
@@ -148,16 +149,18 @@ impl OciPuller {
 
     /// Pulls `reference`, reusing a sealed cache entry without downloading a blob again.
     pub fn pull(&self, reference: &ImageReference) -> Result<PulledImage> {
-        self.pull_into(reference, &mut io::sink())
+        self.pull_into(reference, &mut StepLog::discard())
     }
 
-    /// Pulls `reference` as one live `FROM` row (1 of 1) for an image that is a bare `from:`.
+    /// Pulls `reference` as one live `FROM` row (1 of 1), labelled with `args` as the author wrote
+    /// it; the normalized registry reference never reaches the row.
     pub fn pull_row(
         &self,
         reference: &ImageReference,
-        log: &mut crate::step_log::StepLog<'_>,
+        args: &str,
+        log: &mut StepLog<'_>,
     ) -> Result<PulledImage> {
-        log.started(1, 1, "FROM", &reference.to_string());
+        log.started(1, 1, "FROM", args);
         let started = std::time::Instant::now();
         match self.pull_into(reference, log) {
             Ok(image) => {
@@ -171,14 +174,11 @@ impl OciPuller {
         }
     }
 
-    /// Pulls `reference`, flushing one progress line per registry phase into `log`.
-    ///
-    /// The caller supplies the sink: the CLI forwards each line as a typed boot event, tests
-    /// pass [`io::sink`]. Every line is flushed immediately so a slow layer never looks stalled.
+    /// Pulls `reference`, emitting one typed engine note per registry phase into `log`.
     pub fn pull_into(
         &self,
         reference: &ImageReference,
-        log: &mut dyn Write,
+        log: &mut StepLog<'_>,
     ) -> Result<PulledImage> {
         // One real pull per OCI reference: two `Dockerfile` builds sharing a base wait here
         // instead of unpacking into the same staging directory.
@@ -219,7 +219,7 @@ impl OciPuller {
     fn pull_uncached(
         &self,
         reference: &ImageReference,
-        log: &mut dyn Write,
+        log: &mut StepLog<'_>,
     ) -> Result<PulledImage> {
         // A recorded digest with a sealed rootfs means the whole pull is served from disk: no
         // registry session, no manifest request, and no "pull" line in the boot log.
@@ -311,7 +311,7 @@ impl OciPuller {
         &self,
         session: &mut crate::registry::RegistrySession<'_>,
         resolved: &crate::registry::ResolvedManifest,
-        log: &mut dyn Write,
+        log: &mut StepLog<'_>,
     ) -> Result<ImageFacts> {
         let path = self.layout.config(&resolved.digest);
         if let Ok(bytes) = fs::read(&path) {
@@ -345,7 +345,7 @@ impl OciPuller {
         session: &mut crate::registry::RegistrySession<'_>,
         manifest: &ImageManifest,
         root: &Path,
-        log: &mut dyn Write,
+        log: &mut StepLog<'_>,
     ) -> Result<()> {
         let unpacker = LayerUnpacker::new(root);
         let total = manifest.layers.len();
@@ -412,10 +412,9 @@ fn parse_config(bytes: &[u8], path: &Path) -> Result<ImageFacts> {
     })
 }
 
-/// Writes one already-formatted progress line and flushes it; sink errors are not fatal.
-fn note(log: &mut dyn Write, line: String) {
-    let _ = writeln!(log, "{line}");
-    let _ = log.flush();
+/// Reports one already-formatted bookkeeping note on `log`.
+fn note(log: &mut StepLog<'_>, line: String) {
+    log.note(&line);
 }
 
 impl BaseImageBuilder for OciPuller {

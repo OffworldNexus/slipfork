@@ -193,11 +193,12 @@ impl NativeImageBuilder {
         &self,
         stage: &Stage,
         built: &[(Option<String>, StageState)],
+        log: &mut StepLog<'_>,
     ) -> Result<StageState> {
         match &stage.base {
             StageBase::Image(reference) => {
                 let reference = ImageReference::parse(reference)?;
-                let image = self.puller.pull(&reference)?;
+                let image = self.puller.pull_into(&reference, log)?;
                 Ok(StageState {
                     key: format!("base-{}", image.digest),
                     config: ImageConfig::from(&image.facts),

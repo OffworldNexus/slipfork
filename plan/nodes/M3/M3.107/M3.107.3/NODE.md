@@ -2,20 +2,29 @@
 id: M3.107.3
 title: "Live build rendering in up: spinner phase rows, gutter-streamed output, collapse, one verdict"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.107.2]
 paths:
+  - "crates/slipfork-image/src/**"
   - crates/slipfork/src/boot.rs
   - "crates/slipfork/src/boot/**"
-  - crates/slipfork/src/ui/palette.rs
+  - "crates/slipfork/src/ui/**"
+  - crates/slipfork/src/world/up.rs
+  - crates/slipfork/src/world/mod.rs
+  - crates/slipfork/src/world/fork.rs
+  - crates/slipfork/src/world/supervise.rs
+  - "crates/slipfork/src/world/runtime/**"
+  - crates/slipfork/src/cli/dispatch.rs
+  - "crates/slipfork/src/commands/**"
   - crates/slipfork/tests/critical_status_live.rs
-attempts: 0
+  - crates/slipfork/tests/critical_world_journey.rs
+attempts: 3
 max_attempts: 3
-escalation: none
+escalation: expert
 created: "2026-11-24T12:12"
-updated: "2026-11-24T12:13"
+updated: "2026-11-24T13:57"
 ---
 
 # Goal
@@ -31,7 +40,7 @@ updated: "2026-11-24T12:13"
 - Success build ends `✓ image api (N steps, Xs)`.
 - `NO_COLOR` and non-TTY: append-only `→`/output/`✓` lines, zero `\x1b[`, no spinner frames. `--json`: frames pass through, zero escapes.
 - `-v` adds the dim `  runtime: crun exited with code 3` row before `next:`.
-- render.rs and pane.rs shrink or stay; new files ≤500 LOC. `cargo test -p slipfork --lib boot` + `--test critical_status_live` green.
+- render.rs and pane.rs shrink or stay; new files ≤500 LOC. `cargo test -p slipfork --bin slipfork -- boot` + `--test critical_status_live` green.
 
 # Styling
 Parent `plan/nodes/M3/M3.107/NODE.md` `# Visual contract` (v2 + live build addendum) is authoritative.

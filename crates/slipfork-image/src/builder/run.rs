@@ -108,7 +108,7 @@ impl<'a, 's, 'l> BuildRun<'a, 's, 'l> {
             self.log.failed(started.elapsed(), None);
             return Err(error);
         }
-        let mut state = match self.builder.base_state(stage, &self.built) {
+        let mut state = match self.builder.base_state(stage, &self.built, self.log) {
             Ok(state) => state,
             Err(error) => {
                 self.log.failed(started.elapsed(), error.exit_code());

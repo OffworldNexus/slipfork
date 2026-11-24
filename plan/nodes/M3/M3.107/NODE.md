@@ -39,17 +39,20 @@ See `# Visual contract` below (Opus-owned v2; supersedes every earlier role/colo
 # Visual contract (Opus-owned, v3 — supersedes v1/v2 and every earlier role/colour table)
 
 Mental model: **we're running X → here is what it said → it settled → here's what to do next.**
-The phase row is the anchor; output is subordinate; metadata recedes. No `out`/`err` words, no stream column.
+The phase row is the anchor (by position + bold target); output is subordinate (indented gutter); metadata recedes (dim). No `out`/`err` words, no stream column.
 
-| Role | Style | Used for |
+| Role | Exact SGR | Used for (same role → same style on every surface) |
 |---|---|---|
-| anchor | bold | `→`, target name, the command/args on a phase row and in the replay header |
-| content | neutral | every child output line (stdout and stderr alike) |
-| metadata | dim (SGR 2) | `[i/n]`, instruction/verb (`RUN`, `COPY`, `start`), elapsed, timestamps, `#run-id`, `(exit N)`, `next:` label, the stdout gutter `│` |
-| stderr gutter | yellow (33) | the stderr gutter glyph `┃` ONLY (stderr is a channel, not a verdict; red stays reserved) |
-| failure | red (31) | `✗` and the word `failed` ONLY |
-| success | green (32) | `✓`, `ready`, `running` ONLY |
-| actionable | cyan (36) | the copy-pasteable command after `next:`; URLs cyan + underline |
+| handle | bold `1` | `#<run id>` in the replay header ONLY |
+| subject | bold `1` | the target name (`api`) — header, phase row, verdict, `✓ image` row. Never blue, never any colour |
+| content | neutral (no SGR) | command/args (phase row + header), the failure reason, every child output line, `→`, the spinner, `done` |
+| metadata | dim `2` | `[i/n]`, kind/instruction/verb (`image`, `RUN`, `COPY`, `start`), elapsed, timestamps, `(exit N)`, `(N steps, Xs)`, `next:` label, stdout gutter `│` |
+| stderr channel | yellow `33` | the stderr gutter glyph `┃` ONLY |
+| failure | red `31` | `✗` and the word `failed` ONLY |
+| success | green `32` | `✓`, `ready`, `running` ONLY |
+| actionable | cyan `36` | the copy-pasteable command after `next:`; URLs `36;4` |
+
+Rule: at most ONE hue (red, green, yellow or cyan) per line besides bold/dim; `palette.label`/blue is banned on these surfaces. A golden unit test pins the exact bytes of the header, a phase row, a `✓` row and a verdict.
 
 SGR 1/2/31/32/33/36 only — readable on dark and light themes, no bright 9x codes, no backgrounds.
 
@@ -68,9 +71,9 @@ SGR 1/2/31/32/33/36 only — readable on dark and light themes, no bright 9x cod
 ✗ RUN api failed (exit 1)
   next: slipfork logs -r 5be421
 ```
-- Phase row: glyph (`→` bold while it runs; spinner in the live region; `✓` green / `✗` red once settled), `[i/n]` dim, instruction dim, target bold, args bold. Instruction and target columns are padded to this image's max visible width (ANSI-stripped). Elapsed dim, right after the args, on settled rows.
+- Phase row: glyph (`→` neutral while it runs; spinner in the live region; `✓` green / `✗` red once settled), `[i/n]` dim, instruction dim, target bold, args neutral. Instruction and target columns are padded to this image's max visible width (ANSI-stripped). Elapsed dim, right after the args, on settled rows.
 - `[i/n]` = instruction index / count of THIS image's Dockerfile; service/hook steps use the boot step counter and verb `start`/`hook` + their command.
-- Verdict: column 0, one line, the same verb token as the phase row: `✗` red, `RUN` dim, target bold, `failed` red, `(exit N)` dim. Remedy: `  next: ` dim + one cyan command. Exactly one. No `Failed to …` sentence, no repeated output, no `build … failed:` prose.
+- Verdict: column 0, one line, the same verb token as the phase row: `✗` red, verb dim, target bold, `failed` red, then `(exit N)` dim for RUN or `: <reason>` neutral when no gutter line above carries it. Remedy: `  next: ` dim + one cyan command. Exactly one. No `Failed to …` sentence, no repeated output, no `build … failed:` prose.
 - `crun`/container plumbing only with `-v`: one dim `  runtime: crun exited with code 1` row between verdict and `next:`.
 
 ## Live Dockerfile build (owner addendum — non-negotiable)
@@ -88,10 +91,13 @@ SGR 1/2/31/32/33/36 only — readable on dark and light themes, no bright 9x cod
 
 ✗ RUN api failed (exit 1)
 ```
-- Header mirrors the phase row: `#id` dim, instruction/kind dim, target bold, command bold (omitted when == target; never the image id twice), started dim. One blank line.
+- Header mirrors the phase row: `#id` bold, instruction/kind dim, target bold, command neutral (omitted when == target; never the image id twice), started dim. One blank line.
 - Rows: 2-space indent, `HH:MM:SS.mmm` dim, then the gutter glyph, 1 space, neutral text — the timestamp is part of the dim gutter, not a column.
 - One blank line, then the verdict from the run RECORD (never the capture): same line as `up`, or `✓ RUN api done (0.8s)`. No `next:`.
 
 ## Collapse rules
 - `NO_COLOR` / non-TTY (CI): append-only — phase row (`→`) when a step starts, every output line in the gutter shape (`│`/`┃`), `✓ [i/n] …  1.2s` when it settles, verdict + `next:`; zero `\x1b[`, no spinner frames.
 - `--json`: NDJSON only, zero escapes, no pre-rendered strings. `up`: `step{image,index,total,instruction,args,state:"started"|"done"|"failed",elapsed_ms,exit_code?}`, `log{image,index,stream:"stdout"|"stderr",line,ts_ms}`, `failed{phase,target,instruction,source,exit_code,run_id,next,runtime}`. `logs -r --json`: the run record (`phase`,`instruction`,`source`,`state`,`exit_code`) then `{stream,line,ts_ms}` lines.
+
+## Engine-step failures explain themselves (owner regression, see M3.107.4)
+Every instruction kind gets its step note at start; an engine-executed step's one-line error is that step's `┃` output in the capture (never wrapper prose); records carry `reason`; a step-less failure puts the reason in the verdict (`✗ image api failed: <reason>`). No failure replays as an empty block.

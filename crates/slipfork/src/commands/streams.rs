@@ -5,7 +5,6 @@
 //! `shell` receives the world's real `/dev/pts/N` master and relays raw bytes untouched; a pipe
 //! relays stdin as base64 input frames, so `psql`, `redis-cli`, and `sh` work over a plain pipe.
 
-use std::collections::BTreeMap;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -22,10 +21,6 @@ pub(crate) use super::timeparse::format_ts;
 
 /// Set by the SIGINT handler so a followed stream exits `0` on Ctrl-C.
 pub(crate) static INTERRUPTED: AtomicBool = AtomicBool::new(false);
-
-const PALETTE: [&str; 8] = [
-    "1;36", "1;35", "1;34", "1;33", "1;32", "1;96", "1;95", "1;31",
-];
 
 /// Parsed `slipfork logs` arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -247,7 +242,6 @@ pub(crate) struct Renderer {
     timestamps: bool,
     /// Replay rows carry a `HH:MM:SS.mmm` clock and the v3 stream gutter.
     clock: bool,
-    pods: BTreeMap<String, &'static str>,
     width: usize,
     /// Human rows emitted in this replay, so an empty capture prints no double blank line.
     rows: usize,
@@ -264,7 +258,6 @@ impl Renderer {
             gutter,
             timestamps,
             clock,
-            pods: BTreeMap::new(),
             width: 0,
             rows: 0,
             verdict: None,
@@ -323,7 +316,7 @@ impl Renderer {
         match kind {
             "eof" => {}
             "divider" => {
-                let _ = emit(&format!("{}\n", self.palette.tint(line, "2;36")));
+                let _ = emit(&format!("{}\n", self.palette.dim(line)));
             }
             _ if self.clock => {
                 // The v3 replay row: 2-space indent, a dim clock in the gutter, then the glyph.
@@ -360,7 +353,6 @@ impl Renderer {
                 } else {
                     String::new()
                 };
-                let code = self.color_for(pod);
                 let columns = [
                     Column::left().at_least(self.width),
                     Column::left(),
@@ -368,7 +360,7 @@ impl Renderer {
                 ];
                 let gutter = Table::new(&columns).gap(" ").indent(&stamp);
                 let cells = [
-                    self.palette.tint(pod, code),
+                    self.palette.tint(pod, "1"),
                     self.palette.gutter(stream),
                     line.to_owned(),
                 ];
@@ -396,9 +388,6 @@ impl Renderer {
             .map(|pod| pod.chars().count())
             .max()
             .unwrap_or(0);
-        for pod in pods {
-            let _ = self.color_for(pod);
-        }
         if let Some(run) = event.get("run") {
             // A roster carrying a catalog record is a capture replay, so every following row takes
             // the clocked v3 stream-gutter path.
@@ -436,7 +425,7 @@ impl Renderer {
             exit_code: run["exit_code"]
                 .as_i64()
                 .and_then(|code| i32::try_from(code).ok()),
-            duration_ms: run["duration_ms"].as_u64().unwrap_or(0),
+            duration_ms: run["duration_ms"].as_u64(),
         });
     }
 
@@ -451,13 +440,6 @@ impl Renderer {
             let gap = if self.rows > 0 { "\n" } else { "" };
             let _ = emit(&format!("{gap}{line}\n"));
         }
-    }
-
-    fn color_for(&mut self, pod: &str) -> &'static str {
-        let index = self.pods.len();
-        self.pods
-            .entry(pod.to_owned())
-            .or_insert(PALETTE[index % PALETTE.len()])
     }
 }
 

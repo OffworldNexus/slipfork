@@ -221,10 +221,11 @@ impl ImageCache {
                     slipfork_image::BuildEvent::Line { stream, text } => {
                         tee.append_stream(stream, text);
                     }
+                    slipfork_image::BuildEvent::Note { text } => tee.note(text),
                     slipfork_image::BuildEvent::Step(event) => tee.step(&event),
                 };
                 let mut step_log = StepLog::with_events(&mut bus);
-                match self.puller.pull_row(&parsed, &mut step_log) {
+                match self.puller.pull_row(&parsed, reference, &mut step_log) {
                     Ok(pulled) => pulled,
                     Err(error) => {
                         let message = format!("pull `{image}` failed: {error}");
@@ -280,6 +281,7 @@ impl ImageCache {
                     slipfork_image::BuildEvent::Line { stream, text } => {
                         tee.append_stream(stream, text);
                     }
+                    slipfork_image::BuildEvent::Note { text } => tee.note(text),
                     slipfork_image::BuildEvent::Step(event) => tee.step(&event),
                 };
                 let mut step_log = StepLog::with_events(&mut bus);
@@ -288,9 +290,6 @@ impl ImageCache {
             let report = match built {
                 Ok(report) => report,
                 Err(error) => {
-                    // Keep only real child output: flush a trailing unterminated tail, then record
-                    // the failing instruction on the run record. The summary line stays in the
-                    // `up` failure, never in the capture.
                     let message = format!("build `{image}` failed: {error}");
                     let note = failed_note(&request.dockerfile, &error);
                     return Err(BuildFailure {
@@ -305,10 +304,6 @@ impl ImageCache {
             {
                 traces.insert(image.to_owned(), last.clone());
             }
-            log.note(&format!(
-                "dockerfile {image}: {} cached, {} built",
-                report.cache_hits, report.cache_misses
-            ));
             // A sealed step cache hit is `cached`; only an actually applied step is `built`. A
             // metadata-only `FROM`+`ENV` Dockerfile has zero hits, so it is still a real build.
             let state = if report.cache_hits > 0 && report.cache_misses == 0 {
@@ -362,8 +357,13 @@ impl ImageCache {
         let outcome = ImageReference::parse(reference)
             .map_err(|error| error.to_string())
             .and_then(|parsed| {
+                let mut bus = |event: slipfork_image::BuildEvent<'_>| {
+                    if let slipfork_image::BuildEvent::Note { text } = event {
+                        log.engine_note(text);
+                    }
+                };
                 self.puller
-                    .pull_into(&parsed, log)
+                    .pull_into(&parsed, &mut StepLog::with_events(&mut bus))
                     .map_err(|error| error.to_string())
             });
         if let Ok(image) = &outcome

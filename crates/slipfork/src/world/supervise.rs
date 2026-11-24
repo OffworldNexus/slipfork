@@ -16,7 +16,7 @@ use slipfork_world::{
 use crate::commands::Session;
 use crate::world::features::WorldFeatures;
 use crate::world::runtime::capture::{RunTarget, strip_ansi};
-use crate::world::runtime::frames::{StepPin, failure_facts, log_frame, step_frame};
+use crate::world::runtime::frames::{StepPin, failure_facts, log_frame, note_frame, step_frame};
 
 use super::{HostEnv, SuperviseArgs, WorldState, fail, runtime::WorldRuntime, state_path};
 
@@ -88,9 +88,7 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
             pg_clones.iter().map(|clone| clone.as_path()),
         )
         .is_some();
-    // A root world that was `down` and then `up` with an unchanged `Forkfile`, lockfiles, and
-    // `PGDATA` carries the same paired checkpoint a fork does, so it reuses the trusted hook path
-    // instead of re-running `pg` -> `pre-deploy` -> `api` serially.
+    // Paired world + PG stamps reuse trusted `@<tool>`/`pre-deploy` digests across warm `up` and `fork`.
     let stamps = stamps_for(project, &stamp_store, trusted);
 
     let step_commands: Arc<Vec<Option<String>>> =
@@ -120,11 +118,21 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
             emitter.send(frame);
         }
     });
+    let typed_exit: Arc<Mutex<Option<(usize, i32)>>> = Arc::new(Mutex::new(None));
     let executor: Arc<slipfork_world::StepExecutor> = {
         let runtime = Arc::clone(&runtime);
+        let exit = Arc::clone(&typed_exit);
         Arc::new(
             move |index: usize, step: &BootStep| -> Result<StepOutcome, BootFailure> {
-                runtime.execute(index, step)
+                let outcome = runtime.execute(index, step);
+                if let Err(failure) = &outcome
+                    && let Some(code) = failure.exit_code
+                    && let Ok(mut slot) = exit.lock()
+                    && slot.as_ref().is_none_or(|(existing, _)| index < *existing)
+                {
+                    *slot = Some((index, code));
+                }
+                outcome
             },
         )
     };
@@ -172,18 +180,16 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
             }
         }
         Err(error) => {
-            let mut frame = failed_frame
-                .lock()
-                .ok()
-                .and_then(|mut slot| slot.take().map(|(_, frame)| frame))
-                .unwrap_or_else(|| {
-                    json!({
-                        "event": "failed",
-                        "label": error.to_string().lines().next().unwrap_or("boot failed"),
-                        "line": 0,
-                        "message": error.to_string().lines().next().unwrap_or_default(),
-                    })
-                });
+            let captured = failed_frame.lock().ok().and_then(|mut slot| slot.take());
+            let failed_step = captured.as_ref().map(|(step, _)| *step);
+            let mut frame = captured.map(|(_, frame)| frame).unwrap_or_else(|| {
+                json!({
+                    "event": "failed",
+                    "label": error.to_string().lines().next().unwrap_or("boot failed"),
+                    "line": 0,
+                    "message": error.to_string().lines().next().unwrap_or_default(),
+                })
+            });
             let record = frame["run_id"].as_str().and_then(|run_id| {
                 LogStore::at(runtime.store_layout().store_root(), world.clone())
                     .records()
@@ -195,6 +201,17 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
             let plumbing = frame["name"]
                 .as_str()
                 .and_then(|name| runtime.image_plumbing(name));
+            if frame.get("exit_code").is_none()
+                && let Some(code) = typed_exit.lock().ok().and_then(|slot| {
+                    (*slot).and_then(|(step, code)| {
+                        failed_step
+                            .is_none_or(|wanted| wanted == step)
+                            .then_some(code)
+                    })
+                })
+            {
+                frame["exit_code"] = json!(code);
+            }
             failure_facts(&mut frame, record.as_ref(), plumbing.as_deref());
             if !runtime.has_live_world() {
                 // Zero resources or services entered the world (a cold image `RUN` or pre-pod
@@ -446,16 +463,20 @@ impl BootSink {
         self.log.send(step_frame(image, event));
     }
 
-    /// Writes one human note to the supervisor's stderr mirror only: never a `log` frame, never a
-    /// capture, because a capture is command output only.
-    pub(super) fn note(&mut self, message: &str) {
-        let _ = writeln!(self.mirror, "{message}");
+    /// Emits one engine narration frame pinned to this step; the renderer shows it only under `-v`.
+    pub(super) fn engine_note(&mut self, text: &str) {
+        let _ = writeln!(self.mirror, "{text}");
+        self.log.note(text);
     }
 
-    /// Emits one readiness frame pinned to this step.
+    /// Emits one readiness note pinned to this step; never a child gutter line or capture line.
     pub(super) fn progress(&mut self, message: &str) {
-        let _ = writeln!(self.log, "{message}");
-        let _ = self.log.flush();
+        self.engine_note(message);
+    }
+
+    /// Flushes the supervisor diagnostic mirror.
+    pub(super) fn flush(&mut self) {
+        let _ = self.mirror.flush();
     }
 
     /// Appends one stream-tagged child line to the stderr mirror and this step's run capture.
@@ -470,22 +491,9 @@ impl BootSink {
     }
 }
 
-impl Write for BootSink {
-    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        let _ = self.mirror.write_all(buffer);
-        self.log.write(buffer)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        let _ = self.mirror.flush();
-        self.log.flush()
-    }
-}
-
 #[derive(Clone)]
 struct EventLog {
     emitter: Arc<Mutex<Emitter>>,
-    pending: Vec<u8>,
     step: usize,
     total: usize,
     label: String,
@@ -505,7 +513,6 @@ impl EventLog {
     ) -> Self {
         Self {
             emitter,
-            pending: Vec::new(),
             step,
             total,
             label: label.to_owned(),
@@ -514,12 +521,6 @@ impl EventLog {
             index: None,
             run: None,
         }
-    }
-
-    fn forward(&self, line: &[u8]) {
-        let text = String::from_utf8_lossy(line);
-        let text = strip_ansi(&text);
-        self.emit(slipfork_world::Stream::Stdout, text.trim_end_matches('\r'));
     }
 
     fn append_stream(&mut self, stream: slipfork_world::Stream, text: &str) {
@@ -547,31 +548,29 @@ impl EventLog {
         self.send(log_frame(&pin, stream.as_str(), text));
     }
 
+    /// Flushes one engine narration frame pinned to this step, without touching any capture.
+    fn note(&self, text: &str) {
+        let text = strip_ansi(text);
+        let text = text.trim_end_matches('\r');
+        if text.is_empty() {
+            return;
+        }
+        let pin = StepPin {
+            step: self.step,
+            total: self.total,
+            label: &self.label,
+            name: &self.name,
+            image: self.image.as_deref(),
+            index: self.index,
+        };
+        self.send(note_frame(&pin, text));
+    }
+
     /// Flushes one complete frame through the shared emitter, immediately.
     fn send(&self, frame: Value) {
         if let Ok(mut emitter) = self.emitter.lock() {
             emitter.send(frame);
         }
-    }
-}
-
-impl Write for EventLog {
-    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        self.pending.extend_from_slice(buffer);
-        while let Some(position) = self.pending.iter().position(|byte| *byte == b'\n') {
-            let rest = self.pending.split_off(position + 1);
-            let line = std::mem::replace(&mut self.pending, rest);
-            self.forward(&line[..line.len() - 1]);
-        }
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        if !self.pending.is_empty() {
-            let line = std::mem::take(&mut self.pending);
-            self.forward(&line);
-        }
-        Ok(())
     }
 }
 

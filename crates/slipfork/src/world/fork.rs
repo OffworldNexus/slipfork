@@ -47,9 +47,10 @@ impl Session {
             self.ui(),
             self.terminal().width,
             &format!("Forking {}", args.name.as_deref().unwrap_or("fork")),
+            args.verbose,
         );
         let outcome = client.call_streaming("fork", params, &mut |event| {
-            if args.json {
+            if args.json && (args.verbose || event["event"].as_str() != Some("note")) {
                 let _ = emit_json(event);
             }
             tui.observe(event);

@@ -66,18 +66,21 @@ fn dispatch(cli: Cli, session: Session) -> ExitCode {
             target,
             features: features.features,
             no_default_features: features.no_default_features,
+            verbose,
         }),
         Command::Down { target } => session.down(&DownArgs { json, target }),
         Command::Restart { target, service } => session.restart(&RestartArgs {
             target,
             service,
             json,
+            verbose,
         }),
         Command::Fork { name, features } => session.fork(&ForkArgs {
             name,
             json,
             features: features.features,
             no_default_features: features.no_default_features,
+            verbose,
         }),
         Command::Drop { name, force } => session.drop(&DropArgs { name, force, json }),
         Command::Logs {

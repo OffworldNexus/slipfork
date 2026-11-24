@@ -6,7 +6,6 @@
 
 use std::collections::VecDeque;
 use std::fs;
-use std::io::Write;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -126,8 +125,7 @@ fn stage_postgres(
                             tail.pop_front();
                         }
                         tail.push_back(line.to_owned());
-                        let _ = writeln!(init_log, "{line}");
-                        let _ = init_log.flush();
+                        init_log.engine_note(line);
                     })?;
                     if code == 0 {
                         Ok(())
@@ -145,12 +143,10 @@ fn stage_postgres(
                         return;
                     }
                     last_report = Some(Instant::now());
-                    let _ = writeln!(
-                        wait_log,
+                    wait_log.engine_note(&format!(
                         "waiting {:.1}s for another `slipfork up` to finish the golden postgres template",
                         waited.as_secs_f64()
-                    );
-                    let _ = wait_log.flush();
+                    ));
                 },
             )
             .map_err(|error| error.to_string())?;

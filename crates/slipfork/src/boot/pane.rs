@@ -1,83 +1,26 @@
 //! The `DECSTBM` fixed bottom bar with one live row per running task.
 //!
-//! Rows `1..rows-1` are a 2D content grid: every `Started` task allocates its own fixed slot and
-//! keeps it for its whole life, spinning in place with a cyan Braille spinner and live elapsed
-//! time until its `Finished`/`UpToDate`/`Failed` row rewrites that same slot. When the grid is
-//! full, the scroll region moves up exactly one line and the top task leaves the grid; nothing
-//! else moves. Row `rows` stays a one-line `apt`-style panel, refreshed by a 120ms ticker and
-//! re-applied on `SIGWINCH`.
-//!
-//! Every escape is written here only after the composition root resolved [`UiMode::ColorTty`];
-//! this module holds only terminal state and delegates every string to [`super::render`].
-//!
-//! The flow cursor is seeded from the shell prompt's line and every paint happens inside
-//! `ESC 7 … ESC 8`, so drawing task rows and the panel never moves the cursor the shell expects.
+//! Rows `1..rows-1` hold settled rows above [`LiveSteps`]'s bottom block; row `rows` is the
+//! 120ms-refreshed panel, re-applied on `SIGWINCH`. Every escape is emitted only for a colour TTY.
 
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crate::ui::Palette;
 use crate::ui::table::ColumnWidths;
 
-use super::ascii::AsciiLine;
-use super::render::{panel_line, running_row};
+use super::build::LiveSteps;
+use super::region::{ScrollRegionGuard, take_resized};
+use super::render::{panel_line, running_row, status_line};
 
 /// Braille spinner for a terminal that accepts ANSI.
 const BRAILLE: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
-static RESIZED: AtomicBool = AtomicBool::new(false);
-static REGION_ROWS: AtomicUsize = AtomicUsize::new(0);
-static PREVIOUS_SIGINT: AtomicUsize = AtomicUsize::new(0);
-static PREVIOUS_SIGWINCH: AtomicUsize = AtomicUsize::new(0);
-
-extern "C" fn on_sigwinch(_: libc::c_int) {
-    RESIZED.store(true, Ordering::Relaxed);
-}
-
-extern "C" fn on_sigint(signal: libc::c_int) {
-    let rows = REGION_ROWS.load(Ordering::Relaxed);
-    if rows >= 3 {
-        let mut buffer = [0_u8; 32];
-        let mut length = 0;
-        buffer[length] = 0x1b;
-        length += 1;
-        buffer[length] = b'[';
-        length += 1;
-        length = push_decimal(&mut buffer, length, rows);
-        for byte in b";1H\x1b[2K\x1b[r" {
-            buffer[length] = *byte;
-            length += 1;
-        }
-        // SAFETY: `write(2)` only reads `buffer`; escape restoration is async-signal-safe.
-        unsafe {
-            libc::write(libc::STDOUT_FILENO, buffer.as_ptr().cast(), length);
-        }
-    }
-    // SAFETY: `_exit(2)` ends the process without touching shared state or unwinding.
-    unsafe { libc::_exit(128 + signal) };
-}
-
-fn push_decimal(buffer: &mut [u8], mut at: usize, mut value: usize) -> usize {
-    if value == 0 {
-        buffer[at] = b'0';
-        return at + 1;
-    }
-    let mut digits = [0_u8; 8];
-    let mut count = 0;
-    while value > 0 {
-        digits[count] = b'0' + (value % 10) as u8;
-        value /= 10;
-        count += 1;
-    }
-    while count > 0 {
-        count -= 1;
-        buffer[at] = digits[count];
-        at += 1;
-    }
-    at
-}
+/// A pane exists only for a colour terminal, so its block is always styled.
+const PALETTE: Palette = Palette::new(true);
 
 /// One live task row: its fixed slot, identity, and the clock its spinner reads.
 #[derive(Debug, Clone)]
@@ -181,6 +124,29 @@ impl TaskRows {
         self.next.min(self.bottom.max(1))
     }
 
+    /// Lowers the grid's bottom when `block` is empty, without scrolling settled rows.
+    pub(super) fn set_bottom(&mut self, bottom: usize) {
+        self.bottom = bottom;
+    }
+
+    /// Reserves rows below `bottom` for a non-empty narrative block, returning the physical region
+    /// scrolls needed so settled rows at `bottom + 1 .. self.next` move up instead of being
+    /// overwritten by `block`.
+    pub(super) fn reserve_below(&mut self, bottom: usize) -> usize {
+        self.bottom = bottom;
+        let occupied = self.next.saturating_sub(1);
+        if occupied <= bottom {
+            return 0;
+        }
+        let shift = occupied - bottom;
+        for task in &mut self.tasks {
+            task.slot = task.slot.saturating_sub(shift);
+        }
+        self.tasks.retain(|task| task.slot >= 1);
+        self.next = bottom + 1;
+        shift
+    }
+
     /// Re-seeds the grid after a resize, dropping rows the terminal no longer owns.
     pub(super) fn fit(&mut self, next: usize, bottom: usize) {
         self.bottom = bottom;
@@ -220,7 +186,7 @@ impl TaskRows {
     }
 }
 
-/// The one shared live region: task rows, the panel on row `rows`, and its scroll-region guard.
+/// The one shared live region: task rows, the injected [`LiveSteps`], the panel, and its guard.
 pub(super) struct Pane {
     cols: usize,
     rows: usize,
@@ -233,16 +199,28 @@ pub(super) struct Pane {
     frame: usize,
     line_len: usize,
     tasks: TaskRows,
+    /// The region's own bottom row (`rows - 1`), independent of the narrative block.
+    region_bottom: usize,
     widths: ColumnWidths,
     /// The grid was full, so the next paint must scroll the region one line first.
     pending_scroll: bool,
+    /// Shared single source of truth for running build/hook steps and their output lines.
+    steps: Arc<Mutex<LiveSteps>>,
+    /// Rows the narrative block painted last frame, so a shrunk block clears its leftovers.
+    block_rows: usize,
 }
 
 impl Pane {
-    pub(super) fn new(title: &str, cols: usize, prompt_row: Option<usize>) -> Self {
+    pub(super) fn new(
+        title: &str,
+        cols: usize,
+        prompt_row: Option<usize>,
+        steps: Arc<Mutex<LiveSteps>>,
+    ) -> Self {
         let (width, rows) = terminal_size();
         let cols = cols.max(width);
         let title = title.to_owned();
+        let region_bottom = if rows >= 3 { rows - 1 } else { 0 };
         let mut pane = Self {
             cols,
             rows,
@@ -255,8 +233,11 @@ impl Pane {
             frame: 0,
             line_len: 0,
             tasks: TaskRows::new(0, 0),
+            region_bottom,
             widths: ColumnWidths::default(),
             pending_scroll: false,
+            steps,
+            block_rows: 0,
         };
         // A missing probe (`None`) or one reporting the panel row cannot rule out a prompt hiding
         // there, and `install` clears that row; one full-screen scroll while no region is set
@@ -268,8 +249,7 @@ impl Pane {
         }
         pane.guard = ScrollRegionGuard::install(rows);
         let flow = pane.seed_flow(prompt_row);
-        let bottom = if pane.rows >= 3 { pane.rows - 1 } else { 0 };
-        pane.tasks = TaskRows::new(flow, bottom);
+        pane.tasks = TaskRows::new(flow, region_bottom);
         pane.draw();
         pane
     }
@@ -283,8 +263,8 @@ impl Pane {
         self.cols = cols;
         self.rows = rows;
         self.line_len = 0;
-        let bottom = if rows >= 3 { rows - 1 } else { 0 };
-        self.tasks.fit(self.tasks.next_row(), bottom);
+        self.region_bottom = if rows >= 3 { rows - 1 } else { 0 };
+        self.tasks.fit(self.tasks.next_row(), self.region_bottom);
         self.guard = ScrollRegionGuard::install(rows);
         if self.guard.is_some() {
             let mut stdout = std::io::stdout().lock();
@@ -297,6 +277,13 @@ impl Pane {
     /// Pins the six-column grid the running and finished rows share.
     pub(super) fn set_widths(&mut self, widths: ColumnWidths) {
         self.widths = widths;
+    }
+
+    /// Latches `done` and `total` onto the bottom bar, including for narrated image/hook/service steps.
+    pub(super) fn set_progress(&mut self, done: usize, total: usize) {
+        self.done = done;
+        self.total = self.total.max(total).max(done);
+        self.refresh_summary();
     }
 
     /// Allocates a fixed row for one started task and paints its first spinner frame.
@@ -312,9 +299,7 @@ impl Pane {
 
     /// Rewrites one finished task's own slot in place and never moves another row.
     pub(super) fn complete(&mut self, kind: &str, name: &str, row: &str, done: usize) {
-        self.done = done;
-        self.total = self.total.max(done);
-        self.refresh_summary();
+        self.set_progress(done, self.total);
         // A finished row that never allocated a live slot (a phase header the plan did not
         // announce, such as `restart`'s) still prints once, at the next free row.
         let slot = match self.tasks.complete(kind, name) {
@@ -332,7 +317,7 @@ impl Pane {
         self.draw();
     }
 
-    /// Writes `text` at one allocated slot, scrolling the region first when it was full.
+    /// Writes `text` at one allocated slot, scrolling `1..=region_bottom` first when it was full.
     fn write_slot(&mut self, slot: Slot, text: &str) {
         if self.guard.is_none() {
             self.clear_line();
@@ -341,7 +326,7 @@ impl Pane {
         }
         let mut stdout = std::io::stdout().lock();
         if slot.scrolled() {
-            let _ = write!(stdout, "\x1b[{};1H\r\n", self.tasks.bottom);
+            self.scroll_up(&mut stdout, 1);
         }
         if let Some(row) = slot.row() {
             let _ = write!(stdout, "\x1b[{row};1H\r\x1b[2K{text}");
@@ -349,11 +334,39 @@ impl Pane {
         let _ = stdout.flush();
     }
 
-    /// Clears the panel row, restores the scrolling region, and parks on the next free row.
+    /// Scrolls `1..=region_bottom` up `lines` times at the real `DECSTBM` bottom margin, clearing
+    /// any live narrative block first so temporary spinner/gutter rows never scroll into history.
+    fn scroll_up(&mut self, stdout: &mut std::io::StdoutLock<'_>, lines: usize) {
+        if lines == 0 || self.region_bottom == 0 {
+            return;
+        }
+        for offset in 0..self.block_rows {
+            let row = self.region_bottom.saturating_sub(offset);
+            if row > 0 {
+                let _ = write!(stdout, "\x1b[{row};1H\r\x1b[2K");
+            }
+        }
+        self.block_rows = 0;
+        for _ in 0..lines {
+            let _ = write!(stdout, "\x1b[{};1H\r\n", self.region_bottom);
+        }
+    }
+
+    /// Clears the panel row and the narrative block, restores the region, and parks the cursor.
     pub(super) fn restore(&mut self) {
+        if let Ok(mut steps) = self.steps.lock() {
+            steps.clear();
+        }
         let had_region = self.guard.take().is_some();
         let mut stdout = std::io::stdout().lock();
         if had_region {
+            for offset in 0..self.block_rows {
+                let row = self.region_bottom.saturating_sub(offset);
+                if row > 0 {
+                    let _ = write!(stdout, "\x1b[{row};1H\r\x1b[2K");
+                }
+            }
+            self.block_rows = 0;
             // A full grid has no blank task row left; park on the panel row below the region
             // instead of leaving the cursor at (1,1) after the `ESC[r` reset.
             let row = self.tasks.free_row().unwrap_or(self.rows);
@@ -420,9 +433,27 @@ impl Pane {
         }
     }
 
-    fn draw(&mut self) {
+    pub(super) fn draw(&mut self) {
         self.frame = self.frame.wrapping_add(1);
         let spinner = BRAILLE.chars().nth(self.frame % 10).unwrap_or('⠋');
+        let mut block = self
+            .steps
+            .lock()
+            .map(|steps| steps.block_rows(spinner, self.cols, PALETTE))
+            .unwrap_or_default();
+        let max_block = self.region_bottom.saturating_sub(1);
+        if max_block > 0 && block.len() > max_block {
+            block.drain(..block.len() - max_block);
+        }
+        // The narrative block owns the region's last rows; settled rows above it scroll up before
+        // `block` paints so a newly opened phase row never overwrites a settled row on row `rows-1`.
+        let new_bottom = self.region_bottom.saturating_sub(block.len()).max(1);
+        let shift = if block.is_empty() {
+            self.tasks.set_bottom(new_bottom);
+            0
+        } else {
+            self.tasks.reserve_below(new_bottom)
+        };
         let summary = self.summary.clone();
         let line = panel_line(
             spinner,
@@ -435,9 +466,8 @@ impl Pane {
         let mut stdout = std::io::stdout().lock();
         if self.guard.is_some() {
             let _ = write!(stdout, "\x1b7");
-            if std::mem::take(&mut self.pending_scroll) {
-                let _ = write!(stdout, "\x1b[{};1H\r\n", self.tasks.bottom);
-            }
+            let scrolls = shift + usize::from(std::mem::take(&mut self.pending_scroll));
+            self.scroll_up(&mut stdout, scrolls);
             let live: Vec<(usize, String)> = self
                 .tasks
                 .live()
@@ -457,10 +487,37 @@ impl Pane {
             for (slot, row) in live {
                 let _ = write!(stdout, "\x1b[{slot};1H\r\x1b[2K{row}");
             }
+            // Paint the block bottom-up and clear any rows a previous, longer block owned.
+            let span = self.block_rows.max(block.len());
+            for offset in 0..span {
+                let Some(row) = self.region_bottom.checked_sub(offset) else {
+                    break;
+                };
+                if row == 0 {
+                    break;
+                }
+                let text = block
+                    .len()
+                    .checked_sub(offset + 1)
+                    .and_then(|index| block.get(index))
+                    .map_or("", String::as_str);
+                let _ = write!(stdout, "\x1b[{row};1H\r\x1b[2K{text}");
+            }
+            self.block_rows = block.len();
             // The panel is always painted inside the saved cursor, so no task row or panel draw
             // ever moves the flow cursor the next allocation depends on.
             let _ = write!(stdout, "\x1b[{};1H\x1b[2K{line}\x1b[K\x1b8", self.rows);
         } else {
+            // No region (a terminal shorter than three rows): degrade to one `\r` line, the one
+            // colourless shape that never assumes cursor addressing.
+            let line = status_line(
+                spinner,
+                self.done,
+                self.total,
+                &self.summary,
+                self.started.elapsed(),
+                self.cols,
+            );
             let visible = console::measure_text_width(&line);
             if visible < self.line_len {
                 let _ = write!(stdout, "\r{line}{}", " ".repeat(self.line_len - visible));
@@ -473,114 +530,33 @@ impl Pane {
     }
 }
 
-/// The RAII `DECSTBM` guard: applies `\x1b[1;{rows-1}r` once and always restores `\x1b[r`.
-///
-/// It is dropped on success, error, panic unwind, and the `SIGINT` handler; `rows < 3` creates no
-/// region at all, so `\x1b[1;1r` and `\x1b[1;2r` can never be written.
-pub(super) struct ScrollRegionGuard {
-    rows: usize,
-    active: bool,
-}
-
-impl ScrollRegionGuard {
-    fn install(rows: usize) -> Option<Self> {
-        if rows < 3 {
-            return None;
-        }
-        let mut stdout = std::io::stdout().lock();
-        let _ = write!(stdout, "\x1b[1;{}r\x1b[{};1H\x1b[2K", rows - 1, rows);
-        let _ = stdout.flush();
-        REGION_ROWS.store(rows, Ordering::Relaxed);
-        RESIZED.store(false, Ordering::Relaxed);
-        // SAFETY: signal handlers only set atomics or issue one async-signal-safe `write`.
-        unsafe {
-            PREVIOUS_SIGINT.store(
-                libc::signal(libc::SIGINT, on_sigint as *const () as libc::sighandler_t),
-                Ordering::Relaxed,
-            );
-            PREVIOUS_SIGWINCH.store(
-                libc::signal(
-                    libc::SIGWINCH,
-                    on_sigwinch as *const () as libc::sighandler_t,
-                ),
-                Ordering::Relaxed,
-            );
-        }
-        Some(Self { rows, active: true })
-    }
-}
-
-impl Drop for ScrollRegionGuard {
-    fn drop(&mut self) {
-        if !self.active {
-            return;
-        }
-        self.active = false;
-        let mut stdout = std::io::stdout().lock();
-        let _ = write!(stdout, "\x1b[{};1H\x1b[2K\x1b[r", self.rows);
-        let _ = stdout.flush();
-        REGION_ROWS.store(0, Ordering::Relaxed);
-        // SAFETY: restoring the handlers captured in `install` only rewrites process handlers.
-        unsafe {
-            let previous = PREVIOUS_SIGINT.load(Ordering::Relaxed);
-            if previous != 0 && previous != libc::SIG_ERR {
-                libc::signal(libc::SIGINT, previous);
-            }
-            let previous = PREVIOUS_SIGWINCH.load(Ordering::Relaxed);
-            if previous != 0 && previous != libc::SIG_ERR {
-                libc::signal(libc::SIGWINCH, previous);
-            }
-        }
-    }
-}
-
 fn terminal_size() -> (usize, usize) {
     crossterm::terminal::size().map_or((80, 0), |(cols, rows)| {
         (usize::from(cols), usize::from(rows))
     })
 }
 
-/// Which live region the ticker refreshes.
-pub(super) enum Screen {
-    Bars(Arc<Mutex<Pane>>),
-    Ascii(Arc<Mutex<AsciiLine>>),
-}
-
 /// Refreshes the visible pane every 120ms so every spinner and elapsed time stays live even when
-/// the daemon is quiet: the colour panel, or the ASCII line of a `NO_COLOR` terminal.
+/// the daemon is quiet.
 pub(super) struct Ticker {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl Ticker {
-    pub(super) fn start(screen: Screen) -> Self {
+    pub(super) fn start(pane: Arc<Mutex<Pane>>) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
         let handle = thread::spawn(move || {
             while !flag.load(Ordering::Relaxed) {
-                if RESIZED.swap(false, Ordering::Relaxed) {
+                if take_resized() {
                     let (cols, rows) = terminal_size();
-                    match &screen {
-                        Screen::Bars(pane) => {
-                            if let Ok(mut pane) = pane.lock() {
-                                pane.set_size(cols, rows);
-                            }
-                        }
-                        Screen::Ascii(_) => {}
+                    if let Ok(mut pane) = pane.lock() {
+                        pane.set_size(cols, rows);
                     }
                 }
-                match &screen {
-                    Screen::Bars(pane) => {
-                        if let Ok(mut pane) = pane.lock() {
-                            pane.draw();
-                        }
-                    }
-                    Screen::Ascii(line) => {
-                        if let Ok(mut line) = line.lock() {
-                            line.draw();
-                        }
-                    }
+                if let Ok(mut pane) = pane.lock() {
+                    pane.draw();
                 }
                 thread::sleep(Duration::from_millis(120));
             }
@@ -675,5 +651,22 @@ mod tests {
         let names: Vec<&str> = tasks.running();
         assert_eq!(names, ["two", "three"], "the row-1 task left the grid");
         assert_eq!(tasks.complete("one", "gone"), None);
+    }
+
+    /// The narrative block shrinks the grid without dropping a settled row's slot, and shifts
+    /// bottom-row settled allocations upward when a block opens over `region_bottom`.
+    #[test]
+    fn narrative_block_reserves_rows_by_scrolling_settled_slots_upward() {
+        let mut tasks = TaskRows::new(5, 20);
+        assert_eq!(tasks.begin("service", "api"), Slot::Row(5));
+        assert_eq!(tasks.reserve_below(12), 0);
+        assert_eq!(tasks.next_row(), 6);
+        tasks.set_bottom(20);
+        assert_eq!(tasks.next_row(), 6, "restored bottom keeps the next slot");
+
+        let mut bottom_seeded = TaskRows::new(39, 39);
+        assert_eq!(bottom_seeded.place(), Slot::Row(39));
+        assert_eq!(bottom_seeded.reserve_below(38), 1);
+        assert_eq!(bottom_seeded.next_row(), 38);
     }
 }

@@ -632,9 +632,24 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         "both services must render a finished row: {readable}"
     );
     assert!(
-        !readable.contains("sha256") && !readable.contains("dockerfile"),
-        "build/log bytes must never reach the terminal: {readable}"
+        readable.contains("FROM")
+            && readable.contains("python:3.13-slim")
+            && !readable.contains("registry-1.docker.io"),
+        "`FROM` row must carry the reference as written, never normalized: {readable}"
     );
+    for forbidden in [
+        "sha256",
+        "sealed",
+        "reusing cache",
+        "crun",
+        "Failed to",
+        "dockerfile",
+    ] {
+        assert!(
+            !readable.contains(forbidden),
+            "engine bookkeeping `{forbidden}` must never reach the terminal without `-v`: {readable}"
+        );
+    }
     let verdict_at = boot
         .output
         .find("✓ Ready")
@@ -925,9 +940,15 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         hook_boot.output
     );
     let hook_readable = plain(&hook_boot.output);
+    // The hook is a phase row: its own command anchors it, and every child line streams under it
+    // in the gutter shape instead of being swallowed.
     assert!(
-        !hook_readable.contains("rolling-tail-"),
-        "hook log bytes must never reach the terminal: {hook_readable}"
+        hook_readable.contains("[1/") && hook_readable.contains("hook"),
+        "the hook phase row must name its verb: {hook_readable}"
+    );
+    assert!(
+        hook_readable.contains("│ rolling-tail-1") && hook_readable.contains("│ rolling-tail-2"),
+        "hook output must stream under the phase row: {hook_readable}"
     );
     assert!(
         hook_boot.output.contains("\u{1b}[1;39r"),
@@ -969,8 +990,12 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         "the failed row must render: {failed_readable}"
     );
     assert!(
-        failed_readable.contains("✗ Failed to run hook"),
-        "the failure sentence must name the hook: {failed_readable}"
+        failed_readable.contains("✗ hook") && failed_readable.contains("failed (exit 3)"),
+        "the verdict names the hook and its exit code: {failed_readable}"
+    );
+    assert!(
+        !failed_readable.contains("Failed to"),
+        "the rejected `Failed to …` sentence is gone: {failed_readable}"
     );
     assert_eq!(
         failed_readable.matches("next:").count(),
@@ -1006,6 +1031,20 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
             "{args:?} with {envs:?} emitted an escape: {:?}",
             output.output
         );
+        if args == ["up"] {
+            assert!(
+                output.output.contains("→ [")
+                    && output.output.contains('✓')
+                    && !output.output.replace("\r\n", "\n").contains('\r'),
+                "{args:?} must keep the append-only shape: {:?}",
+                output.output
+            );
+            assert!(
+                !BRAILLE.chars().any(|glyph| output.output.contains(glyph)),
+                "{args:?} must never paint a spinner: {:?}",
+                output.output
+            );
+        }
     }
 
     // 5. `down` keeps captures: every logs shape replays history, and `-f` follows the next `up`.
@@ -1134,7 +1173,7 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         project.join("Dockerfile"),
         format!(
             "FROM python:3.13-slim\nCOPY . /app\n\
-             RUN sh -c 'echo a-{stamp}; sleep 1; echo b-{stamp} >&2'\n\
+             RUN sh -c 's={stamp}; echo a-$s; sleep 1; echo b-$s >&2'\n\
              RUN sh -c 'echo out-{stamp}; echo err-{stamp} >&2; exit 3'\n"
         ),
     )
@@ -1214,6 +1253,18 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         1,
         "exactly one `FROM` row per image: {stdout}\n{detail}"
     );
+    assert!(
+        from_rows
+            .iter()
+            .all(|frame| frame["args"] == "python:3.13-slim"),
+        "`FROM` args must be emitted as written, never normalized: {from_rows:?}\n{detail}"
+    );
+    for forbidden in ["sha256", "sealed", "reusing cache", "registry-1.docker.io"] {
+        assert!(
+            !stdout.contains(forbidden),
+            "`up --json` without `-v` must not leak `{forbidden}`: {stdout}"
+        );
+    }
     assert!(
         from_rows
             .iter()
@@ -1348,7 +1399,222 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
             .contains("crun"),
         "no crun text in the primary copy: {failed}"
     );
-    let _ = run(&project, &env, &["down"]);
+
+    // 7. The owner-visible narrative under a real colour PTY: a spinner phase row with live gutter
+    //    output while the child sleeps, collapsed settled rows, one expanded failure, and a single
+    //    verdict + remedy. Fresh stamp so step 3 executes live rather than hitting step cache.
+    let pty_stamp = unique_suffix();
+    fs::write(
+        project.join("Dockerfile"),
+        format!(
+            "FROM python:3.13-slim\nCOPY . /app\n\
+             RUN sh -c 's={pty_stamp}; echo a-$s; sleep 1; echo b-$s >&2'\n\
+             RUN sh -c 'echo out-{pty_stamp}; echo err-{pty_stamp} >&2; exit 3'\n"
+        ),
+    )
+    .expect("write the uncached PTY Dockerfile");
+    let narrative = run_pty(&project, &env, &["up"], &[], None);
+    assert!(
+        !narrative.status.success(),
+        "the exit-3 `RUN` must fail `up`: {:?}",
+        narrative.output
+    );
+    let repaints: Vec<String> = narrative.output.split("\u{1b}7").map(plain).collect();
+    assert!(
+        repaints.iter().any(|frame| {
+            frame.contains("[3/4] RUN")
+                && frame.chars().any(|glyph| BRAILLE.contains(glyph))
+                && frame.contains(&format!("│ a-{pty_stamp}"))
+                && !frame.contains(&format!("b-{pty_stamp}"))
+        }),
+        "at least one repaint during `sleep 1` must paint `[3/4] RUN` + spinner + `│ a-{pty_stamp}` before `b-{pty_stamp}` exists:\n{repaints:#?}"
+    );
+    let shown = plain(&narrative.output);
+    assert!(
+        shown.contains("✓ [1/4] FROM")
+            && shown.contains("python:3.13-slim")
+            && !shown.contains("registry-1.docker.io"),
+        "`FROM` row must carry `python:3.13-slim` as written: {shown}"
+    );
+    for settled in ["✓ [1/4] FROM", "✓ [2/4] COPY", "✓ [3/4] RUN"] {
+        assert!(
+            shown.contains(settled),
+            "a settled step must collapse to one `{settled}` row: {shown}"
+        );
+    }
+    assert!(
+        !shown.contains("✓ image web ("),
+        "a failed build must never print the `✓ image web (` success end-row: {shown}"
+    );
+    assert!(shown.contains(&format!("│ out-{pty_stamp}")), "{shown}");
+    assert!(shown.contains(&format!("┃ err-{pty_stamp}")), "{shown}");
+    assert!(
+        shown.contains("✗ [4/4] RUN"),
+        "the failing step stays expanded: {shown}"
+    );
+    assert_eq!(
+        shown.matches("✗ RUN web failed (exit 3)").count(),
+        1,
+        "exactly one verdict: {shown}"
+    );
+    assert_eq!(
+        shown.matches("next: slipfork logs -r ").count(),
+        1,
+        "exactly one remedy: {shown}"
+    );
+    for forbidden in [
+        "sha256",
+        "sealed",
+        "reusing cache",
+        "crun",
+        "Failed to",
+        " out ",
+        " err ",
+    ] {
+        assert!(
+            !shown.contains(forbidden),
+            "`{forbidden}` must never appear on the default terminal: {shown}"
+        );
+    }
+
+    // 8. `-v` inserts the dim runtime plumbing between the verdict and the one remedy.
+    let verbose = run_pty(&project, &env, &["up", "-v"], &[], None);
+    assert!(!verbose.status.success(), "{:?}", verbose.output);
+    let verbose = plain(&verbose.output);
+    let verdict_at = verbose
+        .find("✗ RUN web failed (exit 3)")
+        .unwrap_or_else(|| panic!("no verdict under -v: {verbose}"));
+    let runtime_at = verbose
+        .find("runtime: crun exited with code 3")
+        .unwrap_or_else(|| panic!("-v must add the runtime row: {verbose}"));
+    let next_at = verbose
+        .find("next: slipfork logs -r ")
+        .unwrap_or_else(|| panic!("no remedy under -v: {verbose}"));
+    assert!(
+        verdict_at < runtime_at && runtime_at < next_at,
+        "runtime sits between verdict and next: {verbose}"
+    );
+
+    // 9. `NO_COLOR` on a pipe is append-only: `→`, gutter output, `✓`, one verdict, zero escapes.
+    let pipe_stamp = unique_suffix();
+    fs::write(
+        project.join("Dockerfile"),
+        format!(
+            "FROM python:3.13-slim\nCOPY . /app\n\
+             RUN sh -c 's={pipe_stamp}; echo a-$s; echo b-$s >&2'\n\
+             RUN sh -c 'echo out-{pipe_stamp}; echo err-{pipe_stamp} >&2; exit 3'\n"
+        ),
+    )
+    .expect("write the uncached piped Dockerfile");
+    let piped = run(&project, &env, &["up"]);
+    assert!(!piped.status.success(), "{piped:?}");
+    let piped_out = String::from_utf8_lossy(&piped.stdout).into_owned();
+    let piped_err = String::from_utf8_lossy(&piped.stderr).into_owned();
+    let piped_all = format!("{piped_out}\n{piped_err}");
+    assert!(!piped_all.contains('\u{1b}'), "zero escapes: {piped_all}");
+    assert!(!piped_all.contains('\r'), "no `\\r` redraws: {piped_all}");
+    assert!(
+        !BRAILLE.chars().any(|glyph| piped_all.contains(glyph)),
+        "no spinner frames: {piped_all}"
+    );
+    assert!(piped_out.contains("✓ [1/4] FROM"), "{piped_out}");
+    assert!(piped_out.contains("python:3.13-slim"), "{piped_out}");
+    assert!(piped_out.contains("→ [3/4] RUN"), "{piped_out}");
+    assert!(
+        piped_out.contains(&format!("  │ a-{pipe_stamp}")),
+        "{piped_out}"
+    );
+    assert!(
+        piped_out.contains(&format!("  ┃ b-{pipe_stamp}")),
+        "{piped_out}"
+    );
+    assert_eq!(
+        piped_out.matches(&format!("  │ out-{pipe_stamp}")).count(),
+        1,
+        "append-only must not repeat child output on failure: {piped_out}"
+    );
+    assert_eq!(
+        piped_out.matches(&format!("  ┃ err-{pipe_stamp}")).count(),
+        1,
+        "append-only must not repeat stderr output on failure: {piped_out}"
+    );
+    assert!(
+        !piped_all.contains("✓ image web ("),
+        "a failed build must never print `✓ image web (`: {piped_all}"
+    );
+    assert_eq!(
+        piped_err.matches("✗ RUN web failed (exit 3)").count(),
+        1,
+        "{piped_all}"
+    );
+    assert_eq!(
+        piped_err.matches("next: slipfork logs -r ").count(),
+        1,
+        "{piped_all}"
+    );
+    for forbidden in [
+        "sha256",
+        "sealed",
+        "reusing cache",
+        "crun",
+        "Failed to",
+        "registry-1.docker.io",
+    ] {
+        assert!(
+            !piped_all.contains(forbidden),
+            "`{forbidden}` must never appear on a non-`-v` pipe: {piped_all}"
+        );
+    }
+
+    // 9b. A succeeding multi-step Dockerfile prints `✓ image web (3 steps, Xs)` on build end.
+    fs::write(
+        project.join("Dockerfile"),
+        "FROM python:3.13-slim\nCOPY . /app\nWORKDIR /app\n",
+    )
+    .expect("write the succeeding multi-step Dockerfile");
+    let ok_build = run_pty(&project, &env, &["up"], &[], None);
+    assert!(
+        ok_build.status.success(),
+        "succeeding Dockerfile must boot cleanly: {:?}",
+        ok_build.output
+    );
+    let ok_shown = plain(&ok_build.output);
+    let ok_screen = ok_build.screen.text();
+    let ok_fills = panel_fills(&ok_shown);
+    assert!(
+        ok_fills
+            .iter()
+            .any(|(_, done, total)| *done > 0 && *total >= 2),
+        "the bottom bar must latch `total >= 2` and advance `done` when narrated steps finish: {ok_fills:?}\n{ok_shown}"
+    );
+    for settled in ["✓ [1/3] FROM", "✓ [2/3] COPY", "✓ [3/3] WORKDIR"] {
+        assert!(
+            ok_screen.contains(settled),
+            "settled step `{settled}` must stay visible in scrollback:\n{ok_screen}"
+        );
+    }
+    assert!(
+        ok_screen.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed.starts_with("✓ image web (3 steps, ") && trimmed.ends_with("s)")
+        }),
+        "a succeeding build must keep `✓ image web (3 steps, Xs)` on screen:\n{ok_screen}"
+    );
+    for forbidden in [
+        "sha256",
+        "sealed",
+        "reusing cache",
+        "crun",
+        "Failed to",
+        "registry-1.docker.io",
+    ] {
+        assert!(
+            !ok_shown.contains(forbidden),
+            "`{forbidden}` must never appear on a succeeding non-`-v` build: {ok_shown}"
+        );
+    }
+    let stopped = run(&project, &env, &["down"]);
+    assert!(stopped.status.success(), "{stopped:?}");
 }
 
 #[test]

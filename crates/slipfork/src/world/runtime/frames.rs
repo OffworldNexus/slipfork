@@ -43,6 +43,29 @@ pub(crate) fn log_frame(pin: &StepPin<'_>, stream: &str, line: &str) -> Value {
     frame
 }
 
+/// One `note` frame: engine narration (seal/cache/digest bookkeeping) pinned to its step.
+///
+/// It is never step output, so no renderer may paint it as a gutter line or write it to a capture;
+/// `-v` shows it as one dim row and nothing else does.
+pub(crate) fn note_frame(pin: &StepPin<'_>, text: &str) -> Value {
+    let mut frame = json!({
+        "event": "note",
+        "text": text,
+        "step": pin.step,
+        "total": pin.total,
+        "label": pin.label,
+        "name": pin.name,
+        "ts_ms": now_ms(),
+    });
+    if let Some(image) = pin.image {
+        frame["image"] = json!(image);
+    }
+    if let Some(index) = pin.index {
+        frame["index"] = json!(index);
+    }
+    frame
+}
+
 /// One `step` frame: the instruction, its position, and how it settled.
 pub(crate) fn step_frame(image: &str, event: &StepEvent<'_>) -> Value {
     let mut frame = json!({

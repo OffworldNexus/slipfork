@@ -1,4 +1,4 @@
-//! Live build reporting: child lines plus the `started`/`done`/`failed` row of every instruction.
+//! Live build reporting: child lines, engine notes, and instruction `started`/`done`/`failed` rows.
 
 use std::time::Duration;
 
@@ -79,7 +79,7 @@ impl<'a> StepEvent<'a> {
     }
 }
 
-/// Everything one build reports while it walks a `Dockerfile`.
+/// Everything one build reports while it walks a `Dockerfile` or pulls an OCI image.
 #[derive(Debug)]
 pub enum BuildEvent<'a> {
     /// One line of child output, tagged with the stream that produced it.
@@ -87,6 +87,11 @@ pub enum BuildEvent<'a> {
         /// The stream the line came from.
         stream: Stream,
         /// The line without its terminator.
+        text: &'a str,
+    },
+    /// Engine narration (seal/cache/digest bookkeeping); never step output, never a capture line.
+    Note {
+        /// The one engine sentence.
         text: &'a str,
     },
     /// One instruction's lifecycle transition.
@@ -101,32 +106,46 @@ struct StepIdentity {
     args: String,
 }
 
-/// Typed sink for one step's live build: every line keeps its stream, and every instruction
-/// reports `started` before it executes and `done`/`failed` when it settles.
+/// Typed sink for one build or pull: child lines, engine notes, and instruction lifecycle rows
+/// travel on distinct variants so bookkeeping never masquerades as child output.
 pub struct StepLog<'a> {
-    events: &'a mut dyn FnMut(BuildEvent<'_>),
+    events: Option<&'a mut dyn FnMut(BuildEvent<'_>)>,
     current: Option<StepIdentity>,
-    pending: Vec<u8>,
+}
+
+impl StepLog<'static> {
+    /// A silent sink for headless pulls and tests that do not inspect live events.
+    #[must_use]
+    pub const fn discard() -> Self {
+        Self {
+            events: None,
+            current: None,
+        }
+    }
 }
 
 impl<'a> StepLog<'a> {
-    /// Wraps the caller's typed sink, which receives child lines **and** instruction rows.
+    /// Wraps the caller's typed sink, which receives child lines, engine notes, and step rows.
     pub fn with_events(events: &'a mut dyn FnMut(BuildEvent<'_>)) -> Self {
         Self {
-            events,
+            events: Some(events),
             current: None,
-            pending: Vec::new(),
         }
     }
 
-    /// Emits one line tagged with the stream that produced it.
+    /// Emits one child line tagged with the stream that produced it.
     pub fn line(&mut self, stream: Stream, text: &str) {
-        (self.events)(BuildEvent::Line { stream, text });
+        self.emit(BuildEvent::Line { stream, text });
+    }
+
+    /// Emits one engine narration line: the caller's renderer keeps it behind `-v`.
+    pub fn note(&mut self, text: &str) {
+        self.emit(BuildEvent::Note { text });
     }
 
     /// Announces `instruction` before it executes, so a pull or context walk never looks frozen.
     pub(crate) fn started(&mut self, index: usize, total: usize, instruction: &str, args: &str) {
-        (self.events)(BuildEvent::Step(StepEvent::new(
+        self.emit(BuildEvent::Step(StepEvent::new(
             index,
             total,
             instruction,
@@ -161,7 +180,7 @@ impl<'a> StepLog<'a> {
         let Some(identity) = self.current.take() else {
             return;
         };
-        (self.events)(BuildEvent::Step(StepEvent::new(
+        self.emit(BuildEvent::Step(StepEvent::new(
             identity.index,
             identity.total,
             &identity.instruction,
@@ -171,27 +190,65 @@ impl<'a> StepLog<'a> {
             exit_code,
         )));
     }
+
+    fn emit(&mut self, event: BuildEvent<'_>) {
+        if let Some(events) = self.events.as_deref_mut() {
+            events(event);
+        }
+    }
 }
 
-/// The puller's progress lines become ordinary stdout lines on the same typed sink.
-impl std::io::Write for StepLog<'_> {
-    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        self.pending.extend_from_slice(buffer);
-        while let Some(position) = self.pending.iter().position(|byte| *byte == b'\n') {
-            let rest = self.pending.split_off(position + 1);
-            let line = std::mem::replace(&mut self.pending, rest);
-            let text = String::from_utf8_lossy(&line[..line.len() - 1]).into_owned();
-            self.line(Stream::Stdout, text.trim_end_matches('\r'));
-        }
-        Ok(buffer.len())
-    }
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
 
-    fn flush(&mut self) -> std::io::Result<()> {
-        if !self.pending.is_empty() {
-            let line = std::mem::take(&mut self.pending);
-            let text = String::from_utf8_lossy(&line).into_owned();
-            self.line(Stream::Stdout, text.trim_end_matches('\r'));
+    use super::{BuildEvent, StepLog, StepState};
+    use crate::runtime::Stream;
+
+    #[test]
+    fn engine_notes_and_child_lines_stay_on_distinct_variants() {
+        let mut notes = Vec::new();
+        let mut lines = Vec::new();
+        let mut steps = Vec::new();
+        {
+            let mut bus = |event: BuildEvent<'_>| match event {
+                BuildEvent::Note { text } => notes.push(text.to_owned()),
+                BuildEvent::Line { stream, text } => lines.push((stream, text.to_owned())),
+                BuildEvent::Step(step) => {
+                    steps.push((
+                        step.instruction.to_owned(),
+                        step.args.to_owned(),
+                        step.state,
+                    ));
+                }
+            };
+            let mut log = StepLog::with_events(&mut bus);
+            log.started(1, 1, "FROM", "python:3.13-slim");
+            log.note("sealed sha256:deadbeef: reusing cache");
+            log.line(Stream::Stdout, "child-out");
+            log.done(Duration::from_millis(12));
         }
-        Ok(())
+        assert_eq!(notes, ["sealed sha256:deadbeef: reusing cache"]);
+        assert_eq!(lines, [(Stream::Stdout, "child-out".to_owned())]);
+        assert_eq!(
+            steps,
+            [
+                (
+                    "FROM".to_owned(),
+                    "python:3.13-slim".to_owned(),
+                    StepState::Started
+                ),
+                (
+                    "FROM".to_owned(),
+                    "python:3.13-slim".to_owned(),
+                    StepState::Done
+                ),
+            ]
+        );
+
+        let mut silent = StepLog::discard();
+        silent.started(1, 1, "FROM", "alpine:3.20");
+        silent.note("sealed sha256:00: reusing cache");
+        silent.done(Duration::ZERO);
     }
 }

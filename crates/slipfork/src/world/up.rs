@@ -133,6 +133,7 @@ impl Session {
             self.ui(),
             self.terminal().width,
             &format!("Booting {}", resolved.world.as_str()),
+            args.verbose,
         );
         let outcome = client.call_streaming(
             "up",
@@ -150,7 +151,7 @@ impl Session {
                 if let Some(node) = boot_node(event) {
                     nodes.push(node);
                 }
-                if args.json {
+                if args.json && (args.verbose || event["event"].as_str() != Some("note")) {
                     let _ = emit_json(event);
                 }
                 tui.observe(event);
@@ -299,6 +300,7 @@ impl Session {
             self.ui(),
             self.terminal().width,
             &format!("Restarting {}", resolved.world.as_str()),
+            args.verbose,
         );
         let outcome = client.call_streaming(
             "restart",

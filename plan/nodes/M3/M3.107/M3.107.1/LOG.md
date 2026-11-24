@@ -63,3 +63,7 @@ live VM: critical_world_journey 2/2, critical_dockerfile_live 3/3; fmt/clippy/gu
 ## 2026-11-24T12:27 [lead]
 
 status review -> done
+
+## 2026-11-24T12:54 [lead]
+
+OWNER REGRESSION: COPY --from failure replayed empty with no instruction/reason; fixed forward in M3.107.4

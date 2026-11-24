@@ -2,7 +2,8 @@
 //!
 //! The live driver owns the scroll region and the ticker thread; this module owns every byte
 //! those drivers print. Every colour role comes from the shipped [`Palette`], so a `NO_COLOR`,
-//! `TERM=dumb`, piped, or `--json` invocation emits zero `ESC[` bytes.
+//! `TERM=dumb`, piped, or `--json` invocation emits zero `ESC[` bytes. Failure copy lives in the
+//! binary's `boot::failure`, and the live build narrative in `boot::build`.
 
 use std::time::Duration;
 
@@ -42,9 +43,6 @@ const WIDEST_STATE: &str = "up to date";
 
 /// Measures the six boot columns from the complete announced plan: icon, kind, name, state,
 /// duration (>=6, right), and the reserved run-id slot (>=7).
-///
-/// Every column that depends on a name or a state is measured here and only here, so rows 1..N
-/// share one grid no matter which name or state the daemon reports later.
 #[must_use]
 pub fn plan_widths(rows: &[(String, String)]) -> ColumnWidths {
     let cells: Vec<Vec<String>> = rows
@@ -65,9 +63,6 @@ pub fn plan_widths(rows: &[(String, String)]) -> ColumnWidths {
 
 /// One live task row: cyan Braille spinner in the icon cell, dim kind, bold name, green
 /// `running`, right-aligned live elapsed, and the reserved run-id slot.
-///
-/// A running row and its later [`completed_row`] share one [`ColumnWidths`], so finishing a task
-/// rewrites its own slot and moves no other row.
 #[must_use]
 pub fn running_row(
     kind: &str,
@@ -80,9 +75,9 @@ pub fn running_row(
     boot_table().line(
         widths,
         &[
-            palette.tint(&spinner.to_string(), "1;36"),
+            spinner.to_string(),
             palette.dim(kind),
-            palette.label(name),
+            palette.tint(name, "1"),
             palette.status("running"),
             palette.dim(&elapsed_text(millis)),
             String::new(),
@@ -224,7 +219,7 @@ fn assemble(
     };
     let counter = palette.value(&counter);
     let pct = palette.value(&pct);
-    let summary = palette.label(summary);
+    let summary = palette.tint(summary, "1");
     let seconds = palette.dim(&seconds);
 
     if let Some(cells) = pane_geometry(width) {
@@ -260,190 +255,6 @@ pub fn header_row(step: u64, total: u64, kind: &str, name: &str) -> String {
     format!("→ [{step}/{total}] {kind} {name}")
 }
 
-/// One failure verdict: `✗  image     backend  failed` with every role from the palette.
-#[must_use]
-pub fn failed_row(kind: &str, name: &str, styled: bool) -> String {
-    const FAILED: [Column; 4] = [
-        Column::left().at_least(1),
-        Column::left().at_least(8),
-        Column::left(),
-        Column::left(),
-    ];
-    let palette = Palette::new(styled);
-    let table = Table::new(&FAILED);
-    let widths = table.widths(&[vec![
-        String::new(),
-        kind.to_owned(),
-        name.to_owned(),
-        "failed".to_owned(),
-    ]]);
-    table.line(
-        &widths,
-        &[
-            palette.icon_bad(),
-            palette.dim(kind),
-            palette.label(name),
-            palette.status("failed"),
-        ],
-    )
-}
-
-/// The indented diagnostic rows printed directly under a [`failed_row`]: the event's `message`
-/// as plain text wrapped to `width` visible cells, then the `next:` remedy when one was reported.
-/// The source location stays in the raw step event (`--json`), never in this one-line UX.
-///
-/// Rows carry no glyph of their own — the failed row and the final [`failure_sentence`] each keep
-/// their single leading `✗` — and uncoloured rows contain zero escape bytes.
-#[must_use]
-pub fn failure_details(
-    message: &str,
-    remedy: Option<&str>,
-    width: usize,
-    styled: bool,
-) -> Vec<String> {
-    let palette = Palette::new(styled);
-    let mut rows = Vec::new();
-    // A `slipfork-world::Error` Display already ends in `next: …`; that line is the remedy, not
-    // more evidence, so it is lifted out of the message and rendered once in the remedy role.
-    let mut embedded = None;
-    let mut evidence = Vec::new();
-    for text in message
-        .lines()
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-    {
-        match text.strip_prefix("next:") {
-            Some(rest) if embedded.is_none() => embedded = Some(rest.trim()),
-            _ => evidence.push(text),
-        }
-    }
-    for text in evidence {
-        rows.extend(
-            wrap_row("  ", text, width)
-                .into_iter()
-                .map(|row| palette.dim(&row)),
-        );
-    }
-    let remedy = remedy
-        .map(str::trim)
-        .filter(|remedy| !remedy.is_empty())
-        .or(embedded);
-    if let Some(remedy) = remedy {
-        let text = if remedy.starts_with("next:") {
-            remedy.to_owned()
-        } else {
-            format!("next: {remedy}")
-        };
-        for (index, row) in wrap_row("  ", &text, width).into_iter().enumerate() {
-            let body = row.trim_start();
-            let body = match body.strip_prefix("next:") {
-                Some(rest) if index == 0 => rest.trim_start(),
-                _ => body,
-            };
-            let prefix = if index == 0 {
-                format!("{} ", palette.kind("next:"))
-            } else {
-                String::new()
-            };
-            rows.push(format!("  {prefix}{}", palette.command(body)));
-        }
-    }
-    rows
-}
-
-/// Greedy word wrap on visible width, repeating `indent` on every continuation row.
-fn wrap_row(indent: &str, text: &str, width: usize) -> Vec<String> {
-    let width = width.max(24);
-    let mut rows = Vec::new();
-    let mut current = String::from(indent);
-    for word in text.split_whitespace() {
-        let candidate = if current.trim().is_empty() {
-            format!("{indent}{word}")
-        } else {
-            format!("{current} {word}")
-        };
-        if visible_width(&candidate) > width && !current.trim().is_empty() {
-            rows.push(current);
-            current = format!("{indent}{word}");
-        } else {
-            current = candidate;
-        }
-    }
-    if !current.trim().is_empty() {
-        rows.push(current);
-    }
-    rows
-}
-
-/// Drops any embedded `next:` remedy from a failure message, keeping only its evidence lines.
-///
-/// The boot pane uses this when the catalog run id already supplies the block's one `next:` line,
-/// so a message can never contribute a second remedy.
-#[must_use]
-pub fn without_remedy(message: &str) -> String {
-    message
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("next:"))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// The evidence rows and the crisp sentence for one `failed` event frame.
-///
-/// A step that opened a capture names its exact replay command as the block's single `next:` line,
-/// styled and wrapped by [`failure_details`]. A step that never opened one (a `RunTarget::open`
-/// failure) prints its own remedy there instead. The sentence itself is the bare verdict, so the
-/// block never prints two hints.
-#[must_use]
-pub fn failure_block(event: &Value, width: usize, styled: bool) -> (Vec<String>, String) {
-    let kind = event["kind"].as_str().unwrap_or("step");
-    let name = event["name"]
-        .as_str()
-        .or_else(|| event["label"].as_str())
-        .unwrap_or("step");
-    let run_id = event["run_id"].as_str();
-    let message = event["message"].as_str().unwrap_or_default();
-    let message = if run_id.is_some() {
-        without_remedy(message)
-    } else {
-        message.to_owned()
-    };
-    let derived;
-    let remedy = match run_id {
-        Some(run_id) => {
-            derived = format!("slipfork logs -r {run_id}");
-            Some(derived.as_str())
-        }
-        None => event["remedy"].as_str(),
-    };
-    let details = failure_details(&message, remedy, width, styled);
-    (
-        details,
-        failure_sentence(kind, name, event["command"].as_str()),
-    )
-}
-
-/// The one crisp verdict sentence printed after the failed row.
-///
-/// The block's single `next:` line lives in [`failure_details`], so this sentence keeps a single
-/// leading `✗` and never repeats a remedy.
-#[must_use]
-pub fn failure_sentence(kind: &str, name: &str, command: Option<&str>) -> String {
-    let verb = match kind {
-        "image" => "build image",
-        "hook" => "run hook",
-        "service" => "start service",
-        "setup" => "run setup",
-        "resource" => "start resource",
-        _ => "finish step",
-    };
-    let subject = match (kind, command) {
-        ("setup" | "hook", Some(command)) => format!(" '{command}' ({name})"),
-        _ => format!(" {name}"),
-    };
-    format!("✗ Failed to {verb}{subject}")
-}
-
 /// The world-ready verdict, with the primary URL always bold cyan and underlined.
 #[must_use]
 pub fn ready_row(url: &str, styled: bool) -> String {
@@ -463,7 +274,7 @@ pub fn forked_row(fork: &str, millis: u64, url: &str, styled: bool) -> String {
     format!(
         "{} {} {} {} {}",
         palette.icon_ok(),
-        palette.label(fork),
+        palette.tint(fork, "1"),
         palette.dim(&format!("({})", elapsed_text(millis))),
         palette.dim("->"),
         palette.url(url),
@@ -477,7 +288,7 @@ pub fn stopped_row(world: &str, millis: u64, styled: bool) -> String {
     format!(
         "{} {} {}",
         palette.tint("✓ Stopped", "32"),
-        palette.label(world),
+        palette.tint(world, "1"),
         palette.dim(&format!("({})", elapsed_text(millis))),
     )
 }
@@ -512,7 +323,7 @@ pub fn completed_row(node: &Node<'_>, widths: &ColumnWidths, styled: bool) -> St
         &[
             mark,
             palette.dim(node.kind),
-            palette.label(node.name),
+            palette.tint(node.name, "1"),
             state,
             palette.dim(&elapsed_text(node.millis)),
             run_id,
@@ -522,82 +333,7 @@ pub fn completed_row(node: &Node<'_>, widths: &ColumnWidths, styled: bool) -> St
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Node, completed_row, failed_row, failure_block, failure_details, failure_sentence,
-        plan_widths, without_remedy,
-    };
-
-    #[test]
-    fn a_failure_block_prints_its_message_and_remedy_once_with_one_glyph_per_row() {
-        let message = "`crun` exited with code 1";
-        let remedy = "fix the `RUN` command above, then rerun `slipfork up`";
-        let details = failure_details(message, Some(remedy), 100, false);
-        assert_eq!(
-            details,
-            vec![
-                "  `crun` exited with code 1".to_owned(),
-                "  next: fix the `RUN` command above, then rerun `slipfork up`".to_owned(),
-            ]
-        );
-
-        let mut block = vec![failed_row("image", "frontend", false)];
-        block.extend(details.iter().cloned());
-        block.push(failure_sentence("image", "frontend", None));
-        for row in &block {
-            assert!(
-                row.matches('✗').count() <= 1,
-                "one glyph per row, got `{row}`"
-            );
-            assert!(!row.contains('\u{1b}'), "NO_COLOR rows stay colourless");
-        }
-        let block = block.join("\n");
-        assert_eq!(block.matches(message).count(), 1, "{block}");
-        assert_eq!(block.matches(remedy).count(), 1, "{block}");
-        assert_eq!(
-            block.matches("next:").count(),
-            1,
-            "a remedy-only failure blocks prints exactly one `next:`:\n{block}"
-        );
-        assert!(
-            !block.contains("check logs with:"),
-            "the superseded hint copy is gone:\n{block}"
-        );
-    }
-
-    #[test]
-    fn an_embedded_next_line_becomes_the_single_styled_remedy() {
-        let message =
-            "`crun` exited with code 1\nnext: fix the `RUN` command and rerun `slipfork up`";
-        let rows = failure_details(message, None, 100, false);
-        assert_eq!(
-            rows,
-            vec![
-                "  `crun` exited with code 1".to_owned(),
-                "  next: fix the `RUN` command and rerun `slipfork up`".to_owned(),
-            ]
-        );
-        let styled = failure_details(message, None, 100, true);
-        assert!(styled[1].contains("\u{1b}[36mnext:"), "{styled:?}");
-        assert_eq!(styled.len(), 2, "the embedded next line prints once");
-    }
-
-    #[test]
-    fn a_long_failure_message_wraps_inside_the_visible_width() {
-        let rows = failure_details(
-            "the build step wrote a message long enough that it must wrap onto more than one row",
-            None,
-            48,
-            false,
-        );
-        assert!(rows.len() > 1, "{rows:?}");
-        for row in &rows {
-            assert!(
-                console::measure_text_width(row) <= 48,
-                "`{row}` is too wide"
-            );
-            assert!(row.starts_with("  "), "`{row}` is not indented");
-        }
-    }
+    use super::{Node, completed_row, plan_widths};
 
     /// Plan-derived widths keep every row in the same columns, even when a later row carries a
     /// much longer name and an `up to date` state.
@@ -665,144 +401,5 @@ mod tests {
         assert!(!rows[1].contains('#'), "{:?}", rows[1]);
         assert_eq!(rows[1].trim_end().len(), DURATION_END);
         assert!(!rows[1].contains('\u{1b}'), "plain rows stay colourless");
-
-        // The same grid spans plan and completion: swapping either row's run id moves neither the
-        // kind/name/state starts nor the duration right edge, and both slot forms end identically.
-        let short_hit = completed_row(
-            &Node {
-                run_id: None,
-                ..short
-            },
-            &widths,
-            false,
-        );
-        let long_run = completed_row(
-            &Node {
-                run_id: Some("c91e04"),
-                ..long
-            },
-            &widths,
-            false,
-        );
-        assert_eq!(short_hit.trim_end().len(), DURATION_END);
-        assert!(!short_hit.contains('#'), "{short_hit:?}");
-        assert_eq!(short_hit.find("ready"), Some(STATE), "{short_hit:?}");
-        assert_eq!(long_run.find("up to date"), Some(STATE), "{long_run:?}");
-        assert_eq!(
-            long_run.find("#c91e04"),
-            Some(DURATION_END + 2),
-            "the reserved slot starts where the filled one does: {long_run:?}"
-        );
-        assert_eq!(
-            long_run.trim_end().len(),
-            DURATION_END + 2 + 7,
-            "unfilled and filled slots share one total width"
-        );
-        assert_eq!(
-            long_run.trim_end().len(),
-            rows[0].trim_end().len(),
-            "one six-column grid across plan and completion"
-        );
-    }
-
-    /// A failing setup prints the exact `-r <id>` command, and replaying that id returns the real
-    /// stderr: one glyph on the sentence, never `✗ ✗`.
-    #[test]
-    fn a_failed_setup_names_a_run_id_that_replays_the_real_stderr() {
-        use slipfork_world::pod_log::read_range;
-        use slipfork_world::run_log::{RunCapture, resolve_run};
-
-        let root = tempfile::Builder::new()
-            .prefix("run-id-replay")
-            .tempdir_in("/var/tmp")
-            .expect("disk temp directory");
-        let store = slipfork_world::LogStore::at(
-            root.path().to_path_buf(),
-            slipfork_world::WorldName::parse("demo").expect("valid world"),
-        );
-        let project = root.path().join("apps/demo");
-        let mut capture = RunCapture::begin(&store, &project, "setup", "backend", "uv sync")
-            .expect("begin a real run capture");
-        capture
-            .append_stream(
-                slipfork_world::Stream::Stdout,
-                "Resolved 12 packages in 3ms",
-            )
-            .expect("append stdout");
-        capture
-            .append_stream(
-                slipfork_world::Stream::Stderr,
-                "error: Failed to resolve `numpy==9`",
-            )
-            .expect("append stderr");
-        let run_id = capture.run_id().to_owned();
-        capture.finish("failed", 41).expect("finish the run");
-
-        let event = serde_json::json!({
-            "kind": "setup",
-            "name": "backend",
-            "command": "uv sync",
-            "message": "uv sync failed\nnext: fix the command above",
-            "line": 0,
-            "run_id": run_id,
-        });
-        let (details, sentence) = failure_block(&event, 100, false);
-        assert_eq!(sentence, "✗ Failed to run setup 'uv sync' (backend)");
-        let block = [failed_row("setup", "backend", false), sentence.clone()]
-            .into_iter()
-            .chain(details.iter().cloned())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert_eq!(
-            block.matches("next:").count(),
-            1,
-            "one replay command, never a second hint:\n{block}"
-        );
-        assert!(
-            block.contains(&format!("next: slipfork logs -r {run_id}")),
-            "{block}"
-        );
-        assert_eq!(sentence.matches('✗').count(), 1, "{sentence}");
-        let styled = failure_block(&event, 100, true).0;
-        assert!(
-            styled.iter().any(|row| row.contains("\u{1b}[36mnext:")),
-            "the one remedy is styled through the details path: {styled:?}"
-        );
-
-        let resolved = resolve_run(&store.world_logs(), &run_id).expect("resolve the printed id");
-        let mut reader =
-            read_range(&store.run_dir(), &resolved, None, None).expect("open the run capture");
-        let mut lines = Vec::new();
-        let _ = reader.read_lines(&mut |line| lines.push(line.text.clone()));
-        reader.flush(&mut |line| lines.push(line.text.clone()));
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("Failed to resolve `numpy==9`")),
-            "{lines:?}"
-        );
-
-        // The block carries the run id's single remedy even when the step message embeds its own
-        // `next:`; `without_remedy` removes that second hint before rendering.
-        let evidence = failure_details(
-            &without_remedy("uv sync failed\nnext: fix the command above"),
-            None,
-            100,
-            false,
-        );
-        assert_eq!(
-            evidence.iter().filter(|row| row.contains("next:")).count(),
-            0,
-            "the evidence rows never carry a hint here: {evidence:?}"
-        );
-        assert!(!block.contains("✗ ✗"), "{block}");
-        assert!(
-            !block.contains('\u{1b}'),
-            "NO_COLOR failure blocks stay pure"
-        );
-        assert_eq!(
-            without_remedy("ok line\nnext: dead command\nmore evidence"),
-            "ok line\nmore evidence"
-        );
     }
 }

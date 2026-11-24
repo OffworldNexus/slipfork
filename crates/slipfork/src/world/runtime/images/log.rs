@@ -28,6 +28,11 @@ impl<'a> BuildLog<'a> {
         }
     }
 
+    /// Forwards one engine narration line to the live sink; it never enters a capture.
+    pub(super) fn note(&mut self, text: &str) {
+        self.sink.engine_note(text);
+    }
+
     /// Forwards one instruction transition to the live sink, pinned to this image id.
     pub(super) fn step(&mut self, event: &StepEvent<'_>) {
         self.sink.step_event(&self.id, event);
