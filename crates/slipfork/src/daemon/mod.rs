@@ -327,16 +327,11 @@ impl Daemon {
             "fork" => self.dispatch_fork(&request.params, emit),
             "drop" => self.core()?.drop_fork(&request.params, emit).map(Some),
             "ping" => {
-                let core = self.core()?;
-                Ok(Some(json!({
-                    "pong": true,
-                    "pid": std::process::id(),
-                    "worlds": core.world_count(),
-                    // Identity of the code actually answering: a client refuses a daemon it did
-                    // not start, instead of silently running against a stale binary's behaviour.
-                    "version": self.identity.version(),
-                    "exe": self.identity.exe().display().to_string(),
-                })))
+                let mut reply = self.identity.ping_fields();
+                reply["pong"] = json!(true);
+                reply["pid"] = json!(std::process::id());
+                reply["worlds"] = json!(self.core()?.world_count());
+                Ok(Some(reply))
             }
             "ps" => {
                 let reply = self.core()?.ps()?;

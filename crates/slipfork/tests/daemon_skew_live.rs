@@ -350,6 +350,89 @@ fn a_stale_daemon_is_refused_and_an_auto_spawned_one_matches() {
     let still = client(&alpha, &runtime, &state, root, &["status", "--json"]);
     assert!(still.status.success(), "the daemon must survive a refusal");
 
+    // A rebuild at the same path: the daemon's code predates the file the client now runs.
+    // Binary B is binary A plus one trailing byte, so the ELF stays executable while `len`
+    // (and mtime) change — exactly what installing over a running daemon produces.
+    let rebuilt_runtime = scratch.runtime("rebuilt");
+    daemons.add(rebuilt_runtime.clone());
+    let rebuilt_socket = rebuilt_runtime.join("daemon.sock");
+    let rebuilt_dir = root.join("rebuilt");
+    fs::create_dir_all(&rebuilt_dir).expect("create the rebuilt binary directory");
+    let rebuilt_exe = rebuilt_dir.join("slipfork");
+    fs::copy(env!("CARGO_BIN_EXE_slipfork"), &rebuilt_exe).expect("install binary A");
+    let rebuilt_exe = fs::canonicalize(&rebuilt_exe).expect("canonicalize binary A");
+    let mut stale = daemon(&rebuilt_exe, &rebuilt_runtime, &state);
+    wait_for_socket(&rebuilt_socket, &state.join("daemon.stderr"), &mut stale);
+    let stale_pid = stale.id();
+
+    // A running ELF cannot be opened for writing (`ETXTBSY`), so install the way a package
+    // does: write the replacement beside it, then `rename` over the same path. Binary B is
+    // binary A plus one trailing byte, so `len` (and mtime) change while the ELF stays valid.
+    let mut bytes = fs::read(&rebuilt_exe).expect("read binary A");
+    bytes.push(0);
+    let replacement = rebuilt_dir.join("slipfork.new");
+    fs::write(&replacement, bytes).expect("write binary B beside binary A");
+    let mode = fs::metadata(&rebuilt_exe)
+        .expect("stat binary A")
+        .permissions();
+    fs::set_permissions(&replacement, mode).expect("keep binary B executable");
+    fs::rename(&replacement, &rebuilt_exe)
+        .expect("rename binary B over the path binary A occupied");
+
+    let skew = client(
+        &rebuilt_exe,
+        &rebuilt_runtime,
+        &state,
+        root,
+        &["status", "--json"],
+    );
+    let value = refusal(&skew, "status");
+    let message = value["error"]["message"]
+        .as_str()
+        .expect("a message string");
+    assert!(message.contains("stale build"), "{message}");
+    assert!(
+        message.contains(&rebuilt_exe.display().to_string()),
+        "the refusal names the rebuilt path: {message}"
+    );
+    assert_stale_remedy(value["error"]["next"].as_str().unwrap(), stale_pid);
+    assert!(
+        stale.try_wait().expect("poll daemon A").is_none(),
+        "the stale daemon must still be running when it is named"
+    );
+
+    let rebuilt_human = client(&rebuilt_exe, &rebuilt_runtime, &state, root, &["status"]);
+    assert_stale_stderr(&text(&rebuilt_human.stderr), stale_pid);
+
+    // Killing the stale daemon lets the rebuilt binary spawn its own daemon and connect.
+    // SAFETY: `kill(2)` on this test's own live child; `wait` below reaps it.
+    unsafe {
+        libc::kill(stale_pid as i32, libc::SIGKILL);
+    }
+    let killed = stale.wait().expect("reap the stale daemon");
+    assert!(!killed.success(), "SIGKILL must not look clean: {killed}");
+    let respawned = client(
+        &rebuilt_exe,
+        &rebuilt_runtime,
+        &state,
+        root,
+        &["status", "--json"],
+    );
+    let respawned_err = text(&respawned.stderr);
+    assert!(
+        respawned.status.success(),
+        "the rebuilt binary must spawn and connect: {}{}",
+        text(&respawned.stdout),
+        respawned_err
+    );
+    assert!(
+        !respawned_err.contains("daemon-skew"),
+        "the daemon it just started is its own build: {respawned_err}"
+    );
+    let reply: serde_json::Value = serde_json::from_slice(&respawned.stdout)
+        .expect("`status --json` emits one JSON document after the rebuild");
+    assert_eq!(reply["worlds"], serde_json::json!([]));
+
     // An old-style daemon on a fresh runtime: a real process whose ping has only a pid.
     let legacy_runtime = scratch.runtime("legacy");
     daemons.add(legacy_runtime.clone());
