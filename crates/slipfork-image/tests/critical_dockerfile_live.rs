@@ -9,6 +9,7 @@
 #[path = "support/mod.rs"]
 mod support;
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -20,9 +21,9 @@ use std::thread;
 use std::time::Duration;
 
 use slipfork_image::{
-    BuildArgs, BuildEvent, BuildRequest, Command, Credentials, CrunStepRuntime, ImageConfig,
-    ImageLayout, NativeImageBuilder, OciPuller, Port, Protocol, RegistryScheme, RunSpec, StepHost,
-    StepLayout, StepLog, Stream,
+    BuildArgs, BuildEvent, BuildRequest, Command, Credentials, CrunStepRuntime, ExternalImage,
+    ImageConfig, ImageLayout, ImageReference, NativeImageBuilder, OciPuller, Port, Protocol,
+    RegistryScheme, RunSpec, StepHost, StepLayout, StepLog, Stream, external_references,
 };
 use slipfork_world::{BtrfsEngine, Dirtiness, StoreLayout, WorldEngine, is_subvolume_path};
 
@@ -187,6 +188,7 @@ fn native_dockerfile_multistage_build_lifecycle() {
         dockerfile: dockerfile.clone(),
         args: BuildArgs::new(),
         target: None,
+        externals: BTreeMap::new(),
     };
     let (first, first_log) = build_capture(&builder, &request);
     let first = first.unwrap_or_else(|error| {
@@ -409,6 +411,7 @@ fn a_target_stage_never_reaches_a_later_failing_stage() {
         dockerfile: dockerfile.clone(),
         args: BuildArgs::new(),
         target: Some("dev".to_owned()),
+        externals: BTreeMap::new(),
     };
     let (dev, dev_log) = build_capture(&builder, &dev_request);
     let dev = dev.unwrap_or_else(|error| {
@@ -564,6 +567,253 @@ fn forkfile_compiler_rejects_secret_build_args() {
     assert_eq!(args.iter().count(), 0, "BuildArgs starts empty");
     args.declare("X", "plain");
     assert_eq!(args.get("X"), Some("plain"));
+}
+
+/// One external-image journey on a single store boot: `COPY --from` by image/index/name, a moved
+/// external digest invalidating the sealed copy step, and the owner's real `uv` reference through
+/// `crun`.
+#[test]
+fn external_copy_from_image_lifecycle() {
+    let crun = crun_path();
+    // SAFETY: `getuid`/`getgid` only read the caller's identity and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    // SAFETY: as above; `getgid` has no preconditions.
+    let gid = unsafe { libc::getgid() };
+    let run = support::live_run_root("dockerfile-external");
+    let store = StoreLayout::new(&run);
+    let engine = Arc::new(BtrfsEngine::new(store.clone()));
+    engine.ensure_store().expect("create the Btrfs image store");
+    let steps = StepLayout::new(store.images_root());
+    let scratch = run.join("bundles");
+    let fixture = support::Fixture::start();
+    let arch = support::host_architecture();
+    let loopback = OciPuller::new(
+        Arc::clone(&engine) as Arc<dyn WorldEngine>,
+        ImageLayout::new(store.images_root()),
+        Credentials::Anonymous,
+        arch,
+        "slipfork-tests/0.1".to_owned(),
+    )
+    .with_scheme(RegistryScheme::Http);
+
+    // The `FROM` base is `library/demo` (has `bin/tool`, no `/bin/sh`), so resolving a `--from`
+    // external to the base stage cannot accidentally produce the copied bytes.
+    let demo_ref = fixture.reference_text("library/demo");
+    let shell_ref = fixture.reference_text("library/shell");
+    let demo = loopback
+        .pull_into(&fixture.reference("library/demo"), &mut StepLog::discard())
+        .expect("pull the loopback demo rootfs");
+    let shell = loopback
+        .pull_into(&fixture.reference("library/shell"), &mut StepLog::discard())
+        .expect("pull the loopback shell rootfs");
+    let shell_bytes = fs::read(shell.rootfs.join("bin/sh")).expect("read the external `/bin/sh`");
+    let shell_image = ExternalImage {
+        rootfs: shell.rootfs,
+        digest: shell.digest,
+    };
+    let demo_image = ExternalImage {
+        rootfs: demo.rootfs,
+        digest: demo.digest,
+    };
+
+    let builder = NativeImageBuilder::new(
+        Arc::clone(&engine) as Arc<dyn WorldEngine>,
+        loopback,
+        steps.clone(),
+        arch,
+        StepHost::new(crun, "/etc/resolv.conf", &scratch, uid, gid),
+    );
+    let context = run.join("context");
+    fs::create_dir_all(&context).expect("create the build context");
+    let dockerfile = context.join("Dockerfile");
+
+    // 1. image reference, stage index, and stage name all reach the pulled external rootfs.
+    fs::write(
+        &dockerfile,
+        format!(
+            "FROM {demo_ref} AS first\n\
+             COPY --from={shell_ref} /bin/sh /bin/external-sh\n\
+             FROM {demo_ref} AS second\n\
+             COPY --from=0 /bin/external-sh /bin/by-index\n\
+             COPY --from=first /bin/external-sh /bin/by-name\n"
+        ),
+    )
+    .expect("write the external Dockerfile");
+    let mut stage_externals = BTreeMap::new();
+    stage_externals.insert(shell_ref.clone(), shell_image.clone());
+    let request = BuildRequest {
+        context: context.clone(),
+        dockerfile: dockerfile.clone(),
+        args: BuildArgs::new(),
+        target: None,
+        externals: stage_externals,
+    };
+    let (report, log) = build_capture(&builder, &request);
+    let report = report.unwrap_or_else(|error| {
+        panic!(
+            "external COPY build: {error}\nbuild output tail:\n{}",
+            output_tail(&log)
+        )
+    });
+    for artifact in ["bin/external-sh", "bin/by-index", "bin/by-name"] {
+        let path = report.rootfs.join(artifact);
+        assert!(path.is_file(), "`{artifact}` must exist");
+        assert!(
+            fs::metadata(&path).expect("stat the artifact").mode() & 0o111 != 0,
+            "`{artifact}` must stay executable"
+        );
+        assert_eq!(
+            fs::read(&path).expect("read the copied artifact"),
+            shell_bytes,
+            "`{artifact}` must be the external rootfs's `/bin/sh` bytes"
+        );
+    }
+    let (repeat, repeat_log) = build_capture(&builder, &request);
+    let repeat = repeat.unwrap_or_else(|error| {
+        panic!(
+            "cached external build: {error}\nbuild output tail:\n{}",
+            output_tail(&repeat_log)
+        )
+    });
+    assert_eq!(repeat.cache_misses, 0, "a repeat build is all sealed hits");
+    assert_eq!(
+        repeat.cache_hits, 3,
+        "three external/stage copies are sealed"
+    );
+    let empty = BuildRequest {
+        externals: BTreeMap::new(),
+        ..request.clone()
+    };
+    let (error, _) = build_capture(&builder, &empty);
+    let error = error.expect_err("an external COPY with no pulled rootfs must fail");
+    assert!(
+        matches!(error, slipfork_image::Error::ExternalImageMissing { ref reference } if reference == &shell_ref),
+        "unexpected error: {error}"
+    );
+
+    // 2. A moved external digest must bust the sealed COPY step, not serve a stale `/app/bin`.
+    fs::write(
+        &dockerfile,
+        format!("FROM {demo_ref}\nCOPY --from=external /bin /app/bin\n"),
+    )
+    .expect("rewrite the digest-salt Dockerfile");
+    let mut shell_map = BTreeMap::new();
+    shell_map.insert("external".to_owned(), shell_image.clone());
+    let shell_request = BuildRequest {
+        context: context.clone(),
+        dockerfile: dockerfile.clone(),
+        args: BuildArgs::new(),
+        target: None,
+        externals: shell_map,
+    };
+    let (shell_build, shell_log) = build_capture(&builder, &shell_request);
+    let shell_build = shell_build.unwrap_or_else(|error| {
+        panic!(
+            "shell-salt build: {error}\nbuild output tail:\n{}",
+            output_tail(&shell_log)
+        )
+    });
+    assert!(
+        shell_build.rootfs.join("app/bin/sh").is_file(),
+        "the shell rootfs must seed `/app/bin/sh`"
+    );
+    let mut demo_map = BTreeMap::new();
+    demo_map.insert("external".to_owned(), demo_image);
+    let demo_request = BuildRequest {
+        externals: demo_map,
+        ..shell_request.clone()
+    };
+    let (demo_build, demo_log) = build_capture(&builder, &demo_request);
+    let demo_build = demo_build.unwrap_or_else(|error| {
+        panic!(
+            "demo-salt build: {error}\nbuild output tail:\n{}",
+            output_tail(&demo_log)
+        )
+    });
+    assert!(
+        demo_build.cache_misses >= 1,
+        "a moved external digest must re-execute the sealed COPY"
+    );
+    assert!(
+        demo_build.rootfs.join("app/bin/tool").is_file(),
+        "the demo rootfs must seed `/app/bin/tool`"
+    );
+    assert!(
+        !demo_build.rootfs.join("app/bin/sh").exists(),
+        "the stale shell payload must be replaced, not merged"
+    );
+
+    // 3. The owner's real Dockerfile: pull `uv` by reference over HTTPS, then run it via `crun`.
+    let https = OciPuller::new(
+        Arc::clone(&engine) as Arc<dyn WorldEngine>,
+        ImageLayout::new(store.images_root()),
+        Credentials::Anonymous,
+        arch,
+        "slipfork-tests/0.1".to_owned(),
+    );
+    let owner_source = "FROM python:3.14-trixie AS base\n\
+                        COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/\n\
+                        RUN /bin/uv --version\n";
+    let references = external_references(owner_source, None).expect("the owner Dockerfile parses");
+    let mut owner_externals = BTreeMap::new();
+    for reference in &references {
+        let parsed =
+            ImageReference::parse(&reference.reference).expect("the external reference parses");
+        let pulled = https
+            .pull_into(&parsed, &mut StepLog::discard())
+            .unwrap_or_else(|error| {
+                panic!(
+                    "fail closed: pull `{}` from ghcr.io failed: {error}\nnext: check network egress to ghcr.io and retry",
+                    reference.reference
+                )
+            });
+        owner_externals.insert(
+            reference.reference.clone(),
+            ExternalImage {
+                rootfs: pulled.rootfs,
+                digest: pulled.digest,
+            },
+        );
+    }
+    fs::write(&dockerfile, owner_source).expect("write the owner Dockerfile");
+    let owner_request = BuildRequest {
+        context: context.clone(),
+        dockerfile: dockerfile.clone(),
+        args: BuildArgs::new(),
+        target: None,
+        externals: owner_externals,
+    };
+    let (owner, owner_log) = build_capture(&builder, &owner_request);
+    let owner = owner.unwrap_or_else(|error| {
+        panic!(
+            "owner Dockerfile build: {error}\nbuild output tail:\n{}",
+            output_tail(&owner_log)
+        )
+    });
+    assert!(
+        owner.rootfs.join("bin/uv").is_file(),
+        "the external `uv` binary must land in the built rootfs"
+    );
+    let uv_version = owner_log
+        .iter()
+        .filter(|(stream, _)| *stream == Stream::Stdout)
+        .map(|(_, line)| line.trim_start())
+        .any(|line| {
+            line.starts_with("uv ")
+                && line.split_whitespace().nth(1).is_some_and(|version| {
+                    version.chars().next().is_some_and(|c| c.is_ascii_digit())
+                })
+        });
+    assert!(
+        uv_version,
+        "`uv --version` must print `uv <digit>…`, saw:\n{}",
+        output_tail(&owner_log)
+    );
+
+    drop(fixture);
+    destroy_children(&engine, &steps.steps());
+    destroy_children(&engine, &store.images_root().join("oci"));
+    let _ = fs::remove_dir_all(&run);
 }
 
 fn dockerfile_source(base: &str, url: &str, marker: &str, uid: u32, gid: u32) -> String {

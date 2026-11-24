@@ -80,6 +80,8 @@ pub enum Error {
     },
     /// A `--from` stage or `stage <name>` target does not exist.
     UnknownStage { name: String },
+    /// A `COPY --from=<image>` reference has no pulled rootfs to read.
+    ExternalImageMissing { reference: String },
     /// `crun` is not installed, so no `RUN` instruction can execute.
     CrunMissing { path: PathBuf },
     /// An in-process image collaborator was poisoned or panicked.
@@ -164,6 +166,9 @@ impl Error {
             Self::Dockerfile { line, message, .. } => format!("Dockerfile:{line}: {message}"),
             Self::StepFailed { message, .. } => message.clone(),
             Self::UnknownStage { name } => format!("no build stage named `{name}`"),
+            Self::ExternalImageMissing { reference } => {
+                format!("no rootfs was pulled for `--from={reference}`")
+            }
             Self::CrunMissing { path } => {
                 format!("`RUN` needs `crun`, but `{}` is missing", path.display())
             }
@@ -195,6 +200,7 @@ impl Error {
             Self::UnknownStage { name } => format!(
                 "add `FROM <image> AS {name}` above this stage or fix the `--from=` argument"
             ),
+            Self::ExternalImageMissing { .. } => "declare the stage with `FROM <image> AS <name>` above this `COPY`, or fix the `--from=` reference".to_owned(),
             Self::CrunMissing { .. } => "install crun from your distribution (`apt install crun`, `dnf install crun`, `pacman -S crun`) and retry".to_owned(),
             Self::Interrupted { .. } => "retry `slipfork up`".to_owned(),
             Self::Json { .. } | Self::Io { .. } | Self::World(_) => return None,

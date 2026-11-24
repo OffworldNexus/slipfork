@@ -224,6 +224,7 @@ fn a_missing_crun_fails_typed_before_any_step_runs() {
         dockerfile,
         args: BuildArgs::new(),
         target: None,
+        externals: std::collections::BTreeMap::new(),
     };
     let mut events = |_: BuildEvent<'_>| {};
     let mut log = StepLog::with_events(&mut events);
@@ -362,6 +363,7 @@ fn an_absent_target_alias_fails_before_any_build_work() {
         dockerfile,
         args: BuildArgs::new(),
         target: Some("staging".to_owned()),
+        externals: std::collections::BTreeMap::new(),
     };
     let mut events = |_: BuildEvent<'_>| {};
     let mut log = StepLog::with_events(&mut events);

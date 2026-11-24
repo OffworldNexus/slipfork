@@ -149,3 +149,5 @@ Slipfork has **five explicit composition roots** and **zero** ambient OS/env pro
 | `slipfork-lsp` | `LspServer` | — |
 
 The canonical port set is strictly `WorldEngine`, `BaseImageBuilder`, `SecretVault`, `OsppClient`, and `VcsWorkspace` — zero single-impl mock traits sit beside them.
+
+`COPY --from` accepts a stage index, a stage `AS` name, or an OCI image reference; the composition root pulls the latter into a sealed rootfs first, then hands every pulled rootfs to the network-free native builder.

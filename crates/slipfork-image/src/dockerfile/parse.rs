@@ -120,7 +120,9 @@ fn parse_copy(op: &str, rest: &str, line: usize) -> Result<Instruction> {
             None => (flag.as_str(), ""),
         };
         match name {
-            "--from" => spec.from = Some(value.to_ascii_lowercase()),
+            // Image-reference tags and digests are case-sensitive; aliases match case-insensitively
+            // at classification time instead.
+            "--from" => spec.from = Some(value.to_owned()),
             "--chown" => spec.chown = Some(parse_owner(value, line)?),
             "--chmod" | "--link" | "--exclude" | "--parents" | "--checksum" => {
                 return Err(Error::Dockerfile {

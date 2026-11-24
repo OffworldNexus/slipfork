@@ -1,12 +1,65 @@
 //! Resource-image pulls: one OCI fetch per reference, reused by every pod built from it.
 
-use slipfork_image::{ImageReference, PulledImage, StepLog};
+use std::collections::BTreeMap;
+
+use slipfork_image::{
+    BuildRequest, ExternalImage, ImageReference, PulledImage, StepLog, external_references,
+};
 
 use super::ImageCache;
 use super::flight::{FlightRole, acquire_flight, wait_flight};
 use crate::world::supervise::BootSink;
 
 impl ImageCache {
+    /// Pre-scans the `Dockerfile` and pulls every external `COPY --from=<image>` rootfs.
+    ///
+    /// Each pull is one live `COPY` row at the instruction's own walked position and `Dockerfile`
+    /// line; a failure folds back onto that line instead of surfacing a step-less build error.
+    pub(super) fn pull_externals(
+        &self,
+        request: &BuildRequest,
+        step_log: &mut StepLog<'_>,
+    ) -> Result<BTreeMap<String, ExternalImage>, slipfork_image::Error> {
+        let source = std::fs::read_to_string(&request.dockerfile).map_err(|source| {
+            slipfork_image::Error::Io {
+                action: "read",
+                path: request.dockerfile.clone(),
+                source,
+            }
+        })?;
+        let references = external_references(&source, request.target.as_deref())?;
+        let mut externals = BTreeMap::new();
+        for external in references {
+            step_log.announce_at(
+                external.place,
+                "COPY",
+                &format!("--from={}", external.reference),
+            );
+            let started = std::time::Instant::now();
+            let outcome = match ImageReference::parse(&external.reference) {
+                Ok(parsed) => self.puller.pull_into(&parsed, step_log),
+                Err(error) => Err(error),
+            };
+            match outcome {
+                Ok(image) => {
+                    step_log.done(started.elapsed());
+                    externals.insert(
+                        external.reference.clone(),
+                        ExternalImage {
+                            rootfs: image.rootfs,
+                            digest: image.digest,
+                        },
+                    );
+                }
+                Err(error) => {
+                    step_log.failed(started.elapsed(), error.exit_code());
+                    return Err(external.pull_failure(&error));
+                }
+            }
+        }
+        Ok(externals)
+    }
+
     /// Pulls one resource image (`postgres:18`, `redis:7`) once and reuses it afterwards.
     pub(in crate::world::runtime) fn pull(
         &self,

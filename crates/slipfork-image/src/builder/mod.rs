@@ -1,5 +1,6 @@
 //! Native multi-stage `Dockerfile` evaluation into sealed Btrfs step subvolumes.
 
+mod externals;
 mod run;
 
 use std::collections::BTreeMap;
@@ -23,6 +24,8 @@ use crate::puller::{OciPuller, PulledImage};
 use crate::reference::ImageReference;
 use crate::runtime::{CrunStepRuntime, StepHost, StepLog};
 use crate::steps::{StepCache, StepLayout, StepRecord};
+pub use externals::{ExternalFrom, ExternalImage, external_references};
+use externals::{FromSource, classify_from};
 use run::BuildRun;
 
 /// Everything one `build` call needs; every path is absolute and caller-injected.
@@ -36,6 +39,9 @@ pub struct BuildRequest {
     pub args: BuildArgs,
     /// Stop after this `AS` stage instead of building the final stage.
     pub target: Option<String>,
+    /// Rootfs the composition root pulled for each `COPY --from=<image>` reference, keyed by the
+    /// reference exactly as the `Dockerfile` wrote it.
+    pub externals: BTreeMap<String, ExternalImage>,
 }
 
 /// The last instruction a build applied, named exactly as the author wrote it.
@@ -218,28 +224,29 @@ impl NativeImageBuilder {
         from: &str,
         built: &[(Option<String>, StageState)],
         stages: &[Stage],
+        externals: &BTreeMap<String, ExternalImage>,
     ) -> Result<StageState> {
-        if let Some((_, state)) = built
-            .iter()
-            .find(|(alias, _)| alias.as_deref() == Some(from))
-        {
-            return Ok(state.clone());
+        match classify_from(from, stages) {
+            Some(FromSource::Index(index) | FromSource::Stage(index)) => built
+                .get(index)
+                .map(|(_, state)| state.clone())
+                .ok_or_else(|| Error::UnknownStage {
+                    name: from.to_owned(),
+                }),
+            Some(FromSource::External) => externals
+                .get(from)
+                .map(|image| StageState {
+                    rootfs: image.rootfs.clone(),
+                    key: format!("external-{}", image.digest),
+                    config: ImageConfig::default(),
+                })
+                .ok_or_else(|| Error::ExternalImageMissing {
+                    reference: from.to_owned(),
+                }),
+            None => Err(Error::UnknownStage {
+                name: from.to_owned(),
+            }),
         }
-        if let Ok(index) = from.parse::<usize>() {
-            if let Some((_, state)) = built.get(index) {
-                return Ok(state.clone());
-            }
-            if let Some(alias) = stages.get(index).and_then(|stage| stage.alias.as_ref())
-                && let Some((_, state)) = built
-                    .iter()
-                    .find(|(built_alias, _)| built_alias.as_deref() == Some(alias.as_str()))
-            {
-                return Ok(state.clone());
-            }
-        }
-        Err(Error::UnknownStage {
-            name: from.to_owned(),
-        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -251,13 +258,14 @@ impl NativeImageBuilder {
         args: &BTreeMap<String, String>,
         context_hash: &str,
         config: &ImageConfig,
+        salt: &str,
         apply: F,
     ) -> Result<(StageState, bool)>
     where
         F: FnOnce(&Path) -> Result<()>,
     {
         let label = instruction.render();
-        let key = state_key(instruction, args, context_hash, config, &parent.key);
+        let key = state_key(instruction, args, context_hash, config, &parent.key, salt);
         if let Some(sealed) = self.cache.lookup(&key)? {
             return Ok((
                 StageState {
@@ -311,10 +319,15 @@ fn state_key(
     context_hash: &str,
     config: &ImageConfig,
     parent: &str,
+    salt: &str,
 ) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"slipfork-step-v1\0");
     hasher.update(parent.as_bytes());
+    hasher.update(b"\0");
+    // A `COPY --from` step's sealed key includes the source rootfs key, so a floating external
+    // tag whose digest moved never gets served from a stale step.
+    hasher.update(salt.as_bytes());
     hasher.update(b"\0");
     hasher.update(instruction.render().as_bytes());
     hasher.update(b"\0");
@@ -422,7 +435,9 @@ fn at_line(err: Error, line: usize, instruction: &Instruction) -> Error {
             message: format!("no build stage named `{name}`"),
             exit_code: None,
             runtime: None,
-            next: "declare it above this stage with `FROM <image> AS <name>`".to_owned(),
+            next:
+                "declare it above this stage with `FROM <image> AS <name>`, or use a full image reference"
+                    .to_owned(),
         },
         other => other,
     }

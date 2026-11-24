@@ -211,6 +211,7 @@ impl<'a, 's, 'l> BuildRun<'a, 's, 'l> {
                     args,
                     hash,
                     &next_config,
+                    "",
                     |writer| {
                         let target = writer.join(resolved.trim_start_matches('/'));
                         fs::create_dir_all(&target)
@@ -249,6 +250,7 @@ impl<'a, 's, 'l> BuildRun<'a, 's, 'l> {
         let config = state.config.clone();
         let Self {
             builder,
+            request,
             context,
             context_hash,
             stages,
@@ -260,9 +262,10 @@ impl<'a, 's, 'l> BuildRun<'a, 's, 'l> {
             .expect("the build context loads before COPY/ADD");
         let hash = context_hash.as_deref().unwrap_or_default();
         let from_state = match &expanded.from {
-            Some(from) => Some(builder.source_state(from, built, stages)?),
+            Some(from) => Some(builder.source_state(from, built, stages, &request.externals)?),
             None => None,
         };
+        let salt = from_state.as_ref().map_or("", |source| source.key.as_str());
         let (next, hit) = builder.filesystem_step(
             state,
             &instruction,
@@ -270,6 +273,7 @@ impl<'a, 's, 'l> BuildRun<'a, 's, 'l> {
             args,
             hash,
             &config,
+            salt,
             |writer| {
                 let destination = copy::Destination::new(writer, &config.workdir);
                 match &from_state {
@@ -340,13 +344,19 @@ impl<'a, 's, 'l> BuildRun<'a, 's, 'l> {
         let id = format!(
             "sf-{}-{}",
             std::process::id(),
-            &state_key(&instruction, args, hash, &config, &state.key)[..16]
+            &state_key(&instruction, args, hash, &config, &state.key, "")[..16]
         );
         let log = &mut **log;
-        let (next, hit) =
-            builder.filesystem_step(state, &instruction, line, args, hash, &config, |writer| {
-                runtime.run(&id, writer, &config, &run, &mounts, line, log)
-            })?;
+        let (next, hit) = builder.filesystem_step(
+            state,
+            &instruction,
+            line,
+            args,
+            hash,
+            &config,
+            "",
+            |writer| runtime.run(&id, writer, &config, &run, &mounts, line, log),
+        )?;
         *state = next;
         Ok(hit)
     }

@@ -50,6 +50,7 @@
 //!     dockerfile: "/mnt/btrfs/projects/demo/Dockerfile".into(),
 //!     args: BuildArgs::new(),
 //!     target: None,
+//!     externals: std::collections::BTreeMap::new(),
 //! }, &mut log)?;
 //! println!("{} {}", report.key, report.rootfs.display());
 //! # Ok(())
@@ -77,7 +78,8 @@ mod unpack;
 use std::fmt;
 
 pub use builder::{
-    BuildReport, BuildRequest, NativeImageBuilder, StageWalk, StepTrace, stage_walk,
+    BuildReport, BuildRequest, ExternalFrom, ExternalImage, NativeImageBuilder, StageWalk,
+    StepTrace, external_references, stage_walk,
 };
 pub use context::{BuildContext, ContextEntry};
 pub use dockerfile::{

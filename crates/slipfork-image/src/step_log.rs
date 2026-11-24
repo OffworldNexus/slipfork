@@ -185,7 +185,13 @@ impl<'a> StepLog<'a> {
 
     /// Announces one standalone step (a `from:` pull) whose total is itself, before it is tried.
     pub fn announce(&mut self, instruction: &str, args: &str) {
-        self.started(StepPlace::new(1, 1, 0), instruction, args);
+        self.announce_at(StepPlace::new(1, 1, 0), instruction, args);
+    }
+
+    /// Announces a pre-build row at `place`, so an external `COPY --from` pull still carries the
+    /// `Dockerfile` line it serves.
+    pub fn announce_at(&mut self, place: StepPlace, instruction: &str, args: &str) {
+        self.started(place, instruction, args);
     }
 
     /// Settles the running instruction with the wall time it took.
