@@ -29,6 +29,11 @@ mod resources;
 mod rootfs;
 
 use helpers::{ServiceLaunch, merge_env, merge_path, project_binds, shell_command, upsert_env};
+
+/// The one line a non-zero pod exit writes into both the capture and the failure message.
+pub(crate) fn exit_line(command: &str, code: i32) -> String {
+    format!("`{command}` exited with {code}")
+}
 use images::{BuiltImage, ImageCache};
 use ready::{Ready, Staged};
 
@@ -193,7 +198,7 @@ impl WorldRuntime {
                 &features,
             );
             if let Some(error) = failure.into_inner() {
-                return Err(format!("{}; next: {}", error.message, error.next));
+                return Err(format!("{}\nnext: {}", error.message, error.next));
             }
             resolved
         };
@@ -221,8 +226,9 @@ impl WorldRuntime {
     /// Executes one DAG node with zero global lock: staging uses narrow collaborator scopes and
     /// [`Staged::await_ready`] polls sockets outside all locks.
     ///
-    /// Steps that can execute real work arm a lazy run capture; a cache hit discards it, so a
-    /// `cached`/`up to date` row never mints a `#run_id`.
+    /// Every step opens its run capture eagerly, before it executes anything; a `cached`/`up to
+    /// date` outcome discards it. A capture that cannot be opened fails the step instead of
+    /// silently running it unrecorded.
     pub(super) fn execute(
         &self,
         index: usize,
@@ -235,20 +241,17 @@ impl WorldRuntime {
             &step.label,
             &step.node_name(),
         );
-        if matches!(
-            step.kind,
-            BootKind::Image | BootKind::Setup | BootKind::Hook
-        ) {
-            let command = step.command.clone().unwrap_or_else(|| step.subject.clone());
-            let store = slipfork_world::LogStore::at(self.layout.store_root(), self.world.clone());
-            log = log.capture_run(
-                &store,
-                &self.project,
-                step.kind.as_str(),
-                &step.node_name(),
-                &command,
-            );
-        }
+        // Armed for every kind: a pod that dies inside `launch_pod` must still leave a record and a
+        // readable capture, and only a cached outcome throws it away.
+        let command = step.command.clone().unwrap_or_else(|| step.subject.clone());
+        let store = slipfork_world::LogStore::at(self.layout.store_root(), self.world.clone());
+        log = log.capture_run(
+            &store,
+            &self.project,
+            step.kind.as_str(),
+            &step.node_name(),
+            &command,
+        )?;
         let started = std::time::Instant::now();
         let mut staged = match self.execute_step(step, &mut log) {
             Ok(staged) => staged,
@@ -263,8 +266,8 @@ impl WorldRuntime {
         let outcome = staged.await_ready();
         let duration = elapsed_ms(started);
         let run_id = match &outcome {
-            // A `cached` step executed zero commands: its capture is removed and no id is shown.
-            Ok(done) if matches!(done.state, BootState::Cached) => {
+            // A no-op step executed zero commands: its capture is removed and no id is shown.
+            Ok(done) if matches!(done.state, BootState::Cached | BootState::UpToDate) => {
                 log.discard_run();
                 None
             }
@@ -448,9 +451,10 @@ impl WorldRuntime {
         } else {
             // A command that printed nothing still leaves one real line in its run capture, so a
             // failed step is never reported against an empty `slipfork logs -r <id>`.
-            let _ = writeln!(log, "`{command}` exited with {code}");
+            let line = exit_line(&command, code);
+            let _ = writeln!(log, "{line}");
             let _ = log.flush();
-            let mut message = format!("`{command}` exited with {code}");
+            let mut message = line;
             for line in tail {
                 message.push_str("\n  ");
                 message.push_str(&line);

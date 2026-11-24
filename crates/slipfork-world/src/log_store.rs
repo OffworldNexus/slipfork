@@ -5,16 +5,28 @@
 //! selected on the Btrfs filesystem root (`/`) or on a read-only mount resolves under
 //! `<data_home>/slipfork/store` instead of producing `/.slipfork-store`, and `<store>/logs/<world>`
 //! is derived through [`StoreLayout`].
+//!
+//! Scheduler workers (one per DAG node) and the daemon both mutate the same catalog, so every
+//! mutation holds one exclusive `flock` on `runs/index.jsonl`, re-reads inside it, and publishes
+//! rewrites through a per-call unique sibling.
 
-use std::fs::{self, DirBuilder, OpenOptions};
+use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::{Error, Result};
 use crate::layout::{STORE_DIR, StoreLayout, WorldName};
 use crate::pod_log;
 use crate::run_log::{self, INDEX_FILE, LAST_FAILED_FILE, LAST_FILE, RunRecord};
+
+/// How many successful run captures one world keeps after a teardown.
+///
+/// A `failed` record and its `.log`/`.idx` are never counted or pruned: the artifact an operator
+/// needs after a failed boot must outlive every `up`/`down`/`fork`.
+pub const RETAIN_RUNS: usize = 20;
 
 /// The one store path and run-capture catalog for a single world.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,12 +122,31 @@ impl LogStore {
         run_log::catalog(&self.run_dir())
     }
 
+    /// The newest recorded run whose `target` matches, whatever its kind.
+    ///
+    /// A hook's target is its phase-qualified name (`api:pre-deploy`) and an image build's target is
+    /// its image id, so `slipfork logs api` reaches the failed build that never opened a pod.
+    pub fn resolve_target(&self, target: &str) -> Result<Option<RunRecord>> {
+        Ok(self
+            .records()?
+            .records
+            .into_iter()
+            .filter(|record| record.target == target)
+            .max_by_key(|record| record.started_ms))
+    }
+
     /// Prunes all but the newest `newest` non-failed runs, returning how many were removed.
     ///
     /// A `failed` record and its `.log`/`.idx` are never deleted: a failed run is the one an
     /// operator needs to inspect after a teardown.
     pub fn retain(&self, newest: usize) -> Result<usize> {
         let dir = self.run_dir();
+        if !dir.is_dir() {
+            return Ok(0);
+        }
+        let mut lock = CatalogLock::acquire(&dir)?;
+        // Re-read inside the lock: a step may have appended its terminal line since the caller
+        // looked, and pruning a stale view would drop a live capture.
         let mut records = run_log::catalog(&dir)?.records;
         records.sort_by_key(|record| record.started_ms);
         let non_failed = records
@@ -137,37 +168,167 @@ impl LogStore {
             }
         }
         if pruned > 0 {
-            rewrite_index(&dir, &kept)?;
+            lock.replace(&kept)?;
             refresh_pointers(&dir, &kept)?;
         }
         Ok(pruned)
     }
 }
 
-/// Appends one `RunRecord` as a single `index.jsonl` line, creating the run directory mode `0700`.
+/// One exclusive advisory lock on a world's `index.jsonl`.
+///
+/// The identity check makes a prune's atomic rename safe: a lock taken on a just-unlinked inode is
+/// released and retried against the file now at the path, so no append is ever written into a
+/// catalog nobody reads.
+struct CatalogLock {
+    file: File,
+    path: PathBuf,
+}
+
+impl CatalogLock {
+    fn acquire(dir: &Path) -> Result<Self> {
+        DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
+            .map_err(|source| Error::io("create", dir, source))?;
+        let path = dir.join(INDEX_FILE);
+        for _ in 0..32 {
+            let file = OpenOptions::new()
+                .read(true)
+                .append(true)
+                .create(true)
+                .mode(0o600)
+                .open(&path)
+                .map_err(|source| Error::io("open", &path, source))?;
+            lock_exclusive(&file).map_err(|source| Error::io("lock", &path, source))?;
+            let locked = file
+                .metadata()
+                .map_err(|source| Error::io("stat", &path, source))?;
+            let current = match fs::metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(source) => return Err(Error::io("stat", &path, source)),
+            };
+            if locked.ino() == current.ino() && locked.dev() == current.dev() {
+                return Ok(Self { file, path });
+            }
+        }
+        Err(Error::Protocol {
+            message: format!("could not lock the run catalog at `{}`", path.display()),
+        })
+    }
+
+    /// Appends one already-serialized line under the held lock.
+    fn append(&mut self, line: &str) -> Result<()> {
+        self.file
+            .write_all(line.as_bytes())
+            .and_then(|()| self.file.write_all(b"\n"))
+            .and_then(|()| self.file.flush())
+            .map_err(|source| Error::io("write", &self.path, source))
+    }
+
+    /// Replaces the catalog with `records` through a per-call unique sibling, then renames it over
+    /// the locked path.
+    fn replace(&mut self, records: &[RunRecord]) -> Result<()> {
+        let dir = self.path.parent().ok_or_else(|| Error::Protocol {
+            message: format!("`{}` has no parent directory", self.path.display()),
+        })?;
+        let (temporary, mut file) = temp_file(dir, INDEX_FILE)?;
+        for record in records {
+            let line = serde_json::to_string(record).map_err(|error| Error::Protocol {
+                message: format!("serialize run record: {error}"),
+            })?;
+            file.write_all(line.as_bytes())
+                .and_then(|()| file.write_all(b"\n"))
+                .map_err(|source| Error::io("write", &temporary, source))?;
+        }
+        file.flush()
+            .map_err(|source| Error::io("write", &temporary, source))?;
+        drop(file);
+        fs::rename(&temporary, &self.path).map_err(|source| {
+            let _ = fs::remove_file(&temporary);
+            Error::io("rename", &self.path, source)
+        })
+    }
+}
+
+/// Blocks until one exclusive advisory lock is held on `file`.
+///
+/// `libc::flock` is the only MSRV-1.85 way to take it; the wrapper is the single `unsafe` in this
+/// module and only passes a live descriptor the process already owns.
+#[allow(unsafe_code)]
+fn lock_exclusive(file: &File) -> std::io::Result<()> {
+    loop {
+        // SAFETY: `fd` is owned by `file` and stays open for the borrow; `flock` only inspects it.
+        let locked = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        if locked == 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+/// Creates a per-call unique `0600` temporary sibling named after `name`.
+///
+/// The pid, a nanosecond stamp, and a create-new retry counter keep worker threads and the daemon
+/// from ever sharing a temp path; the library deliberately holds no process-global counter.
+pub(crate) fn temp_file(dir: &Path, name: &str) -> Result<(PathBuf, File)> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    for attempt in 0..64_u32 {
+        let path = dir.join(format!(
+            ".{name}.{}.{nanos}.{attempt}.tmp",
+            std::process::id()
+        ));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(source) => return Err(Error::io("create", &path, source)),
+        }
+    }
+    Err(Error::Protocol {
+        message: format!(
+            "could not create a temporary catalog beside `{}`",
+            dir.join(name).display()
+        ),
+    })
+}
+
+/// Appends one `RunRecord` as a single `index.jsonl` line under the catalog lock.
 pub(crate) fn append_record(dir: &Path, record: &RunRecord) -> Result<()> {
-    DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-        .map_err(|source| Error::io("create", dir, source))?;
-    let path = dir.join(INDEX_FILE);
     let line = serde_json::to_string(record).map_err(|error| Error::Protocol {
         message: format!("serialize run record: {error}"),
     })?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(&path)
-        .map_err(|source| Error::io("open", &path, source))?;
-    file.write_all(line.as_bytes())
-        .and_then(|()| file.write_all(b"\n"))
-        .and_then(|()| file.flush())
-        .map_err(|source| Error::io("write", &path, source))
+    CatalogLock::acquire(dir)?.append(&line)
 }
 
-fn remove_capture(dir: &Path, run_id: &str) -> Result<()> {
+/// Drops every catalog line for `run_id` and refreshes the pointers it owned.
+///
+/// A capture that turns out to be a no-op (`cached`, `up to date`) must leave no trace in
+/// `slipfork logs --runs`, so [`run_log::RunCapture::discard`] calls this after removing its files.
+pub(crate) fn forget_record(dir: &Path, run_id: &str) -> Result<()> {
+    let mut lock = CatalogLock::acquire(dir)?;
+    let kept: Vec<RunRecord> = run_log::catalog(dir)?
+        .records
+        .into_iter()
+        .filter(|record| record.run_id != run_id)
+        .collect();
+    lock.replace(&kept)?;
+    refresh_pointers(dir, &kept)
+}
+
+/// Removes one run's `.log` and `.idx`.
+pub(crate) fn remove_capture(dir: &Path, run_id: &str) -> Result<()> {
     for path in [
         pod_log::log_path(dir, run_id),
         pod_log::index_path(dir, run_id),
@@ -179,30 +340,6 @@ fn remove_capture(dir: &Path, run_id: &str) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn rewrite_index(dir: &Path, records: &[RunRecord]) -> Result<()> {
-    let path = dir.join(INDEX_FILE);
-    let temporary = path.with_extension("tmp");
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(&temporary)
-        .map_err(|source| Error::io("create", &temporary, source))?;
-    for record in records {
-        let line = serde_json::to_string(record).map_err(|error| Error::Protocol {
-            message: format!("serialize run record: {error}"),
-        })?;
-        file.write_all(line.as_bytes())
-            .and_then(|()| file.write_all(b"\n"))
-            .map_err(|source| Error::io("write", &temporary, source))?;
-    }
-    file.flush()
-        .map_err(|source| Error::io("write", &temporary, source))?;
-    drop(file);
-    fs::rename(&temporary, &path).map_err(|source| Error::io("rename", &path, source))
 }
 
 fn refresh_pointers(dir: &Path, records: &[RunRecord]) -> Result<()> {

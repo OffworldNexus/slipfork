@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
@@ -354,8 +354,8 @@ impl BootSink {
         }
     }
 
-    /// Arms a lazy per-step run capture: the id is minted on the first output line, so a `cached`
-    /// step that executes nothing never earns one.
+    /// Opens this step's run capture **before** the step executes, so a step that errors before its
+    /// first printed line still leaves a capture and a catalog record behind.
     pub(super) fn capture_run(
         mut self,
         store: &LogStore,
@@ -363,11 +363,11 @@ impl BootSink {
         kind: &str,
         name: &str,
         command: &str,
-    ) -> Self {
-        self.log.run = Some(Arc::new(Mutex::new(RunTarget::new(
+    ) -> Result<Self, BootFailure> {
+        self.log.run = Some(Arc::new(Mutex::new(RunTarget::open(
             store, project, kind, name, command,
-        ))));
-        self
+        )?)));
+        Ok(self)
     }
 
     /// Appends the catalog line and returns the minted id, or `None` when nothing ran.
@@ -418,56 +418,35 @@ struct EventLog {
     run: Option<Arc<Mutex<RunTarget>>>,
 }
 
-/// One step's lazy run capture: begun on the first line, finished with its final state.
+/// One step's run capture: opened before the step runs, finished with its final state.
 struct RunTarget {
-    store: LogStore,
-    project: PathBuf,
-    kind: String,
-    name: String,
-    command: String,
     capture: Option<RunCapture>,
-    closed: bool,
 }
 
 impl RunTarget {
-    fn new(store: &LogStore, project: &Path, kind: &str, name: &str, command: &str) -> Self {
-        Self {
-            store: store.clone(),
-            project: project.to_path_buf(),
-            kind: kind.to_owned(),
-            name: name.to_owned(),
-            command: command.to_owned(),
-            capture: None,
-            closed: false,
-        }
+    fn open(
+        store: &LogStore,
+        project: &Path,
+        kind: &str,
+        name: &str,
+        command: &str,
+    ) -> Result<Self, BootFailure> {
+        RunCapture::begin(store, project, kind, name, command)
+            .map(|capture| Self {
+                capture: Some(capture),
+            })
+            .map_err(|error| {
+                BootFailure::new(format!("cannot open a run capture for `{name}`: {error}"))
+            })
     }
 
     fn append(&mut self, text: &str) {
-        if self.closed {
-            return;
-        }
-        if self.capture.is_none() {
-            match RunCapture::begin(
-                &self.store,
-                &self.project,
-                &self.kind,
-                &self.name,
-                &self.command,
-            ) {
-                Ok(capture) => self.capture = Some(capture),
-                Err(_) => {
-                    self.closed = true;
-                    return;
-                }
-            }
-        }
         if let Some(capture) = &mut self.capture {
             let _ = capture.append(text);
         }
     }
 
     fn finish(&mut self, state: &str, duration_ms: u64) -> Option<String> {
-        self.closed = true;
         let mut capture = self.capture.take()?;
         let run_id = capture.run_id().to_owned();
         let _ = capture.finish(state, duration_ms);
@@ -475,7 +454,6 @@ impl RunTarget {
     }
 
     fn discard(&mut self) {
-        self.closed = true;
         if let Some(capture) = self.capture.take() {
             capture.discard();
         }
@@ -589,7 +567,7 @@ mod tests {
         WorldStampStore, plan_epoch, write_pg_checkpoint,
     };
 
-    use super::{boot_event_json, stamps_for};
+    use super::{RunTarget, boot_event_json, stamps_for};
 
     /// The conditional-stamp key a `pre-deploy when changed(uv.lock)` hook records.
     const LOCK_STAMP: &str = "pre-deploy-lock";
@@ -731,6 +709,53 @@ mod tests {
             !stamps.is_step_current(&relocked.steps, 0),
             "a changed lockfile must re-run `pre-deploy`"
         );
+    }
+
+    /// A step that errors before printing still owns an eager capture and a catalog record.
+    #[test]
+    fn an_eagerly_opened_run_records_a_capture_before_the_step_prints_anything() {
+        let root = temp("supervise-run-target");
+        let store = slipfork_world::LogStore::at(
+            root.path().join("store"),
+            slipfork_world::WorldName::parse("demo").expect("valid world name"),
+        );
+        let project = root.path().join("apps/demo");
+        let mut target = RunTarget::open(&store, &project, "setup", "backend", "uv sync")
+            .expect("open the capture before the step runs");
+
+        let running = store.records().expect("read the catalog").records;
+        assert_eq!(
+            running.len(),
+            1,
+            "begin appends one `running` record: {running:?}"
+        );
+        let run_id = running[0].run_id.clone();
+        assert_eq!(running[0].state, "running");
+        assert!(
+            store.capture(&run_id).is_file(),
+            "the capture exists before the first printed line"
+        );
+
+        // The runtime writes this synthetic line precisely so the capture is never empty; the test
+        // replays whatever the production formatter produced.
+        let exit = crate::world::runtime::exit_line("uv sync", 2);
+        target.append(&exit);
+        assert_eq!(target.finish("failed", 7).as_deref(), Some(run_id.as_str()));
+
+        let mut reader = slipfork_world::pod_log::read_range(&store.run_dir(), &run_id, None, None)
+            .expect("replay the failed capture");
+        let mut lines = Vec::new();
+        let _ = reader.read_lines(&mut |line| lines.push(line.text.clone()));
+        reader.flush(&mut |line| lines.push(line.text.clone()));
+        assert!(
+            lines.iter().any(|line| line.contains(&exit)),
+            "the failed capture replays the produced text `{exit}`: {lines:?}"
+        );
+
+        let finished = store.records().expect("read the catalog").records;
+        assert_eq!(finished.len(), 1, "one record per run id: {finished:?}");
+        assert_eq!(finished[0].state, "failed");
+        assert_eq!(finished[0].duration_ms, 7);
     }
 
     /// The `plan` frame is the first NDJSON line, lists every row, and carries zero escapes.

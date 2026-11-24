@@ -153,6 +153,9 @@ impl Core {
         // bundles and ephemeral subvolume mounts behind, so `down` sweeps the run root too.
         let swept = sweep_run_root(pods_dir.as_deref());
         let sweep_ms = millis(sweep_started);
+        // A stopped world keeps its newest successes and every failed run, so `logs -r failed`
+        // still works after `down`.
+        Self::report_retain(self.retain_runs(&project, &name));
         let _ = fs::remove_file(project.join(".slipfork/world.json"));
         self.ingress = None;
         Ok(json!({

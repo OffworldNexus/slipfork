@@ -188,9 +188,12 @@ impl BootSession {
     }
 
     /// Stops an unusable half-boot and drops its placeholder before the failure is reported.
+    ///
+    /// `forget` prunes the world's run catalog exactly once, so a half-boot never prunes twice.
     fn fail_boot(&mut self, daemon: &Daemon) -> Result<(), Failure> {
         self.stop();
-        daemon.core()?.forget(&self.key);
+        let mut core = daemon.core()?;
+        core.forget(&self.key);
         Ok(())
     }
 

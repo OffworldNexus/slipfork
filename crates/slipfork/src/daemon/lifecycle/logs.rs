@@ -13,10 +13,10 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use slipfork_forkfile::Forkfile;
+use slipfork_world::LogStore;
 use slipfork_world::control::{PROTOCOL_VERSION, Request, StreamClient, StreamFrame};
 use slipfork_world::pod_log::{LogKind, LogMerge, REORDER_MS, now_ms, read_range};
 use slipfork_world::run_log;
-use slipfork_world::{LogStore, WorldName};
 
 use super::super::Failure;
 use super::super::rpc::key_of;
@@ -94,11 +94,11 @@ impl Core {
         let since_ms = params.get("since_ms").and_then(Value::as_u64);
         let until_ms = params.get("until_ms").and_then(Value::as_u64);
         if params.get("runs").and_then(Value::as_bool).unwrap_or(false) {
-            return Ok(LogStream::run_catalog(self.log_store(&project)?));
+            return Ok(LogStream::run_catalog(log_store_of(self, &project)?));
         }
         if let Some(spec) = params.get("run").and_then(Value::as_str) {
             return Ok(LogStream::run_replay(
-                self.log_store(&project)?,
+                log_store_of(self, &project)?,
                 spec.to_owned(),
                 since_ms,
                 until_ms,
@@ -158,11 +158,17 @@ impl Core {
         }) {
             return Err(s3_refusal(id, &shellable(&rows)));
         }
-        let capture_dir = self.log_store(project)?.world_logs();
+        let store = log_store_of(self, project)?;
+        let capture_dir = store.world_logs();
         let captured = capture_ids(&capture_dir);
         for target in &targets {
+            let recorded = store
+                .resolve_target(target)
+                .map_err(|error| catalog_failure(&store, &error))?
+                .is_some();
             let known = rows.iter().any(|(_, id, _)| id == target)
-                || captured.iter().any(|id| id == target);
+                || captured.iter().any(|id| id == target)
+                || recorded;
             if !known {
                 return Err(unknown_target(target));
             }
@@ -178,6 +184,20 @@ impl Core {
                     Some(target),
                     None,
                     follow,
+                    since_ms,
+                    until_ms,
+                ));
+            }
+            // A service that never opened a pod (a failed build or `setup`) has no `<id>.log`, but
+            // its run capture does: replay the newest recorded run whose target is `id`.
+            if !captured.iter().any(|id| id == &target)
+                && let Some(record) = store
+                    .resolve_target(&target)
+                    .map_err(|error| catalog_failure(&store, &error))?
+            {
+                return Ok(LogStream::run_replay(
+                    store,
+                    record.run_id,
                     since_ms,
                     until_ms,
                 ));
@@ -208,7 +228,7 @@ impl Core {
         since_ms: Option<u64>,
         until_ms: Option<u64>,
     ) -> Result<LogStream, Failure> {
-        let store = self.log_store(project)?;
+        let store = log_store_of(self, project)?;
         let dir = store.world_logs();
         let (ids, explicit) = if targets.is_empty() {
             let mut ids = capture_ids(&dir);
@@ -223,20 +243,6 @@ impl Core {
         Ok(LogStream::captures(
             store, ids, explicit, follow, since_ms, until_ms,
         ))
-    }
-
-    /// The canonical `<store>/logs/<world>` store, live or stopped.
-    fn log_store(&self, project: &Path) -> Result<LogStore, Failure> {
-        let world = match self.worlds.get(&key_of(project)) {
-            Some(World::Live { entry, .. }) => entry.world.clone(),
-            _ => crate::world::world_name(project, None)
-                .map_err(|error| Failure::new("no-world", error))?
-                .as_str()
-                .to_owned(),
-        };
-        let parsed = WorldName::parse(&world)
-            .map_err(|error| Failure::new("no-world", error.to_string()))?;
-        Ok(LogStore::at(self.host.store_root_for(project), parsed))
     }
 
     /// The live world's pod root, name, and `(kind, id, running)` roster.
@@ -356,17 +362,15 @@ impl LogStream {
     /// Emits one `runs` frame carrying every catalog entry, newest last.
     fn list_runs(&self, emit: &mut dyn FnMut(Value) -> bool) -> Result<Value, Failure> {
         let store = self.store.as_ref().ok_or_else(|| {
-            Failure::new(
-                "no-world",
-                "✗ no world log store\n  next: run `slipfork up`",
-            )
+            Failure::new("no-world", "✗ no world log store\nnext: run `slipfork up`")
         })?;
         let catalog = store.records().map_err(|error| {
             Failure::new(
                 "run-index",
                 format!(
-                    "✗ cannot read `{}`: {error}\n  next: check that the directory is readable",
-                    store.index().display()
+                    "✗ cannot read `{}`: {error}\nnext: check that `{}` is readable",
+                    store.index().display(),
+                    store.run_dir().display()
                 ),
             )
         })?;
@@ -397,20 +401,22 @@ impl LogStream {
         alive: &mut dyn FnMut() -> bool,
     ) -> Result<Value, Failure> {
         let store = self.store.as_ref().ok_or_else(|| {
-            Failure::new(
-                "no-world",
-                "✗ no world log store\n  next: run `slipfork up`",
-            )
+            Failure::new("no-world", "✗ no world log store\nnext: run `slipfork up`")
         })?;
         let run_id = run_log::resolve_run(&store.world_logs(), spec).map_err(|error| {
             Failure::new(
                 "no-run",
-                format!("✗ {error}\n  next: list recorded runs with `slipfork logs --runs`"),
+                format!("✗ {error}\nnext: list recorded runs with `slipfork logs --runs`"),
             )
         })?;
         let mut reader = read_range(&store.run_dir(), &run_id, self.since_ms, self.until_ms)
             .map_err(|error| {
-                Failure::new("no-run", format!("✗ cannot read run `{run_id}`: {error}"))
+                Failure::new(
+                    "no-run",
+                    format!(
+                        "✗ cannot read run `{run_id}`: {error}\nnext: retry with `slipfork logs -r last`"
+                    ),
+                )
             })?;
         if !emit(json!({
             "kind": "roster",
@@ -514,7 +520,7 @@ impl LogStream {
         let Some(store) = &self.store else {
             return Err(Failure::new(
                 "no-target",
-                "✗ no world log store\n  next: run `slipfork up`",
+                "✗ no world log store\nnext: run `slipfork up`",
             ));
         };
         let logs_dir = store.world_logs();
@@ -527,7 +533,8 @@ impl LogStream {
                     return Err(Failure::new(
                         "no-log",
                         format!(
-                            "no captured logs for `{id}` in `{}` ({error})",
+                            "✗ no captured logs for `{id}` in `{}` ({error})\nnext: check that `{}` is readable",
+                            logs_dir.display(),
                             logs_dir.display()
                         ),
                     ));
@@ -537,7 +544,10 @@ impl LogStream {
         if readers.is_empty() {
             return Err(Failure::new(
                 "no-target",
-                format!("no captured logs in `{}`", logs_dir.display()),
+                format!(
+                    "✗ no captured logs in `{}`\nnext: run `slipfork up`",
+                    logs_dir.display()
+                ),
             ));
         }
         let roster: Vec<String> = readers.iter().map(|(id, _)| id.clone()).collect();
@@ -631,7 +641,7 @@ fn s3_refusal(id: &str, shellable: &[String]) -> Failure {
     );
     Failure::new(
         "shell-refused",
-        format!("✗ native S3 bucket '{id}' has no pod logs\n  next: {next}"),
+        format!("✗ native S3 bucket '{id}' has no pod logs\nnext: {next}"),
     )
 }
 
@@ -639,7 +649,31 @@ fn s3_refusal(id: &str, shellable: &[String]) -> Failure {
 fn unknown_target(id: &str) -> Failure {
     Failure::new(
         "no-log",
-        format!("✗ '{id}' is not running and has no captured logs"),
+        format!(
+            "✗ '{id}' is not running and has no captured logs\nnext: list recorded runs with `slipfork logs --runs`"
+        ),
+    )
+}
+
+/// Resolves one project's canonical `<store>/logs/<world>` store, live or stopped.
+fn log_store_of(core: &Core, project: &Path) -> Result<LogStore, Failure> {
+    core.log_store(project).ok_or_else(|| {
+        Failure::new(
+            "no-world",
+            format!("no world log store for `{}`", project.display()),
+        )
+    })
+}
+
+/// One readable refusal when the run catalog itself cannot be read.
+fn catalog_failure(store: &LogStore, error: &slipfork_world::Error) -> Failure {
+    Failure::new(
+        "run-index",
+        format!(
+            "✗ cannot read `{}`: {error}\nnext: check that `{}` is readable",
+            store.index().display(),
+            store.run_dir().display()
+        ),
     )
 }
 

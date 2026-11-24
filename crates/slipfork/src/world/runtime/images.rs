@@ -14,7 +14,9 @@ use slipfork_image::{
     Architecture, BuildArgs, BuildRequest, Credentials, ImageLayout, ImageReference,
     NativeImageBuilder, OciPuller, PulledImage, StepHost, StepLayout,
 };
-use slipfork_world::{BootState, ImageNode, ImageStamp, StoreLayout, WorldEngine, WorldName};
+use slipfork_world::{
+    BootState, ImageNode, ImageStamp, LogStore, StoreLayout, WorldEngine, WorldName,
+};
 
 use crate::world::supervise::BootSink;
 
@@ -90,7 +92,7 @@ pub(super) struct ImageCache {
     puller: OciPuller,
     builder: NativeImageBuilder,
     images: Vec<ImageNode>,
-    logs_root: PathBuf,
+    store: LogStore,
     sealed: Mutex<BTreeMap<String, BuiltImage>>,
     pulled: Mutex<BTreeMap<String, PulledImage>>,
     inflight_builds: FlightTable<(BuiltImage, BootState)>,
@@ -158,7 +160,7 @@ impl ImageCache {
             architecture,
             host,
         );
-        let logs_root = layout.world_logs(&world);
+        let store = LogStore::at(layout.store_root(), world.clone());
         Self {
             world,
             scheme: scheme.to_owned(),
@@ -168,7 +170,7 @@ impl ImageCache {
             puller,
             builder,
             images,
-            logs_root,
+            store,
             sealed: Mutex::new(sealed),
             pulled: Mutex::new(BTreeMap::new()),
             inflight_builds: Arc::new(Mutex::new(BTreeMap::new())),
@@ -232,16 +234,14 @@ impl ImageCache {
             .ok_or_else(|| format!("unknown image `{image}`"))?;
         if let Some(reference) = &node.from {
             let parsed = ImageReference::parse(reference).map_err(|error| error.to_string())?;
-            let mut tee = BuildLog::new(log, &self.logs_root, image);
+            let mut tee = BuildLog::new(log, &self.store, image);
             let pulled = match self.puller.pull_into(&parsed, &mut tee) {
                 Ok(pulled) => {
                     tee.finish();
                     pulled
                 }
                 Err(error) => {
-                    let message = format!(
-                        "pull `{reference}` failed: {error}\nnext: run `slipfork logs {image}`"
-                    );
+                    let message = format!("pull `{image}` failed: {error}");
                     tee.fail(&message);
                     return Err(message);
                 }
@@ -284,7 +284,7 @@ impl ImageCache {
                 args,
                 target: self.doc.eval_image_stage_with(image, &self.features),
             };
-            let mut tee = BuildLog::new(log, &self.logs_root, image);
+            let mut tee = BuildLog::new(log, &self.store, image);
             let report = match self.builder.build(&request, &mut tee) {
                 Ok(report) => {
                     tee.finish();
@@ -294,9 +294,7 @@ impl ImageCache {
                     // A `RUN` writes its output line by line, but its last unterminated tail
                     // (and pull/`COPY` failures with no output) would otherwise never reach the
                     // capture, leaving `slipfork logs <image>` empty exactly when it matters.
-                    let message = format!(
-                        "build `{image}` failed: {error}\nnext: run `slipfork logs {image}`"
-                    );
+                    let message = format!("build `{image}` failed: {error}");
                     tee.fail(&message);
                     return Err(message);
                 }
@@ -507,8 +505,13 @@ mod tests {
             .expect("the failed build must leave a log capture");
         assert!(captured.contains("build `web` failed"), "{captured}");
         assert!(
-            captured.contains("next: run `slipfork logs web`"),
-            "{captured}"
+            !captured.contains("slipfork logs web"),
+            "the failed build names no obsolete log hint:\n{captured}"
+        );
+        assert_eq!(
+            captured.matches("next:").count(),
+            1,
+            "the failure carries exactly one remedy:\n{captured}"
         );
     }
 }

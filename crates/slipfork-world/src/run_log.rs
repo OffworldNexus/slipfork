@@ -8,13 +8,14 @@
 //! [`crate::LogStore`] owns store-root resolution, the path vocabulary, and the tolerant catalog
 //! read/write/prune operations; this module keeps the per-capture sink and the resolution rules.
 //!
-//! A step that did no work (`cached`, `up to date`) mints no id: the capture is begun lazily on the
-//! first output line and [`RunCapture::discard`] removes its files when the state turns out to be a
-//! no-op. Long-lived services keep their own `<store>/logs/<world>/<service>.log`.
+//! The capture is opened (and one `running` record appended) **before** the step executes, so a step
+//! that dies before printing its first line still leaves a readable artifact. A step that did no
+//! work (`cached`, `up to date`) is [`RunCapture::discard`]ed: its files and catalog lines go away.
+//! Long-lived services keep their own `<store>/logs/<world>/<service>.log`.
 
-use std::fs::{self, DirBuilder, File, OpenOptions};
+use std::fs::{self, DirBuilder, File};
 use std::io::{Read, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -125,11 +126,34 @@ impl RunCapture {
             .map_err(|source| Error::io("chmod", &dir, source))?;
         let run_id = mint(&dir)?;
         let sink = LogSink::open(&dir, &run_id)?;
+        let started_ms = now_ms();
+        // The `running` line lands before the step executes anything, so a step that errors (or is
+        // killed) before its first printed line still resolves through `logs -r last`.
+        if let Err(error) = crate::log_store::append_record(
+            &dir,
+            &RunRecord {
+                run_id: run_id.clone(),
+                kind: kind.to_owned(),
+                target: target.to_owned(),
+                command: command.to_owned(),
+                state: "running".to_owned(),
+                started_ms,
+                finished_ms: None,
+                duration_ms: 0,
+                project: project.display().to_string(),
+                world: store.world().as_str().to_owned(),
+            },
+        ) {
+            // A begin that could not be catalogued must not leave an orphan capture behind.
+            let _ = crate::log_store::remove_capture(&dir, &run_id);
+            return Err(error);
+        }
+        write_pointer(&dir, LAST_FILE, &run_id)?;
         Ok(Self {
             sink,
             dir,
             run_id,
-            started_ms: now_ms(),
+            started_ms,
             kind: kind.to_owned(),
             target: target.to_owned(),
             command: command.to_owned(),
@@ -186,6 +210,7 @@ impl RunCapture {
         drop(self.sink);
         let _ = fs::remove_file(pod_log::log_path(&dir, &run_id));
         let _ = fs::remove_file(pod_log::index_path(&dir, &run_id));
+        let _ = crate::log_store::forget_record(&dir, &run_id);
     }
 }
 
@@ -300,16 +325,15 @@ pub(crate) fn read_pointer(dir: &Path, name: &str) -> Result<Option<String>> {
 
 pub(crate) fn write_pointer(dir: &Path, name: &str, run_id: &str) -> Result<()> {
     let path = dir.join(name);
-    let temporary = path.with_extension("tmp");
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(&temporary)
-        .map_err(|source| Error::io("create", &temporary, source))?;
+    let (temporary, mut file) = crate::log_store::temp_file(dir, name)?;
     file.write_all(run_id.as_bytes())
         .and_then(|()| file.write_all(b"\n"))
         .map_err(|source| Error::io("write", &temporary, source))?;
-    fs::rename(&temporary, &path).map_err(|source| Error::io("rename", &path, source))
+    file.flush()
+        .map_err(|source| Error::io("write", &temporary, source))?;
+    drop(file);
+    fs::rename(&temporary, &path).map_err(|source| {
+        let _ = fs::remove_file(&temporary);
+        Error::io("rename", &path, source)
+    })
 }

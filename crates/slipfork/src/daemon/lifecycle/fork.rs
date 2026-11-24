@@ -268,6 +268,7 @@ impl Core {
         self.ingress = None;
         let _ = self.persist();
         let forked = StoreLayout::fork_world_name(&prepared.world_name, &prepared.fork_name);
+        Self::report_retain(self.retain_runs(&prepared.parent, forked.as_str()));
         let _ = RuntimePods::purge(&self.host.runtime_dir, &forked);
         let engine = BtrfsEngine::new(StoreLayout::at(self.host.store_root_for(&prepared.parent)));
         let _ = engine.drop_fork(
@@ -401,6 +402,9 @@ impl Core {
                 format!("no fork named `{}` exists", fork.as_str()),
             ));
         }
+        // Only a real fork is pruned, and the store root belongs to the PARENT project.
+        let fork_world_name = StoreLayout::fork_world_name(&world, &fork);
+        Self::report_retain(self.retain_runs(&project, fork_world_name.as_str()));
         // Refuse dirty work before stopping anything: a refusal leaves the fork running.
         let dirtiness = if force || !has_checkout {
             Dirtiness::Clean

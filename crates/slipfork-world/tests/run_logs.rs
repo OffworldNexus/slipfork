@@ -1,7 +1,8 @@
 //! Lab: the per-step run catalog on a real disk (`/var/tmp`), zero mocks.
 //!
 //! One executed step must mint one unique 6-char id, leave a framed `.log` plus its `.idx`, and
-//! append exactly one `index.jsonl` line; a discarded no-op must leave nothing behind.
+//! append one `running` line plus one terminal line to `index.jsonl`; a discarded no-op must leave
+//! nothing behind.
 
 use slipfork_world::LogStore;
 use slipfork_world::WorldName;
@@ -84,12 +85,13 @@ fn an_executed_step_mints_one_unique_id_capture_pair_and_catalog_line() {
             .trim(),
         second_id
     );
-    assert!(
+    assert_eq!(
         std::fs::read_to_string(store.index())
             .expect("catalog text")
             .lines()
-            .count()
-            == 2
+            .count(),
+        4,
+        "one `running` line at begin plus one terminal line per run"
     );
 
     let resolved =
@@ -147,4 +149,56 @@ fn a_cached_no_op_mints_no_id_and_leaves_no_run_files() {
     assert!(store.records().expect("empty catalog").records.is_empty());
     assert!(!dir.join(LAST_FILE).exists(), "a no-op never moves `last`");
     assert!(slipfork_world::run_log::resolve_run(&store.world_logs(), "last").is_err());
+}
+
+/// Two workers appending at once keep every record: each catalog mutation holds one exclusive
+/// lock, so no append is lost and no line is torn across a rewrite.
+#[test]
+fn concurrent_workers_keep_every_record_and_no_torn_line() {
+    let root = temp("run-log-concurrent");
+    let store = store(&root);
+    let project = root.path().join("apps/demo");
+    let workers: Vec<_> = (0..2)
+        .map(|worker| {
+            let store = store.clone();
+            let project = project.clone();
+            std::thread::spawn(move || {
+                for index in 0..50 {
+                    let target = format!("worker{worker}-{index}");
+                    let mut capture =
+                        RunCapture::begin(&store, &project, "setup", &target, "uv sync")
+                            .expect("begin a concurrent capture");
+                    capture.append("resolved 12 packages").expect("append");
+                    capture.finish("ready", 3).expect("finish");
+                }
+            })
+        })
+        .collect();
+    for worker in workers {
+        worker.join().expect("no worker panicked");
+    }
+
+    let catalog = store.records().expect("read the catalog");
+    assert_eq!(
+        catalog.records.len(),
+        100,
+        "every run survives: {catalog:?}"
+    );
+    assert_eq!(catalog.skipped, 0, "no interleaved line was torn");
+
+    let text = std::fs::read_to_string(store.index()).expect("catalog text");
+    assert_eq!(
+        text.lines()
+            .filter(|line| line.contains("\"state\":\"running\""))
+            .count(),
+        100,
+        "one `running` line per run"
+    );
+    assert_eq!(
+        text.lines()
+            .filter(|line| line.contains("\"state\":\"ready\""))
+            .count(),
+        100,
+        "one terminal line per run"
+    );
 }
