@@ -11,7 +11,7 @@ use slipfork_image::{
     Architecture, BuildArgs, BuildContext, BuildEvent, BuildRequest, Command, DockerfileParser,
     Dockerignore, ImageConfig, ImageLayout, ImageReference, Instruction, LayerUnpacker,
     NativeImageBuilder, OciPuller, RegistryCredentials, StepHost, StepLayout, StepLog, Variables,
-    stage_walk,
+    build_inputs_digest, stage_walk,
 };
 use slipfork_world::{BtrfsEngine, StoreLayout, WorldEngine};
 
@@ -158,7 +158,63 @@ fn a_real_build_context_hashes_stably_and_honours_dockerignore() {
     let _ = fs::remove_dir_all(&root);
 }
 
-/// Dockerfile variables keep unknown references verbatim, and an unknown instruction fails closed.
+/// The canonical build-input digest tracks the `Dockerfile` and copied context, and ignores a
+/// checkout edit for an image that copies nothing (so bind-mounted sources never force rebuilds).
+#[test]
+fn build_inputs_digest_tracks_the_dockerfile_and_copied_context_only() {
+    let root = lab("inputs-digest");
+    fs::create_dir_all(root.join("src")).expect("create the context");
+    fs::write(root.join("src/app.txt"), "one").expect("write source");
+    fs::write(root.join("debug.log"), "noise").expect("write ignored log");
+    fs::write(root.join(".dockerignore"), "*.log\n").expect("write ignore");
+    let dockerfile = root.join("Dockerfile");
+    fs::write(
+        &dockerfile,
+        "FROM alpine:3.20\nCOPY src /src\nRUN echo one\n",
+    )
+    .expect("write the Dockerfile");
+
+    let first = build_inputs_digest(&root, &dockerfile, None).expect("digest");
+    assert_eq!(
+        first,
+        build_inputs_digest(&root, &dockerfile, None).expect("digest again")
+    );
+    // An ignored file is not a build input.
+    fs::write(root.join("debug.log"), "more noise").expect("edit the ignored log");
+    assert_eq!(
+        first,
+        build_inputs_digest(&root, &dockerfile, None).expect("ignored edit keeps the digest")
+    );
+    // A copied context file is.
+    fs::write(root.join("src/app.txt"), "two").expect("edit the copied source");
+    let context_edited = build_inputs_digest(&root, &dockerfile, None).expect("context digest");
+    assert_ne!(
+        first, context_edited,
+        "a copied file edit must change the key"
+    );
+    // So is the Dockerfile itself.
+    fs::write(
+        &dockerfile,
+        "FROM alpine:3.20\nCOPY src /src\nRUN echo two\n",
+    )
+    .expect("edit the Dockerfile");
+    let dockerfile_edited =
+        build_inputs_digest(&root, &dockerfile, None).expect("Dockerfile digest");
+    assert_ne!(
+        context_edited, dockerfile_edited,
+        "a Dockerfile edit must change the key"
+    );
+    // A `Dockerfile` with no host `COPY`/`ADD` never walks the checkout.
+    fs::write(&dockerfile, "FROM alpine:3.20\nRUN echo three\n").expect("drop the COPY");
+    let no_context = build_inputs_digest(&root, &dockerfile, None).expect("no-context digest");
+    fs::write(root.join("src/app.txt"), "three").expect("edit an uncopied source");
+    assert_eq!(
+        no_context,
+        build_inputs_digest(&root, &dockerfile, None).expect("uncopied edit keeps the digest")
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn dockerfile_variables_keep_unknown_refs_and_bogus_instructions_error() {
     let mut args = BuildArgs::new();

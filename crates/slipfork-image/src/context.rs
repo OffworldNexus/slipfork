@@ -40,6 +40,16 @@ impl BuildContext {
         }
     }
 
+    /// The context for one build walk: the full `.dockerignore`-filtered walk when a host
+    /// `COPY`/`ADD` needs it, otherwise the empty context the builder keys against.
+    pub fn for_walk(root: &Path, needs_context: bool) -> Result<Self> {
+        if needs_context {
+            Self::load(root)
+        } else {
+            Ok(Self::empty(root))
+        }
+    }
+
     /// Loads `<root>/.dockerignore` and indexes the included entries.
     pub fn load(root: &Path) -> Result<Self> {
         let ignore_path = root.join(".dockerignore");

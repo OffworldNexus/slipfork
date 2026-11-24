@@ -151,7 +151,6 @@ const MISSING_STAGE_DOCKERFILE: &str = "\
 FROM python:3.13-slim
 COPY --from=Missing-Stage /x /y
 ";
-
 // A `FROM` the engine cannot pull: the pull, not a child process, is the failing command.
 const UNPULLABLE_FROM_DOCKERFILE: &str = "\
 FROM 127.0.0.1:1/nope:latest
@@ -173,6 +172,53 @@ image app from /bad:latest {
 const PARSE_FAIL_DOCKERFILE: &str = "\
 COPY /x /y
 FROM scratch
+";
+
+// M3.115: every image build input (the `Dockerfile`, a copied context file) must change the head
+// so `up`/`restart` rebuild instead of serving a stale image.
+const CONVERGE_FORKFILE: &str = r#"# forkfile: 0.1
+image app . {
+  dockerfile Dockerfile
+  service web {
+    run: sleep 3600
+  }
+}
+"#;
+
+const CONVERGE_FORKFILE_TWO: &str = r#"# forkfile: 0.1
+image app . {
+  dockerfile Dockerfile
+  service web {
+    run: sleep 3600
+  }
+  service worker {
+    run: sleep 3600
+  }
+}
+"#;
+
+const CONVERGE_DOCKERFILE_ONE: &str = "\
+FROM python:3.13-slim
+COPY seed.txt /seed.txt
+RUN sh -c 'cat /seed.txt; echo built-one'
+WORKDIR /project
+CMD [\"python3\", \"--version\"]
+";
+
+const CONVERGE_DOCKERFILE_FAIL: &str = "\
+FROM python:3.13-slim
+COPY seed.txt /seed.txt
+RUN sh -c 'cat /seed.txt; echo built-two; exit 9'
+WORKDIR /project
+CMD [\"python3\", \"--version\"]
+";
+
+const CONVERGE_DOCKERFILE_THREE: &str = "\
+FROM python:3.13-slim
+COPY seed.txt /seed.txt
+RUN sh -c 'cat /seed.txt; echo built-three'
+WORKDIR /project
+CMD [\"python3\", \"--version\"]
 ";
 
 fn fail_closed(message: &str) -> ! {
@@ -376,6 +422,7 @@ impl Journey {
             "parsefail",
             "badfrom",
             "crash",
+            "converge",
         ] {
             if let Ok(world) = WorldName::parse(world) {
                 let _ = engine.drop_world(&world);
@@ -752,6 +799,7 @@ impl Drop for Journey {
             "parsefail",
             "badfrom",
             "crash",
+            "converge",
         ] {
             if let Ok(world) = WorldName::parse(world) {
                 let _ = store_engine.drop_world(&world);
@@ -887,6 +935,23 @@ fn stdout(output: &Output) -> String {
 
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+/// The newest image-build run id recorded for `project`, or a panic naming the failed listing.
+fn latest_image_run(journey: &Journey, project: &Path) -> String {
+    let runs = journey.slipfork(project, &["logs", "--runs", "--json"]);
+    let text = stdout(&runs);
+    assert!(
+        runs.status.success(),
+        "`logs --runs --json` failed: {}",
+        stderr(&runs)
+    );
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|record| record["kind"] == "image" && record["target"] == "app")
+        .max_by_key(|record| record["started_ms"].as_u64())
+        .and_then(|record| record["run_id"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| panic!("no image build run recorded:\n{text}"))
 }
 
 fn crun_list(crun: &Path) -> String {
@@ -2843,6 +2908,194 @@ fn world_up_restart_down_journey() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn changed_build_inputs_rebuild_and_restart_converges() {
+    for (label, source) in [
+        ("converge", CONVERGE_FORKFILE),
+        ("converge-two", CONVERGE_FORKFILE_TWO),
+    ] {
+        let doc =
+            slipfork_forkfile::parse(source).unwrap_or_else(|_| panic!("`{label}` must parse"));
+        assert!(
+            slipfork_forkfile::check(&doc).is_ok(),
+            "`{label}` must pass static validation"
+        );
+    }
+    let journey = Journey::new();
+    let crun = require_tool("crun");
+    let unshare = require_tool("unshare");
+    require_userns(&unshare);
+    require_registry_egress();
+
+    let project = journey.project("converge", CONVERGE_FORKFILE);
+    fs::write(project.join("seed.txt"), "one").expect("write the copied context");
+    fs::write(project.join("Dockerfile"), CONVERGE_DOCKERFILE_ONE).expect("write the Dockerfile");
+
+    // 1. Cold boot builds the image.
+    let first = journey.slipfork(&project, &["up"]);
+    assert!(
+        first.status.success(),
+        "{}",
+        up_failure("first `up` failed", &project, &first)
+    );
+    let first_run = latest_image_run(&journey, &project);
+
+    // 2. An unchanged `up` is idle: no rebuild and no new image build record.
+    let cached = journey.slipfork(&project, &["up"]);
+    assert!(
+        cached.status.success(),
+        "{}",
+        up_failure("unchanged `up` failed", &project, &cached)
+    );
+    assert!(
+        !stdout(&cached).contains("built"),
+        "an unchanged `up` must not rebuild:\n{}",
+        stdout(&cached)
+    );
+    assert_eq!(
+        latest_image_run(&journey, &project),
+        first_run,
+        "an unchanged `up` must not rebuild the image"
+    );
+
+    // 3. The owner's reproduction: editing the `RUN` to a failing command must actually run it.
+    fs::write(project.join("Dockerfile"), CONVERGE_DOCKERFILE_FAIL).expect("edit the Dockerfile");
+    let failing = journey.slipfork(&project, &["up"]);
+    assert!(
+        !failing.status.success(),
+        "the edited failing RUN must fail the boot: {}",
+        up_failure("edited `up` unexpectedly succeeded", &project, &failing)
+    );
+    let failed_output = format!(
+        "{}{}{}",
+        stdout(&failing),
+        stderr(&failing),
+        supervisor_tail(&project)
+    );
+    assert!(
+        failed_output.contains("built-two"),
+        "the edited `RUN` must execute instead of serving the cached image:\n{failed_output}"
+    );
+    assert!(
+        failed_output.contains("exit 9"),
+        "the edited command's exit code must surface:\n{failed_output}"
+    );
+
+    // 4. A succeeding Dockerfile edit rebuilds with a new image run id, then stays cached.
+    fs::write(project.join("Dockerfile"), CONVERGE_DOCKERFILE_THREE)
+        .expect("repair the Dockerfile");
+    let rebuilt = journey.slipfork(&project, &["up"]);
+    assert!(
+        rebuilt.status.success(),
+        "{}",
+        up_failure("the repaired Dockerfile must boot", &project, &rebuilt)
+    );
+    assert!(
+        stdout(&rebuilt).contains("built-three"),
+        "the repaired Dockerfile must run:\n{}",
+        stdout(&rebuilt)
+    );
+    let dockerfile_run = latest_image_run(&journey, &project);
+    assert_ne!(
+        first_run, dockerfile_run,
+        "a Dockerfile edit must produce a new image run id"
+    );
+    let cached_again = journey.slipfork(&project, &["up"]);
+    assert!(cached_again.status.success());
+    assert!(
+        !stdout(&cached_again).contains("built"),
+        "a warm unchanged `up` must not rebuild:\n{}",
+        stdout(&cached_again)
+    );
+    assert_eq!(latest_image_run(&journey, &project), dockerfile_run);
+
+    // 5. A copied context edit changes the canonical context digest and rebuilds.
+    fs::write(project.join("seed.txt"), "two").expect("edit the copied context");
+    let context_edit = journey.slipfork(&project, &["up"]);
+    assert!(
+        context_edit.status.success(),
+        "{}",
+        up_failure(
+            "the context-edited build must boot",
+            &project,
+            &context_edit
+        )
+    );
+    let context_run = latest_image_run(&journey, &project);
+    assert_ne!(
+        dockerfile_run, context_run,
+        "a copied context edit must produce a new image run id"
+    );
+
+    // 6. A Forkfile edit (add a service) converges on `restart`, not a stale pod restart.
+    fs::write(project.join("Forkfile"), CONVERGE_FORKFILE_TWO).expect("add the worker service");
+    let restarted = journey.slipfork(&project, &["restart"]);
+    assert!(
+        restarted.status.success(),
+        "{}",
+        up_failure(
+            "restart after the Forkfile edit failed",
+            &project,
+            &restarted
+        )
+    );
+    assert!(
+        stdout(&restarted).contains("worker"),
+        "`restart` must boot the newly declared service:\n{}",
+        stdout(&restarted)
+    );
+    let ps = journey.slipfork(&project, &["ps", "--json"]);
+    assert!(ps.status.success(), "{}", stderr(&ps));
+    let reply: serde_json::Value = serde_json::from_slice(&ps.stdout).expect("ps --json");
+    let services = reply["worlds"][0]["services"]
+        .as_array()
+        .unwrap_or_else(|| panic!("ps --json carries services: {reply}"));
+    let worker = services
+        .iter()
+        .find(|row| row["id"] == "worker")
+        .unwrap_or_else(|| panic!("the added service must appear: {services:?}"));
+    assert_eq!(worker["running"], true, "{worker}");
+    let converged_run = latest_image_run(&journey, &project);
+
+    // 7. An unchanged `restart` keeps today's in-place restart with no rebuild.
+    let again = journey.slipfork(&project, &["restart"]);
+    assert!(
+        again.status.success(),
+        "{}",
+        up_failure("unchanged restart failed", &project, &again)
+    );
+    assert!(
+        stdout(&again).contains("restarting"),
+        "an unchanged `restart` must restart in place:\n{}",
+        stdout(&again)
+    );
+    assert_eq!(
+        latest_image_run(&journey, &project),
+        converged_run,
+        "an unchanged `restart` must not rebuild the image"
+    );
+
+    // 8. Teardown leaves no process or container behind.
+    let down = journey.slipfork(&project, &["down"]);
+    assert!(down.status.success(), "final down: {}", stderr(&down));
+    let _ = wait_until(
+        || scoped_leaks(&journey.run).is_empty(),
+        Duration::from_secs(10),
+    );
+    assert!(
+        scoped_leaks(&journey.run).is_empty(),
+        "processes survived teardown: {:?}",
+        scoped_leaks(&journey.run)
+    );
+    let listed = crun_list(&crun);
+    for id in ["web", "worker"] {
+        assert!(
+            !listed.contains(id),
+            "container `{id}` survived teardown:\n{listed}"
+        );
     }
 }
 

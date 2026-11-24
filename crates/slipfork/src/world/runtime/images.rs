@@ -264,12 +264,7 @@ impl ImageCache {
                 state,
             ))
         } else {
-            let context = self.project.join(&node.directory);
-            let dockerfile = context.join(
-                node.dockerfile
-                    .clone()
-                    .unwrap_or_else(|| PathBuf::from("Dockerfile")),
-            );
+            let paths = node.paths(&self.project);
             let mut args = BuildArgs::new();
             for (key, value) in self.doc.eval_image_args_with(
                 self.world.as_str(),
@@ -280,8 +275,8 @@ impl ImageCache {
                 args.declare(key, value);
             }
             let request = BuildRequest {
-                context,
-                dockerfile,
+                context: paths.context,
+                dockerfile: paths.dockerfile,
                 args,
                 target: self.doc.eval_image_stage_with(image, &self.features),
                 externals: BTreeMap::new(),

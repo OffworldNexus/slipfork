@@ -21,7 +21,7 @@ pub use stamp::{
 };
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::resources::{ResourceKind, S3Bucket};
 
@@ -93,6 +93,33 @@ pub struct ImageNode {
     pub from: Option<String>,
     /// `Forkfile` line of the `image` keyword.
     pub line: u32,
+}
+
+/// The on-disk build context and `Dockerfile` of one image, resolved against the project root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImagePaths {
+    /// Absolute build-context root (`COPY`/`ADD` read from here).
+    pub context: PathBuf,
+    /// Absolute `Dockerfile` path.
+    pub dockerfile: PathBuf,
+}
+
+impl ImageNode {
+    /// Resolves this image's build context and `Dockerfile`; the single owner of the rule every
+    /// builder, stamp, and staleness caller uses.
+    #[must_use]
+    pub fn paths(&self, project: &Path) -> ImagePaths {
+        let context = project.join(&self.directory);
+        let dockerfile = context.join(
+            self.dockerfile
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("Dockerfile")),
+        );
+        ImagePaths {
+            context,
+            dockerfile,
+        }
+    }
 }
 
 /// One backing-resource declaration.

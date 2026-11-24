@@ -67,6 +67,7 @@ mod error;
 mod fetch;
 mod identity;
 mod ignore;
+mod inputs;
 mod layout;
 mod manifest;
 mod puller;
@@ -91,6 +92,7 @@ pub use dockerfile::{
 };
 pub use error::{Error, Result};
 pub use ignore::Dockerignore;
+pub use inputs::build_inputs_digest;
 pub use layout::ImageLayout;
 pub use manifest::{Descriptor, ImageIndex, ImageManifest, Platform};
 pub use puller::{OciPuller, PulledImage};

@@ -261,17 +261,21 @@ impl WorldStampStore {
     }
 
     /// The stamp a fork may reuse: `Some` only when the stored `world_epoch` and every paired
-    /// clone match `(plan, features)`'s epoch, so no caller re-derives trust on its own and a
-    /// cross-feature boot (`-F -dev`, `--no-default-features`) never adopts another mode's images.
+    /// clone match `(plan, features, image_inputs)`'s epoch, so no caller re-derives trust on its
+    /// own and a cross-feature boot (`-F -dev`, `--no-default-features`) never adopts another mode's
+    /// images.
     #[must_use]
     pub fn trusted_stamp<'a>(
         &self,
         plan: &WorldPlan,
         features: &FeatureSet,
+        image_inputs: &BTreeMap<String, String>,
         clones: impl IntoIterator<Item = &'a Path>,
     ) -> Option<WorldStamp> {
         match self.verify_all(clones) {
-            EpochState::Matched(stored) if stored == plan_epoch(plan, features) => self.load(),
+            EpochState::Matched(stored) if stored == plan_epoch(plan, features, image_inputs) => {
+                self.load()
+            }
             _ => None,
         }
     }
@@ -295,10 +299,15 @@ pub fn write_pg_checkpoints(clones: &[PathBuf], epoch: &str) -> Result<()> {
     Ok(())
 }
 
-/// A stable epoch for one `(plan, features)` pair, so a fork with the same `Forkfile` and active
-/// feature set derives the same epoch while any feature override invalidates inherited stamps.
+/// A stable epoch for one `(plan, features, image inputs)` tuple, so a fork with the same
+/// `Forkfile`, active feature set, and on-disk `Dockerfile`/context derives the same epoch while
+/// any feature override or build-input edit invalidates inherited stamps.
 #[must_use]
-pub fn plan_epoch(plan: &WorldPlan, features: &FeatureSet) -> String {
+pub fn plan_epoch(
+    plan: &WorldPlan,
+    features: &FeatureSet,
+    image_inputs: &BTreeMap<String, String>,
+) -> String {
     let mut seed = String::from("features|");
     for (index, name) in features.active().iter().enumerate() {
         if index > 0 {
@@ -319,9 +328,10 @@ pub fn plan_epoch(plan: &WorldPlan, features: &FeatureSet) -> String {
     }
     for image in &plan.images {
         seed.push_str(&format!(
-            "image|{}|{}\n",
+            "image|{}|{}|{}\n",
             image.id,
-            image.from.as_deref().unwrap_or("")
+            image.from.as_deref().unwrap_or(""),
+            image_inputs.get(&image.id).map_or("", String::as_str)
         ));
     }
     epoch_for(&seed)

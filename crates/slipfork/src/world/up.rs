@@ -332,12 +332,18 @@ impl Session {
                         "nodes": nodes,
                     }));
                 }
-                match &resolved.service {
-                    Some(service) => tui.line(&format!("✓ Restarted {service}")),
-                    None => {
-                        let restarted = reply["restarted"].as_u64().unwrap_or(0);
-                        let plural = if restarted == 1 { "pod" } else { "pods" };
-                        tui.line(&format!("✓ Restarted {world} ({restarted} {plural})"));
+                if reply["reconciled"].as_bool() == Some(true) {
+                    // The boot stream already printed its own `✓ Ready -> …`; a `Restarted …`
+                    // line (with a fabricated `0 pods`, or a single service after a world-wide
+                    // rebuild) would contradict the rows the user just watched.
+                } else {
+                    match &resolved.service {
+                        Some(service) => tui.line(&format!("✓ Restarted {service}")),
+                        None => {
+                            let restarted = reply["restarted"].as_u64().unwrap_or(0);
+                            let plural = if restarted == 1 { "pod" } else { "pods" };
+                            tui.line(&format!("✓ Restarted {world} ({restarted} {plural})"));
+                        }
                     }
                 }
                 ExitCode::SUCCESS

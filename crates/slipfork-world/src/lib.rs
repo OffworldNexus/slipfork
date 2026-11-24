@@ -48,10 +48,11 @@ mod supervisor;
 
 pub use boot::{
     BootEvent, BootFailure, BootGraph, BootKind, BootScheduler, BootState, BootStep, EpochState,
-    EventSink, FailedHook, HookPhase, ImageNode, ImageStamp, PG_STAMP_FILE, PlanRow, ResourceNode,
-    ServiceHealth, ServiceNode, StampStore, StepExecutor, StepOutcome, StepStamp, WORLD_STAMP_FILE,
-    WorldPlan, WorldStamp, WorldStampStore, classify_service, epoch_for, plan_epoch, step_digest,
-    world_plan, world_plan_with, write_pg_checkpoint, write_pg_checkpoints,
+    EventSink, FailedHook, HookPhase, ImageNode, ImagePaths, ImageStamp, PG_STAMP_FILE, PlanRow,
+    ResourceNode, ServiceHealth, ServiceNode, StampStore, StepExecutor, StepOutcome, StepStamp,
+    WORLD_STAMP_FILE, WorldPlan, WorldStamp, WorldStampStore, classify_service, epoch_for,
+    plan_epoch, step_digest, world_plan, world_plan_with, write_pg_checkpoint,
+    write_pg_checkpoints,
 };
 pub use btrfs::{is_btrfs_path, is_subvolume_path};
 

@@ -18,7 +18,9 @@ use crate::world::features::WorldFeatures;
 use crate::world::runtime::capture::{RunTarget, strip_ansi};
 use crate::world::runtime::frames::{StepPin, failure_facts, log_frame, note_frame, step_frame};
 
-use super::{HostEnv, SuperviseArgs, WorldState, fail, runtime::WorldRuntime, state_path};
+use super::{
+    HostEnv, SuperviseArgs, WorldState, fail, runtime::WorldBoot, runtime::WorldRuntime, state_path,
+};
 
 impl Session {
     /// Hidden detached-supervisor mode: boot, wait until `down`, then exit.
@@ -54,16 +56,20 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
     let features = WorldFeatures::load_resolved(project, &doc)
         .map_err(|error| format!("{error}\nnext: {}", WorldFeatures::REMEDY))?;
     let plan = world_plan_with(&doc, project, &features).map_err(|error| error.to_string())?;
+    // One digest per build image: the `Dockerfile` bytes plus the canonical context hash. Folding
+    // it into the epoch means a Dockerfile/context edit can never adopt a stale image stamp.
+    let image_inputs = crate::world::image_inputs(project, &doc, &plan.images, &features);
     let emitter = Arc::new(Mutex::new(Emitter { open: true }));
-    let runtime = Arc::new(WorldRuntime::new(
+    let runtime = Arc::new(WorldRuntime::new(WorldBoot {
         project,
-        world.clone(),
-        &doc,
-        &plan,
-        features.clone(),
+        world: world.clone(),
+        doc: &doc,
+        plan: &plan,
+        features: features.clone(),
+        image_inputs: &image_inputs,
         env,
-        Arc::clone(&emitter),
-    )?);
+        emitter: Arc::clone(&emitter),
+    })?);
     let pods_dir = runtime.pods_dir().to_path_buf();
     let socket = control::control_socket_path(&pods_dir).map_err(|error| error.to_string())?;
     let world_dir = runtime.world_dir();
@@ -79,12 +85,13 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
         .filter(|resource| resource.resource == ResourceKind::Postgres)
         .map(|resource| layout.world_clone(&world, resource.resource, &resource.id))
         .collect();
-    let epoch = plan_epoch(&plan, &features);
+    let epoch = plan_epoch(&plan, &features, &image_inputs);
     let stamp_store = WorldStampStore::new(&world_dir);
     let trusted = stamp_store
         .trusted_stamp(
             &plan,
             &features,
+            &image_inputs,
             pg_clones.iter().map(|clone| clone.as_path()),
         )
         .is_some();
@@ -641,7 +648,7 @@ mod tests {
         fs::create_dir_all(&world_dir).expect("create the world dir");
         fs::create_dir_all(&pg_clone).expect("create the PG clone");
         let store = WorldStampStore::new(&world_dir);
-        let epoch = plan_epoch(plan, features);
+        let epoch = plan_epoch(plan, features, &BTreeMap::new());
         store
             .save(&WorldStamp::checkpoint(
                 plan,
@@ -665,7 +672,7 @@ mod tests {
         let (store, pg_clone) = checkpoint(root.path(), &warm, &dev);
         let trusted = |plan: &WorldPlan, features: &FeatureSet| {
             store
-                .trusted_stamp(plan, features, [pg_clone.as_path()])
+                .trusted_stamp(plan, features, &BTreeMap::new(), [pg_clone.as_path()])
                 .is_some()
         };
         assert!(
@@ -706,7 +713,7 @@ mod tests {
         let (pinned_store, pinned_pg) = checkpoint(root.path(), &pinned, &dev);
         let pinned_trusted = |plan: &WorldPlan| {
             pinned_store
-                .trusted_stamp(plan, &dev, [pinned_pg.as_path()])
+                .trusted_stamp(plan, &dev, &BTreeMap::new(), [pinned_pg.as_path()])
                 .is_some()
         };
         assert!(pinned_trusted(&pinned));
@@ -718,8 +725,8 @@ mod tests {
 
         let relocked = hook_plan("uv run seed", Some("uv.lock@bbb"));
         assert_eq!(
-            plan_epoch(&relocked, &dev),
-            plan_epoch(&pinned, &dev),
+            plan_epoch(&relocked, &dev, &BTreeMap::new()),
+            plan_epoch(&pinned, &dev, &BTreeMap::new()),
             "same plan shape, same epoch"
         );
         let stamps = stamps_for(&project, &pinned_store, pinned_trusted(&relocked));

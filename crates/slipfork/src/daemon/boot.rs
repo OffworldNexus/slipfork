@@ -153,7 +153,9 @@ impl BootSession {
                     let child = self.child.take().ok_or_else(|| {
                         Failure::new("supervisor-spawn", "the world supervisor disappeared")
                     })?;
-                    daemon.core()?.publish(&self.key, entry, child)?;
+                    // The head walks the build context; compute it before taking the core lock.
+                    let recorded = super::lifecycle::up::fingerprint(&self.project);
+                    daemon.core()?.publish(&self.key, entry, child, recorded)?;
                     // Only a persisted registry entry may announce `✓ Ready` / `{"event":"ready"}`.
                     let url = event["url"].clone();
                     emit(event);
@@ -187,7 +189,8 @@ impl BootSession {
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .map_or(0, |since| since.as_millis() as u64),
                         };
-                        daemon.core()?.publish(&self.key, entry, child)?;
+                        let recorded = super::lifecycle::up::fingerprint(&self.project);
+                        daemon.core()?.publish(&self.key, entry, child, recorded)?;
                     } else {
                         self.stop();
                         daemon.core()?.forget(&self.key);

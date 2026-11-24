@@ -57,15 +57,29 @@ pub(crate) struct Reconcile {
     child: Option<Child>,
 }
 
+/// The `project` parameter every lifecycle request carries.
+pub(crate) fn project_path(params: &Value) -> Result<PathBuf, Failure> {
+    params
+        .get("project")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .ok_or_else(|| Failure::new("bad-params", "`project` is required"))
+}
+
+/// The current head digest for `params`, computed **before** the daemon lock is taken so a large
+/// build-context walk never blocks `ps`/`ping`.
+pub(crate) fn fingerprint_for(params: &Value) -> Result<Option<Fingerprint>, Failure> {
+    Ok(fingerprint(&project_path(params)?))
+}
+
 impl Core {
     /// Decides one idempotent `up`: unchanged heals outside the lock; edited reconciles then boots.
-    pub(crate) fn up_plan(&mut self, params: &Value) -> Result<UpAction, Failure> {
-        let project = PathBuf::from(
-            params
-                .get("project")
-                .and_then(Value::as_str)
-                .ok_or_else(|| Failure::new("bad-params", "`project` is required"))?,
-        );
+    pub(crate) fn up_plan(
+        &mut self,
+        params: &Value,
+        current: Option<Fingerprint>,
+    ) -> Result<UpAction, Failure> {
+        let project = project_path(params)?;
         let key = key_of(&project);
         let Some(World::Live { entry, .. }) = self.worlds.get(&key) else {
             return Ok(UpAction::Boot);
@@ -74,26 +88,11 @@ impl Core {
         if !pid_alive(entry.supervisor_pid) || !world_answers(&entry.pods_dir) {
             return Ok(UpAction::Boot);
         }
-        let current = fingerprint(&project);
-        let recorded = registry::load_fingerprints(&self.state_dir)
-            .ok()
-            .and_then(|mut all| all.remove(&key));
-        let unchanged = match (&current, &recorded) {
-            (Some(current), Some(recorded)) => current == recorded,
-            // A world booted before fingerprints were recorded (or by another binary) still
-            // matches when its `Forkfile` predates the boot; otherwise reconcile once.
-            (Some(current), None) => {
-                let predates = inputs_predate(&project, entry.started_at_ms);
-                if predates {
-                    let _ = registry::store_fingerprint(&self.state_dir, &project, Some(current));
-                }
-                predates
-            }
-            _ => false,
-        };
-        // Only heal when every declared service already wrote its bundle; a half-booted world
-        // whose hook failed before bundling a service must reconcile to run the full DAG.
-        if unchanged && services_bundled(&project, &entry.pods_dir) {
+        // Only heal when the recorded head still matches disk AND every declared service already
+        // wrote its bundle; a half-booted or edited world reconciles to re-run the full DAG.
+        if !self.world_stale(&project, current, entry.started_at_ms)
+            && services_bundled(&project, &entry.pods_dir)
+        {
             return Ok(UpAction::Heal(Box::new(Heal {
                 world: entry.world,
                 project: entry.project,
@@ -103,18 +102,51 @@ impl Core {
                 fork: entry.fork,
             })));
         }
-        let Some(World::Live { entry, child }) = self.worlds.remove(&key) else {
+        let Some(plan) = self.detach_live(&key) else {
             return Ok(UpAction::Boot);
         };
-        let _ = registry::store_fingerprint(&self.state_dir, &project, None);
+        Ok(UpAction::Reconcile(Box::new(plan)))
+    }
+
+    /// Whether the live world's recorded head (`Forkfile` + every image's `Dockerfile` + context)
+    /// differs from `current`. A world booted before fingerprints were recorded still matches when
+    /// its inputs predate the boot; otherwise it reconciles once and records the current head.
+    pub(crate) fn world_stale(
+        &self,
+        project: &Path,
+        current: Option<Fingerprint>,
+        started_at_ms: u64,
+    ) -> bool {
+        let recorded = registry::load_fingerprints(&self.state_dir)
+            .ok()
+            .and_then(|mut all| all.remove(&key_of(project)));
+        match (&current, &recorded) {
+            (Some(current), Some(recorded)) => current != recorded,
+            (Some(current), None) => {
+                let predates = inputs_predate(project, started_at_ms);
+                if predates {
+                    let _ = registry::store_fingerprint(&self.state_dir, project, Some(current));
+                }
+                !predates
+            }
+            _ => true,
+        }
+    }
+
+    /// Detaches the live world so `reconcile` and the reboot run outside the daemon lock.
+    pub(crate) fn detach_live(&mut self, key: &str) -> Option<Reconcile> {
+        let Some(World::Live { entry, child }) = self.worlds.remove(key) else {
+            return None;
+        };
+        let _ = registry::store_fingerprint(&self.state_dir, &entry.project, None);
         self.ingress = None;
         let _ = self.persist();
-        Ok(UpAction::Reconcile(Box::new(Reconcile {
+        Some(Reconcile {
             project: entry.project,
             pods_dir: entry.pods_dir,
             supervisor_pid: entry.supervisor_pid,
             child,
-        })))
+        })
     }
 }
 
@@ -407,18 +439,16 @@ fn layout_fork(project: &Path) -> Option<String> {
         .map(|fork| fork.as_str().to_owned())
 }
 
-/// The compiled `Forkfile`'s stable content digest plus its resolved active features.
-pub(super) fn fingerprint(project: &Path) -> Option<Fingerprint> {
+/// The compiled `Forkfile`'s stable content digest, its resolved active features, and every build
+/// image's canonical `Dockerfile` + context digest.
+pub(crate) fn fingerprint(project: &Path) -> Option<Fingerprint> {
     let source = fs::read_to_string(project.join("Forkfile")).ok()?;
     let checked = slipfork_forkfile::compile(&source).ok()?;
     let config = WorldFeatures::load(project).ok()?;
-    let features: Vec<String> = config
-        .resolve(&checked.document)
-        .ok()?
-        .active()
-        .iter()
-        .cloned()
-        .collect();
+    let resolved = config.resolve(&checked.document).ok()?;
+    let features: Vec<String> = resolved.active().iter().cloned().collect();
+    let plan = slipfork_world::world_plan_with(&checked.document, project, &resolved).ok()?;
+    let inputs = crate::world::image_inputs(project, &checked.document, &plan.images, &resolved);
     let raw = fs::read(WorldFeatures::path(project)).unwrap_or_default();
     let edits: Vec<String> = config.edits.iter().map(ToString::to_string).collect();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -427,20 +457,54 @@ pub(super) fn fingerprint(project: &Path) -> Option<Fingerprint> {
     config.no_default.hash(&mut hasher);
     edits.hash(&mut hasher);
     features.hash(&mut hasher);
+    for image in &plan.images {
+        image.id.hash(&mut hasher);
+        inputs
+            .get(&image.id)
+            .map(String::as_str)
+            .unwrap_or_default()
+            .hash(&mut hasher);
+    }
     Some(Fingerprint {
         digest: format!("{:016x}", hasher.finish()),
         features,
     })
 }
 
-/// Whether both `Forkfile` and any `.slipfork/features.json` predate `started_at_ms`.
+/// Whether `Forkfile`, any image's `Dockerfile`, and their optional feature/ignore files all
+/// predate `started_at_ms`.
 fn inputs_predate(project: &Path, started_at_ms: u64) -> bool {
     if started_at_ms == 0 {
         return false;
     }
+    if !file_predates(&project.join("Forkfile"), started_at_ms) {
+        return false;
+    }
     let features_path = WorldFeatures::path(project);
-    file_predates(&project.join("Forkfile"), started_at_ms)
-        && (!features_path.exists() || file_predates(&features_path, started_at_ms))
+    if features_path.exists() && !file_predates(&features_path, started_at_ms) {
+        return false;
+    }
+    let Ok(source) = fs::read_to_string(project.join("Forkfile")) else {
+        return false;
+    };
+    let Ok(checked) = slipfork_forkfile::compile(&source) else {
+        return false;
+    };
+    let Ok(features) = WorldFeatures::load_resolved(project, &checked.document) else {
+        return false;
+    };
+    let Ok(plan) = slipfork_world::world_plan_with(&checked.document, project, &features) else {
+        return false;
+    };
+    plan.images
+        .iter()
+        .filter(|image| image.from.is_none())
+        .all(|image| {
+            let paths = image.paths(project);
+            let ignore = paths.context.join(".dockerignore");
+            file_predates(&paths.dockerfile, started_at_ms)
+                && (!ignore.exists() || file_predates(&ignore, started_at_ms))
+        })
 }
 
 fn file_predates(path: &Path, started_at_ms: u64) -> bool {
@@ -456,7 +520,9 @@ fn file_predates(path: &Path, started_at_ms: u64) -> bool {
 mod tests {
     use std::fs;
 
-    use super::layout_fork;
+    use super::{fingerprint, layout_fork};
+
+    const FORKFILE: &str = "# forkfile: 0.1\nimage app . {\n  dockerfile Dockerfile\n  service web {\n    run: sleep 3600\n  }\n}\n";
 
     fn temp(prefix: &str) -> tempfile::TempDir {
         tempfile::Builder::new()
@@ -478,6 +544,58 @@ mod tests {
             layout_fork(&parent.join(slipfork_world::FORKS_DIR).join("Bad_Name")),
             None,
             "an invalid fork name never reserves a fork"
+        );
+    }
+
+    /// `up` compares the head it recorded at boot against the `Forkfile`, every `Dockerfile`, and
+    /// the copied context, so each edit reconciles and an unchanged tree stays cached.
+    #[test]
+    fn the_fingerprint_tracks_the_forkfile_dockerfile_and_copied_context() {
+        let root = temp("slipfork-up-fingerprint");
+        let project = root.path();
+        fs::write(project.join("Forkfile"), FORKFILE).expect("write Forkfile");
+        let dockerfile = project.join("Dockerfile");
+        fs::write(
+            &dockerfile,
+            "FROM alpine:3.20\nCOPY seed.txt /seed.txt\nRUN echo one\n",
+        )
+        .expect("write Dockerfile");
+        fs::write(project.join("seed.txt"), "one").expect("write the copied context");
+
+        let first = fingerprint(project).expect("fingerprint the project");
+        assert_eq!(
+            first,
+            fingerprint(project).expect("re-fingerprint"),
+            "an unchanged tree keeps its head"
+        );
+
+        fs::write(
+            &dockerfile,
+            "FROM alpine:3.20\nCOPY seed.txt /seed.txt\nRUN echo two\n",
+        )
+        .expect("edit the Dockerfile");
+        let dockerfile_edited = fingerprint(project).expect("fingerprint after the edit");
+        assert_ne!(
+            first, dockerfile_edited,
+            "a `RUN` edit must change the head and force a rebuild"
+        );
+
+        fs::write(project.join("seed.txt"), "two").expect("edit the copied context");
+        let context_edited = fingerprint(project).expect("fingerprint after the context edit");
+        assert_ne!(
+            dockerfile_edited, context_edited,
+            "a copied context edit must change the head and force a rebuild"
+        );
+
+        fs::write(
+            project.join("Forkfile"),
+            format!("{FORKFILE}\nimage worker . {{\n  dockerfile Dockerfile\n}}\n"),
+        )
+        .expect("add a service");
+        assert_ne!(
+            context_edited,
+            fingerprint(project).expect("fingerprint after the Forkfile edit"),
+            "a Forkfile edit must change the head and force a reconcile"
         );
     }
 }

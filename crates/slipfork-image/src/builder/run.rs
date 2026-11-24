@@ -50,15 +50,7 @@ impl<'a, 's, 'l> BuildRun<'a, 's, 'l> {
             .iter()
             .map(|stage| 1 + stage.instructions.len())
             .sum();
-        let needs_context = stages
-            .iter()
-            .flat_map(|stage| &stage.instructions)
-            .any(|parsed| {
-                matches!(
-                    &parsed.instruction,
-                    Instruction::Copy(spec) | Instruction::Add(spec) if spec.from.is_none()
-                )
-            });
+        let needs_context = crate::inputs::needs_context(stages);
         Self {
             builder,
             request,
@@ -375,11 +367,7 @@ impl<'a, 's, 'l> BuildRun<'a, 's, 'l> {
         if self.context.is_some() {
             return Ok(());
         }
-        let context = if self.needs_context {
-            BuildContext::load(&self.request.context)?
-        } else {
-            BuildContext::empty(&self.request.context)
-        };
+        let context = BuildContext::for_walk(&self.request.context, self.needs_context)?;
         self.context_hash = Some(context.hash()?);
         self.context = Some(context);
         Ok(())

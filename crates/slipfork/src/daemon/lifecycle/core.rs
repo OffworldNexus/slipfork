@@ -16,7 +16,7 @@ use slipfork_world::{LogStore, WorldName};
 use super::super::Failure;
 use super::super::rpc::{key_of, pid_alive, world_answers, world_call};
 use super::plan;
-use crate::daemon::registry::{self, RegistryEntry};
+use crate::daemon::registry::{self, Fingerprint, RegistryEntry};
 use crate::world::HostEnv;
 
 /// One owned world: either still booting, or live with its supervisor child.
@@ -48,6 +48,14 @@ impl World {
             Self::Live { entry, .. } => &entry.world,
         }
     }
+}
+
+/// What one `restart` must do, decided under the daemon lock and executed outside it.
+pub(crate) enum RestartAction {
+    /// The live world still matches the recorded head: restart its pods in place.
+    Restarted(Value),
+    /// The head changed on disk: stop the live world, then boot the edited plan.
+    Reconcile(Box<super::up::Reconcile>),
 }
 
 /// The daemon's mutable world state.
@@ -122,8 +130,8 @@ impl Core {
         key: &str,
         entry: RegistryEntry,
         child: Child,
+        recorded: Option<Fingerprint>,
     ) -> Result<(), Failure> {
-        let recorded = super::up::fingerprint(&entry.project);
         let _ = registry::store_fingerprint(&self.state_dir, &entry.project, recorded.as_ref());
         self.worlds.insert(
             key.to_owned(),
@@ -198,29 +206,45 @@ impl Core {
     pub(crate) fn restart(
         &mut self,
         params: &Value,
+        current: Option<Fingerprint>,
         emit: &mut dyn FnMut(Value),
-    ) -> Result<Value, Failure> {
-        let project = PathBuf::from(
-            params
-                .get("project")
-                .and_then(Value::as_str)
-                .ok_or_else(|| Failure::new("bad-params", "`project` is required"))?,
-        );
-        let entity = self
-            .worlds
-            .get(&key_of(&project))
-            .ok_or_else(|| Failure::new("no-world", "no world is running in this directory"))?;
-        let (pods_dir, world, booting) = match entity {
-            World::Booting { world, .. } => (None, world.clone(), true),
-            World::Live { entry, .. } => (Some(entry.pods_dir.clone()), entry.world.clone(), false),
+    ) -> Result<RestartAction, Failure> {
+        let project = super::up::project_path(params)?;
+        let key = key_of(&project);
+        let Some(entity) = self.worlds.get(&key) else {
+            return Err(Failure::new(
+                "no-world",
+                "no world is running in this directory",
+            ));
         };
-        if booting {
+        let (world, started_at_ms) = match entity {
+            World::Booting { world, .. } => (world.clone(), None),
+            World::Live { entry, .. } => (entry.world.clone(), Some(entry.started_at_ms)),
+        };
+        let Some(started_at_ms) = started_at_ms else {
             return Err(Failure::new(
                 "world-booting",
                 format!("world `{world}` is still starting"),
             ));
+        };
+        // The same staleness check `up` uses: an edited `Forkfile`, `Dockerfile`, or copied
+        // context stops the old world and boots the new plan instead of restarting stale pods.
+        if self.world_stale(&project, current, started_at_ms) {
+            let Some(plan) = self.detach_live(&key) else {
+                return Err(Failure::new(
+                    "no-world",
+                    "no world is running in this directory",
+                ));
+            };
+            return Ok(RestartAction::Reconcile(Box::new(plan)));
         }
-        let pods_dir = pods_dir.expect("a live world has a pod root");
+        let Some(World::Live { entry, .. }) = self.worlds.get(&key) else {
+            return Err(Failure::new(
+                "no-world",
+                "no world is running in this directory",
+            ));
+        };
+        let pods_dir = entry.pods_dir.clone();
         let service = params
             .get("service")
             .and_then(Value::as_str)
@@ -254,7 +278,9 @@ impl Core {
             }));
         }
         self.ingress = None;
-        Ok(json!({ "restarted": reply["restarted"], "world": world }))
+        Ok(RestartAction::Restarted(
+            json!({ "restarted": reply["restarted"], "world": world }),
+        ))
     }
 
     /// The ingress view, rebuilt only after `up`/`down`/`restart`.

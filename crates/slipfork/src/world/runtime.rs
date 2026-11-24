@@ -61,16 +61,30 @@ pub(super) struct WorldRuntime {
     emitter: Arc<Mutex<Emitter>>,
 }
 
+/// The caller-injected inputs one world boot needs; every path and host fact is composed once.
+pub(super) struct WorldBoot<'a> {
+    pub(super) project: &'a Path,
+    pub(super) world: WorldName,
+    pub(super) doc: &'a Forkfile,
+    pub(super) plan: &'a WorldPlan,
+    pub(super) features: FeatureSet,
+    pub(super) image_inputs: &'a BTreeMap<String, String>,
+    pub(super) env: &'a HostEnv,
+    pub(super) emitter: Arc<Mutex<Emitter>>,
+}
+
 impl WorldRuntime {
-    pub(super) fn new(
-        project: &Path,
-        world: WorldName,
-        doc: &Forkfile,
-        plan: &WorldPlan,
-        features: FeatureSet,
-        env: &HostEnv,
-        emitter: Arc<Mutex<Emitter>>,
-    ) -> Result<Self, String> {
+    pub(super) fn new(boot: WorldBoot<'_>) -> Result<Self, String> {
+        let WorldBoot {
+            project,
+            world,
+            doc,
+            plan,
+            features,
+            image_inputs,
+            env,
+            emitter,
+        } = boot;
         let scheme = "http";
         let is_fork = StoreLayout::parse_fork_world(std::ffi::OsStr::new(world.as_str())).is_some();
         let engine = BtrfsEngine::new(StoreLayout::at(env.store_root_for(project)));
@@ -99,8 +113,12 @@ impl WorldRuntime {
             .filter(|resource| resource.resource == ResourceKind::Postgres)
             .map(|resource| layout.world_clone(&world, resource.resource, &resource.id))
             .collect();
-        let trusted_stamp =
-            stamps.trusted_stamp(plan, &features, pg_clones.iter().map(PathBuf::as_path));
+        let trusted_stamp = stamps.trusted_stamp(
+            plan,
+            &features,
+            image_inputs,
+            pg_clones.iter().map(PathBuf::as_path),
+        );
         let stamp_trusted = trusted_stamp.is_some();
         let adopted = trusted_stamp.map(|stamp| stamp.images).unwrap_or_default();
         let images = ImageCache::new(
