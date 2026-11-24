@@ -1,4 +1,6 @@
 # The developer whose per-user daemon receives the accepted :80 connection fd.
-# The package's install hook writes the installing user here; the
-# handoff refuses to run as root, so leaving this empty simply fails closed.
+# `apk` runs install hooks with a PATH-only environment, so the hook cannot
+# write this; set it yourself as shown in docs/install.md ("Alpine: set the
+# ingress user yourself"). The handoff refuses to run as root, so leaving this
+# empty simply fails closed.
 SLIPFORK_INGRESS_USER=
