@@ -9,10 +9,12 @@ mod client;
 mod frames;
 mod handoff;
 mod host;
+mod identity;
 mod ingress;
 mod lifecycle;
 mod registry;
 mod rpc;
+mod spawn;
 mod view;
 mod wire;
 
@@ -32,6 +34,7 @@ use std::thread;
 
 use crate::world::HostEnv;
 use frames::{FrameReader, write_frame};
+use identity::DaemonIdentity;
 use lifecycle::core::Core;
 use serde_json::{Value, json};
 use slipfork_vcs::VcsWorkspace;
@@ -103,6 +106,8 @@ struct Daemon {
     core: Mutex<Core>,
     socket: PathBuf,
     state_dir: PathBuf,
+    /// This daemon's own binary and version, so a client can refuse a stale daemon.
+    identity: DaemonIdentity,
     /// The invoking process environment, snapshotted by the composition root.
     env: BTreeMap<String, String>,
 }
@@ -132,6 +137,7 @@ impl Daemon {
         }
         let socket = socket_path(&host);
         let _ = fs::remove_file(&socket);
+        let identity = DaemonIdentity::new(&host.exe);
         let state_dir = host.state_dir.clone();
         let env = host.env.clone();
         let entries = registry::load(&state_dir).map_err(|error| {
@@ -150,6 +156,7 @@ impl Daemon {
             core: Mutex::new(core),
             socket,
             state_dir,
+            identity,
             env,
         }))
     }
@@ -325,6 +332,10 @@ impl Daemon {
                     "pong": true,
                     "pid": std::process::id(),
                     "worlds": core.world_count(),
+                    // Identity of the code actually answering: a client refuses a daemon it did
+                    // not start, instead of silently running against a stale binary's behaviour.
+                    "version": self.identity.version(),
+                    "exe": self.identity.exe().display().to_string(),
                 })))
             }
             "ps" => {

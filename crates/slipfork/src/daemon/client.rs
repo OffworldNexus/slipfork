@@ -4,21 +4,23 @@
 //! `slipfork __daemon` detached and waits up to three seconds for the socket.
 
 use std::fmt;
-use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::os::fd::{OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
-use std::process::{Command, Stdio};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use base64::Engine as _;
 
+use super::identity::DaemonIdentity;
+use super::spawn::spawn_daemon;
 use super::{socket_path, wire};
 use crate::world::HostEnv;
 
-/// One typed daemon failure; `message` never embeds a `next:` remedy.
+/// One typed daemon failure; `message` may carry its own trailing `next:` remedy, which every
+/// renderer prefers over its call site's generic fallback.
 #[derive(Debug, Clone)]
 pub struct DaemonError {
     pub code: String,
@@ -60,7 +62,7 @@ impl DaemonClient {
     pub fn connect(host: &HostEnv) -> Result<Self, DaemonError> {
         let socket = socket_path(host);
         match UnixStream::connect(&socket) {
-            Ok(stream) => return Ok(Self::new(stream, socket)),
+            Ok(stream) => return Self::handshake(stream, socket, host),
             Err(error) if is_absent(&error) => {}
             Err(error) => {
                 return Err(DaemonError::new(
@@ -82,7 +84,7 @@ impl DaemonClient {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             match UnixStream::connect(&socket) {
-                Ok(stream) => return Ok(Self::new(stream, socket)),
+                Ok(stream) => return Self::handshake(stream, socket, host),
                 Err(error) if Instant::now() < deadline && is_absent(&error) => {
                     std::thread::sleep(Duration::from_millis(50));
                 }
@@ -108,13 +110,35 @@ impl DaemonClient {
     pub fn connect_existing(host: &HostEnv) -> Result<Option<Self>, DaemonError> {
         let socket = socket_path(host);
         match UnixStream::connect(&socket) {
-            Ok(stream) => Ok(Some(Self::new(stream, socket))),
+            Ok(stream) => Self::handshake(stream, socket, host).map(Some),
             Err(error) if is_absent(&error) => Ok(None),
             Err(error) => Err(DaemonError::new(
                 "daemon-unavailable",
                 format!("connect `{}`: {error}", socket.display()),
             )),
         }
+    }
+
+    /// Pings the daemon once before any verb runs, so a stale binary is refused with one remedy.
+    ///
+    /// The auto-spawn path passes: the daemon it just started is this very binary.
+    fn handshake(stream: UnixStream, socket: PathBuf, host: &HostEnv) -> Result<Self, DaemonError> {
+        let mut client = Self::new(stream, socket);
+        client.verify_identity(host)?;
+        Ok(client)
+    }
+
+    fn verify_identity(&mut self, host: &HostEnv) -> Result<(), DaemonError> {
+        let identity = DaemonIdentity::new(&host.exe);
+        let reply = match self.call_streaming("ping", json!({}), &mut |_| {}) {
+            Ok(reply) => reply,
+            // A daemon that cannot even answer `ping` predates this handshake.
+            Err(error) if error.code == "unknown-method" => {
+                return Err(identity.predates(&self.socket));
+            }
+            Err(error) => return Err(error),
+        };
+        identity.verify(&reply, &self.socket)
     }
 
     fn new(stream: UnixStream, socket: std::path::PathBuf) -> Self {
@@ -465,45 +489,4 @@ fn is_absent(error: &std::io::Error) -> bool {
         error.kind(),
         std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
     )
-}
-
-fn spawn_daemon(host: &HostEnv) -> Result<(), DaemonError> {
-    fs::create_dir_all(&host.runtime_dir).map_err(|error| {
-        DaemonError::new(
-            "daemon-unavailable",
-            format!("create `{}`: {error}", host.runtime_dir.display()),
-        )
-    })?;
-    fs::create_dir_all(&host.state_dir).map_err(|error| {
-        DaemonError::new(
-            "daemon-unavailable",
-            format!("create `{}`: {error}", host.state_dir.display()),
-        )
-    })?;
-    let log_path = host.state_dir.join("daemon.log");
-    let log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|error| {
-            DaemonError::new(
-                "daemon-unavailable",
-                format!("open `{}`: {error}", log_path.display()),
-            )
-        })?;
-    Command::new(&host.exe)
-        .arg("__daemon")
-        // A vanished cwd must never outlive the CLI that auto-spawned the daemon.
-        .current_dir("/")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::from(log))
-        .spawn()
-        .map_err(|error| {
-            DaemonError::new(
-                "daemon-unavailable",
-                format!("start `slipfork __daemon`: {error}"),
-            )
-        })?;
-    Ok(())
 }
