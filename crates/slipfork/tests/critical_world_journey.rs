@@ -1816,9 +1816,15 @@ fn world_up_restart_down_journey() {
     assert!(
         listed_text.lines().any(|line| {
             let row = line.trim_end();
-            row.contains("broken") && row.ends_with("failed")
+            let Some(state) = row.find(" failed ") else {
+                return false;
+            };
+            let Some(command) = row.find("@uv run python -c \"raise SystemExit(7)\"") else {
+                return false;
+            };
+            row.contains("broken") && state < command
         }),
-        "the failed service row must render `broken` with `failed` as its last column:\n{listed_text}"
+        "the failed service row must carry `broken`, its own `failed` state, then the run command:\n{listed_text}"
     );
     // Re-running `up` on the live failed world takes `Heal` (`Request::Restart`), refuses `Ready`
     // when `broken` exits again, and leaves `down` able to reap the restarted pod cleanly.
@@ -1929,9 +1935,39 @@ fn world_up_restart_down_journey() {
         crash_text.contains("crash-marker"),
         "the service's own stderr must reach the run capture:\n{crash_text}"
     );
+    // The replay glyph follows the recorded wire stream: `│` for stdout/combined (a merged pod
+    // capture) and `┃` for a real stderr. Ask `--json` which stream the tee recorded, then prove
+    // the human row carries exactly that one gutter.
+    let crash_json = journey.slipfork(&crash, &["logs", "-r", &crash_run, "--json"]);
     assert!(
-        crash_text.contains('┃'),
-        "the captured service line must keep its gutter:\n{crash_text}"
+        crash_json.status.success(),
+        "`logs -r {crash_run} --json`: {}",
+        stderr(&crash_json)
+    );
+    let marker_stream = stdout(&crash_json)
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("log JSON"))
+        .find(|frame| frame["line"] == "crash-marker")
+        .and_then(|frame| frame["stream"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| {
+            panic!(
+                "`logs -r {crash_run} --json` must carry the crash-marker stream:\n{}",
+                stdout(&crash_json)
+            )
+        });
+    let glyph = match marker_stream.as_str() {
+        "stderr" => '┃',
+        "stdout" | "combined" => '│',
+        other => panic!("off-contract wire stream {other:?}"),
+    };
+    let marker_row = crash_text
+        .lines()
+        .find(|line| line.trim_end().ends_with("crash-marker"))
+        .unwrap_or_else(|| panic!("the crash-marker row is missing:\n{crash_text}"));
+    assert!(
+        marker_row.contains(glyph)
+            && marker_row.matches('│').count() + marker_row.matches('┃').count() == 1,
+        "the captured `{marker_stream}` line must carry exactly one `{glyph}` gutter:\n{crash_text}"
     );
     assert!(
         !crash_text.contains('\u{1b}'),
