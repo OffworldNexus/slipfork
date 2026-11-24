@@ -288,8 +288,8 @@ pub fn failed_row(kind: &str, name: &str, styled: bool) -> String {
 }
 
 /// The indented diagnostic rows printed directly under a [`failed_row`]: the event's `message`
-/// (prefixed with its `Forkfile:<line>` context when known) wrapped to `width` visible cells, then
-/// the `next:` remedy when one was reported.
+/// as plain text wrapped to `width` visible cells, then the `next:` remedy when one was reported.
+/// The source location stays in the raw step event (`--json`), never in this one-line UX.
 ///
 /// Rows carry no glyph of their own — the failed row and the final [`failure_sentence`] each keep
 /// their single leading `✗` — and uncoloured rows contain zero escape bytes.
@@ -297,7 +297,6 @@ pub fn failed_row(kind: &str, name: &str, styled: bool) -> String {
 pub fn failure_details(
     message: &str,
     remedy: Option<&str>,
-    line: Option<u64>,
     width: usize,
     styled: bool,
 ) -> Vec<String> {
@@ -317,18 +316,9 @@ pub fn failure_details(
             _ => evidence.push(text),
         }
     }
-    let mut first = true;
     for text in evidence {
-        let text = if std::mem::take(&mut first) {
-            match line {
-                Some(line) if line > 0 => format!("Forkfile:{line}: {text}"),
-                _ => text.to_owned(),
-            }
-        } else {
-            text.to_owned()
-        };
         rows.extend(
-            wrap_row("  ", &text, width)
+            wrap_row("  ", text, width)
                 .into_iter()
                 .map(|row| palette.dim(&row)),
         );
@@ -425,7 +415,7 @@ pub fn failure_block(event: &Value, width: usize, styled: bool) -> (Vec<String>,
         }
         None => event["remedy"].as_str(),
     };
-    let details = failure_details(&message, remedy, event["line"].as_u64(), width, styled);
+    let details = failure_details(&message, remedy, width, styled);
     (
         details,
         failure_sentence(kind, name, event["command"].as_str()),
@@ -552,11 +542,11 @@ mod tests {
     fn a_failure_block_prints_its_message_and_remedy_once_with_one_glyph_per_row() {
         let message = "`crun` exited with code 1";
         let remedy = "fix the `RUN` command above, then rerun `slipfork up`";
-        let details = failure_details(message, Some(remedy), Some(12), 100, false);
+        let details = failure_details(message, Some(remedy), 100, false);
         assert_eq!(
             details,
             vec![
-                "  Forkfile:12: `crun` exited with code 1".to_owned(),
+                "  `crun` exited with code 1".to_owned(),
                 "  next: fix the `RUN` command above, then rerun `slipfork up`".to_owned(),
             ]
         );
@@ -589,15 +579,15 @@ mod tests {
     fn an_embedded_next_line_becomes_the_single_styled_remedy() {
         let message =
             "`crun` exited with code 1\nnext: fix the `RUN` command and rerun `slipfork up`";
-        let rows = failure_details(message, None, Some(12), 100, false);
+        let rows = failure_details(message, None, 100, false);
         assert_eq!(
             rows,
             vec![
-                "  Forkfile:12: `crun` exited with code 1".to_owned(),
+                "  `crun` exited with code 1".to_owned(),
                 "  next: fix the `RUN` command and rerun `slipfork up`".to_owned(),
             ]
         );
-        let styled = failure_details(message, None, Some(12), 100, true);
+        let styled = failure_details(message, None, 100, true);
         assert!(styled[1].contains("\u{1b}[36mnext:"), "{styled:?}");
         assert_eq!(styled.len(), 2, "the embedded next line prints once");
     }
@@ -606,7 +596,6 @@ mod tests {
     fn a_long_failure_message_wraps_inside_the_visible_width() {
         let rows = failure_details(
             "the build step wrote a message long enough that it must wrap onto more than one row",
-            None,
             None,
             48,
             false,
@@ -802,7 +791,6 @@ mod tests {
         // `next:`; `without_remedy` removes that second hint before rendering.
         let evidence = failure_details(
             &without_remedy("uv sync failed\nnext: fix the command above"),
-            None,
             None,
             100,
             false,
