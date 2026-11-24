@@ -965,9 +965,21 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         "the failed row must render: {failed_readable}"
     );
     assert!(
-        failed_readable.contains("✗ Failed to run hook")
-            && failed_readable.contains("check logs with: slipfork logs"),
-        "the one failure sentence must point at the log: {failed_readable}"
+        failed_readable.contains("✗ Failed to run hook"),
+        "the failure sentence must name the hook: {failed_readable}"
+    );
+    assert_eq!(
+        failed_readable.matches("next:").count(),
+        1,
+        "a failure prints exactly one `next:` line: {failed_readable}"
+    );
+    assert!(
+        failed_readable.contains("next: slipfork logs -r "),
+        "the one remedy replays the catalog run: {failed_readable}"
+    );
+    assert!(
+        !failed_readable.contains("check logs with:"),
+        "the superseded hint copy is gone: {failed_readable}"
     );
     // A failed boot may have no published live entry; best-effort cleanup before the next boot.
     let _ = run(&project, &env, &["down"]);

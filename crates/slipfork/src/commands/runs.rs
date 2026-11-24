@@ -1,8 +1,8 @@
 //! `slipfork logs --runs`: the recorded-run catalog as one borderless [`Table`].
 //!
 //! The daemon owns the catalog read (`<store>/logs/<world>/runs/index.jsonl`); this module only
-//! lays the rows out. Widths come from the complete set, so every `#run_id`, status and duration
-//! edge is pixel-straight, and a colourless render carries zero `ESC[` bytes.
+//! projects and lays out the rows. Widths come from the complete set, so every `#run_id`, status
+//! and duration edge is pixel-straight, and a colourless render carries zero `ESC[` bytes.
 
 use serde_json::Value;
 
@@ -17,11 +17,14 @@ use super::streams::format_ts;
 pub(crate) struct RunRow {
     pub run_id: String,
     pub kind: String,
-    pub name: String,
+    pub target: String,
     pub command: String,
     pub state: String,
+    pub started_ms: u64,
+    pub finished_ms: Option<u64>,
     pub duration_ms: u64,
-    pub ts_ms: u64,
+    pub project: String,
+    pub world: String,
 }
 
 impl RunRow {
@@ -30,34 +33,24 @@ impl RunRow {
         Some(Self {
             run_id: value["run_id"].as_str()?.to_owned(),
             kind: value["kind"].as_str().unwrap_or_default().to_owned(),
-            name: value["name"].as_str().unwrap_or_default().to_owned(),
+            target: value["target"].as_str().unwrap_or_default().to_owned(),
             command: value["command"].as_str().unwrap_or_default().to_owned(),
             state: value["state"].as_str().unwrap_or_default().to_owned(),
+            started_ms: value["started_ms"].as_u64().unwrap_or(0),
+            finished_ms: value["finished_ms"].as_u64(),
             duration_ms: value["duration_ms"].as_u64().unwrap_or(0),
-            ts_ms: value["ts_ms"].as_u64().unwrap_or(0),
-        })
-    }
-
-    /// The catalog as one JSON object (the exact `--json` line, with no escapes added).
-    pub(crate) fn to_value(&self) -> Value {
-        serde_json::json!({
-            "run_id": self.run_id,
-            "kind": self.kind,
-            "name": self.name,
-            "command": self.command,
-            "state": self.state,
-            "duration_ms": self.duration_ms,
-            "ts_ms": self.ts_ms,
+            project: value["project"].as_str().unwrap_or_default().to_owned(),
+            world: value["world"].as_str().unwrap_or_default().to_owned(),
         })
     }
 
     fn step(&self) -> String {
-        match (self.name.is_empty(), self.command.is_empty()) {
+        match (self.target.is_empty(), self.command.is_empty()) {
             (true, true) => String::new(),
             (true, false) => self.command.clone(),
-            (false, true) => self.name.clone(),
-            (false, false) if self.name == self.command => self.name.clone(),
-            (false, false) => format!("{} {}", self.name, self.command),
+            (false, true) => self.target.clone(),
+            (false, false) if self.target == self.command => self.target.clone(),
+            (false, false) => format!("{} {}", self.target, self.command),
         }
     }
 }
@@ -97,7 +90,7 @@ pub(crate) fn render_runs(rows: &[RunRow], color: bool) -> Vec<String> {
                 row.step(),
                 status,
                 elapsed_text(row.duration_ms),
-                format_ts(row.ts_ms),
+                format_ts(row.started_ms),
             ]
         })
         .collect();
@@ -117,11 +110,14 @@ mod tests {
         RunRow {
             run_id: run_id.to_owned(),
             kind: "setup".to_owned(),
-            name: "backend".to_owned(),
+            target: "backend".to_owned(),
             command: "uv sync".to_owned(),
             state: state.to_owned(),
+            started_ms: 1_764_000_000_000,
+            finished_ms: Some(1_764_000_000_041),
             duration_ms,
-            ts_ms: 1_764_000_000_000,
+            project: "/srv/demo".to_owned(),
+            world: "demo".to_owned(),
         }
     }
 
@@ -158,7 +154,6 @@ mod tests {
             ends.windows(2).all(|pair| pair[0] == pair[1]),
             "one right edge: {ends:?}"
         );
-        // The duration column is right-aligned, so every row ends on the recorded stamp.
         assert!(
             body.iter().all(|line| line.contains(" uv sync ")),
             "{body:?}"
@@ -173,39 +168,74 @@ mod tests {
         assert!(visible_width(&lines[0]) >= visible_width("#run_id  kind"));
     }
 
-    /// The `--json` object round-trips and carries zero terminal escapes.
+    /// The daemon's `RunRecord` serialization mirrors every catalog field with no escapes.
     #[test]
-    fn the_catalog_json_is_escape_free() {
-        let line = serde_json::to_string(&row("b7f2a1", "ready", 41).to_value())
-            .expect("serialize one run");
+    fn the_catalog_json_mirrors_the_record_and_is_escape_free() {
+        use slipfork_world::run_log::RunRecord;
+
+        let record = RunRecord {
+            run_id: "b7f2a1".to_owned(),
+            kind: "setup".to_owned(),
+            target: "backend".to_owned(),
+            command: "uv sync".to_owned(),
+            state: "ready".to_owned(),
+            started_ms: 1_764_000_000_000,
+            finished_ms: Some(1_764_000_000_041),
+            duration_ms: 41,
+            project: "/srv/demo".to_owned(),
+            world: "demo".to_owned(),
+        };
+        let value = serde_json::to_value(&record).expect("serialize one run");
+        assert_eq!(
+            RunRow::from_value(&value),
+            Some(row("b7f2a1", "ready", 41)),
+            "the CLI projects the daemon's exact record"
+        );
+        let line = serde_json::to_string(&value).expect("serialize one run");
         assert!(line.starts_with("{\"command\":\"uv sync\""), "{line}");
-        assert!(line.contains("\"run_id\":\"b7f2a1\""), "{line}");
+        for field in [
+            "\"run_id\":\"b7f2a1\"",
+            "\"kind\":\"setup\"",
+            "\"target\":\"backend\"",
+            "\"state\":\"ready\"",
+            "\"started_ms\":1764000000000",
+            "\"finished_ms\":1764000000041",
+            "\"duration_ms\":41",
+            "\"project\":\"/srv/demo\"",
+            "\"world\":\"demo\"",
+        ] {
+            assert!(line.contains(field), "missing {field}: {line}");
+        }
+        assert!(
+            !line.contains("\"name\""),
+            "the bare field is `target`: {line}"
+        );
         assert!(!line.contains('\u{1b}'), "{line}");
         assert!(!line.contains('\u{7}'), "{line}");
     }
 
-    /// `@<tool>` setup nodes carry `name == command`; the step renders that pair exactly once.
+    /// `@<tool>` setup nodes carry `target == command`; the step renders that pair exactly once.
     #[test]
-    fn the_step_never_repeats_an_identical_name_and_command() {
+    fn the_step_never_repeats_an_identical_target_and_command() {
         let mut run = row("b7f2a1", "ready", 41);
-        run.name = "uv sync".to_owned();
+        run.target = "uv sync".to_owned();
         run.command = "uv sync".to_owned();
         assert_eq!(run.step(), "uv sync");
 
-        // A differing name and command still render both halves.
-        run.name = "install".to_owned();
+        // A differing target and command still render both halves.
+        run.target = "install".to_owned();
         assert_eq!(run.step(), "install uv sync");
 
         // One-sided and fully-empty rows keep their existing fallbacks.
-        run.name = String::new();
+        run.target = String::new();
         assert_eq!(run.step(), "uv sync");
         run.command = String::new();
         assert_eq!(run.step(), "");
-        run.name = "backend".to_owned();
+        run.target = "backend".to_owned();
         assert_eq!(run.step(), "backend");
 
         // The rendered table itself carries the deduplicated step and zero escapes.
-        run.name = "uv sync".to_owned();
+        run.target = "uv sync".to_owned();
         run.command = "uv sync".to_owned();
         let lines = render_runs(&[run], false);
         assert!(lines[1].contains("uv sync"), "{lines:?}");

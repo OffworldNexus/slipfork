@@ -394,19 +394,9 @@ impl BootTui {
             return;
         }
         let row = text::failed_row(kind, name, self.mode.color());
-        let details = text::failure_details(
-            event["message"].as_str().unwrap_or_default(),
-            event["remedy"].as_str(),
-            event["line"].as_u64(),
-            self.width,
-            self.mode.color(),
-        );
-        let sentence = text::failure_sentence(
-            kind,
-            name,
-            event["command"].as_str(),
-            event["run_id"].as_str(),
-        );
+        // Exactly one `next:` per failure: the catalog run id supplies a styled replay command, or
+        // the step's own remedy is used when it never opened a capture.
+        let (details, sentence) = text::failure_block(event, self.width, self.mode.color());
         if self.pane.is_some() {
             if let Some(pane) = &self.pane
                 && let Ok(mut pane) = pane.lock()

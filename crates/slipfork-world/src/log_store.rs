@@ -9,6 +9,10 @@
 //! Scheduler workers (one per DAG node) and the daemon both mutate the same catalog, so every
 //! mutation holds one exclusive `flock` on `runs/index.jsonl`, re-reads inside it, and publishes
 //! rewrites through a per-call unique sibling.
+//!
+//! Retention prunes only terminal successes (`built`, `pulled`, `ready`). A `failed` run, a crashed
+//! run still marked `running`, and any unknown state are never counted or swept, so the evidence an
+//! operator needs outlives every teardown.
 
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::Write;
@@ -22,11 +26,17 @@ use crate::layout::{STORE_DIR, StoreLayout, WorldName};
 use crate::pod_log;
 use crate::run_log::{self, INDEX_FILE, LAST_FAILED_FILE, LAST_FILE, RunRecord};
 
-/// How many successful run captures one world keeps after a teardown.
+/// How many terminal-successful run captures one world keeps after a teardown.
 ///
-/// A `failed` record and its `.log`/`.idx` are never counted or pruned: the artifact an operator
-/// needs after a failed boot must outlive every `up`/`down`/`fork`.
+/// A `failed` record, a crashed record still marked `running`, and any unknown state are never
+/// counted or pruned: the artifact an operator needs after a failed boot must outlive every
+/// `up`/`down`/`fork`.
 pub const RETAIN_RUNS: usize = 20;
+
+/// Whether a run finished successfully, i.e. is safe for retention to prune.
+fn is_terminal_success(state: &str) -> bool {
+    matches!(state, "built" | "pulled" | "ready")
+}
 
 /// The one store path and run-capture catalog for a single world.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,10 +145,18 @@ impl LogStore {
             .max_by_key(|record| record.started_ms))
     }
 
-    /// Prunes all but the newest `newest` non-failed runs, returning how many were removed.
+    /// Resolves `<id>`, `#<id>`, `last`, or `failed` to one recorded run id for this world.
     ///
-    /// A `failed` record and its `.log`/`.idx` are never deleted: a failed run is the one an
-    /// operator needs to inspect after a teardown.
+    /// Callers never re-derive `<store>/logs/<world>/runs`; this is the one spec-to-id entry point.
+    pub fn resolve_run(&self, spec: &str) -> Result<String> {
+        run_log::resolve_run(&self.world_logs(), spec)
+    }
+
+    /// Prunes all but the newest `newest` terminal successes, returning how many were removed.
+    ///
+    /// Only `built`, `pulled`, and `ready` records are eligible. A `failed` record, a crashed run
+    /// still marked `running`, and any unknown state keep their `.log`/`.idx` forever: the evidence
+    /// an operator needs after a teardown is never swept.
     pub fn retain(&self, newest: usize) -> Result<usize> {
         let dir = self.run_dir();
         if !dir.is_dir() {
@@ -149,16 +167,16 @@ impl LogStore {
         // looked, and pruning a stale view would drop a live capture.
         let mut records = run_log::catalog(&dir)?.records;
         records.sort_by_key(|record| record.started_ms);
-        let non_failed = records
+        let successes = records
             .iter()
-            .filter(|record| record.state != "failed")
+            .filter(|record| is_terminal_success(&record.state))
             .count();
-        let prune_budget = non_failed.saturating_sub(newest);
+        let prune_budget = successes.saturating_sub(newest);
         let mut dropped_so_far = 0;
         let mut kept = Vec::with_capacity(records.len());
         let mut pruned = 0;
         for record in records {
-            let keep = record.state == "failed" || dropped_so_far >= prune_budget;
+            let keep = !is_terminal_success(&record.state) || dropped_so_far >= prune_budget;
             if keep {
                 kept.push(record);
             } else {
@@ -367,5 +385,48 @@ fn update_pointer(dir: &Path, name: &str, run_id: Option<&str>) -> Result<()> {
                 Err(source) => Err(Error::io("remove", &path, source)),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::LogStore;
+
+    /// A Btrfs-root host (longest mount `/`) keeps the store under the user's data directory.
+    #[test]
+    fn a_root_mount_resolves_under_the_data_home() {
+        let root = LogStore::root_for(
+            &[PathBuf::from("/")],
+            Path::new("/srv/demo"),
+            Path::new("/home/you/.local/share"),
+            true,
+        );
+        assert_eq!(root, PathBuf::from("/home/you/.local/share/slipfork/store"));
+    }
+
+    /// A writable non-`/` Btrfs mount keeps `<mount>/.slipfork-store`.
+    #[test]
+    fn a_writable_nested_mount_keeps_the_mount_store() {
+        let root = LogStore::root_for(
+            &[PathBuf::from("/"), PathBuf::from("/mnt/cow")],
+            Path::new("/mnt/cow/demo"),
+            Path::new("/home/you/.local/share"),
+            true,
+        );
+        assert_eq!(root, PathBuf::from("/mnt/cow/.slipfork-store"));
+    }
+
+    /// A read-only nested mount also falls back to the data directory.
+    #[test]
+    fn a_read_only_mount_falls_back_to_the_data_home() {
+        let root = LogStore::root_for(
+            &[PathBuf::from("/mnt/ro")],
+            Path::new("/mnt/ro/demo"),
+            Path::new("/var/lib/data"),
+            false,
+        );
+        assert_eq!(root, PathBuf::from("/var/lib/data/slipfork/store"));
     }
 }

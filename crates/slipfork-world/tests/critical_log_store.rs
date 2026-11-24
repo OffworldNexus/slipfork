@@ -225,6 +225,70 @@ fn retain_prunes_old_successes_but_never_deletes_a_failed_run() {
     );
 }
 
+/// A crash leaves `running` with no terminal line; retention must never sweep that evidence.
+#[test]
+fn retain_never_sweeps_a_crashed_running_run_or_a_failed_run() {
+    let lab = temp("log-store-retain-crash");
+    let store = store(&lab);
+
+    let successes: Vec<String> = (0..25)
+        .map(|step| seed(&store, "ready", 1_000 + step))
+        .collect();
+    let crashed = seed(&store, "running", 2_000);
+    let failed = seed(&store, "failed", 2_001);
+
+    assert_eq!(store.retain(2).expect("retain two successes"), 23);
+
+    for id in &successes[..23] {
+        assert!(!store.capture(id).exists(), "old success pruned: {id}");
+        assert!(
+            !store.capture(id).with_extension("idx").exists(),
+            "old success index pruned: {id}"
+        );
+    }
+    for id in [&successes[23], &successes[24]] {
+        assert!(store.capture(id).is_file(), "newest success kept: {id}");
+    }
+    for (label, id) in [("crashed", &crashed), ("failed", &failed)] {
+        assert!(
+            store.capture(id).is_file(),
+            "{label} capture survives retention"
+        );
+        assert!(
+            store.capture(id).with_extension("idx").is_file(),
+            "{label} index companion survives retention"
+        );
+    }
+
+    let mut states: Vec<(String, String)> = store
+        .records()
+        .expect("read the pruned catalog")
+        .records
+        .into_iter()
+        .map(|record| (record.run_id, record.state))
+        .collect();
+    states.sort();
+    assert_eq!(
+        states.len(),
+        4,
+        "two successes + crashed + failed: {states:?}"
+    );
+    assert_eq!(
+        states.iter().filter(|(_, state)| state == "ready").count(),
+        2
+    );
+    assert!(
+        states
+            .iter()
+            .any(|(id, state)| id == &crashed && state == "running")
+    );
+    assert!(
+        states
+            .iter()
+            .any(|(id, state)| id == &failed && state == "failed")
+    );
+}
+
 #[test]
 fn catalog_keeps_the_newest_line_for_a_duplicate_run_id() {
     let lab = temp("log-store-duplicate");

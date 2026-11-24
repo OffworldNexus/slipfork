@@ -384,18 +384,60 @@ fn wrap_row(indent: &str, text: &str, width: usize) -> Vec<String> {
     rows
 }
 
-/// The one crisp remedy sentence printed after the failed row.
+/// Drops any embedded `next:` remedy from a failure message, keeping only its evidence lines.
 ///
-/// A step with a capture names its exact replay command (`slipfork logs -r <id>`); anything else
-/// falls back to the step's own capture id. The sentence keeps a single leading `✗`, so a failure
-/// block never prints `✗ ✗`.
+/// The boot pane uses this when the catalog run id already supplies the block's one `next:` line,
+/// so a message can never contribute a second remedy.
 #[must_use]
-pub fn failure_sentence(
-    kind: &str,
-    name: &str,
-    command: Option<&str>,
-    run_id: Option<&str>,
-) -> String {
+pub fn without_remedy(message: &str) -> String {
+    message
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("next:"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The evidence rows and the crisp sentence for one `failed` event frame.
+///
+/// A step that opened a capture names its exact replay command as the block's single `next:` line,
+/// styled and wrapped by [`failure_details`]. A step that never opened one (a `RunTarget::open`
+/// failure) prints its own remedy there instead. The sentence itself is the bare verdict, so the
+/// block never prints two hints.
+#[must_use]
+pub fn failure_block(event: &Value, width: usize, styled: bool) -> (Vec<String>, String) {
+    let kind = event["kind"].as_str().unwrap_or("step");
+    let name = event["name"]
+        .as_str()
+        .or_else(|| event["label"].as_str())
+        .unwrap_or("step");
+    let run_id = event["run_id"].as_str();
+    let message = event["message"].as_str().unwrap_or_default();
+    let message = if run_id.is_some() {
+        without_remedy(message)
+    } else {
+        message.to_owned()
+    };
+    let derived;
+    let remedy = match run_id {
+        Some(run_id) => {
+            derived = format!("slipfork logs -r {run_id}");
+            Some(derived.as_str())
+        }
+        None => event["remedy"].as_str(),
+    };
+    let details = failure_details(&message, remedy, event["line"].as_u64(), width, styled);
+    (
+        details,
+        failure_sentence(kind, name, event["command"].as_str()),
+    )
+}
+
+/// The one crisp verdict sentence printed after the failed row.
+///
+/// The block's single `next:` line lives in [`failure_details`], so this sentence keeps a single
+/// leading `✗` and never repeats a remedy.
+#[must_use]
+pub fn failure_sentence(kind: &str, name: &str, command: Option<&str>) -> String {
     let verb = match kind {
         "image" => "build image",
         "hook" => "run hook",
@@ -408,11 +450,7 @@ pub fn failure_sentence(
         ("setup" | "hook", Some(command)) => format!(" '{command}' ({name})"),
         _ => format!(" {name}"),
     };
-    let hint = match run_id {
-        Some(run_id) => format!("slipfork logs -r {run_id}"),
-        None => format!("slipfork logs {name}"),
-    };
-    format!("✗ Failed to {verb}{subject} — check logs with: {hint}")
+    format!("✗ Failed to {verb}{subject}")
 }
 
 /// The world-ready verdict, with the primary URL always bold cyan and underlined.
@@ -505,7 +543,10 @@ pub fn elapsed_text(millis: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Node, completed_row, failed_row, failure_details, failure_sentence, plan_widths};
+    use super::{
+        Node, completed_row, failed_row, failure_block, failure_details, failure_sentence,
+        plan_widths, without_remedy,
+    };
 
     #[test]
     fn a_failure_block_prints_its_message_and_remedy_once_with_one_glyph_per_row() {
@@ -522,7 +563,7 @@ mod tests {
 
         let mut block = vec![failed_row("image", "frontend", false)];
         block.extend(details.iter().cloned());
-        block.push(failure_sentence("image", "frontend", None, None));
+        block.push(failure_sentence("image", "frontend", None));
         for row in &block {
             assert!(
                 row.matches('✗').count() <= 1,
@@ -533,9 +574,14 @@ mod tests {
         let block = block.join("\n");
         assert_eq!(block.matches(message).count(), 1, "{block}");
         assert_eq!(block.matches(remedy).count(), 1, "{block}");
+        assert_eq!(
+            block.matches("next:").count(),
+            1,
+            "a remedy-only failure blocks prints exactly one `next:`:\n{block}"
+        );
         assert!(
-            block.contains("check logs with: slipfork logs frontend"),
-            "{block}"
+            !block.contains("check logs with:"),
+            "the superseded hint copy is gone:\n{block}"
         );
     }
 
@@ -708,14 +754,36 @@ mod tests {
         let run_id = capture.run_id().to_owned();
         capture.finish("failed", 41).expect("finish the run");
 
-        let sentence = failure_sentence("setup", "backend", Some("uv sync"), Some(&run_id));
+        let event = serde_json::json!({
+            "kind": "setup",
+            "name": "backend",
+            "command": "uv sync",
+            "message": "uv sync failed\nnext: fix the command above",
+            "line": 0,
+            "run_id": run_id,
+        });
+        let (details, sentence) = failure_block(&event, 100, false);
+        assert_eq!(sentence, "✗ Failed to run setup 'uv sync' (backend)");
+        let block = [failed_row("setup", "backend", false), sentence.clone()]
+            .into_iter()
+            .chain(details.iter().cloned())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert_eq!(
-            sentence,
-            format!(
-                "✗ Failed to run setup 'uv sync' (backend) — check logs with: slipfork logs -r {run_id}"
-            )
+            block.matches("next:").count(),
+            1,
+            "one replay command, never a second hint:\n{block}"
+        );
+        assert!(
+            block.contains(&format!("next: slipfork logs -r {run_id}")),
+            "{block}"
         );
         assert_eq!(sentence.matches('✗').count(), 1, "{sentence}");
+        let styled = failure_block(&event, 100, true).0;
+        assert!(
+            styled.iter().any(|row| row.contains("\u{1b}[36mnext:")),
+            "the one remedy is styled through the details path: {styled:?}"
+        );
 
         let resolved = resolve_run(&store.world_logs(), &run_id).expect("resolve the printed id");
         let mut reader =
@@ -730,11 +798,28 @@ mod tests {
             "{lines:?}"
         );
 
-        let block = [failed_row("setup", "backend", false), sentence].join("\n");
+        // The block carries the run id's single remedy even when the step message embeds its own
+        // `next:`; `without_remedy` removes that second hint before rendering.
+        let evidence = failure_details(
+            &without_remedy("uv sync failed\nnext: fix the command above"),
+            None,
+            None,
+            100,
+            false,
+        );
+        assert_eq!(
+            evidence.iter().filter(|row| row.contains("next:")).count(),
+            0,
+            "the evidence rows never carry a hint here: {evidence:?}"
+        );
         assert!(!block.contains("✗ ✗"), "{block}");
         assert!(
             !block.contains('\u{1b}'),
             "NO_COLOR failure blocks stay pure"
+        );
+        assert_eq!(
+            without_remedy("ok line\nnext: dead command\nmore evidence"),
+            "ok line\nmore evidence"
         );
     }
 }
