@@ -190,6 +190,8 @@ flowchart LR
 | Supplementary groups | None. |
 | Subordinate uids / idmapped mounts | Not shipped: every build-store path is single-uid (invoking-uid) owned; a per-file ownership model is a later design. |
 
+Both build steps and runtime pods pin `process.umask` to `0o022` as OCI process state installed before `execve`, never as an environment entry, so containers create `0755` directories and `0644` files even when the daemon inherited a desktop `0002`; generated trees such as `.venv` and wheels are therefore not group-writable, which is why `uv sync` never trips its virtualenv writability check.
+
 ---
 
 ## 6. One Snapshot Graph: Plan, Reconcile, Lease & GC
