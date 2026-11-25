@@ -71,6 +71,7 @@ hmac.workspace = true
 hpke.workspace = true
 libc.workspace = true
 p256.workspace = true
+sea-orm.workspace = true
 sha2.workspace = true
 tar.workspace = true
 tempfile.workspace = true

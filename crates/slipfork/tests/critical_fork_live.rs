@@ -26,11 +26,13 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use hmac::{Hmac, Mac};
+use sea_orm::sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sea_orm::{ConnectionTrait, SqlxSqliteConnector};
 use sha2::{Digest, Sha256};
 use slipfork_ingress::IngressHandoff;
 use slipfork_world::{
-    BtrfsEngine, Dirtiness, ForkName, ResourceKind, STORE_DIR, StoreLayout, WorldEngine, WorldName,
-    is_subvolume_path,
+    BtrfsEngine, Dirtiness, ForkLedger, ForkName, ResourceKind, STORE_DIR, StoreLayout,
+    WorldEngine, WorldName, WorldState, is_subvolume_path,
 };
 
 const BTRFS_SUPER_MAGIC: u64 = 0x9123_683E;
@@ -1693,6 +1695,68 @@ impl ForkLab {
             .unwrap_or_else(|| panic!("{label} emitted no JSON"))
     }
 
+    /// Creates `name` in `project`'s repository so a nested `fork` has a branch to switch to.
+    fn branch(&self, project: &Path, name: &str) {
+        let status = Command::new(require_tool("git"))
+            .arg("-C")
+            .arg(project)
+            .args(["branch", "-f", name])
+            .status()
+            .expect("create the fork branch");
+        assert!(status.success(), "git branch {name} failed");
+    }
+
+    /// Stops the lab daemon so the ledger writer is released for a raw mutation.
+    fn shutdown_daemon(&self) {
+        if let Ok(mut stream) = UnixStream::connect(self.runtime.join("daemon.sock")) {
+            let _ = stream.write_all(b"{\"v\":1,\"id\":\"bye\",\"method\":\"shutdown\"}\n");
+            let mut reply = [0_u8; 256];
+            let _ = stream.read(&mut reply);
+        }
+    }
+
+    /// Deletes one root row with a raw single-connection handle, leaving its fork edge dangling.
+    fn delete_root_row(&self, world_name: &str) {
+        let db = self.root.join("state/slipfork/state.db");
+        assert!(db.is_file(), "the daemon ledger lives at {}", db.display());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        runtime.block_on(async {
+            let options = SqliteConnectOptions::new()
+                .filename(&db)
+                .foreign_keys(false)
+                .busy_timeout(Duration::from_secs(5));
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(options)
+                .await
+                .expect("open the daemon ledger directly");
+            let conn = SqlxSqliteConnector::from_sqlx_sqlite_pool(pool);
+            let deleted = conn
+                .execute_unprepared(&format!(
+                    "DELETE FROM worlds WHERE world_name='{world_name}'"
+                ))
+                .await
+                .expect("delete the root row");
+            assert_eq!(
+                deleted.rows_affected(),
+                1,
+                "delete exactly the `{world_name}` root row"
+            );
+            conn.close().await.expect("close the raw ledger handle");
+        });
+    }
+
+    /// The daemon's rows through the ordinary offline ledger reader.
+    fn ledger_rows(&self) -> slipfork_world::LedgerRows {
+        ForkLedger::open_reader(self.root.join("state/slipfork"))
+            .expect("open the daemon ledger read-only")
+            .list()
+            .expect("read the daemon ledger rows")
+    }
+
     fn node_state(&self, reply: &serde_json::Value, name: &str) -> Option<String> {
         reply["nodes"].as_array()?.iter().find_map(|node| {
             (node["kind"] == "image" && node["name"] == name)
@@ -1883,6 +1947,170 @@ fn fork_copies_a_plain_checkout_without_touching_it() {
     assert!(
         !fork_project.exists(),
         "teardown must remove the copied checkout directory"
+    );
+}
+
+#[test]
+fn up_in_a_fork_registers_its_ancestry_and_fork_from_a_fork_succeeds() {
+    let _guard = LAB_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let lab = ForkLab::plain();
+    let up = lab.run(&["up", "--json"]);
+    let _ = lab.json(&up, "up plaindemo");
+    let fork = lab.run(&["fork", "feat-plain", "--json"]);
+    let parent_fork = lab.json(&fork, "fork feat-plain");
+    assert_eq!(
+        parent_fork["world"], "feat-plain--plaindemo",
+        "{parent_fork}"
+    );
+    let fork_project = lab.project.join(".forks/feat-plain");
+    assert!(fork_project.is_dir(), "the fork checkout must exist");
+
+    // Idle `up` in a fork is registration-only: one row, zero restarts, no rebuild.
+    let idle = lab.run_in(&fork_project, &["up", "--json"]);
+    let idle_frames = lab.frames(&idle, "up in the fork");
+    assert_eq!(
+        idle_frames
+            .iter()
+            .filter(|frame| frame["event"] == "up-to-date")
+            .count(),
+        1,
+        "an Idle up emits exactly one up-to-date row: {idle_frames:?}"
+    );
+    assert!(
+        !idle_frames.iter().any(|frame| matches!(
+            frame["event"].as_str(),
+            Some("started" | "finished" | "step")
+        )),
+        "an Idle up emits no work rows: {idle_frames:?}"
+    );
+    let idle_reply = lab.json(&idle, "up in the fork");
+    assert_eq!(idle_reply["world"], "feat-plain--plaindemo", "{idle_reply}");
+
+    // Registration is not work: a vanished root row is repaired by the live daemon's Idle path.
+    lab.delete_root_row("plaindemo");
+    let repaired = lab.run_in(&fork_project, &["up", "--json"]);
+    let repaired_frames = lab.frames(&repaired, "up the fork after the root row vanished");
+    assert_eq!(
+        repaired_frames
+            .iter()
+            .filter(|frame| frame["event"] == "up-to-date")
+            .count(),
+        1,
+        "the Idle registration path emits exactly one up-to-date row: {repaired_frames:?}"
+    );
+    assert!(
+        !repaired_frames.iter().any(|frame| matches!(
+            frame["event"].as_str(),
+            Some("started" | "finished" | "step")
+        )),
+        "repairing the ancestry is not work and emits no step rows: {repaired_frames:?}"
+    );
+    let repaired_reply = lab.json(&repaired, "up the fork after the root row vanished");
+    assert_eq!(
+        repaired_reply["world"], "feat-plain--plaindemo",
+        "{repaired_reply}"
+    );
+    let rows = lab.ledger_rows();
+    let root = rows
+        .worlds
+        .iter()
+        .find(|row| row.world_name == "plaindemo")
+        .expect("the root is re-registered from disk");
+    assert_eq!(
+        root.checkout_path, lab.project,
+        "the root row names its on-disk checkout"
+    );
+    assert_eq!(
+        root.state,
+        WorldState::Stopped,
+        "an ancestor registered by a chain walk is stopped, never booted"
+    );
+    let fork_row = rows
+        .worlds
+        .iter()
+        .find(|row| row.world_name == "feat-plain--plaindemo")
+        .expect("the fork row survives");
+    let edge = rows
+        .forks
+        .iter()
+        .find(|edge| edge.world_id == fork_row.id)
+        .expect("the fork edge is repaired");
+    assert_eq!(
+        edge.root_id, root.id,
+        "the dangling edge points at the new root"
+    );
+    assert_eq!(edge.parent_id, root.id);
+    assert_eq!(edge.name, "feat-plain");
+
+    lab.branch(&fork_project, "feat-salut");
+    let salut = lab.run_in(&fork_project, &["fork", "feat-salut", "--json"]);
+    let salut_stderr = String::from_utf8_lossy(&salut.stderr);
+    assert!(salut.status.success(), "fork feat-salut: {salut_stderr}");
+    let salut_reply = lab.json(&salut, "fork feat-salut");
+    assert_eq!(
+        salut_reply["world"], "feat-salut--plaindemo",
+        "{salut_reply}"
+    );
+    let salut_project = lab.project.join(".forks/feat-salut");
+    assert!(salut_project.is_dir(), "the fork boots from its checkout");
+    // Live-gate the flattening regression: the child edge keeps its real parent and family root.
+    let rows = lab.ledger_rows();
+    let plaindemo = rows
+        .worlds
+        .iter()
+        .find(|row| row.world_name == "plaindemo")
+        .expect("the root row");
+    let feat_plain = rows
+        .worlds
+        .iter()
+        .find(|row| row.world_name == "feat-plain--plaindemo")
+        .expect("the parent fork row");
+    let salut_row = rows
+        .worlds
+        .iter()
+        .find(|row| row.world_name == "feat-salut--plaindemo")
+        .expect("the child fork row");
+    let salut_edge = rows
+        .forks
+        .iter()
+        .find(|edge| edge.world_id == salut_row.id)
+        .expect("the child fork edge");
+    assert_eq!(
+        salut_edge.root_id, plaindemo.id,
+        "a flat fork keeps its family root"
+    );
+    assert_eq!(
+        salut_edge.parent_id, feat_plain.id,
+        "a fork of a fork keeps its real parent instead of flattening to the root"
+    );
+    let drop = lab.run(&["drop", "feat-salut", "-f", "--json"]);
+    let _ = lab.json(&drop, "drop feat-salut");
+
+    let down = lab.run_in(&fork_project, &["down"]);
+    assert!(
+        down.status.success(),
+        "down the fork: {}",
+        String::from_utf8_lossy(&down.stderr)
+    );
+    let drop = lab.run(&["drop", "feat-plain", "-f", "--json"]);
+    assert!(
+        drop.status.success(),
+        "drop feat-plain: {}",
+        String::from_utf8_lossy(&drop.stderr)
+    );
+    assert!(!fork_project.exists(), "no fork checkout survives its drop");
+    assert!(
+        !salut_project.exists(),
+        "no child fork checkout survives either"
+    );
+    lab.shutdown_daemon();
+    assert!(
+        wait_until(
+            || daemons_for(&lab.runtime).is_empty(),
+            Duration::from_secs(10)
+        ),
+        "no daemon survives the journey: {:?}",
+        daemons_for(&lab.runtime)
     );
 }
 

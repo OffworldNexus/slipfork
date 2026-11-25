@@ -12,7 +12,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use serde_json::Value;
-use slipfork_world::{LedgerError, RootRequest, RuntimePods, WorldName, WorldRow};
+use slipfork_world::{
+    ChainEntry, ForkName, LedgerError, RuntimePods, StoreLayout, WorldName, WorldRow,
+    checkout_chain,
+};
 
 use super::core::{Core, World, ledger_failure};
 use crate::daemon::Failure;
@@ -58,6 +61,18 @@ pub(crate) fn project_path(params: &Value) -> Result<PathBuf, Failure> {
 /// declared services already wrote their bundles.
 fn is_idle(no_cache: bool, head_matches: bool, bundled: bool) -> bool {
     !no_cache && head_matches && bundled
+}
+
+/// The fail-closed notice for a fork whose ancestor checkout is genuinely missing.
+fn missing_checkout(role: &str, world: &WorldName, path: &Path) -> Failure {
+    Failure::new(
+        "no-checkout",
+        format!(
+            "the fork's {role} `{world}` has no checkout at `{}`\nnext: restore `{}`, run `slipfork up` there, then retry `slipfork fork`",
+            path.display(),
+            path.display()
+        ),
+    )
 }
 
 /// The supervisor pid of a row, or `0` when it has never been published.
@@ -158,7 +173,10 @@ impl Core {
         world_id: Option<i64>,
     ) -> Result<BootSession, Failure> {
         let project = project_path(params)?;
+        let requested = params.get("world").and_then(Value::as_str);
         let key = key_of(&project);
+        // Registration is not work: the Idle path repairs the ancestry before any decision.
+        let chain_row = self.ensure_chain(&project, requested)?;
         match self.worlds.get(&key) {
             Some(World::Booting { row, .. }) => {
                 return Err(Failure::new(
@@ -185,38 +203,116 @@ impl Core {
             Some(id) => self.row_by_id(id).ok_or_else(|| {
                 Failure::new("no-world", "the world row disappeared from the ledger")
             })?,
-            None => match self.row_for_project(&project) {
-                Some(row) => row,
-                None => self.register_root(&project, params)?,
-            },
+            None => chain_row,
         };
         self.spawn(project, key, params, planned, row)
     }
 
-    /// Registers this checkout's root row, mapping a taken world name to its one remedy.
+    /// Registers this checkout's world and every ancestor implied by its `.forks` path hops.
     ///
-    /// The ledger is the only identity owner: a fresh registration passes `registered == None`
-    /// down to [`crate::world::WorldIdentities`], which silently drops a stale
-    /// `.slipfork/world.json` instead of adopting its world.
-    fn register_root(&self, project: &Path, params: &Value) -> Result<WorldRow, Failure> {
-        let world = crate::world::WorldIdentities::new(Some(&self.ledger))
-            .name(project, params.get("world").and_then(Value::as_str))
-            .map_err(|message| Failure::new("world", message))?;
-        let request = RootRequest {
-            name: world,
-            checkout_path: project.to_path_buf(),
-            store_root: self.host.store_root_for(project),
-            now_ms: now_ms(),
-        };
-        self.ledger.register_root(request).map_err(|error| match error {
-            LedgerError::NameTaken { world_name } => Failure::new(
-                "world-name-taken",
-                format!(
-                    "world `{world_name}` is already registered in this store\nnext: run `slipfork up --world <other-name>`"
+    /// This is the one registration owner: every `up` (including Idle), `restart`, and `fork`
+    /// runs it, so a fork checkout booted without its ancestors repairs the chain from disk
+    /// instead of demanding a row nobody wrote.
+    pub(crate) fn ensure_chain(
+        &self,
+        project: &Path,
+        requested: Option<&str>,
+    ) -> Result<WorldRow, Failure> {
+        let chain = self.chain_entries(project, requested)?;
+        self.ledger
+            .ensure_chain(self.host.store_root_for(project), chain, now_ms())
+            .map_err(|error| match error {
+                LedgerError::NameTaken { world_name } => Failure::new(
+                    "world-name-taken",
+                    format!(
+                        "world `{world_name}` is already registered in this store\nnext: run `slipfork up --world <other-name>`"
+                    ),
                 ),
-            ),
-            other => ledger_failure(other),
-        })
+                other => ledger_failure(other),
+            })
+    }
+
+    /// The root-to-project checkout chain implied by `project`'s `.forks/<name>` components.
+    ///
+    /// The hop walk itself lives in the layout owner; this method only maps names onto it. Names
+    /// come from an existing ledger row at the exact checkout, else from the parent world
+    /// (`<fork>--<root>`); `requested` renames only a still-unregistered root project. Every
+    /// ancestor must be a real directory: a fork never invents a root that has no checkout.
+    fn chain_entries(
+        &self,
+        project: &Path,
+        requested: Option<&str>,
+    ) -> Result<Vec<ChainEntry>, Failure> {
+        let chain = checkout_chain(project);
+        let checkouts: Vec<PathBuf> = chain.iter().map(|(path, _)| path.clone()).collect();
+        let hops: Vec<Option<ForkName>> = chain.into_iter().map(|(_, fork)| fork).collect();
+
+        let rows = self.ledger.list().map_err(ledger_failure)?;
+        let mut names: Vec<WorldName> = Vec::with_capacity(checkouts.len());
+        for (index, checkout) in checkouts.iter().enumerate() {
+            let existing = rows
+                .worlds
+                .iter()
+                .find(|row| row.checkout_path == *checkout);
+            let name = match existing {
+                Some(row) => WorldName::parse(&row.world_name).map_err(|error| {
+                    let message = error.to_string();
+                    Failure::new(
+                        "invalid-world",
+                        message.lines().next().unwrap_or_default().to_owned(),
+                    )
+                })?,
+                None if index == 0 => {
+                    let requested = if checkouts.len() == 1 {
+                        requested
+                    } else {
+                        None
+                    };
+                    crate::world::WorldIdentities::new(Some(&self.ledger))
+                        .name(checkout, requested)
+                        .map_err(|message| Failure::new("world", message))?
+                }
+                None => {
+                    let parent = names.get(index - 1).ok_or_else(|| {
+                        Failure::new(
+                            "invalid-fork",
+                            "a fork checkout has no parent world ahead of it",
+                        )
+                    })?;
+                    let fork = hops[index].as_ref().ok_or_else(|| {
+                        Failure::new(
+                            "invalid-fork",
+                            "a nested checkout has no `.forks` hop ahead of it",
+                        )
+                    })?;
+                    StoreLayout::fork_world_name(parent, fork)
+                }
+            };
+            names.push(name);
+        }
+
+        for index in 0..checkouts.len().saturating_sub(1) {
+            // A live checkout's ancestors structurally exist; this fires only on a concurrent
+            // checkout removal between path derivation and registration.
+            if !checkouts[index].is_dir() {
+                let role = if index == 0 {
+                    "root world"
+                } else {
+                    "parent world"
+                };
+                return Err(missing_checkout(role, &names[index], &checkouts[index]));
+            }
+        }
+
+        Ok(checkouts
+            .into_iter()
+            .enumerate()
+            .map(|(index, checkout_path)| ChainEntry {
+                world_name: names[index].clone(),
+                checkout_path,
+                fork: hops[index].clone(),
+            })
+            .collect())
     }
 
     fn spawn(
@@ -299,7 +395,11 @@ impl Core {
 
 #[cfg(test)]
 mod tests {
-    use super::is_idle;
+    use std::path::Path;
+
+    use slipfork_world::WorldName;
+
+    use super::{is_idle, missing_checkout};
 
     /// A matching head is Idle only with a warm cache and every declared service bundled.
     #[test]
@@ -311,5 +411,46 @@ mod tests {
         );
         assert!(!is_idle(false, false, true), "a changed head reconciles");
         assert!(!is_idle(false, true, false), "a missing bundle reconciles");
+    }
+
+    /// The fail-closed ancestor notice names the role, world, and path with exactly one remedy.
+    #[test]
+    fn missing_checkout_names_the_world_and_its_one_remedy() {
+        let world = WorldName::parse("test1").expect("valid world");
+        let failure = missing_checkout("root world", &world, Path::new("/abs/test1"));
+        assert_eq!(failure.code, "no-checkout");
+        assert!(
+            failure
+                .message
+                .contains("the fork's root world `test1` has no checkout at `/abs/test1`"),
+            "{}",
+            failure.message
+        );
+        assert!(
+            failure.message.contains(
+                "next: restore `/abs/test1`, run `slipfork up` there, then retry `slipfork fork`"
+            ),
+            "{}",
+            failure.message
+        );
+        assert_eq!(
+            failure.message.matches("next:").count(),
+            1,
+            "{}",
+            failure.message
+        );
+
+        let parent = missing_checkout("parent world", &world, Path::new("/abs/test1/.forks/feat"));
+        assert!(
+            parent.message.contains("the fork's parent world `test1`"),
+            "{}",
+            parent.message
+        );
+        assert_eq!(
+            parent.message.matches("next:").count(),
+            1,
+            "{}",
+            parent.message
+        );
     }
 }

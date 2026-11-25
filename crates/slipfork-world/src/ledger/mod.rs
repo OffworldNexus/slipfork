@@ -63,6 +63,17 @@ pub struct ForkRequest {
     pub now_ms: i64,
 }
 
+/// One ancestor checkout in a fork's registration chain, outermost first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainEntry {
+    /// `<basename>` for the root, `<fork>--<root>` for a fork.
+    pub world_name: WorldName,
+    /// Absolute checkout path.
+    pub checkout_path: PathBuf,
+    /// The `.forks/<name>` hop this checkout represents; `None` for the family root.
+    pub fork: Option<ForkName>,
+}
+
 /// The `live` fields `publish_live` records once the supervisor is ready.
 #[derive(Debug, Clone)]
 pub struct LiveFork {
@@ -81,6 +92,47 @@ pub struct ForkLedger {
 }
 
 impl ForkLedger {
+    /// Registers a root-to-project chain in one transaction, repairing missing rows and edges.
+    ///
+    /// The ledger never inspects the filesystem: the caller proves every ancestor checkout exists.
+    /// An already-current chain performs zero writes and returns the innermost row.
+    ///
+    /// # Errors
+    ///
+    /// [`LedgerError::NameTaken`] when a missing world's `UNIQUE(store_root, world_name)` is held.
+    pub fn ensure_chain(
+        &self,
+        store_root: PathBuf,
+        chain: Vec<ChainEntry>,
+        now_ms: i64,
+    ) -> LedgerResult<WorldRow> {
+        if chain.is_empty() {
+            return Err(LedgerError::Invalid {
+                message:
+                    "a registration chain needs at least its root world\nnext: report this as a bug"
+                        .to_owned(),
+            });
+        }
+        if chain[0].fork.is_some() {
+            return Err(LedgerError::Invalid {
+                message: "the first registration chain entry is the root world, never a fork\nnext: report this as a bug"
+                    .to_owned(),
+            });
+        }
+        for entry in &chain {
+            if entry.world_name.as_str().len() > 63 {
+                return Err(LedgerError::NameTooLong {
+                    kind: "world name",
+                    name: entry.world_name.as_str().to_owned(),
+                    limit: 63,
+                });
+            }
+        }
+        self.db
+            .ensure_chain(store_root, &chain, now_ms)
+            .map(world_row)
+    }
+
     /// Opens the single writer on the daemon's already-open lock descriptor and migrates once.
     ///
     /// # Errors
@@ -122,6 +174,14 @@ impl ForkLedger {
     ///
     /// [`LedgerError::NameTaken`] when `UNIQUE(store_root, world_name)` is already held.
     pub fn register_root(&self, request: RootRequest) -> LedgerResult<WorldRow> {
+        if crate::layout::fork_checkout(&request.checkout_path).is_some() {
+            return Err(LedgerError::Invalid {
+                message: format!(
+                    "`{}` is a fork checkout, not a root world\nnext: run `slipfork up` in that checkout so its ancestry is registered",
+                    request.checkout_path.display()
+                ),
+            });
+        }
         if request.name.as_str().len() > 63 {
             return Err(LedgerError::NameTooLong {
                 kind: "world name",

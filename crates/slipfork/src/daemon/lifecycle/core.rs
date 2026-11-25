@@ -1,6 +1,6 @@
 //! The daemon's world map plus the verbs that only mutate it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Child;
@@ -113,15 +113,6 @@ impl Core {
             .worlds
             .into_iter()
             .find(|row| row.checkout_path == project)
-    }
-
-    /// The root row whose checkout is exactly `project`; a fork row is never a root.
-    pub(crate) fn root_row(&self, project: &Path) -> Option<WorldRow> {
-        let rows = self.ledger.list().ok()?;
-        let forks: BTreeSet<i64> = rows.forks.iter().map(|fork| fork.world_id).collect();
-        rows.worlds
-            .into_iter()
-            .find(|row| row.checkout_path == project && !forks.contains(&row.id))
     }
 
     pub(crate) fn row_by_id(&self, id: i64) -> Option<WorldRow> {

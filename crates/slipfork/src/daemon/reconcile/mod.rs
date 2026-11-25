@@ -351,6 +351,8 @@ impl super::Daemon {
         let requested = params.get("world").and_then(Value::as_str);
         let world = {
             let core = self.core()?;
+            // Registration precedes naming so the Idle head and `origin_world` see repaired ancestry.
+            core.ensure_chain(&project, requested)?;
             crate::world::WorldIdentities::new(Some(&core.ledger)).name(&project, requested)
         }
         .map_err(|message| Failure::new("world", message))?;

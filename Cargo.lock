@@ -2872,6 +2872,7 @@ dependencies = [
  "jiff",
  "libc",
  "p256",
+ "sea-orm",
  "serde",
  "serde_json",
  "sha2 0.10.9",

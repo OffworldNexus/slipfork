@@ -43,6 +43,8 @@ impl Core {
         preflight_ms: u64,
         emit: &mut dyn FnMut(Value),
     ) -> Result<(BootSession, PreparedFork), Failure> {
+        // Registration is not work: repair the parent chain before the first snapshot or row.
+        self.ensure_chain(&target.project, None)?;
         if !self.worlds.contains_key(&key_of(&target.project)) {
             return Err(Failure::new(
                 "no-world",
@@ -123,28 +125,36 @@ impl Core {
             "project": prepared.project.clone(),
             "world": prepared.world.clone(),
         });
-        let Some(root_row) = self.root_row(&prepared.parent) else {
-            self.discard_fork(&prepared);
-            return Err(Failure::new(
-                "no-world",
-                "the fork's root world has no ledger row\nnext: run `slipfork up` in the root checkout, then retry `slipfork fork`",
-            ));
+        // Resolve, never demand: a missing ancestor checkout or row is registered from disk here;
+        // a genuinely absent checkout fails closed with the world and path named.
+        let parent_row = match self.ensure_chain(&prepared.parent, None) {
+            Ok(row) => row,
+            Err(failure) => {
+                self.discard_fork(&prepared);
+                return Err(failure);
+            }
         };
         // The immediate parent edge comes from the snapshot's own `ForkPaths.parent`; a fork of a
         // fork keeps its real ancestry instead of flattening every child onto the root.
-        let parent_id = self
-            .ledger
-            .list()
-            .ok()
-            .and_then(|rows| {
-                rows.worlds
-                    .into_iter()
-                    .find(|row| row.world_name == prepared.parent_world.as_str())
-                    .map(|row| row.id)
-            })
-            .unwrap_or(root_row.id);
+        let rows = match self.ledger.list() {
+            Ok(rows) => rows,
+            Err(error) => {
+                self.discard_fork(&prepared);
+                return Err(crate::daemon::lifecycle::core::ledger_failure(error));
+            }
+        };
+        let root_id = crate::ps::ancestry(&rows, parent_row.id)
+            .last()
+            .copied()
+            .unwrap_or(parent_row.id);
+        let parent_id = rows
+            .worlds
+            .iter()
+            .find(|row| row.world_name == prepared.parent_world.as_str())
+            .map(|row| row.id)
+            .unwrap_or(parent_row.id);
         let fork_row = match self.ledger.begin_fork(slipfork_world::ForkRequest {
-            root_id: root_row.id,
+            root_id,
             parent_id,
             name: prepared.fork_name.clone(),
             runtime_dir: self.host.runtime_dir.clone(),

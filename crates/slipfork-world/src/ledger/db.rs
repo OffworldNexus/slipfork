@@ -25,6 +25,7 @@ use sea_orm::{
 use sea_orm_migration::prelude::MigratorTrait;
 use sea_orm_migration::{SchemaManager, migrator::MigrationStatus, seaql_migrations};
 
+use super::ChainEntry;
 use super::entity::{forks, worlds};
 use super::error::{LedgerError, LedgerResult};
 use super::migrations::Migrator;
@@ -392,6 +393,126 @@ impl StateDb {
                 .map_err(LedgerError::db)?;
             tx.commit().await.map_err(LedgerError::db)?;
             Ok(())
+        })
+    }
+
+    /// Inserts every missing world outermost-first, upserts each fork edge, and returns the
+    /// innermost row. A fully current chain opens a transaction but performs zero writes.
+    pub(crate) fn ensure_chain(
+        &self,
+        store_root: PathBuf,
+        chain: &[ChainEntry],
+        now_ms: i64,
+    ) -> LedgerResult<worlds::Model> {
+        let conn = self.writer_conn()?;
+        self.run(async move {
+            let tx = conn.begin().await.map_err(LedgerError::db)?;
+            let store_root = store_root.to_string_lossy().into_owned();
+            let mut ids: Vec<i64> = Vec::with_capacity(chain.len());
+            let mut current = None;
+            for (index, entry) in chain.iter().enumerate() {
+                let checkout = entry.checkout_path.to_string_lossy().into_owned();
+                let model = match worlds::Entity::find()
+                    .filter(worlds::Column::CheckoutPath.eq(checkout.clone()))
+                    .one(&tx)
+                    .await
+                    .map_err(LedgerError::db)?
+                {
+                    Some(model) => model,
+                    None => worlds::ActiveModel {
+                        id: ActiveValue::NotSet,
+                        checkout_path: ActiveValue::Set(checkout),
+                        world_name: ActiveValue::Set(entry.world_name.as_str().to_owned()),
+                        store_root: ActiveValue::Set(store_root.clone()),
+                        state: ActiveValue::Set(super::WorldState::Stopped),
+                        supervisor_pid: ActiveValue::NotSet,
+                        pods_dir: ActiveValue::NotSet,
+                        started_at_ms: ActiveValue::NotSet,
+                        problem: ActiveValue::NotSet,
+                        updated_at_ms: ActiveValue::Set(now_ms),
+                    }
+                    .insert(&tx)
+                    .await
+                    .map_err(|error| match unique_or_db(error) {
+                        LedgerError::Duplicate => LedgerError::NameTaken {
+                            world_name: entry.world_name.as_str().to_owned(),
+                        },
+                        other => other,
+                    })?,
+                };
+                if let Some(fork) = &entry.fork {
+                    let Some(root_id) = ids.first().copied() else {
+                        return Err(LedgerError::Invalid {
+                            message: "a fork chain entry has no root world ahead of it\nnext: report this as a bug"
+                                .to_owned(),
+                        });
+                    };
+                    let Some(parent_id) = index.checked_sub(1).and_then(|prev| ids.get(prev).copied())
+                    else {
+                        return Err(LedgerError::Invalid {
+                            message: "a fork chain entry has no parent world ahead of it\nnext: report this as a bug"
+                                .to_owned(),
+                        });
+                    };
+                    let name = fork.as_str().to_owned();
+                    match forks::Entity::find_by_id(model.id)
+                        .one(&tx)
+                        .await
+                        .map_err(LedgerError::db)?
+                    {
+                        Some(row) => {
+                            let root_present = worlds::Entity::find_by_id(row.root_id)
+                                .one(&tx)
+                                .await
+                                .map_err(LedgerError::db)?
+                                .is_some();
+                            let parent_present = worlds::Entity::find_by_id(row.parent_id)
+                                .one(&tx)
+                                .await
+                                .map_err(LedgerError::db)?
+                                .is_some();
+                            // A live edge is never re-parented: a flat `<fork>--<root>` layout can
+                            // only re-derive [root, child], so rewriting the topology would flatten
+                            // real ancestry and lease origin. Only a dangling reference is healed.
+                            let root_id = if root_present { row.root_id } else { root_id };
+                            let parent_id = if parent_present {
+                                row.parent_id
+                            } else {
+                                parent_id
+                            };
+                            if root_id != row.root_id
+                                || parent_id != row.parent_id
+                                || row.name != name
+                            {
+                                let mut active: forks::ActiveModel = row.into();
+                                active.root_id = ActiveValue::Set(root_id);
+                                active.parent_id = ActiveValue::Set(parent_id);
+                                active.name = ActiveValue::Set(name);
+                                active.update(&tx).await.map_err(unique_or_db)?;
+                            }
+                        }
+                        None => {
+                            forks::ActiveModel {
+                                world_id: ActiveValue::Set(model.id),
+                                root_id: ActiveValue::Set(root_id),
+                                parent_id: ActiveValue::Set(parent_id),
+                                name: ActiveValue::Set(name),
+                                branch: ActiveValue::Set(String::new()),
+                                created_at_ms: ActiveValue::Set(now_ms),
+                            }
+                            .insert(&tx)
+                            .await
+                            .map_err(unique_or_db)?;
+                        }
+                    }
+                }
+                ids.push(model.id);
+                current = Some(model);
+            }
+            tx.commit().await.map_err(LedgerError::db)?;
+            current.ok_or_else(|| LedgerError::Invalid {
+                message: "a registration chain has no entries\nnext: report this as a bug".to_owned(),
+            })
         })
     }
 

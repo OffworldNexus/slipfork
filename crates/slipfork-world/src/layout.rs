@@ -10,8 +10,8 @@ mod names;
 // The family type is returned by `fork_family` and inferred at every call site.
 #[allow(unused_imports)]
 pub use family::{
-    ForkDir, ForkFamily, ProjectScope, fork_checkout, fork_checkouts, fork_family, fork_under,
-    fork_world_id, project_root,
+    ForkDir, ForkFamily, ProjectScope, checkout_chain, fork_checkout, fork_checkouts, fork_family,
+    fork_under, fork_world_id, project_root,
 };
 pub(crate) use names::validate_name;
 pub use names::{ForkName, WorldName};

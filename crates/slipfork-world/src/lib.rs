@@ -81,13 +81,13 @@ pub use fdpass::{PAYLOAD_CAP, recv_fd, send_fd};
 pub use identity::{Account, Identity, IdentityError};
 pub use layout::{
     FORKS_DIR, ForkDir, ForkName, PODS_DIR, ProjectScope, STORE_DIR, StoreLayout, WorldName,
-    fork_checkout, fork_checkouts, fork_under, fork_world_id, project_root,
+    checkout_chain, fork_checkout, fork_checkouts, fork_under, fork_world_id, project_root,
 };
 pub use ledger::{
-    Access, ConvergeAction, ConvergeInput, ForkLedger, ForkRequest, ForkRow, LeaseState,
-    LedgerError, LedgerResult, LedgerRows, LiveFork, OrphanWorld, Resolved, RootRequest, StateDb,
-    StatePaths, UnregisteredFork, UntrackedKind, WorldFacts, WorldRow, WorldState, plan_converge,
-    resolve_target,
+    Access, ChainEntry, ConvergeAction, ConvergeInput, ForkLedger, ForkRequest, ForkRow,
+    LeaseState, LedgerError, LedgerResult, LedgerRows, LiveFork, OrphanWorld, Resolved,
+    RootRequest, StateDb, StatePaths, UnregisteredFork, UntrackedKind, WorldFacts, WorldRow,
+    WorldState, plan_converge, resolve_target,
 };
 pub use log_store::{LogStore, RETAIN_RUNS};
 pub use namespaces::{NAMESPACE_KINDS, NamespaceIdentity, NamespaceTable};

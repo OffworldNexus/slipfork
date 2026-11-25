@@ -51,6 +51,37 @@ pub fn fork_checkout(project: &Path) -> Option<(PathBuf, super::ForkName)> {
     }
 }
 
+/// The checkout chain from the family root down to `project`, root first.
+///
+/// A plain project yields exactly `[(project, None)]`; a `<root>/.forks/<a>[/.forks/<b>…]`
+/// checkout yields one entry per `.forks` hop, each paired with that hop's name (`None` for the
+/// root), and the final entry is always `project` itself. This is the one ancestry walk every
+/// caller shares: no caller re-inspects `.forks` path components.
+#[must_use]
+pub fn checkout_chain(project: &Path) -> Vec<(PathBuf, Option<super::ForkName>)> {
+    let mut hops: Vec<(PathBuf, super::ForkName)> = Vec::new();
+    let mut current = project.to_path_buf();
+    while let Some((parent, fork)) = fork_hop(&current) {
+        hops.push((current.clone(), fork));
+        current = parent;
+    }
+    hops.reverse();
+    let mut chain = Vec::with_capacity(hops.len() + 1);
+    chain.push((current, None));
+    chain.extend(hops.into_iter().map(|(path, fork)| (path, Some(fork))));
+    chain
+}
+
+/// Splits one `<parent>/.forks/<name>` checkout into its parent and fork name.
+fn fork_hop(path: &Path) -> Option<(PathBuf, super::ForkName)> {
+    let forks_dir = path.parent()?;
+    if forks_dir.file_name()? != OsStr::new(FORKS_DIR) {
+        return None;
+    }
+    let fork = super::ForkName::parse(path.file_name()?.to_str()?).ok()?;
+    Some((forks_dir.parent()?.to_path_buf(), fork))
+}
+
 /// The nearest ancestor of `cwd` holding a `Forkfile` or `.slipfork` record.
 ///
 /// A `<parent>/.forks/<fork>` checkout is never itself a root: resolution climbs to the project
@@ -287,7 +318,7 @@ mod tests {
     use crate::error::Error;
     use crate::layout::{ForkName, StoreLayout, WorldName};
 
-    use super::{fork_checkout, fork_family, fork_under, project_root};
+    use super::{checkout_chain, fork_checkout, fork_family, fork_under, project_root};
 
     /// Real disk scratch space; `/tmp` is RAM-backed and must never hold a family tree.
     fn scratch(prefix: &str) -> TempDir {
@@ -391,6 +422,35 @@ mod tests {
                 Err(Error::ForeignFamily { .. })
             ),
             "a foreign world id fails closed with the dedicated error"
+        );
+    }
+
+    #[test]
+    fn checkout_chain_walks_flat_and_legacy_hops_root_first() {
+        let tmp = scratch("slipfork-layout-chain");
+        let root = root_project(tmp.path(), "a");
+        let flat = root.join(".forks/f1");
+        let nested = flat.join(".forks/f2");
+        fs::create_dir_all(&nested).expect("create the legacy nested tree");
+
+        assert_eq!(checkout_chain(&root), vec![(root.clone(), None)]);
+        assert_eq!(
+            checkout_chain(&flat),
+            vec![(root.clone(), None), (flat.clone(), Some(name("f1")))]
+        );
+        assert_eq!(
+            checkout_chain(&nested),
+            vec![
+                (root.clone(), None),
+                (flat.clone(), Some(name("f1"))),
+                (nested.clone(), Some(name("f2"))),
+            ],
+            "a legacy nested tree keeps every hop, root first"
+        );
+        assert_eq!(
+            checkout_chain(&nested.join("src")),
+            vec![(nested.join("src"), None)],
+            "a directory below a checkout is itself a plain project"
         );
     }
 

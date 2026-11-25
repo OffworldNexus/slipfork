@@ -12,8 +12,10 @@ use sea_orm::{
 };
 use sea_orm_migration::seaql_migrations;
 use slipfork_world::ledger::entity::worlds;
-use slipfork_world::ledger::{ForkLedger, ForkRequest, ForkRow, LiveFork, RootRequest, StatePaths};
-use slipfork_world::{ForkName, LedgerError, ProjectScope, WorldName, WorldState};
+use slipfork_world::ledger::{
+    ChainEntry, ForkLedger, ForkRequest, ForkRow, LiveFork, RootRequest, StatePaths,
+};
+use slipfork_world::{ForkName, LedgerError, ProjectScope, StoreLayout, WorldName, WorldState};
 use tempfile::TempDir;
 
 const NOW: i64 = 1_700_000_000_000;
@@ -476,6 +478,209 @@ fn lifecycle_transitions_and_validation() {
         ledger.mark_stopping(9999, NOW),
         Err(LedgerError::UnknownRow { id: 9999 })
     ));
+}
+
+#[test]
+fn ensure_chain_registers_root_and_fork_then_stays_a_pure_read() {
+    let dir = lab();
+    let state = paths(dir.path());
+    let ledger = writer(&state);
+    let root_path = dir.path().join("proj/test1");
+    let fork = ForkName::parse("feat").expect("valid fork name");
+    let fork_path = StoreLayout::project_fork(&root_path, &fork);
+    let chain = vec![
+        ChainEntry {
+            world_name: world("test1"),
+            checkout_path: root_path,
+            fork: None,
+        },
+        ChainEntry {
+            world_name: world("feat--test1"),
+            checkout_path: fork_path.clone(),
+            fork: Some(fork),
+        },
+    ];
+
+    let registered = ledger
+        .ensure_chain(PathBuf::from(STORE), chain.clone(), NOW)
+        .expect("register the chain");
+    assert_eq!(registered.world_name, "feat--test1");
+    assert_eq!(registered.checkout_path, fork_path);
+    assert_eq!(registered.state, WorldState::Stopped);
+    let rows = ledger.list().expect("rows");
+    assert_eq!(rows.worlds.len(), 2, "{rows:?}");
+    let root = rows
+        .worlds
+        .iter()
+        .find(|row| row.world_name == "test1")
+        .expect("the root is inserted");
+    let edge = rows
+        .forks
+        .iter()
+        .find(|edge| edge.world_id == registered.id)
+        .expect("the fork edge is inserted");
+    assert_eq!(edge.root_id, root.id);
+    assert_eq!(edge.parent_id, root.id);
+    assert_eq!(edge.name, "feat");
+    assert_eq!(edge.branch, "", "a chain walk never invents a branch");
+
+    let again = ledger
+        .ensure_chain(PathBuf::from(STORE), chain, NOW + 1)
+        .expect("an already-current chain");
+    assert_eq!(again, registered, "the innermost row is unchanged");
+    let reread = ledger.list().expect("rows");
+    assert_eq!(
+        reread.worlds, rows.worlds,
+        "an already-current chain writes no worlds row"
+    );
+    assert_eq!(
+        reread.forks, rows.forks,
+        "an already-current chain writes no forks row"
+    );
+}
+
+#[test]
+fn ensure_chain_repairs_a_root_ish_fork_row_from_disk() {
+    let dir = lab();
+    let state = paths(dir.path());
+    let fork = ForkName::parse("feat").expect("valid fork name");
+    let root_path = dir.path().join("proj/test1");
+    let fork_path = StoreLayout::project_fork(&root_path, &fork);
+    drop(writer(&state));
+    // The bug: an `up` in the fork registered the fork checkout as a root, without its ancestor.
+    // `register_root` now refuses a `.forks` checkout, so the historical row is seeded raw.
+    let rt = runtime();
+    let orphan_id = rt.block_on(async {
+        let conn = open_dev(&state).await;
+        conn.execute_unprepared(&format!(
+            "INSERT INTO worlds (checkout_path, world_name, store_root, state, updated_at_ms) VALUES ('{}', 'feat--test1', '{STORE}', 'stopped', {NOW})",
+            fork_path.display()
+        ))
+        .await
+        .expect("root-ish fork row");
+        let id = worlds::Entity::find()
+            .filter(worlds::Column::WorldName.eq("feat--test1"))
+            .one(&conn)
+            .await
+            .expect("query")
+            .expect("row")
+            .id;
+        conn.close().await.expect("close");
+        id
+    });
+    let ledger = writer(&state);
+    let chain = vec![
+        ChainEntry {
+            world_name: world("test1"),
+            checkout_path: root_path,
+            fork: None,
+        },
+        ChainEntry {
+            world_name: world("feat--test1"),
+            checkout_path: fork_path,
+            fork: Some(fork),
+        },
+    ];
+
+    let repaired = ledger
+        .ensure_chain(PathBuf::from(STORE), chain, NOW + 1)
+        .expect("repair the chain");
+    assert_eq!(repaired.id, orphan_id, "the on-disk checkout keeps its row");
+    let rows = ledger.list().expect("rows");
+    let root = rows
+        .worlds
+        .iter()
+        .find(|row| row.world_name == "test1")
+        .expect("the missing root is inserted");
+    assert_eq!(root.state, WorldState::Stopped);
+    let edge = rows
+        .forks
+        .iter()
+        .find(|edge| edge.world_id == orphan_id)
+        .expect("the missing edge is inserted");
+    assert_eq!(edge.root_id, root.id);
+    assert_eq!(edge.parent_id, root.id);
+    assert_eq!(edge.name, "feat");
+}
+
+#[test]
+fn ensure_chain_never_reparents_a_live_fork_edge() {
+    let dir = lab();
+    let state = paths(dir.path());
+    let ledger = writer(&state);
+    let root_path = dir.path().join("proj/test1");
+    let root = ledger
+        .register_root(RootRequest {
+            checkout_path: root_path.clone(),
+            ..root_request("test1", dir.path())
+        })
+        .expect("root");
+    let feat = begin(&ledger, root.id, "feat", root.id);
+    let jello = begin(&ledger, root.id, "jello", feat.world_id);
+    assert_eq!(
+        jello.parent_id, feat.world_id,
+        "the fork keeps its real parent"
+    );
+
+    // Flat layouts can only derive [root, jello] from the checkout path; that topology-blind
+    // walk must never flatten the live `jello -> feat` edge back onto the root.
+    let jello_name = ForkName::parse("jello").expect("valid fork name");
+    let jello_path = StoreLayout::project_fork(&root_path, &jello_name);
+    let chain = vec![
+        ChainEntry {
+            world_name: world("test1"),
+            checkout_path: root_path,
+            fork: None,
+        },
+        ChainEntry {
+            world_name: world("jello--test1"),
+            checkout_path: jello_path,
+            fork: Some(jello_name),
+        },
+    ];
+    let registered = ledger
+        .ensure_chain(PathBuf::from(STORE), chain, NOW + 1)
+        .expect("register the child checkout");
+    assert_eq!(registered.id, jello.world_id);
+
+    let rows = ledger.list().expect("rows");
+    let edge = rows
+        .forks
+        .iter()
+        .find(|edge| edge.world_id == jello.world_id)
+        .expect("the live edge");
+    assert_eq!(
+        edge.parent_id, feat.world_id,
+        "a live edge is never re-parented from path topology"
+    );
+    assert_eq!(edge.root_id, root.id);
+    assert_eq!(edge.name, "jello");
+}
+
+#[test]
+fn ensure_chain_refuses_a_missing_world_whose_name_is_taken() {
+    let dir = lab();
+    let state = paths(dir.path());
+    let ledger = writer(&state);
+    ledger
+        .register_root(root_request("test1", dir.path()))
+        .expect("root");
+    let chain = vec![ChainEntry {
+        world_name: world("test1"),
+        checkout_path: dir.path().join("elsewhere/test1"),
+        fork: None,
+    }];
+    let refused = ledger
+        .ensure_chain(PathBuf::from(STORE), chain, NOW)
+        .expect_err("a taken world name must fail typed");
+    assert!(
+        matches!(refused, LedgerError::NameTaken { ref world_name } if world_name == "test1"),
+        "{refused}"
+    );
+    assert!(
+        refused.to_string().contains("next: slipfork down test1"),
+        "{refused}"
+    );
 }
 
 #[test]
