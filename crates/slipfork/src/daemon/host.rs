@@ -39,7 +39,9 @@ pub(super) fn env(
     let vars = FileSecretVault::new(state_dir.join("vars.json"));
     let resolver = crate::secrets::EnvironmentResolver::new(&vault, &vars, process_env);
     let scheme = "http";
-    let world = inferred_world(&project);
+    let identities = crate::world::WorldIdentities::open(state_dir.to_path_buf())
+        .map_err(|message| Failure::new("ledger", message))?;
+    let world = inferred_world(&project, &identities)?;
     let evaluated = {
         let failure = std::cell::RefCell::new(None);
         let secret =
@@ -254,18 +256,15 @@ fn resolve(binding: &EnvBinding<'_>, stored: Option<&Secret>) -> Option<String> 
     }
 }
 
-/// Reads `<project>/Forkfile`; the visitor classifies every declared variable.
-fn inferred_world(project: &Path) -> String {
-    if let Some((parent, fork)) = slipfork_world::fork_checkout(project)
-        && let Ok(parent_world) = crate::world::world_name(&parent, None)
-    {
-        return slipfork_world::StoreLayout::fork_world_name(&parent_world, &fork)
-            .as_str()
-            .to_owned();
-    }
-    crate::world::world_name(project, None)
+/// Resolves the world the ledger row owns for `<project>/Forkfile`; never a stale record.
+fn inferred_world(
+    project: &Path,
+    identities: &crate::world::WorldIdentities<'_>,
+) -> Result<String, Failure> {
+    identities
+        .name(project, None)
         .map(|name| name.as_str().to_owned())
-        .unwrap_or_else(|_| "world".to_owned())
+        .map_err(|message| Failure::new("world", message))
 }
 
 /// The world's features: the request merged over the persisted file (evaluate-only for `env`).

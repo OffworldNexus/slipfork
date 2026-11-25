@@ -26,11 +26,11 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use slipfork_forkfile::ast::Forkfile;
 use slipfork_forkfile::{FeatureEdit, FeatureSet};
 use slipfork_image::RegistryCredentials;
-use slipfork_world::ImageNode;
+use slipfork_world::{ForkLedger, ImageNode, WorldName};
 
 /// The canonical build-input digest per build image (`Dockerfile` bytes + context hash).
 ///
@@ -246,59 +246,137 @@ pub struct SuperviseArgs {
     pub no_cache: bool,
 }
 
-/// The on-disk handle a separate `down`/`restart` process uses.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct WorldState {
-    pub(super) world: String,
-    pub(super) socket: PathBuf,
-    pub(super) project: PathBuf,
-    pub(super) pid: u32,
+/// The one owner of "what world is this checkout": the `ForkLedger` row keyed by its path.
+///
+/// Identity resolution order is a requested name, then the ledger row whose `checkout_path` is
+/// this project (root or fork), then the canonical `<fork>--<parent>` id of a `.forks/<fork>`
+/// checkout, then the directory's RFC 1123 slug. `.slipfork/world.json` is never consulted: the
+/// ledger owns identity, and a stale record is settled (removed) whenever it is found.
+pub(crate) struct WorldIdentities<'a> {
+    borrowed: Option<&'a ForkLedger>,
+    owned: Option<ForkLedger>,
 }
 
-pub(super) fn state_path(project: &Path) -> PathBuf {
+impl<'a> WorldIdentities<'a> {
+    /// Injects the ledger a caller holds; `None` is a daemonless reader with no row to consult.
+    #[must_use]
+    pub(crate) fn new(ledger: Option<&'a ForkLedger>) -> Self {
+        Self {
+            borrowed: ledger,
+            owned: None,
+        }
+    }
+
+    /// Opens `<state_dir>/state.db` once, so a real ledger error never means "no row".
+    ///
+    /// An absent `state.db` still opens as an empty, readable ledger; a pending migration, a
+    /// newer schema, or an unreadable database fails closed before any record is unlinked.
+    pub(crate) fn open(state_dir: PathBuf) -> Result<Self, String> {
+        let ledger = ForkLedger::open_reader(state_dir).map_err(|error| error.to_string())?;
+        Ok(Self {
+            borrowed: None,
+            owned: Some(ledger),
+        })
+    }
+
+    /// The ledger this resolver reads, borrowed or owned.
+    pub(crate) fn ledger(&self) -> Option<&ForkLedger> {
+        self.borrowed.or(self.owned.as_ref())
+    }
+
+    /// Resolves `project`'s world id, then settles any legacy `.slipfork/world.json` record.
+    ///
+    /// # Errors
+    ///
+    /// Fails with one line plus `next: rm .slipfork/world.json` when a stale record names a world
+    /// other than the ledger's row, so neither identity is silently preferred.
+    pub(crate) fn name(
+        &self,
+        project: &Path,
+        requested: Option<&str>,
+    ) -> Result<WorldName, String> {
+        let (world, registered) = self.resolve(project, requested)?;
+        settle_record(project, registered.as_ref())?;
+        Ok(world)
+    }
+
+    fn resolve(
+        &self,
+        project: &Path,
+        requested: Option<&str>,
+    ) -> Result<(WorldName, Option<WorldName>), String> {
+        let registered = self.registered(project)?;
+        if let Some(name) = requested {
+            let world = WorldName::parse(name).map_err(|error| error.to_string())?;
+            return Ok((world, registered));
+        }
+        if let Some(world) = registered.clone() {
+            return Ok((world.clone(), Some(world)));
+        }
+        if let Some((parent, fork)) = slipfork_world::fork_checkout(project) {
+            let parent_world = self.resolve(&parent, None)?.0;
+            return Ok((
+                slipfork_world::StoreLayout::fork_world_name(&parent_world, &fork),
+                None,
+            ));
+        }
+        let directory = project
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("world");
+        let raw = slipfork_forkfile::DnsLabel::slug(directory)
+            .map_err(|error| error.message(directory))?;
+        Ok((
+            WorldName::parse(&raw).map_err(|error| error.to_string())?,
+            None,
+        ))
+    }
+
+    /// The world name on this checkout's ledger row, root or fork; `None` before registration.
+    fn registered(&self, project: &Path) -> Result<Option<WorldName>, String> {
+        let Some(ledger) = self.ledger() else {
+            return Ok(None);
+        };
+        let rows = ledger.list().map_err(|error| error.to_string())?;
+        let Some(row) = rows
+            .worlds
+            .into_iter()
+            .find(|row| row.checkout_path == project)
+        else {
+            return Ok(None);
+        };
+        WorldName::parse(&row.world_name)
+            .map(Some)
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// The legacy `<project>/.slipfork/world.json` path; never read as identity.
+fn legacy_record(project: &Path) -> PathBuf {
     project.join(".slipfork/world.json")
 }
 
-/// Derives the world name for a project, in resolution order: a requested name, the world
-/// recorded in `<project>/.slipfork/world.json`, the canonical `<project>/.forks/<fork>` id
-/// (`<fork>--<parent>`), then the directory's RFC 1123 slug.
-pub(crate) fn world_name(
-    project: &Path,
-    requested: Option<&str>,
-) -> Result<slipfork_world::WorldName, String> {
-    if let Some(name) = requested {
-        return slipfork_world::WorldName::parse(name).map_err(|error| error.to_string());
+/// Settles a stale `.slipfork/world.json` against the ledger that now owns identity.
+///
+/// A fresh registration (`registered == None`) ignores and silently removes the record. Once a
+/// ledger row exists, a record naming a different world fails closed with one line and one
+/// `next: rm .slipfork/world.json`; a matching record is removed because the row is the only owner.
+fn settle_record(project: &Path, registered: Option<&WorldName>) -> Result<(), String> {
+    let path = legacy_record(project);
+    let recorded = fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|value| value.get("world")?.as_str().map(str::to_owned))
+        .and_then(|world| WorldName::parse(&world).ok());
+    if let (Some(recorded), Some(registered)) = (recorded.as_ref(), registered)
+        && recorded != registered
+    {
+        return Err(format!(
+            "`.slipfork/world.json` names world `{recorded}`, but this checkout is registered as `{registered}`\nnext: rm .slipfork/world.json"
+        ));
     }
-    if let Some(recorded) = recorded_world(project) {
-        return Ok(recorded);
-    }
-    if let Some(forked) = fork_world(project) {
-        return Ok(forked);
-    }
-    let directory = project
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("world");
-    let raw =
-        slipfork_forkfile::DnsLabel::slug(directory).map_err(|error| error.message(directory))?;
-    slipfork_world::WorldName::parse(&raw).map_err(|error| error.to_string())
-}
-
-/// The world a live or stopped project recorded in `<project>/.slipfork/world.json`.
-fn recorded_world(project: &Path) -> Option<slipfork_world::WorldName> {
-    let raw = fs::read_to_string(state_path(project)).ok()?;
-    let state: WorldState = serde_json::from_str(&raw).ok()?;
-    slipfork_world::WorldName::parse(&state.world).ok()
-}
-
-/// The canonical `<fork>--<parent>` world id when `project` is `<parent>/.forks/<fork>`.
-fn fork_world(project: &Path) -> Option<slipfork_world::WorldName> {
-    let (parent, fork) = slipfork_world::fork_checkout(project)?;
-    let parent_world = world_name(&parent, None).ok()?;
-    Some(slipfork_world::StoreLayout::fork_world_name(
-        &parent_world,
-        &fork,
-    ))
+    let _ = fs::remove_file(&path);
+    Ok(())
 }
 
 pub(super) fn fail(
@@ -323,10 +401,10 @@ mod tests {
             .expect("create a disk temp directory")
     }
 
-    fn record(project: &Path, world: &str) {
+    fn legacy(project: &Path, world: &str) {
         fs::create_dir_all(project.join(".slipfork")).expect("create .slipfork");
         fs::write(
-            state_path(project),
+            legacy_record(project),
             format!(
                 "{{\"world\":\"{world}\",\"socket\":\"/run/s\",\"project\":\"{}\",\"pid\":1}}",
                 project.display()
@@ -335,40 +413,39 @@ mod tests {
         .expect("write world.json");
     }
 
-    /// A stopped project resolves its world from the record, the `.forks` layout, or the slug.
+    /// Identity comes from the request, the `.forks` layout, or the slug — never the old record.
     #[test]
-    fn world_name_resolves_recorded_forks_then_the_directory_slug() {
+    fn name_ignores_the_legacy_record_and_removes_it() {
         let root = temp("slipfork-world-name");
+        let identities = WorldIdentities::new(None);
 
         let plain = root.path().join("plainworld");
         fs::create_dir_all(&plain).expect("create plain project");
         assert_eq!(
-            world_name(&plain, None).expect("slug").as_str(),
+            identities.name(&plain, None).expect("slug").as_str(),
             "plainworld",
-            "an unrecorded project falls back to its directory slug"
+            "an unregistered project falls back to its directory slug"
         );
         assert_eq!(
-            world_name(&plain, Some("explicit"))
+            identities
+                .name(&plain, Some("explicit"))
                 .expect("requested")
                 .as_str(),
             "explicit",
             "an explicit requested name always wins"
         );
 
-        let recorded = root.path().join("demo");
-        fs::create_dir_all(&recorded).expect("create recorded project");
-        record(&recorded, "feat-auth--demo");
+        let stale = root.path().join("demo");
+        fs::create_dir_all(&stale).expect("create recorded project");
+        legacy(&stale, "feat-auth--demo");
         assert_eq!(
-            world_name(&recorded, None).expect("recorded").as_str(),
-            "feat-auth--demo",
-            "the recorded world beats the directory slug"
+            identities.name(&stale, None).expect("slug").as_str(),
+            "demo",
+            "a stale record never beats the directory slug"
         );
-        assert_eq!(
-            world_name(&recorded, Some("explicit"))
-                .expect("requested")
-                .as_str(),
-            "explicit",
-            "an explicit requested name beats the recorded world"
+        assert!(
+            !legacy_record(&stale).exists(),
+            "a fresh registration removes the stale record silently"
         );
 
         let parent = root.path().join("app");
@@ -376,16 +453,72 @@ mod tests {
         let fork = parent.join(".forks").join("feat-auth");
         fs::create_dir_all(&fork).expect("create fork checkout");
         assert_eq!(
-            world_name(&fork, None).expect("fork layout").as_str(),
+            identities.name(&fork, None).expect("fork layout").as_str(),
             "feat-auth--app",
-            "a fork checkout without a record uses the canonical <fork>--<parent> id"
+            "a fork checkout uses the canonical <fork>--<parent> id"
+        );
+        legacy(&fork, "chosen--app");
+        assert_eq!(
+            identities.name(&fork, None).expect("fork layout").as_str(),
+            "feat-auth--app",
+            "a fork's stale record never renames the canonical layout id"
+        );
+        assert!(!legacy_record(&fork).exists());
+    }
+
+    /// Once a ledger row exists, a disagreeing record fails closed and is never deleted.
+    #[test]
+    fn settle_record_fails_closed_on_a_disagreement_and_drops_a_match() {
+        let root = temp("slipfork-world-settle");
+        let project = root.path().join("demo");
+        fs::create_dir_all(&project).expect("create project");
+        let registered = WorldName::parse("demo").expect("valid world name");
+
+        legacy(&project, "other--demo");
+        let error = settle_record(&project, Some(&registered)).expect_err("conflict must fail");
+        assert_eq!(
+            error.lines().count(),
+            2,
+            "a conflict is exactly one line plus one remedy: {error:?}"
+        );
+        assert!(
+            error.starts_with("`.slipfork/world.json` names world `other--demo`"),
+            "the verdict names the stale record: {error:?}"
+        );
+        assert!(
+            error.ends_with("next: rm .slipfork/world.json"),
+            "the one remedy clears the stale record: {error:?}"
+        );
+        assert!(
+            legacy_record(&project).is_file(),
+            "a conflict never deletes the evidence"
         );
 
-        record(&fork, "chosen--app");
+        legacy(&project, "demo");
+        settle_record(&project, Some(&registered)).expect("a matching record settles");
+        assert!(
+            !legacy_record(&project).exists(),
+            "the ledger row now owns identity, so the record is removed"
+        );
+    }
+
+    /// A corrupt record names no world, so it is ignored and removed without an error.
+    #[test]
+    fn corrupt_legacy_record_is_ignored_and_removed() {
+        let root = temp("slipfork-world-corrupt");
+        let project = root.path().join("demo");
+        fs::create_dir_all(project.join(".slipfork")).expect("create .slipfork");
+        fs::write(legacy_record(&project), "not json at all").expect("write the corrupt record");
+
+        let identities = WorldIdentities::new(None);
         assert_eq!(
-            world_name(&fork, None).expect("fork record").as_str(),
-            "chosen--app",
-            "a fork's own record still beats the layout derivation"
+            identities.name(&project, None).expect("slug").as_str(),
+            "demo",
+            "an unparseable record never blocks the path-derived slug"
+        );
+        assert!(
+            !legacy_record(&project).exists(),
+            "an unparseable record is removed with no error"
         );
     }
 }

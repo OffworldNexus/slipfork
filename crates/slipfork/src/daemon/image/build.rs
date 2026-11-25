@@ -18,6 +18,7 @@ use slipfork_world::world_plan_with;
 
 use super::{ImageFrame, ImageLab, ImageRequest, client_closed, failure, now_ms, record_built};
 use crate::world::HostEnv;
+use crate::world::WorldIdentities;
 use crate::world::features::WorldFeatures;
 
 /// Builds one declared image component and streams its rows as typed frames.
@@ -107,8 +108,19 @@ pub(crate) fn build(
 
     let paths = node.paths(&request.project);
     let target = target.or_else(|| doc.eval_image_stage_with(&component, &features));
-    let world = crate::world::world_name(&request.project, None)
-        .map_or_else(|_| "slipfork".to_owned(), |world| world.as_str().to_owned());
+    let identities = WorldIdentities::open(host.state_dir.clone())
+        .map_err(|message| failure("ledger", message, "run `slipfork doctor` and retry"))?;
+    let world = identities
+        .name(&request.project, None)
+        .map_err(|message| {
+            failure(
+                "world",
+                message,
+                "run `slipfork up` to register this checkout",
+            )
+        })?
+        .as_str()
+        .to_owned();
     let mut build_args = BuildArgs::new();
     for (key, value) in doc.eval_image_args_with(&world, "http", &component, &features) {
         build_args.declare(key, value);

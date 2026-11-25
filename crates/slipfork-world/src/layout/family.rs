@@ -202,25 +202,6 @@ pub fn fork_world_id(parent: &str, fork: &str) -> Option<WorldName> {
     Some(StoreLayout::fork_world_name(&parent, &fork))
 }
 
-/// The world id a stopped project displays: the canonical `<fork>--<parent>` for a fork
-/// checkout, else the directory's own name.
-#[must_use]
-pub fn world_id_for_project(project: &Path) -> String {
-    if let Some((parent, fork)) = fork_checkout(project)
-        && let Some(parent) = parent.file_name().and_then(|name| name.to_str())
-        && let Ok(parent) = WorldName::parse(parent)
-    {
-        return StoreLayout::fork_world_name(&parent, &fork)
-            .as_str()
-            .to_owned();
-    }
-    project
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("world")
-        .to_owned()
-}
-
 /// Which project world a `ps` invocation is scoped to, resolved once from the caller's cwd.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectScope {
@@ -250,14 +231,31 @@ pub enum ProjectScope {
 
 impl ProjectScope {
     /// Resolves `cwd` against the on-disk `.forks` layout exactly once.
+    ///
+    /// The `world` fields are display ids derived from the layout; a registered world's real
+    /// identity always comes from its ledger row, never from this path derivation.
     #[must_use]
     pub fn resolve(cwd: &Path) -> Self {
         let Some(root) = project_root(cwd) else {
             return Self::None;
         };
         if let Some((path, fork)) = fork_under(&root, cwd) {
+            let derived = path
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                .and_then(|parent| fork_world_id(parent, fork.as_str()))
+                .map_or_else(
+                    || {
+                        path.file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("world")
+                            .to_owned()
+                    },
+                    |world| world.as_str().to_owned(),
+                );
             return Self::Fork {
-                world: world_id_for_project(&path),
+                world: derived,
                 path,
                 name: fork.as_str().to_owned(),
             };
@@ -267,7 +265,11 @@ impl ProjectScope {
             Err(error) => (Vec::new(), Some(error.to_string())),
         };
         Self::Root {
-            world: world_id_for_project(&root),
+            world: root
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("world")
+                .to_owned(),
             root,
             forks,
             problem,
@@ -285,7 +287,7 @@ mod tests {
     use crate::error::Error;
     use crate::layout::{ForkName, StoreLayout, WorldName};
 
-    use super::{fork_checkout, fork_family, fork_under, project_root, world_id_for_project};
+    use super::{fork_checkout, fork_family, fork_under, project_root};
 
     /// Real disk scratch space; `/tmp` is RAM-backed and must never hold a family tree.
     fn scratch(prefix: &str) -> TempDir {
@@ -321,8 +323,6 @@ mod tests {
         );
         assert_eq!(project_root(&checkout), Some(root.clone()));
         assert_eq!(project_root(&root), Some(root.clone()));
-        assert_eq!(world_id_for_project(&checkout), "f1--a");
-        assert_eq!(world_id_for_project(&root), "a");
         assert_eq!(
             StoreLayout::project_fork(&checkout, &name("f2")),
             root.join(".forks/f2"),
@@ -356,7 +356,6 @@ mod tests {
         assert_eq!(fork_checkout(&second), Some((root.clone(), name("f2"))));
         assert_eq!(fork_checkout(&first), Some((root.clone(), name("f1"))));
         assert_eq!(project_root(&second), Some(root.clone()));
-        assert_eq!(world_id_for_project(&second), "f2--a");
 
         assert_eq!(
             fork_under(&root, &second.join("src")),

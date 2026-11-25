@@ -432,6 +432,7 @@ impl Journey {
             "devkeep",
             "devbaked",
             "devbakedroot",
+            "legacy",
         ] {
             if let Ok(world) = WorldName::parse(world) {
                 let _ = engine.drop_world(&world);
@@ -858,6 +859,7 @@ impl Drop for Journey {
             "devkeep",
             "devbaked",
             "devbakedroot",
+            "legacy",
         ] {
             if let Ok(world) = WorldName::parse(world) {
                 let _ = store_engine.drop_world(&world);
@@ -1868,10 +1870,6 @@ fn world_up_restart_down_journey() {
         "`logs broken` must read the failed service capture: {}",
         stderr(&by_target)
     );
-    assert!(
-        broken.join(".slipfork/world.json").is_file(),
-        "the world must stay up after a failed service"
-    );
     let listed = journey.slipfork(&broken, &["status"]);
     let listed_text = stdout(&listed);
     assert!(
@@ -2081,10 +2079,6 @@ fn world_up_restart_down_journey() {
         "crash down: {}",
         stderr(&crash_down)
     );
-    assert!(
-        !crash.join(".slipfork/world.json").is_file(),
-        "`down` must remove the crashed world marker"
-    );
 
     // 3b. A failing image `RUN` is a durable catalog run: `logs <image>` and `logs -r <id>` replay
     // the build output, `--runs` lists it, and a later successful boot plus `down` keeps all three.
@@ -2124,10 +2118,6 @@ fn world_up_restart_down_journey() {
         image_log.is_file(),
         "the failed build must leave `{}`",
         image_log.display()
-    );
-    assert!(
-        !buildfail.join(".slipfork/world.json").exists(),
-        "a cold image build failure with zero pods must tear its empty world down immediately"
     );
     let by_image = journey.slipfork(&buildfail, &["logs", "app"]);
     assert!(
@@ -3156,7 +3146,6 @@ fn world_up_restart_down_journey() {
             "container `{id}` survived teardown:\n{listed}"
         );
     }
-    assert!(!good.join(".slipfork/world.json").exists());
     // The whole up/restart/down lifecycle leaves the checkout inode-identical, never a
     // subvolume, and never adopted into a sibling.
     let project_final = fs::metadata(&good).expect("stat the project after teardown");
@@ -3179,7 +3168,6 @@ fn world_up_restart_down_journey() {
                 .contains(".slipfork-adopt")),
         "no `.slipfork-adopt` sibling may survive teardown"
     );
-    assert!(!broken.join(".slipfork/world.json").exists());
 
     // 6. No per-project `.slipfork-store` exists, and no run subvolume survives in the mount store.
     for project in [&good, &broken] {
@@ -3604,10 +3592,6 @@ fn dev_mounts_follow_the_dockerfile_workdir_and_refuse_root() {
             .any(|line| line.starts_with("next: set WORKDIR")),
         "the refusal must carry the WORKDIR remedy:\n{refusal}"
     );
-    assert!(
-        !root.join(".slipfork/world.json").exists(),
-        "a refused dev boot must never write world state"
-    );
 
     // (b) `WORKDIR /code`: the pod runs there over the live checkout, no restart needed.
     let code = journey.project("devcode", DEV_FORKFILE);
@@ -3707,6 +3691,141 @@ fn dev_mounts_follow_the_dockerfile_workdir_and_refuse_root() {
         let down = journey.slipfork(project, &["down"]);
         assert!(down.status.success(), "final down: {}", stderr(&down));
     }
+}
+
+/// A stale `.slipfork/world.json` never wins identity over the ledger row keyed by the checkout.
+#[test]
+fn stale_world_record_loses_to_the_ledger_identity() {
+    let journey = Journey::new();
+    require_tool("crun");
+    let unshare = require_tool("unshare");
+    require_userns(&unshare);
+    require_registry_egress();
+
+    let legacy = journey.project("legacy", CATALOG_FORKFILE);
+    let record = legacy.join(".slipfork/world.json");
+    let stale = "{\"world\":\"feat-other--legacy\",\"socket\":\"/run/stale.sock\",\"project\":\"/srv/legacy\",\"pid\":1}";
+    fs::create_dir_all(legacy.join(".slipfork")).expect("create .slipfork");
+    fs::write(&record, stale).expect("write the stale world record");
+
+    // 1. Fresh registration: the path-derived world wins; the record is dropped silently.
+    let first = journey.slipfork(&legacy, &["up"]);
+    assert!(
+        first.status.success(),
+        "{}",
+        up_failure(
+            "a stale record must not block a fresh `up`",
+            &legacy,
+            &first
+        )
+    );
+    let started = format!("{}{}", stdout(&first), stderr(&first));
+    assert!(
+        started.contains("✓ Ready -> http://legacy.localhost"),
+        "the checkout's own world must boot:\n{started}"
+    );
+    assert!(
+        !started.contains("world.json") && !started.contains("feat-other"),
+        "a fresh registration must settle the record without scaring the user:\n{started}"
+    );
+    assert!(!record.exists(), "the stale record must be removed");
+    let first_run = latest_image_run(&journey, &legacy);
+    assert!(
+        journey.run.join("state/slipfork/state.db").is_file(),
+        "the daemon must own a real ledger row on disk"
+    );
+
+    let ps = journey.slipfork(&legacy, &["ps", "--json"]);
+    assert!(ps.status.success(), "ps: {}", stderr(&ps));
+    let reply: serde_json::Value = serde_json::from_slice(&ps.stdout).expect("ps --json");
+    let world = reply["worlds"]
+        .as_array()
+        .and_then(|worlds| worlds.iter().find(|world| world["world"] == "legacy"))
+        .unwrap_or_else(|| panic!("the path's world must be registered: {reply}"));
+    assert_eq!(
+        world["state"], "live",
+        "the world must live under the path identity: {reply}"
+    );
+
+    // 2. Once the ledger owns the path, a disagreeing record fails closed with one remedy.
+    fs::write(&record, stale).expect("restore the stale world record");
+    let disagree = journey.slipfork(&legacy, &["up"]);
+    assert!(
+        !disagree.status.success(),
+        "a disagreeing record must fail closed:\n{}{}",
+        stdout(&disagree),
+        stderr(&disagree)
+    );
+    let refusal = format!("{}{}", stdout(&disagree), stderr(&disagree));
+    assert_eq!(
+        refusal.matches("next:").count(),
+        1,
+        "a conflict is one line plus one `next:`:\n{refusal}"
+    );
+    assert!(
+        refusal.contains("next: rm .slipfork/world.json"),
+        "the one remedy clears the stale record:\n{refusal}"
+    );
+    assert!(
+        refusal.contains("feat-other--legacy") && refusal.contains("`legacy`"),
+        "the refusal names both identities:\n{refusal}"
+    );
+    assert!(record.is_file(), "a conflict never deletes the evidence");
+
+    let after = journey.slipfork(&legacy, &["ps", "--json"]);
+    assert!(after.status.success(), "ps: {}", stderr(&after));
+    let reply: serde_json::Value = serde_json::from_slice(&after.stdout).expect("ps --json");
+    let rows: Vec<&serde_json::Value> = reply["worlds"]
+        .as_array()
+        .map(|worlds| {
+            worlds
+                .iter()
+                .filter(|world| world["world"] == "legacy")
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        rows.len(),
+        1,
+        "a refused `up` must not duplicate the row: {reply}"
+    );
+    assert_eq!(
+        rows[0]["state"], "live",
+        "the live world must keep serving: {reply}"
+    );
+
+    fs::remove_file(&record).expect("clear the stale record");
+    // 3. Cleared evidence: the next `up` is idle — no rebuild and no duplicate ledger row.
+    let idle = journey.slipfork(&legacy, &["up"]);
+    assert!(
+        idle.status.success(),
+        "{}",
+        up_failure("`up` after clearing the record failed", &legacy, &idle)
+    );
+    assert!(
+        !stdout(&idle).contains("built"),
+        "an unchanged `up` must not rebuild:\n{}",
+        stdout(&idle)
+    );
+    assert_eq!(
+        latest_image_run(&journey, &legacy),
+        first_run,
+        "an idle `up` must not rebuild the image"
+    );
+    let settled = journey.slipfork(&legacy, &["ps", "--json"]);
+    assert!(settled.status.success(), "ps: {}", stderr(&settled));
+    let reply: serde_json::Value = serde_json::from_slice(&settled.stdout).expect("ps --json");
+    assert_eq!(
+        reply["worlds"].as_array().map(|worlds| worlds
+            .iter()
+            .filter(|world| world["world"] == "legacy")
+            .count()),
+        Some(1),
+        "an idle `up` must not duplicate the row: {reply}"
+    );
+
+    let down = journey.slipfork(&legacy, &["down"]);
+    assert!(down.status.success(), "down: {}", stderr(&down));
 }
 
 #[test]

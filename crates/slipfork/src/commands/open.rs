@@ -6,6 +6,7 @@ use serde_json::json;
 
 use crate::commands::{Session, emit};
 use crate::ui::Palette;
+use crate::world::WorldIdentities;
 
 /// Parsed `slipfork open` arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,9 +20,28 @@ pub struct OpenArgs {
 impl Session {
     /// Opens the world or service URL, or prints it on a headless host.
     pub fn open(&self, args: &OpenArgs) -> ExitCode {
-        let world = crate::world::world_name(&self.cwd, None)
-            .map(|world| world.as_str().to_owned())
-            .unwrap_or_else(|_| "slipfork".to_owned());
+        let identities = match WorldIdentities::open(self.host().state_dir.clone()) {
+            Ok(identities) => identities,
+            Err(error) => {
+                return self.report(
+                    "ledger",
+                    &error,
+                    "run `slipfork doctor` and retry",
+                    args.json,
+                );
+            }
+        };
+        let world = match identities.name(&self.cwd, None) {
+            Ok(world) => world.as_str().to_owned(),
+            Err(error) => {
+                return self.report(
+                    "world",
+                    &error,
+                    "run `slipfork up` to register this checkout",
+                    args.json,
+                );
+            }
+        };
         let base = format!("http://{world}.localhost");
         // No argument selects the world root (`/`), so a multi-route Forkfile never refuses `open`.
         let candidates = match route_candidates(&self.cwd, &base, args.service.as_deref()) {

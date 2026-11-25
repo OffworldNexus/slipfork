@@ -222,14 +222,15 @@ impl Core {
     pub(crate) fn log_store(&self, project: &Path) -> Option<LogStore> {
         let world = match self.worlds.get(&key_of(project)) {
             Some(world) => world.name().to_owned(),
-            None => self
-                .row_for_project(project)
-                .map(|row| row.world_name)
-                .or_else(|| {
-                    crate::world::world_name(project, None)
-                        .ok()
-                        .map(|name| name.as_str().to_owned())
-                })?,
+            None => {
+                match crate::world::WorldIdentities::new(Some(&self.ledger)).name(project, None) {
+                    Ok(name) => name.as_str().to_owned(),
+                    Err(error) => {
+                        eprintln!("slipfork daemon: {error}");
+                        return None;
+                    }
+                }
+            }
         };
         Some(LogStore::at(
             self.host.store_root_for(project),

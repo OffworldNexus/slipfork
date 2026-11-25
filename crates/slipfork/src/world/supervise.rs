@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Value, json};
 use slipfork_world::{
     BootEvent, BootFailure, BootScheduler, BootState, BootStep, LogStore, ResourceKind, StampStore,
-    StepOutcome, WorldName, WorldStamp, WorldStampStore, control, is_btrfs_path, plan_epoch,
+    StepOutcome, WorldName, WorldStamp, WorldStampStore, is_btrfs_path, plan_epoch,
     world_plan_with, write_pg_checkpoints,
 };
 
@@ -18,9 +18,7 @@ use crate::world::features::WorldFeatures;
 use crate::world::runtime::capture::{RunTarget, strip_ansi};
 use crate::world::runtime::frames::{StepPin, failure_facts, log_frame, note_frame};
 
-use super::{
-    HostEnv, SuperviseArgs, WorldState, fail, runtime::WorldBoot, runtime::WorldRuntime, state_path,
-};
+use super::{HostEnv, SuperviseArgs, fail, runtime::WorldBoot, runtime::WorldRuntime};
 
 impl Session {
     /// Hidden detached-supervisor mode: boot, wait until `down`, then exit.
@@ -96,9 +94,7 @@ fn supervisor_main(
         emitter: Arc::clone(&emitter),
     })?);
     let pods_dir = runtime.pods_dir().to_path_buf();
-    let socket = control::control_socket_path(&pods_dir).map_err(|error| error.to_string())?;
     let world_dir = runtime.world_dir();
-    write_state(project, &world, &socket)?;
 
     // Epoch-paired stamps gate every conditional skip: `fork` snapshots the world and each typed
     // PG sibling together, so matching pairs reuse `@<tool>` and `before-start`/`pre-deploy`
@@ -245,10 +241,9 @@ fn supervisor_main(
             failure_facts(&mut frame, record.as_ref(), None);
             if !runtime.has_live_world() {
                 // Zero resources or services entered the world (a cold image `RUN` or pre-pod
-                // setup/hook failed): reap `unshare`/`slipfork-world-init`/`slirp4netns` and drop
-                // `.slipfork/world.json` before announcing failure so no orphan world survives.
+                // setup/hook failed): reap `unshare`/`slipfork-world-init`/`slirp4netns` before
+                // announcing failure so no orphan world survives.
                 let stopped = runtime.stop_and_cleanup();
-                let _ = fs::remove_file(state_path(project));
                 if let Ok(mut emitter) = emitter.lock() {
                     emitter.send(frame);
                 }
@@ -262,9 +257,7 @@ fn supervisor_main(
         }
     }
     // `down` reaches the init, which stops every pod and exits; this process follows.
-    let awaited = runtime.await_exit_and_cleanup();
-    let _ = fs::remove_file(state_path(project));
-    awaited
+    runtime.await_exit_and_cleanup()
 }
 
 /// The stamp store this boot may trust: only a checkpoint whose `world_epoch` matches the planned
@@ -374,21 +367,6 @@ fn step_index(event: &BootEvent) -> Option<usize> {
     }
 }
 
-fn write_state(project: &Path, world: &WorldName, socket: &Path) -> Result<(), String> {
-    let state = WorldState {
-        world: world.as_str().to_owned(),
-        socket: socket.to_path_buf(),
-        project: project.to_path_buf(),
-        pid: std::process::id(),
-    };
-    let path = state_path(project);
-    let temporary = path.with_extension("json.tmp");
-    let bytes = serde_json::to_vec_pretty(&state).map_err(|error| error.to_string())?;
-    fs::write(&temporary, bytes)
-        .map_err(|error| format!("write `{}`: {error}", temporary.display()))?;
-    fs::rename(&temporary, &path).map_err(|error| format!("rename `{}`: {error}", path.display()))
-}
-
 pub(super) struct Emitter {
     open: bool,
 }
@@ -491,6 +469,9 @@ impl BootSink {
     }
 
     /// Appends one stream-tagged child line to the stderr mirror and this step's run capture.
+    ///
+    /// The bytes are stored exactly as the child wrote them (ANSI included): a later colour
+    /// terminal can replay them, while a pipe/`NO_COLOR`/`--json` viewer strips at the edge.
     pub(super) fn append_stream(&mut self, stream: slipfork_world::Stream, line: &str) {
         let text = strip_ansi(line);
         let text = text.trim_end_matches('\r');

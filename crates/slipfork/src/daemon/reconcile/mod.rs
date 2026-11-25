@@ -336,8 +336,11 @@ impl super::Daemon {
     pub(super) fn up_target(&self, params: &Value) -> Result<(PathBuf, WorldName, bool), Failure> {
         let project = super::lifecycle::up::project_path(params)?;
         let requested = params.get("world").and_then(Value::as_str);
-        let world = crate::world::world_name(&project, requested)
-            .map_err(|message| Failure::new("invalid-world", message))?;
+        let world = {
+            let core = self.core()?;
+            crate::world::WorldIdentities::new(Some(&core.ledger)).name(&project, requested)
+        }
+        .map_err(|message| Failure::new("world", message))?;
         let no_cache = params
             .get("no_cache")
             .and_then(Value::as_bool)

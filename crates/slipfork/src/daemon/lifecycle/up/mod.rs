@@ -193,9 +193,14 @@ impl Core {
     }
 
     /// Registers this checkout's root row, mapping a taken world name to its one remedy.
+    ///
+    /// The ledger is the only identity owner: a fresh registration passes `registered == None`
+    /// down to [`crate::world::WorldIdentities`], which silently drops a stale
+    /// `.slipfork/world.json` instead of adopting its world.
     fn register_root(&self, project: &Path, params: &Value) -> Result<WorldRow, Failure> {
-        let world = crate::world::world_name(project, params.get("world").and_then(Value::as_str))
-            .map_err(|message| Failure::new("invalid-world", message))?;
+        let world = crate::world::WorldIdentities::new(Some(&self.ledger))
+            .name(project, params.get("world").and_then(Value::as_str))
+            .map_err(|message| Failure::new("world", message))?;
         let request = RootRequest {
             name: world,
             checkout_path: project.to_path_buf(),

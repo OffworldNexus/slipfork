@@ -11,7 +11,7 @@ mod names;
 #[allow(unused_imports)]
 pub use family::{
     ForkDir, ForkFamily, ProjectScope, fork_checkout, fork_checkouts, fork_family, fork_under,
-    fork_world_id, project_root, world_id_for_project,
+    fork_world_id, project_root,
 };
 pub(crate) use names::validate_name;
 pub use names::{ForkName, WorldName};

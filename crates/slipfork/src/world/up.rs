@@ -15,7 +15,7 @@ use crate::commands::{Session, emit};
 use crate::daemon::{DaemonClient, DaemonError};
 
 use super::features::WorldFeatures;
-use super::{DownArgs, RestartArgs, Targets, UpArgs, fail};
+use super::{DownArgs, RestartArgs, Targets, UpArgs, WorldIdentities, fail};
 
 impl Session {
     /// Reads, compiles, and verifies `<project>/Forkfile` with `request` merged over the persisted
@@ -58,8 +58,23 @@ impl Session {
 
     /// Boots the world through the daemon and renders every boot node until ready.
     pub fn up(&self, args: &UpArgs) -> ExitCode {
-        let local = Targets::new(self.cwd(), &crate::ps::PsReply::default())
-            .resolve_local(args.target.as_deref());
+        let identities = match WorldIdentities::open(self.host().state_dir.clone()) {
+            Ok(identities) => identities,
+            Err(error) => {
+                return self.report(
+                    "ledger",
+                    &error,
+                    "run `slipfork doctor` and retry",
+                    args.json,
+                );
+            }
+        };
+        let local = Targets::new(
+            self.cwd(),
+            &crate::ps::PsReply::default(),
+            identities.ledger(),
+        )
+        .resolve_local(args.target.as_deref());
         let mut client = None;
         let resolved = match local {
             Some(Ok(resolved)) => resolved,
@@ -87,11 +102,12 @@ impl Session {
                         );
                     }
                 };
-                let resolved =
-                    match Targets::new(self.cwd(), &reply).resolve(args.target.as_deref()) {
-                        Ok(resolved) => resolved,
-                        Err(error) => return self.target_failure(&error, args.json),
-                    };
+                let resolved = match Targets::new(self.cwd(), &reply, identities.ledger())
+                    .resolve(args.target.as_deref())
+                {
+                    Ok(resolved) => resolved,
+                    Err(error) => return self.target_failure(&error, args.json),
+                };
                 client = Some(connected);
                 resolved
             }
@@ -191,6 +207,17 @@ impl Session {
     /// Stops the world through the daemon, streaming one row per known pod and the final world row.
     pub fn down(&self, args: &DownArgs) -> ExitCode {
         let json_mode = args.json;
+        let identities = match WorldIdentities::open(self.host().state_dir.clone()) {
+            Ok(identities) => identities,
+            Err(error) => {
+                return self.report(
+                    "ledger",
+                    &error,
+                    "run `slipfork doctor` and retry",
+                    json_mode,
+                );
+            }
+        };
         let mut client = match DaemonClient::connect(self.host()) {
             Ok(client) => client,
             Err(error) => {
@@ -217,7 +244,9 @@ impl Session {
                 }
             }
         };
-        let resolved = match Targets::new(self.cwd(), &reply).resolve(args.target.as_deref()) {
+        let resolved = match Targets::new(self.cwd(), &reply, identities.ledger())
+            .resolve(args.target.as_deref())
+        {
             Ok(resolved) => resolved,
             Err(error) => return self.target_failure(&error, json_mode),
         };
@@ -264,6 +293,17 @@ impl Session {
     /// Restarts one service or every service in place through the daemon.
     pub fn restart(&self, args: &RestartArgs) -> ExitCode {
         let json_mode = args.json;
+        let identities = match WorldIdentities::open(self.host().state_dir.clone()) {
+            Ok(identities) => identities,
+            Err(error) => {
+                return self.report(
+                    "ledger",
+                    &error,
+                    "run `slipfork doctor` and retry",
+                    json_mode,
+                );
+            }
+        };
         let mut client = match DaemonClient::connect(self.host()) {
             Ok(client) => client,
             Err(error) => {
@@ -290,7 +330,7 @@ impl Session {
                 }
             }
         };
-        let resolved = match Targets::new(self.cwd(), &reply)
+        let resolved = match Targets::new(self.cwd(), &reply, identities.ledger())
             .resolve_restart(args.target.as_deref(), args.service.as_deref())
         {
             Ok(resolved) => resolved,

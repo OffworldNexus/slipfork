@@ -81,7 +81,7 @@ pub use fdpass::{PAYLOAD_CAP, recv_fd, send_fd};
 pub use identity::{Account, Identity, IdentityError};
 pub use layout::{
     FORKS_DIR, ForkDir, ForkName, PODS_DIR, ProjectScope, STORE_DIR, StoreLayout, WorldName,
-    fork_checkout, fork_checkouts, fork_under, fork_world_id, project_root, world_id_for_project,
+    fork_checkout, fork_checkouts, fork_under, fork_world_id, project_root,
 };
 pub use ledger::{
     Access, ConvergeAction, ConvergeInput, ForkLedger, ForkRequest, ForkRow, LeaseState,

@@ -12,6 +12,7 @@ use slipfork_forkfile::ast::Forkfile;
 use crate::commands::{Session, emit};
 use crate::ui::Palette;
 use crate::ui::table::{Column, Table};
+use crate::world::WorldIdentities;
 use crate::world::features::WorldFeatures;
 
 /// Mark, name, state, implications.
@@ -98,13 +99,24 @@ impl Session {
                 );
             }
         };
-        let world = match crate::world::world_name(self.cwd(), None) {
+        let identities = match WorldIdentities::open(self.host().state_dir.clone()) {
+            Ok(identities) => identities,
+            Err(error) => {
+                return self.report(
+                    "ledger",
+                    &error,
+                    "run `slipfork doctor` and retry",
+                    args.json,
+                );
+            }
+        };
+        let world = match identities.name(self.cwd(), None) {
             Ok(world) => world.as_str().to_owned(),
             Err(error) => {
                 return self.report(
                     "world",
                     &error,
-                    "run `slipfork features` from the project directory",
+                    "run `slipfork up` to register this checkout",
                     args.json,
                 );
             }

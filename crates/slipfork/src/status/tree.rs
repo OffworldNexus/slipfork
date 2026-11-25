@@ -205,15 +205,12 @@ fn scope_project(
     let mut stopped: Vec<PsWorld> = forks
         .iter()
         .filter(|fork| !known.contains(fork.path.as_path()))
-        .map(|fork| {
-            let mut row = PsWorld::stopped(
-                &fork.path,
-                &slipfork_world::world_id_for_project(&fork.path),
-                Some(&fork.name),
-            );
+        .filter_map(|fork| {
+            let fork_world = slipfork_world::fork_world_id(world, &fork.name)?;
+            let mut row = PsWorld::stopped(&fork.path, fork_world.as_str(), Some(&fork.name));
             // A flat `.forks/<name>` checkout is a child of this root world by construction.
             row.lineage = vec![world.to_owned()];
-            row
+            Some(row)
         })
         .collect();
     let mut root_row = live
