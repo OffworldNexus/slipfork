@@ -3,8 +3,8 @@
 //! The rules live in [`slipfork_world::identity`]; this module only keeps the build's error
 //! vocabulary (`UnknownAccount`/`StepFailed`) stable for `Dockerfile` diagnostics.
 
-pub(crate) use slipfork_world::identity::Identity;
 use slipfork_world::identity::IdentityError;
+pub(crate) use slipfork_world::identity::{Identity, PROCESS_UMASK};
 
 use crate::error::Error;
 

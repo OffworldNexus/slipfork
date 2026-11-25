@@ -10,7 +10,7 @@ use std::thread;
 
 use crate::dockerfile::{CacheMount, Command as StepCommand, ImageConfig, Owner, RunSpec};
 use crate::error::{Error, Result};
-use crate::identity::Identity;
+use crate::identity::{Identity, PROCESS_UMASK};
 pub(crate) use crate::step_log::StepLog;
 use crate::step_log::exit_detail;
 
@@ -354,6 +354,9 @@ impl StepBundle<'_> {
                 "user": {"uid": identity.uid, "gid": identity.gid},
                 "args": args,
                 "env": env,
+                // Docker parity: a `RUN` must not inherit the daemon's umask, or `uv sync` makes a
+                // group-writable `.venv` that the app's safety check refuses to serve.
+                "umask": PROCESS_UMASK,
                 "cwd": self.config.workdir,
                 "capabilities": {
                     "bounding": capabilities,

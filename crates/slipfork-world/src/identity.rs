@@ -15,6 +15,16 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// The umask every container process starts with, rendered as OCI `process.umask`.
+///
+/// This is process state the runtime installs before `execve`, **not** an environment variable:
+/// audits of `env` must never see it. Docker's packaged default is `0022` while podman simply
+/// inherits the caller's umask, so we pin `0022` explicitly for every container: a desktop `0002`
+/// must not leak in and make `uv sync` create `0775` directories, which trips the application-level
+/// writability safety check on the virtualenv it just made. Both build steps and service pods
+/// therefore render this one value explicitly.
+pub const PROCESS_UMASK: u32 = 0o022;
+
 /// Container ids one process runs as (`0:0` until `USER` names another account).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Identity {

@@ -383,6 +383,9 @@ fn oci_config(
             "user": {"uid": pod.identity.uid, "gid": pod.identity.gid},
             "args": spec.argv,
             "env": env,
+            // Deterministic 0022 creation modes, exactly like Docker/podman: never inherit the
+            // daemon's umask, and never express it as an `env` entry.
+            "umask": crate::identity::PROCESS_UMASK,
             "cwd": workdir,
             "capabilities": {
                 "bounding": capabilities,

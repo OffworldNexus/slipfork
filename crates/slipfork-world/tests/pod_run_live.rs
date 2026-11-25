@@ -5,7 +5,9 @@
 //! `0 → euid` mapping, the 14 Docker caps, `HOME=/root`, and a live `crun` pod's file under a bind
 //! mount stays owned by the invoking host uid/gid; (b) a numeric `USER 1000:1000` with a passwd
 //! entry renders `{1000,1000}`, an empty cap set, and the image account's `HOME`/`USER`/`LOGNAME`;
-//! (c) a `USER` with no passwd entry fails closed with one line plus a `next:` remedy.
+//! (c) a `USER` with no passwd entry fails closed with one line plus a `next:` remedy. The live
+//! journey also asserts Docker-parity creation modes (`0755`/`0644`) under a hostile inherited
+//! `0002` umask, so a pod can never inherit a desktop daemon's group-writable defaults.
 //!
 //! The suite fails closed on a non-Btrfs host or a missing `crun`/user namespace: a skipped live
 //! identity check hides a pod that runs as the wrong uid forever.
@@ -18,6 +20,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use slipfork_world::identity::PROCESS_UMASK;
 use slipfork_world::{
     Bind, BindSource, BtrfsEngine, Identity, IdentityError, PodEnv, PodHost, PodSpec, StoreLayout,
     WorldEngine, WorldHost, WorldName, WorldSupervisor, WorldTools, is_btrfs_path, write_bundle,
@@ -133,14 +136,15 @@ fn copy_bin(rootfs: &Path, binary: &str) {
     }
 }
 
-/// Copies `sh`, `touch`, `id`, and `sleep` into `rootfs` and names the in-image `touch` path.
+/// Copies `sh`, `touch`, `mkdir`, `id`, and `sleep` into `rootfs` and names the in-image `touch`
+/// path.
 fn assemble_rootfs(rootfs: &Path) -> String {
     for dir in ["bin", "usr/bin", "etc", "tmp", "dev", "proc", "sys", "root"] {
         fs::create_dir_all(rootfs.join(dir)).expect("create rootfs dir");
     }
     copy_bin(rootfs, "/bin/sh");
     let mut touch = None;
-    for name in ["touch", "id", "sleep", "grep"] {
+    for name in ["touch", "mkdir", "id", "sleep", "grep"] {
         let binary = [format!("/usr/bin/{name}"), format!("/bin/{name}")]
             .into_iter()
             .find(|candidate| Path::new(candidate).is_file())
@@ -222,6 +226,28 @@ fn wait_for(path: &Path, budget: Duration) -> bool {
     path.exists()
 }
 
+/// Installs a hostile inherited umask for the lifetime of the guard and restores the previous value
+/// on drop, so a panic mid-journey never leaks the poisoned umask into the rest of the binary.
+struct HostileUmask {
+    previous: libc::mode_t,
+}
+
+impl HostileUmask {
+    fn install(value: libc::mode_t) -> Self {
+        // SAFETY: `umask` is process-wide state; this guard is the suite's only installer and puts
+        // the captured value back on drop.
+        let previous = unsafe { libc::umask(value) };
+        Self { previous }
+    }
+}
+
+impl Drop for HostileUmask {
+    fn drop(&mut self) {
+        // SAFETY: restore exactly the value captured by `install`.
+        unsafe { libc::umask(self.previous) };
+    }
+}
+
 #[test]
 fn pod_identity_maps_the_image_user_and_a_live_root_pod_writes_host_owned_files() {
     let run = live_run_root();
@@ -250,10 +276,16 @@ fn pod_identity_maps_the_image_user_and_a_live_root_pod_writes_host_owned_files(
     let touch = assemble_rootfs(&rootfs_a);
     let project = run.join("project-a");
     fs::create_dir_all(&project).expect("create the bound project dir");
+    // The pod's *own init* creates the entries under the bind mount, so the assertions below prove
+    // the container init honoured `process.umask`, not merely a later `crun exec`.
     let mut root_spec = spec(
         "svc-root",
         &rootfs_a,
-        &["/bin/sh", "-c", "exec /usr/bin/sleep 120"],
+        &[
+            "/bin/sh",
+            "-c",
+            "mkdir /project/sub && touch /project/sub/file && exec /usr/bin/sleep 120",
+        ],
         Identity::ROOT,
     );
     root_spec.binds = vec![Bind {
@@ -266,6 +298,18 @@ fn pod_identity_maps_the_image_user_and_a_live_root_pod_writes_host_owned_files(
     let json = read_config(&root_bundle);
     assert_eq!(json["process"]["user"]["uid"], 0);
     assert_eq!(json["process"]["user"]["gid"], 0);
+    // Explicit Docker-parity process state, never an `env` entry.
+    assert_eq!(
+        json["process"]["umask"].as_u64(),
+        Some(u64::from(PROCESS_UMASK)),
+        "every pod renders OCI `process.umask` explicitly"
+    );
+    assert!(
+        !config_env(&json)
+            .iter()
+            .any(|entry| entry.starts_with("UMASK=")),
+        "the umask is process state, not an environment variable"
+    );
     assert_eq!(json["linux"]["uidMappings"][0]["containerID"], 0);
     assert_eq!(json["linux"]["uidMappings"][0]["hostID"], uid);
     assert_eq!(json["linux"]["uidMappings"][0]["size"], 1);
@@ -301,6 +345,11 @@ fn pod_identity_maps_the_image_user_and_a_live_root_pod_writes_host_owned_files(
         gid,
         None,
     );
+    // A desktop daemon commonly runs with `0002`, and world-init hands its umask down to the
+    // `crun run` it spawns. Install the hostile value *before* the world boots so the container's
+    // own init inherits it; only the rendered OCI `process.umask` (0022) can keep the pod's
+    // creations at Docker's 0755/0644.
+    let _umask = HostileUmask::install(0o002);
     let supervisor = WorldSupervisor::boot(world_host, &world).expect("boot a real world");
     let pods_dir = supervisor.pods_dir().to_path_buf();
     write_bundle(
@@ -340,6 +389,34 @@ fn pod_identity_maps_the_image_user_and_a_live_root_pod_writes_host_owned_files(
         (meta.uid(), meta.gid()),
         (uid, gid),
         "a file created by container root in a bind mount must be owned by the invoking user"
+    );
+
+    // Same hostile inherited umask, same determinism: `mkdir`/`touch` ran in the container's init
+    // argv, so the modes come out 0755/0644 like Docker, never the inherited 0775/0664 that makes
+    // `uv`'s `.venv` group-writable.
+    let sub = project.join("sub");
+    let sub_file = sub.join("file");
+    assert!(
+        wait_for(&sub_file, Duration::from_secs(30)),
+        "the live pod's init argv never created `{}`.\nnext: check `crun`/user-namespace support and the world log",
+        sub_file.display()
+    );
+    let sub_meta = fs::metadata(&sub).expect("stat the pod-created directory");
+    assert_eq!(
+        sub_meta.mode() & 0o777,
+        0o755,
+        "a pod-created directory must be 0755 despite the daemon's inherited 0002 umask"
+    );
+    let file_meta = fs::metadata(&sub_file).expect("stat the pod-created file mode");
+    assert_eq!(
+        file_meta.mode() & 0o777,
+        0o644,
+        "a pod-created file must be 0644 despite the daemon's inherited 0002 umask"
+    );
+    assert_eq!(
+        (sub_meta.uid(), sub_meta.gid()),
+        (uid, gid),
+        "the deterministic modes do not change the host uid/gid mapping"
     );
 
     // (b) `USER 1000:1000` resolved against an image that ships that passwd entry.

@@ -15,8 +15,8 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -155,8 +155,24 @@ impl Drop for UrlServer {
     }
 }
 
+/// The process umask is global, so these live tests run one at a time.
+///
+/// `libc::umask` is **process-wide**: the hostile `0002` installed by the target-stage journey
+/// would leak into any sibling `#[test]` that asserts `0644`/`0755` modes (or merely creates
+/// files) if cargo ran them concurrently. Every test holds this guard for its whole body, so the
+/// suite is safe under a bare `cargo test` without `--test-threads=1`. A poisoned lock is reused
+/// rather than propagated: one failing journey must not mask the others.
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[test]
 fn native_dockerfile_multistage_build_lifecycle() {
+    let _serial = serial();
     let crun = crun_path();
     let run = support::live_run_root("dockerfile");
     // SAFETY: `getuid`/`getgid` only read the caller's identity and cannot fail.
@@ -384,6 +400,7 @@ fn native_dockerfile_multistage_build_lifecycle() {
 /// `RUN`; and an unknown alias is refused before any pull or step.
 #[test]
 fn a_target_stage_never_reaches_a_later_failing_stage() {
+    let _serial = serial();
     let crun = crun_path();
     let run = support::live_run_root("dockerfile-target");
     // SAFETY: `getuid`/`getgid` only read the caller's identity and cannot fail.
@@ -492,6 +509,26 @@ fn a_target_stage_never_reaches_a_later_failing_stage() {
         let step_runtime =
             CrunStepRuntime::new(StepHost::new(&crun, "/etc/resolv.conf", &scratch, uid, gid));
         let mut step_log: Vec<(Stream, String)> = Vec::new();
+        // `crun run` for a build step is spawned by this test process, so a hostile inherited `0002`
+        // here is exactly what a desktop daemon hands down. The rendered OCI `process.umask` must
+        // win for the `RUN`'s own creations, not just for a later `crun exec`.
+        struct HostileUmask {
+            previous: libc::mode_t,
+        }
+        impl HostileUmask {
+            fn install(value: libc::mode_t) -> Self {
+                // SAFETY: `umask` is process-wide; this guard restores it on drop, panic included.
+                let previous = unsafe { libc::umask(value) };
+                Self { previous }
+            }
+        }
+        impl Drop for HostileUmask {
+            fn drop(&mut self) {
+                // SAFETY: restore exactly the value captured by `install`.
+                unsafe { libc::umask(self.previous) };
+            }
+        }
+        let _umask = HostileUmask::install(0o002);
         let outcome = {
             let mut events = |event: BuildEvent<'_>| {
                 if let BuildEvent::Line { stream, text } = event {
@@ -505,7 +542,12 @@ fn a_target_stage_never_reaches_a_later_failing_stage() {
                 &ImageConfig::default(),
                 &RunSpec {
                     mounts: Vec::new(),
-                    command: Command::Shell("echo reclaimed > /reclaimed.txt".to_owned()),
+                    // The demo fixture rootfs carries `dash` and little else, so only POSIX shell
+                    // builtins may run. `umask` prints the inherited *process* mask; the
+                    // redirections create files with that mask applied.
+                    command: Command::Shell(
+                        "umask && : > /probe-file && echo reclaimed > /reclaimed.txt".to_owned(),
+                    ),
                 },
                 &[],
                 1,
@@ -526,6 +568,29 @@ fn a_target_stage_never_reaches_a_later_failing_stage() {
         assert_eq!(
             support::read_text(&step_rootfs.join("reclaimed.txt")),
             "reclaimed\n"
+        );
+        assert!(
+            step_log
+                .iter()
+                .any(|(stream, line)| *stream == Stream::Stdout && line.trim() == "0022"),
+            "the `RUN` process must inherit the rendered OCI umask 0022, not the host's 0002, saw:\n{}",
+            output_tail(&step_log)
+        );
+        assert_eq!(
+            fs::metadata(step_rootfs.join("probe-file"))
+                .expect("stat the build-created file")
+                .mode()
+                & 0o777,
+            0o644,
+            "a `RUN` redirection must be 0644 despite the inherited 0002 umask"
+        );
+        assert_eq!(
+            fs::metadata(step_rootfs.join("reclaimed.txt"))
+                .expect("stat the redirected file")
+                .mode()
+                & 0o777,
+            0o644,
+            "a `RUN` redirect target must be 0644 despite the inherited 0002 umask"
         );
         assert!(
             !stale_state.exists(),
@@ -573,6 +638,7 @@ fn a_target_stage_never_reaches_a_later_failing_stage() {
 /// build-time `arg`, and [`BuildArgs`] only accepts plain strings.
 #[test]
 fn forkfile_compiler_rejects_secret_build_args() {
+    let _serial = serial();
     let source = "# forkfile: 0.1\n\nimage backend . {\n  arg X = secret(TOKEN)\n}\n";
     let document =
         slipfork_forkfile::parse(source).expect("the fixture is syntactically valid Forkfile");
@@ -598,6 +664,7 @@ fn forkfile_compiler_rejects_secret_build_args() {
 /// `crun`.
 #[test]
 fn external_copy_from_image_lifecycle() {
+    let _serial = serial();
     let crun = crun_path();
     // SAFETY: `getuid`/`getgid` only read the caller's identity and cannot fail.
     let uid = unsafe { libc::getuid() };
@@ -891,6 +958,7 @@ fn external_copy_from_image_lifecycle() {
 /// synthetic host file.
 #[test]
 fn debian_root_build_installs_system_packages_and_switches_named_users() {
+    let _serial = serial();
     let crun = crun_path();
     // SAFETY: `getuid`/`getgid` only read the caller's identity and cannot fail.
     let uid = unsafe { libc::getuid() };
@@ -1115,6 +1183,7 @@ fn debian_root_build_installs_system_packages_and_switches_named_users() {
 /// `Cache::Cold` re-executes every step even though the keys are unchanged.
 #[test]
 fn copy_keys_isolate_edits_and_cold_rebuilds_every_step() {
+    let _serial = serial();
     let run = support::live_run_root("dockerfile-copy-keys");
     // SAFETY: `getuid`/`getgid` only read the caller's identity and cannot fail.
     let uid = unsafe { libc::getuid() };
