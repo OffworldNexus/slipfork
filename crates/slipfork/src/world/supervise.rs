@@ -41,7 +41,7 @@ impl Session {
         ) {
             Ok(()) => ExitCode::SUCCESS,
             Err(message) => {
-                let (message, embedded) = crate::ui::split_remedy(&message);
+                let (message, embedded) = crate::ui::report::split_remedy(&message);
                 let next = embedded.unwrap_or_else(|| {
                     "inspect `.slipfork/supervisor.log` for the boot cause".to_owned()
                 });

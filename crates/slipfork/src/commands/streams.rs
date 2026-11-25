@@ -11,11 +11,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::{Value, json};
 
-use crate::commands::{Session, emit};
+use crate::commands::Session;
 use crate::daemon::{DaemonClient, DaemonError};
-use crate::ui::report::{StreamKind, StreamRenderer};
-
-use super::runs::{RunRow, render_runs};
+use crate::ui::report::{RunRow, StreamKind, StreamRenderer};
 
 /// Set by the SIGINT handler so a followed stream exits `0` on Ctrl-C.
 pub(crate) static INTERRUPTED: AtomicBool = AtomicBool::new(false);
@@ -116,6 +114,7 @@ impl Session {
 
     /// `slipfork logs --runs`: every recorded step run for this world, newest last.
     fn logs_runs(&self, args: &LogsArgs) -> ExitCode {
+        let renderer = self.renderer();
         let Some(mut client) = self.existing_daemon(args.json) else {
             return ExitCode::FAILURE;
         };
@@ -138,25 +137,28 @@ impl Session {
                 if args.json {
                     // The daemon already matched `RunRecord`'s 10 documented keys; forward verbatim.
                     for record in &catalog {
-                        let line = serde_json::to_string(record).unwrap_or_default();
-                        failed |= matches!(emit(&format!("{line}\n")), ExitCode::FAILURE);
+                        failed |= matches!(renderer.json_exit(record), ExitCode::FAILURE);
                     }
                     if skipped > 0 {
                         failed |= matches!(
-                            emit(&format!("{}\n", json!({ "skipped": skipped }))),
+                            renderer.json_exit(&json!({ "skipped": skipped })),
                             ExitCode::FAILURE
                         );
                     }
                 } else {
                     if let Some(notice) = empty_runs_notice(records.len(), skipped) {
-                        failed |= matches!(emit(&format!("{notice}\n")), ExitCode::FAILURE);
+                        failed |= matches!(
+                            renderer.emit_lines_exit([notice.to_owned()]),
+                            ExitCode::FAILURE
+                        );
                     } else if !records.is_empty() {
-                        for line in render_runs(&records, self.color(), self.clock()) {
-                            failed |= matches!(emit(&format!("{line}\n")), ExitCode::FAILURE);
-                        }
+                        failed |= matches!(
+                            renderer.emit_lines_exit(renderer.runs_lines(&records)),
+                            ExitCode::FAILURE
+                        );
                     }
                     if let Some(notice) = skipped_notice(skipped) {
-                        let _ = self.renderer().emit_notice(StreamKind::Stderr, &notice);
+                        let _ = renderer.emit_notice(StreamKind::Stderr, &notice);
                     }
                 }
                 if failed {

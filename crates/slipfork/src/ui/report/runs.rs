@@ -6,14 +6,14 @@
 
 use serde_json::Value;
 
-use crate::boot::elapsed_text;
-use crate::commands::LocalClock;
-use crate::ui::Palette;
+use crate::ui::elapsed_text;
 use crate::ui::table::{Column, Table};
+
+use super::render::ReportRenderer;
 
 /// One recorded run, projected from the daemon's `runs` frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RunRow {
+pub struct RunRow {
     pub run_id: String,
     pub kind: String,
     pub target: String,
@@ -28,7 +28,8 @@ pub(crate) struct RunRow {
 
 impl RunRow {
     /// Projects one catalog entry; a row without an id is malformed and skipped.
-    pub(crate) fn from_value(value: &Value) -> Option<Self> {
+    #[must_use]
+    pub fn from_value(value: &Value) -> Option<Self> {
         Some(Self {
             run_id: value["run_id"].as_str()?.to_owned(),
             kind: value["kind"].as_str().unwrap_or_default().to_owned(),
@@ -64,48 +65,52 @@ const COLUMNS: [Column; 6] = [
     Column::left(),
 ];
 
-/// Renders the whole catalog: one dim header row and one row per recorded run.
-pub(crate) fn render_runs(rows: &[RunRow], color: bool, clock: &LocalClock) -> Vec<String> {
-    let palette = Palette::new(color);
-    let table = Table::new(&COLUMNS);
-    let header = [
-        palette.meta("#run_id"),
-        palette.meta("kind"),
-        palette.meta("step"),
-        palette.meta("status"),
-        palette.meta("duration"),
-        palette.meta("recorded"),
-    ];
-    let body: Vec<[String; 6]> = rows
-        .iter()
-        .map(|row| {
-            let status = match row.state.as_str() {
-                "failed" => palette.error(&row.state),
-                "built" | "pulled" | "ready" => palette.status(&row.state),
-                _ => row.state.clone(),
-            };
-            [
-                palette.meta(&format!("#{}", row.run_id)),
-                row.kind.clone(),
-                row.step(),
-                status,
-                elapsed_text(row.duration_ms),
-                clock.timestamp(row.started_ms),
-            ]
-        })
-        .collect();
-    let mut cells: Vec<Vec<String>> = Vec::with_capacity(body.len() + 1);
-    cells.push(header.to_vec());
-    cells.extend(body.into_iter().map(Vec::from));
-    let widths = table.widths(&cells);
-    cells.iter().map(|row| table.line(&widths, row)).collect()
+impl ReportRenderer {
+    /// Renders the whole catalog: one dim header row and one row per recorded run.
+    #[must_use]
+    pub fn runs_lines(&self, rows: &[RunRow]) -> Vec<String> {
+        let palette = self.palette();
+        let table = Table::new(&COLUMNS);
+        let header = [
+            palette.meta("#run_id"),
+            palette.meta("kind"),
+            palette.meta("step"),
+            palette.meta("status"),
+            palette.meta("duration"),
+            palette.meta("recorded"),
+        ];
+        let body: Vec<[String; 6]> = rows
+            .iter()
+            .map(|row| {
+                let status = match row.state.as_str() {
+                    "failed" => palette.error(&row.state),
+                    "built" | "pulled" | "ready" => palette.status(&row.state),
+                    _ => row.state.clone(),
+                };
+                [
+                    palette.meta(&format!("#{}", row.run_id)),
+                    row.kind.clone(),
+                    row.step(),
+                    status,
+                    elapsed_text(row.duration_ms),
+                    self.wall().timestamp(row.started_ms),
+                ]
+            })
+            .collect();
+        let mut cells: Vec<Vec<String>> = Vec::with_capacity(body.len() + 1);
+        cells.push(header.to_vec());
+        cells.extend(body.into_iter().map(Vec::from));
+        let widths = table.widths(&cells);
+        cells.iter().map(|row| table.line(&widths, row)).collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{RunRow, render_runs};
-    use crate::commands::LocalClock;
+    use super::RunRow;
+    use crate::ui::report::{ReportRenderer, WallZone};
     use crate::ui::table::visible_width;
+    use crate::ui::{Terminal, UiMode, strip};
 
     fn row(run_id: &str, state: &str, duration_ms: u64) -> RunRow {
         RunRow {
@@ -122,42 +127,42 @@ mod tests {
         }
     }
 
-    /// Every column starts at one byte index and every duration shares one right edge.
-    #[test]
-    fn the_catalog_table_keeps_pixel_straight_columns() {
-        let rows = vec![
+    fn renderer(color: bool) -> ReportRenderer {
+        let mode = if color {
+            UiMode::Interactive { color: true }
+        } else {
+            UiMode::Plain
+        };
+        let terminal = Terminal {
+            cols: 100,
+            rows: 30,
+            mode,
+            stdin_tty: false,
+        };
+        ReportRenderer::new(terminal, WallZone::fixed(0).expect("utc"))
+    }
+
+    fn catalog() -> Vec<RunRow> {
+        vec![
             row("b7f2a1", "ready", 41),
             row("c91e04", "failed", 1_234),
             row("0a1b2c", "ready", 7),
-        ];
-        let lines = render_runs(&rows, false, &LocalClock::fixed(0));
-        assert_eq!(lines.len(), 4, "{lines:?}");
-        let body = &lines[1..];
-        let id_column = body[0].find("#b7f2a1").expect("id column");
-        let kind_column = body[0].find("setup").expect("kind column");
-        let step_column = body[0].find("backend").expect("step column");
-        let status_column = body[0].find("ready").expect("status column");
-        let recorded_column = body[0].find("2025-").expect("recorded column");
-        for line in body {
-            assert_eq!(line.find("setup"), Some(kind_column), "{line:?}");
-            assert_eq!(line.find("backend"), Some(step_column), "{line:?}");
-            assert_eq!(line.find("2025-"), Some(recorded_column), "{line:?}");
-            assert_eq!(
-                line.find("ready").or_else(|| line.find("failed")),
-                Some(status_column),
-                "{line:?}"
-            );
-            let id_at = line.find('#').expect("every row carries #run_id");
-            assert_eq!(id_at, id_column, "{line:?}");
-        }
-        let ends: Vec<usize> = body.iter().map(|line| line.trim_end().len()).collect();
-        assert!(
-            ends.windows(2).all(|pair| pair[0] == pair[1]),
-            "one right edge: {ends:?}"
-        );
-        assert!(
-            body.iter().all(|line| line.contains(" uv sync ")),
-            "{body:?}"
+        ]
+    }
+
+    /// The exact legacy bytes: one dim header row and three pixel-straight catalog rows.
+    #[test]
+    fn the_catalog_table_keeps_pixel_straight_columns() {
+        let lines = renderer(false).runs_lines(&catalog());
+        assert_eq!(
+            lines,
+            vec![
+                "#run_id  kind   step             status  duration  recorded".to_owned(),
+                "#b7f2a1  setup  backend uv sync  ready       41ms  2025-11-24 16:00:00".to_owned(),
+                "#c91e04  setup  backend uv sync  failed      1.2s  2025-11-24 16:00:00".to_owned(),
+                "#0a1b2c  setup  backend uv sync  ready        7ms  2025-11-24 16:00:00".to_owned(),
+            ],
+            "{lines:?}"
         );
         for line in &lines {
             assert!(!line.contains('\u{1b}'), "NO_COLOR stays pure: {line:?}");
@@ -167,6 +172,35 @@ mod tests {
             }
         }
         assert!(visible_width(&lines[0]) >= visible_width("#run_id  kind"));
+    }
+
+    /// Colouring never moves a column: the visible bytes and every column start stay identical.
+    #[test]
+    fn the_colored_catalog_keeps_identical_visible_columns() {
+        let plain = renderer(false).runs_lines(&catalog());
+        let colored = renderer(true).runs_lines(&catalog());
+        assert_eq!(plain.len(), colored.len(), "{colored:?}");
+        assert!(
+            colored.iter().any(|line| line.contains('\u{1b}')),
+            "{colored:?}"
+        );
+        assert!(
+            plain.iter().all(|line| !line.contains('\u{1b}')),
+            "{plain:?}"
+        );
+        for (plain_line, colored_line) in plain.iter().zip(&colored) {
+            assert_eq!(
+                strip(colored_line).as_ref(),
+                plain_line.as_str(),
+                "{colored_line:?}"
+            );
+            assert_eq!(
+                visible_width(colored_line),
+                visible_width(plain_line),
+                "{colored_line:?}"
+            );
+            assert_eq!(visible_width(colored_line), plain_line.len());
+        }
     }
 
     /// The daemon's `RunRecord` serialization mirrors every catalog field with no escapes.
@@ -243,7 +277,7 @@ mod tests {
         // The rendered table itself carries the deduplicated step and zero escapes.
         run.target = "uv sync".to_owned();
         run.command = "uv sync".to_owned();
-        let lines = render_runs(&[run], false, &LocalClock::fixed(0));
+        let lines = renderer(false).runs_lines(&[run]);
         assert!(lines[1].contains("uv sync"), "{lines:?}");
         assert!(!lines[1].contains("uv sync uv sync"), "{lines:?}");
         assert!(!lines[1].contains('\u{1b}'), "{lines:?}");

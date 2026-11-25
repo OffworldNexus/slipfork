@@ -10,6 +10,24 @@ use crate::ui::{Palette, Verdict, elapsed_text};
 
 use super::row::FailureFacts;
 
+/// Splits an embedded `next: <remedy>` line out of a daemon message.
+///
+/// This lives with the failure projection because `next:` is a UI role; every caller shares one
+/// splitter, and the message's own remedy always wins over a caller's fallback.
+#[must_use]
+pub fn split_remedy(message: &str) -> (String, Option<String>) {
+    let mut lines = Vec::new();
+    let mut remedy = None;
+    for line in message.lines() {
+        if let Some(next) = line.strip_prefix("next: ") {
+            remedy.get_or_insert_with(|| next.to_owned());
+        } else if !line.is_empty() {
+            lines.push(line);
+        }
+    }
+    (lines.join("\n"), remedy)
+}
+
 /// One CLI failure: the stable code, the human message, the one remedy, and optional typed facts.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Failure {
@@ -64,7 +82,7 @@ impl Failure {
         message: impl Into<String>,
         next: impl Into<String>,
     ) -> Self {
-        let (message, embedded) = crate::ui::split_remedy(&message.into());
+        let (message, embedded) = split_remedy(&message.into());
         Self::new(code, message, embedded.unwrap_or_else(|| next.into()))
     }
 

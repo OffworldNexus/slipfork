@@ -7,7 +7,6 @@
 
 mod ansi;
 mod elapsed;
-mod failure;
 mod paint;
 mod palette;
 pub mod report;
@@ -16,7 +15,6 @@ mod terminal;
 
 pub use ansi::{colour_only, segments, strip, visible_width};
 pub use elapsed::elapsed_text;
-pub use failure::{block as failure_block, split_remedy};
 pub use paint::paint;
 pub use palette::{Palette, Verdict};
 pub use terminal::{FALLBACK_COLS, Terminal, normalize_size};

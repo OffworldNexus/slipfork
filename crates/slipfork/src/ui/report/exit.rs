@@ -8,6 +8,7 @@ use std::process::ExitCode;
 
 use crate::ui::Palette;
 
+use super::failure::Failure;
 use super::model::{Entry, Report, Section, StreamKind};
 use super::render::ReportRenderer;
 
@@ -78,11 +79,13 @@ pub(crate) fn settle(result: io::Result<()>) -> ExitCode {
 
 /// One stderr diagnostic when stdout itself is unwritable.
 fn write_failure(error: &io::Error) -> ExitCode {
-    for line in crate::ui::failure_block(
-        &format!("failed to write output: {error}"),
+    for line in Failure::new(
+        "write",
+        format!("failed to write output: {error}"),
         "check that stdout is writable",
-        Palette::new(false),
-    ) {
+    )
+    .human(Palette::new(false), false)
+    {
         eprintln!("{line}");
     }
     ExitCode::FAILURE

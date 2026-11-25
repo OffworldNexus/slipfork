@@ -49,7 +49,7 @@ fn main() -> ExitCode {
     let host = match compose::host(args, &cwd, terminal) {
         Ok(host) => host,
         Err(error) => {
-            let (message, next) = ui::split_remedy(&error);
+            let (message, next) = ui::report::split_remedy(&error);
             let next =
                 next.unwrap_or_else(|| "run `slipfork` from an installed binary.".to_owned());
             return fail(&renderer, "host", message, next, 2);
@@ -102,8 +102,10 @@ fn main() -> ExitCode {
         };
         return daemon::run_handoff(&host, mode, listener, &renderer);
     }
-    let clock = commands::LocalClock::new(renderer.wall().clone());
-    cli::run(argv, commands::Session::new(cwd, terminal, host, clock))
+    cli::run(
+        argv,
+        commands::Session::new(cwd, terminal, host, renderer.wall().clone()),
+    )
 }
 
 /// Emits one typed failure and returns its exit status.

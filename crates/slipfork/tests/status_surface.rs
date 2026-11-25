@@ -12,9 +12,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use slipfork::boot::{
-    BarProgress, completed_row, elapsed_text, outer_verb, outer_widths, pane_geometry, status_line,
+    BarProgress, completed_row, outer_verb, outer_widths, pane_geometry, status_line,
 };
 use slipfork::status::{self, Options};
+use slipfork::ui::elapsed_text;
 use slipfork::ui::report::{Counter, Done, Outcome, Row};
 use slipfork::ui::table::visible_width;
 use slipfork_world::{

@@ -35,7 +35,6 @@ use self::status::{StatusLine, Ticker};
 pub use self::render::dropped_row;
 #[allow(unused_imports)]
 pub use self::render::{BarProgress, outer_verb, outer_widths, pane_geometry, status_line};
-pub use crate::ui::elapsed_text;
 
 /// One live boot pane; drop it (via [`BootTui::finish`]) before printing the final result.
 pub struct BootTui {

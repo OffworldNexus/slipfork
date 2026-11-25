@@ -309,7 +309,7 @@ impl<'a> ImageAttempt<'a> {
 
 /// Splits an engine message into its body and the one `next:` remedy it already carries.
 fn failure_parts(message: &str) -> (String, String) {
-    let (body, next) = crate::ui::split_remedy(message);
+    let (body, next) = crate::ui::report::split_remedy(message);
     (
         body,
         next.unwrap_or_else(|| "fix the failing step and retry `slipfork up`".to_owned()),

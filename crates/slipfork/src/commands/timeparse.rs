@@ -1,12 +1,9 @@
-//! `logs --since/--until` value parsing and the local wall-clock replay gutter.
+//! `logs --since/--until` value parsing.
 //!
-//! Relative (`30s|5m|2h|1d`) and RFC 3339 inputs both resolve to epoch milliseconds here. The
-//! composition root resolves the local wall clock once into a [`WallZone`]; display modules format
-//! against that value and never read the environment.
+//! Relative (`30s|5m|2h|1d`) and RFC 3339 inputs both resolve to epoch milliseconds here; the
+//! composition root resolves the local wall clock once into a `WallZone` (see `ui::report`).
 
 use slipfork_world::pod_log::now_ms;
-
-use crate::ui::report::WallZone;
 
 /// clap value parser for `--since`: relative (`30s|5m|2h|1d`) or an RFC 3339 timestamp.
 pub fn parse_since(text: &str) -> Result<u64, String> {
@@ -160,55 +157,4 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     era * 146_097 + day_of_era - 719_468
-}
-
-/// The wall clock a human surface prints, resolved once by the composition root.
-///
-/// A thin delegate over [`WallZone`]: display modules receive this value and never read `TZ`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LocalClock(WallZone);
-
-impl LocalClock {
-    /// Wraps the one wall clock the composition root resolved for this invocation.
-    pub(crate) fn new(zone: WallZone) -> Self {
-        Self(zone)
-    }
-
-    /// The underlying wall zone, for renderers constructed from this clock.
-    pub(crate) fn zone(&self) -> &WallZone {
-        &self.0
-    }
-
-    /// Local `HH:MM:SS.mmm` clock gutter for a replayed run step.
-    #[cfg(test)]
-    pub(crate) fn clock(&self, ts_ms: u64) -> String {
-        self.0.clock(ts_ms)
-    }
-
-    /// Local `YYYY-MM-DD HH:MM:SS` gutter for `-t`, using the same wall clock as [`Self::clock`].
-    pub(crate) fn timestamp(&self, ts_ms: u64) -> String {
-        self.0.timestamp(ts_ms)
-    }
-
-    /// A deterministic offset clock (test-only), so no test mutates the process timezone.
-    #[cfg(test)]
-    pub(crate) fn fixed(offset_seconds: i32) -> Self {
-        Self(WallZone::fixed(offset_seconds).expect("a whole-hour test offset is valid"))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::LocalClock;
-
-    #[test]
-    fn fixed_offset_wall_clock_respects_the_paris_summer_and_winter_offsets() {
-        // 2026-07-01T12:00:00Z is CEST (UTC+2); 2026-01-15T12:00:00Z is CET (UTC+1).
-        let summer = LocalClock::fixed(2 * 3600);
-        assert_eq!(summer.timestamp(1_782_907_200_000), "2026-07-01 14:00:00");
-        assert_eq!(summer.clock(1_782_907_200_000), "14:00:00.000");
-        let winter = LocalClock::fixed(3600);
-        assert_eq!(winter.timestamp(1_768_478_400_000), "2026-01-15 13:00:00");
-        assert_eq!(winter.clock(1_768_478_400_000), "13:00:00.000");
-    }
 }

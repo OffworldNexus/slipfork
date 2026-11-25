@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use serde_json::json;
 
 use crate::daemon::{DaemonClient, DaemonError};
-use crate::ui::report::{Failure, Report, ReportRenderer, StreamKind};
+use crate::ui::report::{Failure, Report, ReportRenderer, StreamKind, WallZone};
 use crate::ui::{Terminal, UiMode};
 use crate::world::HostEnv;
 use crate::{doctor, status};
@@ -23,7 +23,6 @@ mod features;
 mod fmtmigrate;
 mod open;
 mod pty;
-mod runs;
 mod secret;
 mod streams;
 mod timeparse;
@@ -35,16 +34,18 @@ pub use fmtmigrate::{FmtArgs, MigrateArgs};
 pub use open::OpenArgs;
 pub use secret::{SecretArgs, SecretVerb};
 pub use streams::LogsArgs;
-pub(crate) use timeparse::LocalClock;
 pub use timeparse::{parse_since, parse_until};
 
 /// One CLI invocation's environment, injected by the composition root.
+///
+/// The wall zone is resolved exactly once here and shared by every human surface through
+/// [`Self::renderer`]; no handler below reads `TZ` or re-probes stdio.
 #[derive(Debug, Clone)]
 pub struct Session {
     cwd: PathBuf,
     terminal: Terminal,
     host: HostEnv,
-    clock: LocalClock,
+    wall: WallZone,
 }
 
 impl Session {
@@ -63,25 +64,19 @@ impl Session {
     /// Builds a session from the injected working directory, terminal, host state, and wall clock.
     /// No handler below ever re-probes stdio or reads the environment.
     #[must_use]
-    pub fn new(cwd: PathBuf, terminal: Terminal, host: HostEnv, clock: LocalClock) -> Self {
+    pub fn new(cwd: PathBuf, terminal: Terminal, host: HostEnv, wall: WallZone) -> Self {
         Self {
             cwd,
             terminal,
             host,
-            clock,
+            wall,
         }
-    }
-
-    /// The wall clock resolved once by the composition root.
-    #[must_use]
-    pub(crate) fn clock(&self) -> &LocalClock {
-        &self.clock
     }
 
     /// The one report renderer for this invocation.
     #[must_use]
     pub(crate) fn renderer(&self) -> ReportRenderer {
-        ReportRenderer::new(self.terminal, self.clock.zone().clone())
+        ReportRenderer::new(self.terminal, self.wall.clone())
     }
 
     /// The one daemon connect sink: the ephemeral hint prints here exactly once.
@@ -285,6 +280,6 @@ impl Session {
 
 /// Splits a daemon message at its trailing `next: …` line; the message's own remedy wins.
 pub(crate) fn message_and_next(message: &str, fallback: &str) -> (String, String) {
-    let (body, embedded) = crate::ui::split_remedy(message);
+    let (body, embedded) = crate::ui::report::split_remedy(message);
     (body, embedded.unwrap_or_else(|| fallback.to_owned()))
 }

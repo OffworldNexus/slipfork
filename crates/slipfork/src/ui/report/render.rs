@@ -483,4 +483,38 @@ mod tests {
         assert_eq!(value["sections"][0]["entries"][0]["Row"]["target"], "api");
         assert_eq!(value["verdict"]["Failed"]["code"], "build");
     }
+
+    /// The raw byte contract `logs --runs` needs: one notice per line, one `--json` line.
+    #[test]
+    fn notice_sections_and_json_lines_keep_the_legacy_raw_bytes() {
+        let report = Report {
+            sections: vec![Section {
+                header: None,
+                entries: vec![
+                    Entry::Notice {
+                        stream: StreamKind::Stdout,
+                        text: "one".to_owned(),
+                    },
+                    Entry::Notice {
+                        stream: StreamKind::Stderr,
+                        text: "two".to_owned(),
+                    },
+                ],
+            }],
+            verdict: None,
+            remedy: None,
+        };
+        let (out, err) = bytes(&report, UiMode::Plain, false);
+        assert_eq!(out, "one\n", "{out:?}");
+        assert_eq!(err, "two\n", "{err:?}");
+        assert!(!out.contains('\u{1b}') && !err.contains('\u{1b}'));
+
+        // `json_exit` writes `serde_json::to_string(value) + "\n"`; `emit_to` is the same path.
+        let (json, err) = bytes(&Report::notice("x"), UiMode::Json, false);
+        assert!(err.is_empty(), "{err:?}");
+        assert_eq!(
+            json,
+            "{\"sections\":[{\"header\":null,\"entries\":[{\"Notice\":{\"stream\":\"Stdout\",\"text\":\"x\"}}]}],\"verdict\":null,\"remedy\":null}\n"
+        );
+    }
 }
