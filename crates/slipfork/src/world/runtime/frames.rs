@@ -4,6 +4,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use slipfork_image::StepEvent;
+
+use crate::ui::report::{Counter, FailureFacts};
 use slipfork_world::run_log::RunRecord;
 use slipfork_world::snapshot::TailPhase;
 
@@ -143,7 +145,12 @@ pub(crate) fn step_frame(image: &str, event: &StepEvent<'_>) -> Value {
 
 /// Adds the typed facts a failure envelope needs: the instruction that ran, its source line, the
 /// child exit code, exactly one `next:`, and the `-v`-only plumbing kept out of `message`.
-pub(crate) fn failure_facts(frame: &mut Value, record: Option<&RunRecord>, plumbing: Option<&str>) {
+pub(crate) fn failure_facts(
+    frame: &mut Value,
+    record: Option<&RunRecord>,
+    plumbing: Option<&str>,
+    at: Option<Counter>,
+) {
     if frame.get("target").is_none()
         && let Some(name) = frame["name"].as_str()
     {
@@ -172,23 +179,43 @@ pub(crate) fn failure_facts(frame: &mut Value, record: Option<&RunRecord>, plumb
         .map(|id| format!("slipfork logs -r {id}"))
         .or_else(|| frame["remedy"].as_str().map(str::to_owned))
         .unwrap_or_else(|| "run `slipfork logs` for the failing step".to_owned());
-    frame["next"] = json!(next);
-    if let Some(message) = frame["message"].as_str() {
-        let body = message
+    let message = frame["message"].as_str().map(|message| {
+        message
             .lines()
             .filter(|line| !line.trim_start().starts_with("next:"))
             .collect::<Vec<_>>()
-            .join("\n");
-        frame["message"] = json!(body);
+            .join("\n")
+    });
+    let reason = record
+        .and_then(|record| record.reason.as_deref())
+        .filter(|reason| !reason.is_empty())
+        .unwrap_or_default()
+        .to_owned();
+    let facts = FailureFacts {
+        code: frame["code"].as_str().unwrap_or("boot-failed").to_owned(),
+        kind: frame["kind"].as_str().unwrap_or("boot").to_owned(),
+        phase: frame["phase"].as_str().map(str::to_owned),
+        target: frame["target"].as_str().map(str::to_owned),
+        at,
+        exit_code: frame["exit_code"]
+            .as_i64()
+            .and_then(|code| i32::try_from(code).ok()),
+        run_id: frame["run_id"].as_str().map(str::to_owned),
+        reason: reason.clone(),
+        runtime_ms: frame["elapsed_ms"].as_u64(),
+        next: next.clone(),
+    };
+    frame["next"] = json!(next);
+    if let Some(message) = message {
+        frame["message"] = json!(message);
     }
     if let Some(plumbing) = plumbing {
         frame["runtime"] = json!(plumbing);
     }
-    if let Some(reason) = record.and_then(|record| record.reason.as_deref())
-        && !reason.is_empty()
-    {
+    if !reason.is_empty() {
         frame["reason"] = json!(reason);
     }
+    frame["failure"] = json!(facts);
 }
 
 /// Step wall time in whole milliseconds.
@@ -206,7 +233,7 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{StepPin, step_frame, tail_phase_from_wire, tail_wire_label};
+    use super::{StepPin, failure_facts, step_frame, tail_phase_from_wire, tail_wire_label};
     use slipfork_image::{StepEvent, StepPlace, StepState};
     use slipfork_world::snapshot::TailPhase;
     use std::time::Duration;
@@ -252,5 +279,52 @@ mod tests {
             None,
         );
         assert!(step_frame("api", &started).get("phase").is_none());
+    }
+
+    #[test]
+    fn a_failed_frame_carries_one_exact_failure_envelope() {
+        let mut frame = serde_json::json!({
+            "event": "failed",
+            "kind": "run",
+            "name": "api",
+            "run_id": "abc123",
+            "exit_code": 3,
+            "message": "boom\nnext: fix it",
+            "elapsed_ms": 1200,
+        });
+        failure_facts(&mut frame, None, None, None);
+        assert_eq!(
+            frame["failure"],
+            serde_json::json!({
+                "code": "boot-failed",
+                "kind": "run",
+                "phase": null,
+                "target": "api",
+                "at": null,
+                "exit_code": 3,
+                "run_id": "abc123",
+                "reason": "",
+                "runtime_ms": 1200,
+                "next": "slipfork logs -r abc123",
+            })
+        );
+        assert_eq!(frame["message"], "boom");
+        assert_eq!(frame["next"], "slipfork logs -r abc123");
+
+        let mut positioned = serde_json::json!({
+            "event": "failed",
+            "kind": "step",
+            "name": "api",
+        });
+        failure_facts(
+            &mut positioned,
+            None,
+            None,
+            Some(super::Counter { index: 2, total: 3 }),
+        );
+        assert_eq!(
+            positioned["failure"]["at"],
+            serde_json::json!({ "index": 2, "total": 3 })
+        );
     }
 }

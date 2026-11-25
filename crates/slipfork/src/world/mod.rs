@@ -26,7 +26,6 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 
 use serde_json::Value;
 use slipfork_forkfile::FeatureEdit;
@@ -350,17 +349,6 @@ fn settle_record(project: &Path, registered: Option<&WorldName>) -> Result<(), S
     }
     let _ = fs::remove_file(&path);
     Ok(())
-}
-
-pub(super) fn fail(
-    message: impl std::fmt::Display,
-    next: &str,
-    palette: crate::ui::Palette,
-) -> ExitCode {
-    for line in crate::ui::failure_block(&message.to_string(), next, palette) {
-        eprintln!("{line}");
-    }
-    ExitCode::FAILURE
 }
 
 #[cfg(test)]

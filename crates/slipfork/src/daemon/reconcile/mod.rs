@@ -9,6 +9,7 @@ pub(super) mod progress;
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -25,7 +26,7 @@ use crate::world::HostEnv;
 use crate::world::WorldHeads;
 use crate::world::features::WorldFeatures;
 use crate::world::{HEADS_VERSION, ImageHead};
-use progress::{AttemptFailure, ImageAttempt};
+use progress::{AttemptFailure, ImageAttempt, ImageSettle};
 
 /// Compiles the world, seals every declared image (and resource image), and writes one head file.
 ///
@@ -106,9 +107,9 @@ pub(crate) fn build_world_heads(
         );
         let elapsed = millis(started);
         match outcome {
-            Ok((head, state, last, executed)) => {
+            Ok((head, settle, last, executed)) => {
                 images.insert(node.id.clone(), head);
-                attempt.finish(&state, elapsed, last.as_ref(), executed);
+                attempt.finish(settle, elapsed, last.as_ref(), executed);
             }
             Err(failure) => return Err(attempt.fail(failure, elapsed)),
         }
@@ -164,11 +165,23 @@ fn build_image(
     puller: &slipfork_image::OciPuller,
     builder: &NativeImageBuilder,
     attempt: &mut ImageAttempt<'_>,
-) -> Result<(ImageHead, String, Option<slipfork_image::StepTrace>, usize), AttemptFailure> {
+) -> Result<
+    (
+        ImageHead,
+        ImageSettle,
+        Option<slipfork_image::StepTrace>,
+        usize,
+    ),
+    AttemptFailure,
+> {
     if let Some(reference) = &node.from {
         let pulled = pull_row(puller, reference, attempt)?;
-        let state = if pulled.cached { "cached" } else { "pulled" }.to_owned();
-        return Ok((pulled_head(pulled, arch), state, None, 0));
+        let settle = if pulled.cached {
+            ImageSettle::Cached
+        } else {
+            ImageSettle::Pulled
+        };
+        return Ok((pulled_head(pulled, arch), settle, None, 0));
     }
     let paths = node.paths(project);
     let source = fs::read_to_string(&paths.dockerfile).map_err(|error| {
@@ -239,12 +252,13 @@ fn build_image(
         })?;
     let last = report.last;
     let executed = report.cache_misses;
-    let state = if report.cache_misses == 0 {
-        "cached"
+    let settle = if report.cache_misses == 0 {
+        ImageSettle::Cached
     } else {
-        "built"
-    }
-    .to_owned();
+        ImageSettle::Built(
+            NonZeroUsize::new(executed).expect("built implies at least one executed instruction"),
+        )
+    };
     let head = ImageHead {
         key: report.key,
         rootfs: report.rootfs,
@@ -256,9 +270,9 @@ fn build_image(
             .collect(),
         argv: report.config.exec_argv(),
         workdir: report.config.workdir,
-        state: state.clone(),
+        state: settle.as_str().to_owned(),
     };
-    Ok((head, state, last, executed))
+    Ok((head, settle, last, executed))
 }
 
 /// Pulls one `FROM`/resource reference with its own live `FROM` row.

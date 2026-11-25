@@ -9,6 +9,7 @@ use super::Heal;
 use crate::daemon::Failure;
 use crate::daemon::rpc::world_call_within;
 use crate::ps::PsService;
+use crate::ui::report::Outcome;
 
 const HEAL_INSPECT: Duration = Duration::from_secs(2);
 const HEAL_RESTART: Duration = Duration::from_secs(30);
@@ -30,7 +31,9 @@ pub(crate) fn settle(plan: Heal, emit: &mut dyn FnMut(Value)) -> Result<Value, F
         return Ok(ready(&plan.world, ms));
     }
     let label = format!("Verifying {}", plan.world);
-    emit(json!({"event":"started","step":1,"total":1,"kind":"world","label":label}));
+    emit(
+        json!({"event":"started","step":1,"total":1,"kind":"world","label":label,"outcome":Outcome::Running}),
+    );
     let mut restart_error = None;
     for row in &latest {
         let request = Request::Restart {

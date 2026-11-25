@@ -6,7 +6,6 @@ use serde_json::{Value, json};
 use slipfork_forkfile::FeatureEdit;
 
 use crate::commands::{Session, emit};
-use crate::daemon::DaemonClient;
 use crate::ui::Palette;
 use crate::ui::table::{Column, Table};
 
@@ -45,7 +44,7 @@ impl Session {
         }
         // `--json` is machine data: it never carries a plaintext secret, even from a TTY.
         let reveal = args.reveal && self.interactive() && !args.json;
-        let mut client = match DaemonClient::connect(&self.host) {
+        let mut client = match self.connect() {
             Ok(client) => client,
             Err(error) => return self.daemon_failure(&error, args.json),
         };

@@ -10,7 +10,6 @@ use serde_json::json;
 
 use crate::boot::{BootTui, dropped_row};
 use crate::commands::Session;
-use crate::daemon::DaemonClient;
 
 use super::features::WorldFeatures;
 use super::up::{emit_json, emit_stream};
@@ -35,7 +34,7 @@ impl Session {
         } else {
             json!({ "project": self.cwd(), "name": args.name })
         };
-        let mut client = match DaemonClient::connect(self.host()) {
+        let mut client = match self.connect() {
             Ok(client) => client,
             Err(error) => {
                 return self.lifecycle_failure(&error, "run `slipfork up` first", args.json, false);
@@ -109,7 +108,7 @@ impl Session {
 
     /// Stops a fork and deletes both of its snapshots.
     pub fn drop(&self, args: &DropArgs) -> ExitCode {
-        let mut client = match DaemonClient::connect(self.host()) {
+        let mut client = match self.connect() {
             Ok(client) => client,
             Err(error) => {
                 return self.lifecycle_failure(

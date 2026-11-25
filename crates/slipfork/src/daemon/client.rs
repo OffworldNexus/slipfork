@@ -45,6 +45,38 @@ impl fmt::Display for DaemonError {
 
 impl std::error::Error for DaemonError {}
 
+/// The one notice the connect path shows when it has to start an ephemeral daemon.
+///
+/// It owns its own colour decision, so a boot renderer never re-renders the hint and the bytes
+/// stay identical to the single line the CLI printed before this type existed.
+#[derive(Debug, Clone, Copy)]
+pub enum ConnectNotice {
+    /// No packaged daemon answered, so this invocation starts a detached ephemeral one.
+    Ephemeral {
+        /// Whether ANSI styling is allowed for this invocation (`host.color`).
+        color: bool,
+    },
+}
+
+impl ConnectNotice {
+    /// The exact bytes the ephemeral line has always printed.
+    #[must_use]
+    pub fn render(&self) -> String {
+        match self {
+            Self::Ephemeral { color } => crate::ui::Palette::new(*color).meta(EPHEMERAL_HINT),
+        }
+    }
+}
+
+impl fmt::Display for ConnectNotice {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.render())
+    }
+}
+
+/// The one ephemeral hint; the package enables the user service and the `:80` socket.
+const EPHEMERAL_HINT: &str = "• daemon not installed; running ephemeral — the package enables it; on a tarball run `docs/install.sh`";
+
 /// A connected daemon client with its own request sequence.
 #[derive(Debug)]
 pub struct DaemonClient {
@@ -61,7 +93,10 @@ impl DaemonClient {
     ///
     /// Fails after a twenty-second wait when a freshly spawned daemon never answers, reporting the
     /// startup log's own `error:`/`next:` pair when it wrote one.
-    pub fn connect(host: &HostEnv) -> Result<Self, DaemonError> {
+    pub fn connect(
+        host: &HostEnv,
+        emit: &mut dyn FnMut(&ConnectNotice),
+    ) -> Result<Self, DaemonError> {
         let socket = socket_path(host);
         match UnixStream::connect(&socket) {
             Ok(stream) => return Self::handshake(stream, socket, host),
@@ -74,11 +109,8 @@ impl DaemonClient {
             }
         }
         spawn_daemon(host)?;
-        // One-shot hint on the ephemeral autostart path; `host.color` is already gated by
-        // `NO_COLOR`/`TERM=dumb` and is false for Plain/Json, so a pipe or `--json` sees no ANSI.
-        let hint = "• daemon not installed; running ephemeral — the package enables it; \
-                    on a tarball run `docs/install.sh`";
-        eprintln!("{}", crate::ui::Palette::new(host.color).meta(hint));
+        // One typed notice on the ephemeral autostart path; the caller prints its exact bytes.
+        emit(&ConnectNotice::Ephemeral { color: host.color });
         let log = host.state_dir.join("daemon.log");
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {

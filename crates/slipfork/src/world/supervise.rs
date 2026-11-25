@@ -20,7 +20,9 @@ use crate::world::runtime::frames::{
     ROTATION_NOTE, StepPin, UP_NOTE_ENV, failure_facts, log_frame, note_frame,
 };
 
-use super::{HostEnv, SuperviseArgs, fail, runtime::WorldBoot, runtime::WorldRuntime};
+use crate::ui::report::{Counter, Failure, Outcome, Report};
+
+use super::{HostEnv, SuperviseArgs, runtime::WorldBoot, runtime::WorldRuntime};
 
 impl Session {
     /// Hidden detached-supervisor mode: boot, wait until `down`, then exit.
@@ -38,11 +40,18 @@ impl Session {
             args.no_cache,
         ) {
             Ok(()) => ExitCode::SUCCESS,
-            Err(message) => fail(
-                message,
-                "inspect `.slipfork/supervisor.log` for the boot cause",
-                crate::ui::Palette::new(self.color()),
-            ),
+            Err(message) => {
+                let (message, embedded) = crate::ui::split_remedy(&message);
+                let next = embedded.unwrap_or_else(|| {
+                    "inspect `.slipfork/supervisor.log` for the boot cause".to_owned()
+                });
+                let _ = self.renderer().emit(&Report::failure(Failure::new(
+                    "supervise",
+                    message,
+                    next,
+                )));
+                ExitCode::FAILURE
+            }
         }
     }
 }
@@ -256,7 +265,13 @@ fn supervisor_main(
             {
                 frame["exit_code"] = json!(code);
             }
-            failure_facts(&mut frame, record.as_ref(), None);
+            let at = failed_step
+                .filter(|_| !plan.steps.is_empty())
+                .map(|step| Counter {
+                    index: step + 1,
+                    total: plan.steps.len(),
+                });
+            failure_facts(&mut frame, record.as_ref(), None, at);
             if !runtime.has_live_world() {
                 // Zero resources or services entered the world (a cold image `RUN` or pre-pod
                 // setup/hook failed): reap `unshare`/`slipfork-world-init`/`slirp4netns` before
@@ -312,6 +327,7 @@ fn boot_event_json(event: &BootEvent) -> Value {
             "kind": kind.as_str(),
             "name": name,
             "state": "running",
+            "outcome": Outcome::Running,
             "run_id": run_id,
         }),
         BootEvent::Finished {

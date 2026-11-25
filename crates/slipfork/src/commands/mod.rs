@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use serde_json::{Value, json};
 
 use crate::daemon::{DaemonClient, DaemonError};
-use crate::ui::report::ReportRenderer;
+use crate::ui::report::{Failure, Report, ReportRenderer};
 use crate::ui::{Palette, Terminal, UiMode};
 use crate::world::HostEnv;
 use crate::{doctor, status};
@@ -84,6 +84,11 @@ impl Session {
     #[must_use]
     pub(crate) fn renderer(&self) -> ReportRenderer {
         ReportRenderer::new(self.terminal, self.clock.zone().clone())
+    }
+
+    /// The one daemon connect sink: the ephemeral hint prints here exactly once.
+    pub(crate) fn connect(&self) -> Result<DaemonClient, DaemonError> {
+        DaemonClient::connect(self.host(), &mut |notice| eprintln!("{notice}"))
     }
 
     /// The output mode resolved once by the composition root.
@@ -191,9 +196,11 @@ impl Session {
         if json {
             return match serde_json::to_string(&reply) {
                 Ok(text) => emit(&format!("{text}\n")),
-                Err(error) => self.fail(
+                Err(error) => self.report(
+                    "ps",
                     &format!("cannot encode the ps reply: {error}"),
                     "run `slipfork status --json` and report the payload",
+                    false,
                 ),
             };
         }
@@ -240,13 +247,6 @@ impl Session {
         self.report(&error.code, &error.message, next, json)
     }
 
-    fn fail(&self, message: &str, next: &str) -> ExitCode {
-        for line in crate::ui::failure_block(message, next, Palette::new(self.color())) {
-            eprintln!("{line}");
-        }
-        ExitCode::FAILURE
-    }
-
     /// One failure renderer: a JSON object under `--json`, `error:`/`next:` lines otherwise.
     pub(crate) fn report(&self, code: &str, message: &str, next: &str, json: bool) -> ExitCode {
         let (message, next) = message_and_next(message, next);
@@ -258,7 +258,10 @@ impl Session {
             ));
             return ExitCode::FAILURE;
         }
-        self.fail(&message, &next)
+        let _ = self
+            .renderer()
+            .emit(&Report::failure(Failure::new(code, message, next)));
+        ExitCode::FAILURE
     }
 
     /// Renders one feature diagnostic as `Forkfile:<line>: <message>`, plus its single `next:`.
@@ -297,7 +300,7 @@ impl Session {
             let _ = emit(&format!("{}\n", json!({ "error": error })));
             return ExitCode::FAILURE;
         }
-        self.fail(&message, &next)
+        self.report(code, &message, &next, false)
     }
 }
 

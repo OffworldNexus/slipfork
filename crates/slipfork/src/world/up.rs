@@ -13,10 +13,11 @@ use slipfork_forkfile::Diagnostics;
 use crate::boot::BootTui;
 use crate::commands::{Session, emit};
 use crate::daemon::{DaemonClient, DaemonError};
+use crate::ui::report::{Failure, Report};
 
 use super::features::WorldFeatures;
 use super::runtime::frames::ROTATION_NOTE;
-use super::{DownArgs, RestartArgs, Targets, UpArgs, WorldIdentities, fail};
+use super::{DownArgs, RestartArgs, Targets, UpArgs, WorldIdentities};
 
 impl Session {
     /// Reads, compiles, and verifies `<project>/Forkfile` with `request` merged over the persisted
@@ -81,7 +82,7 @@ impl Session {
             Some(Ok(resolved)) => resolved,
             Some(Err(error)) => return self.target_failure(&error, args.json),
             None => {
-                let mut connected = match DaemonClient::connect(self.host()) {
+                let mut connected = match self.connect() {
                     Ok(client) => client,
                     Err(error) => {
                         return self.lifecycle_failure(
@@ -135,7 +136,7 @@ impl Session {
         }
         let mut client = match client {
             Some(client) => client,
-            None => match DaemonClient::connect(self.host()) {
+            None => match self.connect() {
                 Ok(client) => client,
                 Err(error) => {
                     return self.lifecycle_failure(&error, "retry `slipfork up`", args.json, false);
@@ -228,7 +229,7 @@ impl Session {
                 );
             }
         };
-        let mut client = match DaemonClient::connect(self.host()) {
+        let mut client = match self.connect() {
             Ok(client) => client,
             Err(error) => {
                 return self.lifecycle_failure(
@@ -314,7 +315,7 @@ impl Session {
                 );
             }
         };
-        let mut client = match DaemonClient::connect(self.host()) {
+        let mut client = match self.connect() {
             Ok(client) => client,
             Err(error) => {
                 return self.lifecycle_failure(
@@ -472,7 +473,14 @@ impl Session {
         if already_rendered {
             return ExitCode::FAILURE;
         }
-        fail(&error.message, next, crate::ui::Palette::new(self.color()))
+        let (message, embedded) = crate::ui::split_remedy(&error.message);
+        let next = embedded.as_deref().unwrap_or(next);
+        let _ = self.renderer().emit(&Report::failure(Failure::new(
+            error.code.clone(),
+            message,
+            next,
+        )));
+        ExitCode::FAILURE
     }
 }
 

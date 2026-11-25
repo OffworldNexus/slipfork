@@ -6,7 +6,6 @@ use std::process::ExitCode;
 use serde_json::{Value, json};
 
 use crate::commands::{Session, emit};
-use crate::daemon::DaemonClient;
 use crate::ui::Palette;
 use crate::ui::table::{Column, Table};
 
@@ -61,7 +60,7 @@ impl Session {
     }
 
     fn secret_list(&self, args: &SecretArgs) -> ExitCode {
-        let mut client = match DaemonClient::connect(&self.host) {
+        let mut client = match self.connect() {
             Ok(client) => client,
             Err(error) => return self.daemon_failure(&error, args.json),
         };
@@ -160,7 +159,7 @@ impl Session {
                 args.json,
             );
         }
-        let mut client = match DaemonClient::connect(&self.host) {
+        let mut client = match self.connect() {
             Ok(client) => client,
             Err(error) => return self.daemon_failure(&error, args.json),
         };
@@ -197,7 +196,7 @@ impl Session {
                 args.json,
             );
         };
-        let mut client = match DaemonClient::connect(&self.host) {
+        let mut client = match self.connect() {
             Ok(client) => client,
             Err(error) => return self.daemon_failure(&error, args.json),
         };

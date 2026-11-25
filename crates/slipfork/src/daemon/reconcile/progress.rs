@@ -5,6 +5,7 @@
 //! code, and — when no child printed its own cause — the engine's one-line explanation. Captures
 //! stay pure command output; every record fact is published onto the attempt's catalog run.
 
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -13,7 +14,30 @@ use slipfork_world::run_log::RunNote;
 use slipfork_world::{ImageNode, LogStore, WorldPlan};
 
 use crate::daemon::Failure;
+use crate::ui::report::{Counter, Done, FailureFacts, Outcome, StepSettlement};
 use crate::world::{RunNotes, RunTarget, StepPin, log_frame, note_frame, step_frame};
+
+/// Which settled state one finished image attempt publishes; the wire words stay unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ImageSettle {
+    /// A cache hit with no executed steps.
+    Cached,
+    /// A `FROM`/resource reference fetched from a registry.
+    Pulled,
+    /// A Dockerfile build that executed at least one instruction.
+    Built(NonZeroUsize),
+}
+
+impl ImageSettle {
+    /// The exact `state` word this attempt publishes.
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cached => "cached",
+            Self::Pulled => "pulled",
+            Self::Built(_) => "built",
+        }
+    }
+}
 
 /// One image attempt: a `started`/`finished` image row, its inner `step`/`log`/`note` frames, and
 /// the run capture that makes `slipfork logs -r <id>` resolve.
@@ -24,6 +48,7 @@ pub(super) struct ImageAttempt<'a> {
     label: String,
     image: String,
     index: Option<usize>,
+    inner_total: Option<usize>,
     run: Option<RunTarget>,
     notes: RunNotes,
     nodes: &'a [ImageNode],
@@ -69,6 +94,7 @@ impl<'a> ImageAttempt<'a> {
             "name": image,
             "label": label,
             "state": "running",
+            "outcome": Outcome::Running,
             "run_id": run_id,
         }));
         Ok(Self {
@@ -78,6 +104,7 @@ impl<'a> ImageAttempt<'a> {
             label,
             image: image.to_owned(),
             index: None,
+            inner_total: None,
             run: Some(run),
             notes: RunNotes::new(store),
             nodes: &plan.images,
@@ -120,11 +147,12 @@ impl<'a> ImageAttempt<'a> {
     /// pulled), so a replay never has to guess which instruction produced its rows.
     pub(super) fn finish(
         &mut self,
-        state: &str,
+        settle: ImageSettle,
         elapsed_ms: u64,
         last: Option<&StepTrace>,
         executed: usize,
     ) {
+        let state = settle.as_str();
         let discard = !self.wrote && state == "cached";
         if !discard {
             let note = success_note(self.nodes, &self.image, last);
@@ -140,7 +168,8 @@ impl<'a> ImageAttempt<'a> {
                 run.finish(state, elapsed_ms)
             }
         });
-        (self.emit)(json!({
+        let settlement = settlement(settle, elapsed_ms, run_id.as_deref());
+        let mut frame = json!({
             "event": "finished",
             "step": self.step,
             "total": self.total,
@@ -152,7 +181,9 @@ impl<'a> ImageAttempt<'a> {
             "elapsed_ms": elapsed_ms,
             "duration_ms": elapsed_ms,
             "run_id": run_id,
-        }));
+        });
+        frame["settlement"] = json!(settlement);
+        (self.emit)(frame);
     }
 
     /// Settles a failed attempt, keeping its capture and publishing the instruction that failed.
@@ -174,8 +205,27 @@ impl<'a> ImageAttempt<'a> {
             .run
             .as_mut()
             .and_then(|run| run.finish("failed", elapsed_ms));
+        let (reason, next) = failure_parts(&failure.message);
+        let facts = FailureFacts {
+            code: "image-build".to_owned(),
+            kind: note
+                .as_ref()
+                .and_then(|note| note.phase.clone())
+                .map_or_else(|| "image".to_owned(), |phase| phase.to_uppercase()),
+            phase: note.as_ref().and_then(|note| note.phase.clone()),
+            target: Some(self.image.clone()),
+            at: self
+                .index
+                .zip(self.inner_total)
+                .map(|(index, total)| Counter { index, total }),
+            exit_code: failure.exit_code,
+            run_id: run_id.clone(),
+            reason: failure.reason.clone().unwrap_or_else(|| reason.clone()),
+            runtime_ms: Some(elapsed_ms),
+            next: next.clone(),
+        };
         let cause = failure.message.lines().next().unwrap_or(&failure.message);
-        (self.emit)(json!({
+        let mut frame = json!({
             "event": "finished",
             "step": self.step,
             "total": self.total,
@@ -187,7 +237,9 @@ impl<'a> ImageAttempt<'a> {
             "elapsed_ms": elapsed_ms,
             "duration_ms": elapsed_ms,
             "run_id": run_id,
-        }));
+        });
+        frame["failure"] = json!(facts);
+        (self.emit)(frame);
         Failure::new("image-build", failure.message)
     }
 
@@ -196,6 +248,7 @@ impl<'a> ImageAttempt<'a> {
             BuildEvent::Step(step) => {
                 if step.state == StepState::Started {
                     self.index = Some(step.index);
+                    self.inner_total = Some(step.total);
                     self.wrote = true;
                     let note = started_note(self.dockerfile.as_deref(), &step);
                     if let Some(run_id) = self.run.as_ref().and_then(RunTarget::run_id) {
@@ -251,6 +304,32 @@ impl<'a> ImageAttempt<'a> {
             image: Some(&self.image),
             index: self.index,
         }
+    }
+}
+
+/// Splits an engine message into its body and the one `next:` remedy it already carries.
+fn failure_parts(message: &str) -> (String, String) {
+    let (body, next) = crate::ui::split_remedy(message);
+    (
+        body,
+        next.unwrap_or_else(|| "fix the failing step and retry `slipfork up`".to_owned()),
+    )
+}
+
+/// The exact settlement one finished attempt publishes; zero executed steps stay `cached`.
+fn settlement(settle: ImageSettle, duration_ms: u64, run_id: Option<&str>) -> StepSettlement {
+    match settle {
+        ImageSettle::Cached => StepSettlement::Cached { duration_ms },
+        ImageSettle::Pulled => StepSettlement::Completed {
+            done: Done::Pulled,
+            duration_ms,
+            run_id: run_id.map(str::to_owned),
+        },
+        ImageSettle::Built(steps) => StepSettlement::Completed {
+            done: Done::Built { steps },
+            duration_ms,
+            run_id: run_id.map(str::to_owned),
+        },
     }
 }
 
@@ -395,7 +474,15 @@ mod tests {
 
     use slipfork_image::{StepEvent, StepPlace, StepState, StepTrace};
 
-    use super::{failed_note, started_note, step_label, success_note};
+    use serde_json::Value;
+    use slipfork_world::LogStore;
+
+    use super::{
+        AttemptFailure, ImageAttempt, ImageSettle, failed_note, settlement, started_note,
+        step_label, success_note,
+    };
+    use crate::ui::report::StepSettlement;
+    use crate::world::RunNotes;
 
     /// A capture divider names the instruction's position, keyword, and args as the author wrote
     /// them, with no trailing space when the instruction takes none.
@@ -495,5 +582,115 @@ mod tests {
         assert_eq!(unused.phase.as_deref(), Some("Dockerfile"));
         assert_eq!(unused.source.as_deref(), Some("Dockerfile"));
         assert_eq!(unused.instruction, None);
+    }
+
+    #[test]
+    fn image_settlements_publish_exact_stable_json_without_fabricated_steps() {
+        let value = |settlement: &StepSettlement| {
+            serde_json::to_value(settlement).expect("serialize a settlement")
+        };
+        assert_eq!(
+            value(&settlement(ImageSettle::Cached, 7, None)),
+            serde_json::json!({ "state": "cached", "duration_ms": 7 })
+        );
+        assert_eq!(
+            value(&settlement(ImageSettle::Pulled, 7, None)),
+            serde_json::json!({
+                "state": "completed",
+                "done": "pulled",
+                "duration_ms": 7,
+                "run_id": null,
+            })
+        );
+        assert_eq!(
+            value(&settlement(ImageSettle::Pulled, 7, Some("abc"))),
+            serde_json::json!({
+                "state": "completed",
+                "done": "pulled",
+                "duration_ms": 7,
+                "run_id": "abc",
+            })
+        );
+        assert_eq!(
+            value(&settlement(
+                ImageSettle::Built(std::num::NonZeroUsize::new(2).unwrap()),
+                9,
+                Some("abc")
+            )),
+            serde_json::json!({
+                "state": "completed",
+                "done": { "built": { "steps": 2 } },
+                "duration_ms": 9,
+                "run_id": "abc",
+            })
+        );
+    }
+
+    #[test]
+    fn emitted_attempt_frames_carry_typed_objects() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let dir = tempfile::Builder::new()
+            .prefix("slipfork-progress-frame-")
+            .tempdir_in("/var/tmp")
+            .expect("create a disk temp directory");
+        let store = LogStore::at(
+            dir.path().join("store"),
+            slipfork_world::WorldName::parse("demo").expect("valid world name"),
+        );
+        let frames = Rc::new(RefCell::new(Vec::new()));
+        let sink = Rc::clone(&frames);
+        let mut emit = move |frame: Value| sink.borrow_mut().push(frame);
+        let mut attempt = ImageAttempt {
+            emit: &mut emit,
+            total: 1,
+            step: 1,
+            label: "image api".to_owned(),
+            image: "api".to_owned(),
+            index: None,
+            inner_total: None,
+            run: None,
+            notes: RunNotes::new(&store),
+            nodes: &[],
+            dockerfile: None,
+            started: None,
+            wrote: true,
+        };
+        attempt.finish(
+            ImageSettle::Built(std::num::NonZeroUsize::new(2).unwrap()),
+            9,
+            None,
+            2,
+        );
+        let finished = frames
+            .borrow()
+            .last()
+            .cloned()
+            .expect("finish emits one frame");
+        assert_eq!(
+            finished["settlement"],
+            serde_json::json!({
+                "state": "completed",
+                "done": { "built": { "steps": 2 } },
+                "duration_ms": 9,
+                "run_id": null,
+            })
+        );
+        assert!(finished["settlement"].is_object());
+
+        attempt.fail(
+            AttemptFailure::bare("build `api` failed: boom\nnext: fix it"),
+            5,
+        );
+        let failed = frames
+            .borrow()
+            .last()
+            .cloned()
+            .expect("fail emits one frame");
+        assert!(failed["failure"].is_object());
+        assert_eq!(failed["failure"]["code"], "image-build");
+        assert_eq!(failed["failure"]["kind"], "image");
+        assert_eq!(failed["failure"]["next"], "fix it");
     }
 }

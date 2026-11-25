@@ -13,7 +13,6 @@ use std::rc::Rc;
 use serde_json::{Value, json};
 
 use crate::commands::Session;
-use crate::daemon::DaemonClient;
 use crate::daemon::image::ImageFrame;
 use crate::ui::Palette;
 
@@ -75,7 +74,7 @@ impl Session {
         verb: FinalVerb,
         next: &str,
     ) -> ExitCode {
-        let mut client = match DaemonClient::connect(self.host()) {
+        let mut client = match self.connect() {
             Ok(client) => client,
             Err(error) => {
                 return self.report(
