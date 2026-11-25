@@ -22,7 +22,7 @@ use self::reply::{boot_node, ps_reply};
 
 use super::{DownArgs, RestartArgs, Targets, UpArgs, WorldIdentities};
 
-pub(in crate::world) use reply::{emit_json, emit_stream};
+use super::emit::{emit_json, emit_stream};
 
 impl Session {
     /// Boots the world through the daemon and renders every boot node until ready.

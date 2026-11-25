@@ -13,7 +13,8 @@ use crate::world::supervise::BootSink;
 
 use super::notes::{RunNotes, StepFailure};
 use super::ready::{Ready, Staged};
-use super::{WorldRuntime, elapsed_ms, resources};
+use super::{WorldRuntime, resources};
+use crate::world::elapsed_ms;
 
 impl WorldRuntime {
     /// Executes one DAG node with zero global lock: staging uses narrow collaborator scopes and

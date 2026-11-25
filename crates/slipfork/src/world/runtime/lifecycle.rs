@@ -73,8 +73,3 @@ impl WorldRuntime {
         let _ = fs::remove_dir(self.layout.pods_root());
     }
 }
-
-/// Step wall time in whole milliseconds, clamped for a pathological clock jump.
-pub(in crate::world) fn elapsed_ms(started: std::time::Instant) -> u64 {
-    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
-}

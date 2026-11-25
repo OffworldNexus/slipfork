@@ -20,7 +20,7 @@ use super::stream::finish;
 
 impl Daemon {
     /// Relays one `shell`: a real PTY master for a terminal, or the `exec` pipe path otherwise.
-    pub(crate) fn handle_shell(
+    pub(in crate::daemon) fn handle_shell(
         &self,
         request: &wire::Request,
         reader: &mut FrameReader,
@@ -46,7 +46,7 @@ impl Daemon {
     }
 
     /// Relays one `exec`: a PTY master under `tty: true`, else world frames plus client input.
-    pub(crate) fn handle_exec(
+    pub(in crate::daemon) fn handle_exec(
         &self,
         request: &wire::Request,
         reader: &mut FrameReader,

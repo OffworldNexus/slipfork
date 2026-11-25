@@ -12,8 +12,8 @@ use crate::boot::{BootTui, dropped_row};
 use crate::commands::Session;
 use crate::ui::report::Failure;
 
+use super::emit::{emit_json, emit_stream};
 use super::features::WorldFeatures;
-use super::up::{emit_json, emit_stream};
 use super::{DropArgs, ForkArgs};
 
 impl Session {

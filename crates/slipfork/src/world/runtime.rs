@@ -33,8 +33,6 @@ mod rootfs;
 mod steps;
 use dev::DevMounts;
 
-pub(super) use lifecycle::elapsed_ms;
-
 /// The one line a non-zero pod exit writes into both the capture and the failure message.
 pub(crate) fn exit_line(command: &str, code: i32) -> String {
     format!("`{command}` exited with {code}")

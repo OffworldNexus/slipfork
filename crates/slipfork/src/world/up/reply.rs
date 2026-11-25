@@ -1,10 +1,7 @@
-//! Daemon `ps` decoding plus the typed boot-node reply and `--json` emission helpers.
-
-use std::process::ExitCode;
+//! Daemon `ps` decoding plus the typed boot-node reply projection.
 
 use serde_json::{Value, json};
 
-use crate::commands::emit;
 use crate::daemon::{DaemonClient, DaemonError};
 
 /// Reads the daemon's typed `ps` reply so target resolution has one canonical registry view.
@@ -37,16 +34,4 @@ pub(super) fn boot_node(event: &Value) -> Option<Value> {
         "state": event["state"].as_str().unwrap_or("unknown"),
         "duration_ms": event["duration_ms"],
     }))
-}
-
-/// Emits one streamed frame when `--json` is on: `--verbose` keeps `note` frames, else they drop.
-pub(in crate::world) fn emit_stream(json: bool, verbose: bool, event: &Value) {
-    if json && (verbose || event["event"].as_str() != Some("note")) {
-        let _ = emit_json(event);
-    }
-}
-
-/// Emits one already-built JSON object with zero ANSI.
-pub(in crate::world) fn emit_json(value: &Value) -> ExitCode {
-    emit(&format!("{value}\n"))
 }

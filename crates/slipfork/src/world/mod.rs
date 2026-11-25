@@ -5,6 +5,7 @@
 //! `BootEvent`s back over its stdout, then waits for the world init to exit. The init owns the one
 //! `<pods>/control.sock` plane that `down`/`restart` speak to through a typed client.
 
+mod emit;
 pub(crate) mod features;
 mod fork;
 mod heads;
@@ -135,6 +136,11 @@ fn can_write(path: &Path) -> bool {
     };
     // SAFETY: `access(2)` only reads this process's effective credentials and `path`'s mode.
     unsafe { libc::access(path.as_ptr(), libc::W_OK) == 0 }
+}
+
+/// Step wall time in whole milliseconds, clamped for a pathological clock jump.
+pub(crate) fn elapsed_ms(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Parsed `slipfork up [target] [-F ...] [--no-default-features]` arguments.
