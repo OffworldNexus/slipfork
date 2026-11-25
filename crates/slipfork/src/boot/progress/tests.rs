@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use super::BootProgress;
-use crate::boot::render::{BarProgress, panel_line, percent_of, status_line};
+use crate::boot::render::{BarProgress, panel_line, percent_of};
 
 fn plan() -> Vec<(String, String)> {
     vec![
@@ -299,14 +299,11 @@ fn bar_text_keeps_outer_counter_and_fractional_percent_without_mixed_units() {
     let bar = progress.bar();
     assert_eq!((bar.done, bar.total, bar.num, bar.den), (0, 2, 2, 8));
 
-    let plain = status_line('⠸', bar, &progress.label(), Duration::from_millis(200), 110);
-    assert_eq!(
-        plain,
-        "⠸ [######..................]  0/2  25% · [1/2] image api · step 3/4 RUN · 0.2s"
-    );
-    assert!(!plain.contains("2/8"), "{plain}");
-
     let styled = panel_line('⠸', bar, &progress.label(), Duration::from_millis(200), 110);
     assert!(styled.contains("0/2") && styled.contains("25%"), "{styled}");
     assert!(!styled.contains("2/8"), "{styled}");
+    assert_eq!(
+        console::strip_ansi_codes(&styled),
+        "⠸ [██████░░░░░░░░░░░░░░░░░░]  0/2  25% · [1/2] image api · step 3/4 RUN · 0.2s"
+    );
 }

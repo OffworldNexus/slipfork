@@ -25,6 +25,53 @@ pub(super) use ticker::Ticker;
 /// A status line exists only for a colour terminal, so its frame is always styled.
 const PALETTE: Palette = Palette::new(true);
 
+/// The plain append sink: ordinary newline-terminated scrollback lines for the no-status path.
+///
+/// Only this type touches the process streams when no status line owns the cursor, so
+/// [`super::BootTui`] keeps zero print macros and zero direct stream handles.
+#[derive(Debug, Default, Clone, Copy)]
+pub(super) struct Append;
+
+impl Append {
+    /// One stdout row, flushed immediately so a live reader sees it.
+    pub(super) fn row(&self, text: &str) {
+        let mut stdout = std::io::stdout().lock();
+        let _ = writeln!(stdout, "{text}");
+        let _ = stdout.flush();
+    }
+
+    /// A batch of stdout rows, flushed once.
+    pub(super) fn rows(&self, rows: &[String]) {
+        if rows.is_empty() {
+            return;
+        }
+        let mut stdout = std::io::stdout().lock();
+        for row in rows {
+            let _ = writeln!(stdout, "{row}");
+        }
+        let _ = stdout.flush();
+    }
+
+    /// One stderr diagnosis row, flushed immediately.
+    pub(super) fn diagnose(&self, text: &str) {
+        let mut stderr = std::io::stderr().lock();
+        let _ = writeln!(stderr, "{text}");
+        let _ = stderr.flush();
+    }
+
+    /// A held stderr block (the diagnosis envelope), flushed once.
+    pub(super) fn diagnoses(&self, rows: Vec<String>) {
+        if rows.is_empty() {
+            return;
+        }
+        let mut stderr = std::io::stderr().lock();
+        for row in &rows {
+            let _ = writeln!(stderr, "{row}");
+        }
+        let _ = stderr.flush();
+    }
+}
+
 /// The one in-place status line: its content model plus the shared [`Pane`] mechanic.
 pub(super) struct StatusLine {
     progress: BootProgress,

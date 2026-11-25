@@ -168,17 +168,18 @@ impl Session {
                 implies.clone(),
             ]);
             styled.push(vec![
-                palette.tint(
-                    if active { "●" } else { "○" },
-                    if active { "32" } else { "2" },
-                ),
+                if active {
+                    palette.ok("●")
+                } else {
+                    palette.dim("○")
+                },
                 if active {
                     palette.label(name)
                 } else {
                     palette.meta(name)
                 },
                 if active {
-                    palette.tint("active", "32")
+                    palette.ok("active")
                 } else {
                     palette.meta("inactive")
                 },

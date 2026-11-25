@@ -57,9 +57,6 @@ RAW_PRINT_ALLOWLIST = {
         "crates/slipfork/src/ui/report/exit.rs"
     ): "the stderr block for an unwritable stdout",
     PurePosixPath(
-        "crates/slipfork/src/boot.rs"
-    ): "live boot append sink coordinates with the painted PTY line",
-    PurePosixPath(
         "crates/slipfork/src/daemon"
     ): "detached daemon journal has no terminal renderer",
     PurePosixPath(

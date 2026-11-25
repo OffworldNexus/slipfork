@@ -23,6 +23,35 @@ pub struct Verdict {
     pub duration_ms: Option<u64>,
 }
 
+/// The role one diff line plays, so the palette owns every diff hue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffRole {
+    /// A hunk marker (`@@`) or file header (`---`/`+++`): bold.
+    Header,
+    /// An added line: green.
+    Added,
+    /// A removed line: red.
+    Removed,
+    /// Unchanged surrounding context: untouched.
+    Context,
+}
+
+impl DiffRole {
+    /// Classifies one diff line by its leading marker, or `None` for context.
+    #[must_use]
+    pub fn of(line: &str) -> Option<Self> {
+        if line.starts_with("---") || line.starts_with("+++") || line.starts_with("@@") {
+            Some(Self::Header)
+        } else if line.starts_with('+') {
+            Some(Self::Added)
+        } else if line.starts_with('-') {
+            Some(Self::Removed)
+        } else {
+            None
+        }
+    }
+}
+
 /// The shipped visual roles: one method per thing a human reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Palette {
@@ -44,7 +73,7 @@ impl Palette {
 
     /// Tints `text` with a raw SGR parameter, or returns it untouched.
     #[must_use]
-    pub fn tint(self, text: &str, code: &str) -> String {
+    pub(super) fn tint(self, text: &str, code: &str) -> String {
         paint(text, code, self.color)
     }
 
@@ -126,6 +155,66 @@ impl Palette {
         self.tint(text, "31")
     }
 
+    /// Success text in the plain weight (`✓ Stopped`, `Dropped`, an `active` feature).
+    #[must_use]
+    pub fn ok(self, text: &str) -> String {
+        self.tint(text, "32")
+    }
+
+    /// A bold-green readiness row (`✓ Ready`).
+    #[must_use]
+    pub fn ready(self, text: &str) -> String {
+        self.tint(text, "1;32")
+    }
+
+    /// Bold red failure text (`✗ 2 issue(s) found`).
+    #[must_use]
+    pub fn error_bold(self, text: &str) -> String {
+        self.tint(text, "1;31")
+    }
+
+    /// A diagnostic report's leading success verdict (`✓ Ready`): bold green, in the settled
+    /// `colour;1` order so the check result owns the first escape of the block.
+    #[must_use]
+    pub fn headline_ok(self, text: &str) -> String {
+        self.tint(text, "32;1")
+    }
+
+    /// A diagnostic report's leading failure verdict (`✗ 2 issue(s) found`): bold red, same order.
+    #[must_use]
+    pub fn headline_bad(self, text: &str) -> String {
+        self.tint(text, "31;1")
+    }
+
+    /// Receded, inactive content (`○`, a disabled feature's status).
+    #[must_use]
+    pub fn dim(self, text: &str) -> String {
+        self.tint(text, "2")
+    }
+
+    /// A copyable `next:` command: cyan, never bold, because it is runnable not primary.
+    #[must_use]
+    pub fn next(self, text: &str) -> String {
+        self.tint(text, "36")
+    }
+
+    /// A yellow caution mark (`•` for an orphaned world).
+    #[must_use]
+    pub fn warn(self, text: &str) -> String {
+        self.tint(text, "33")
+    }
+
+    /// One diff line by [`DiffRole`]; context lines pass through untouched.
+    #[must_use]
+    pub fn diff(self, role: DiffRole, line: &str) -> String {
+        match role {
+            DiffRole::Header => self.tint(line, "1"),
+            DiffRole::Added => self.ok(line),
+            DiffRole::Removed => self.error(line),
+            DiffRole::Context => line.to_owned(),
+        }
+    }
+
     /// A lifecycle state word, mapped to the shipped status colours.
     ///
     /// Every settled/reached word (`cached`, `up to date`, `built`, `pulled`, `ready`, `running`,
@@ -138,7 +227,7 @@ impl Palette {
         if let Some((word, rest)) = state.split_once(' ')
             && word.eq_ignore_ascii_case("built")
         {
-            return format!("{} {rest}", self.tint(word, "32"));
+            return format!("{} {rest}", self.ok(word));
         }
         let code = match state.to_ascii_lowercase().as_str() {
             "cached" | "up-to-date" | "up to date" | "built" | "pulled" | "ready" | "running"
@@ -153,13 +242,13 @@ impl Palette {
     /// A success mark.
     #[must_use]
     pub fn icon_ok(self) -> String {
-        self.tint("✓", "32")
+        self.ok("✓")
     }
 
     /// A failure mark.
     #[must_use]
     pub fn icon_bad(self) -> String {
-        self.tint("✗", "1;31")
+        self.error_bold("✗")
     }
 
     /// A neutral information mark.
@@ -184,7 +273,7 @@ impl Palette {
         let mut fields = vec![
             self.tint(&format!("#{run_id}"), "1"),
             self.verb(verb),
-            self.tint(target, "1"),
+            self.value(target),
         ];
         if !command.trim().is_empty() && command.trim() != target.trim() {
             fields.push(command.to_owned());
@@ -202,7 +291,7 @@ impl Palette {
     #[must_use]
     pub fn gutter(self, stream: &str) -> String {
         match stream {
-            "stderr" => self.tint("┃", "33"),
+            "stderr" => self.warn("┃"),
             _ => self.meta("│"),
         }
     }
@@ -221,16 +310,12 @@ impl Palette {
             duration_ms,
         } = verdict;
         let subject = if verb.trim().is_empty() || verb.trim() == target.trim() {
-            self.tint(target, "1")
+            self.value(target)
         } else {
-            format!("{} {}", self.verb(verb), self.tint(target, "1"))
+            format!("{} {}", self.verb(verb), self.value(target))
         };
         if state == "failed" {
-            let mut line = format!(
-                "{} {subject} {}",
-                self.tint("✗", "31"),
-                self.tint("failed", "31")
-            );
+            let mut line = format!("{} {subject} {}", self.error("✗"), self.error("failed"));
             if let Some(code) = exit_code {
                 line.push(' ');
                 line.push_str(&self.meta(&format!("(exit {code})")));
@@ -259,27 +344,55 @@ impl Palette {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    /// Literal source patterns that must never reappear: the retired alias would otherwise creep
-    /// back as a second metadata role. Split literals keep this file from matching itself.
-    const FORBIDDEN: [&str; 3] = [
-        concat!("palette.", "dim("),
-        concat!("self.", "dim("),
-        concat!("fn ", "dim("),
-    ];
+    use super::{DiffRole, Palette};
+
+    /// The raw-SGR call shapes: no caller outside this module may name a colour code.
+    const RAW_SGR_CALLS: [&str; 2] = [concat!("tin", "t("), concat!("pai", "nt(")];
 
     #[test]
-    fn no_dim_alias_survives_in_the_crate() {
+    fn the_named_roles_keep_their_settled_bytes() {
+        let palette = Palette::new(true);
+        assert_eq!(palette.ok("x"), "\u{1b}[32mx\u{1b}[0m");
+        assert_eq!(palette.ready("x"), "\u{1b}[1;32mx\u{1b}[0m");
+        assert_eq!(palette.error_bold("x"), "\u{1b}[1;31mx\u{1b}[0m");
+        assert_eq!(palette.dim("x"), "\u{1b}[2mx\u{1b}[0m");
+        assert_eq!(palette.next("x"), "\u{1b}[36mx\u{1b}[0m");
+        assert_eq!(palette.warn("x"), "\u{1b}[33mx\u{1b}[0m");
+        assert_eq!(palette.diff(DiffRole::Header, "x"), "\u{1b}[1mx\u{1b}[0m");
+        assert_eq!(palette.diff(DiffRole::Added, "x"), "\u{1b}[32mx\u{1b}[0m");
+        assert_eq!(palette.diff(DiffRole::Removed, "x"), "\u{1b}[31mx\u{1b}[0m");
+        assert_eq!(palette.diff(DiffRole::Context, "x"), "x");
+    }
+
+    #[test]
+    fn the_disabled_palette_emits_zero_escapes() {
+        let plain = Palette::new(false);
+        for line in [
+            plain.ok("x"),
+            plain.ready("x"),
+            plain.error_bold("x"),
+            plain.dim("x"),
+            plain.next("x"),
+            plain.diff(DiffRole::Added, "x"),
+        ] {
+            assert!(line.ends_with('x'), "{line:?}");
+            assert!(!line.contains('\u{1b}'), "{line:?}");
+        }
+    }
+
+    #[test]
+    fn no_tint_or_paint_sgr_literal_outside_the_palette() {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut violations = Vec::new();
-        scan(&src, &mut violations);
+        scan(&src, &src, &mut violations);
         assert!(
             violations.is_empty(),
-            "retired `dim` alias still present:\n{}",
+            "raw SGR literal outside the palette:\n{}",
             violations.join("\n")
         );
     }
 
-    fn scan(dir: &Path, violations: &mut Vec<String>) {
+    fn scan(dir: &Path, src: &Path, violations: &mut Vec<String>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
@@ -287,14 +400,27 @@ mod tests {
         paths.sort();
         for path in paths {
             if path.is_dir() {
-                scan(&path, violations);
+                scan(&path, src, violations);
             } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                if path == src.join("ui/report/palette.rs") {
+                    continue;
+                }
                 let Ok(text) = std::fs::read_to_string(&path) else {
                     continue;
                 };
-                for (index, line) in text.lines().enumerate() {
-                    if FORBIDDEN.iter().any(|needle| line.contains(needle)) {
-                        violations.push(format!("{}:{}: {line}", path.display(), index + 1));
+                for needle in RAW_SGR_CALLS {
+                    for (index, _) in text.match_indices(needle) {
+                        let rest = &text[index..];
+                        // The argument span runs to the call's closing `)`, so a string literal
+                        // split across lines is still caught.
+                        let arg_end = rest.find(')').unwrap_or(rest.len());
+                        if rest[..arg_end].contains('"') {
+                            let line = text[..index].matches('\n').count() + 1;
+                            violations.push(format!(
+                                "{}:{line}: raw colour call with an SGR string literal",
+                                path.display()
+                            ));
+                        }
                     }
                 }
             }

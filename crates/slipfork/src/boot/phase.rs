@@ -124,7 +124,7 @@ impl Phase {
 
     /// The expanded `✗ …` row printed with a failed step's output.
     pub(super) fn failed_row(&self, palette: Palette) -> String {
-        let mark = palette.tint("✗", "31");
+        let mark = palette.error("✗");
         if self.is_inner() {
             self.inner_row(&mark, None, palette)
         } else {

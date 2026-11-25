@@ -116,7 +116,7 @@ pub fn outer_row(
     row.push_str("  ");
     push_padded(
         &mut row,
-        &palette.tint(target, "1"),
+        &palette.value(target),
         target.chars().count(),
         widths.target,
     );
@@ -236,26 +236,6 @@ pub fn panel_line(
     assemble(spinner, progress, label, elapsed, width, Palette::new(true))
 }
 
-/// One `\r`-rewritten colourless status line; carries zero escapes and zero carriage returns.
-#[must_use]
-#[allow(dead_code)]
-pub fn status_line(
-    spinner: char,
-    progress: BarProgress,
-    label: &str,
-    elapsed: Duration,
-    width: usize,
-) -> String {
-    assemble(
-        spinner,
-        progress,
-        label,
-        elapsed,
-        width,
-        Palette::new(false),
-    )
-}
-
 fn assemble(
     spinner: char,
     progress: BarProgress,
@@ -285,8 +265,8 @@ fn assemble(
         )
     };
     let counter = palette.meta(&count);
-    let pct = palette.tint(&pct, "1");
-    let label = palette.tint(label, "1");
+    let pct = palette.value(&pct);
+    let label = palette.value(label);
     let seconds = palette.meta(&seconds);
 
     if let Some(cells) = pane_geometry(width) {
@@ -323,7 +303,7 @@ pub fn ready_row(url: &str, styled: bool) -> String {
     let palette = Palette::new(styled);
     format!(
         "{} {} {}",
-        palette.tint("✓ Ready", "1;32"),
+        palette.ready("✓ Ready"),
         palette.meta("->"),
         palette.url(url),
     )
@@ -336,7 +316,7 @@ pub fn forked_row(fork: &str, millis: u64, url: &str, styled: bool) -> String {
     format!(
         "{} {} {} {} {}",
         palette.icon_ok(),
-        palette.tint(fork, "1"),
+        palette.value(fork),
         palette.meta(&format!("({})", elapsed_text(millis))),
         palette.meta("->"),
         palette.url(url),
@@ -349,8 +329,8 @@ pub fn stopped_row(world: &str, millis: u64, styled: bool) -> String {
     let palette = Palette::new(styled);
     format!(
         "{} {} {}",
-        palette.tint("✓ Stopped", "32"),
-        palette.tint(world, "1"),
+        palette.ok("✓ Stopped"),
+        palette.value(world),
         palette.meta(&format!("({})", elapsed_text(millis))),
     )
 }
@@ -362,8 +342,8 @@ pub fn dropped_row(fork: &str, millis: u64, styled: bool) -> String {
     format!(
         "{} {} {} {}",
         palette.icon_ok(),
-        palette.tint("Dropped", "32"),
-        palette.tint(fork, "1"),
+        palette.ok("Dropped"),
+        palette.value(fork),
         palette.meta(&format!("({})", elapsed_text(millis))),
     )
 }

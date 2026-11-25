@@ -328,11 +328,7 @@ impl StreamRenderer {
                 ];
                 let gutter = Table::new(&columns).gap(" ").indent(&stamp);
                 let palette = self.renderer.palette();
-                let cells = [
-                    palette.tint(pod, "1"),
-                    palette.gutter(stream),
-                    line.to_string(),
-                ];
+                let cells = [palette.value(pod), palette.gutter(stream), line.to_string()];
                 // Measure the real row, line included: the table engine skips a zero-width column,
                 // and measuring an empty body would silently drop every log line.
                 let widths = gutter.widths(&[cells.to_vec()]);

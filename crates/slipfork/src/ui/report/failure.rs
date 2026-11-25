@@ -167,11 +167,7 @@ impl Failure {
         }
         let next = self.next.lines().next().unwrap_or_default().trim();
         if !next.is_empty() {
-            rows.push(format!(
-                "{} {}",
-                palette.meta("next:"),
-                palette.tint(next, "36")
-            ));
+            rows.push(format!("{} {}", palette.meta("next:"), palette.next(next)));
         }
         rows
     }
@@ -221,7 +217,7 @@ impl FailureFacts {
             rows.push(format!(
                 "  {} {}",
                 palette.meta("next:"),
-                palette.tint(&self.next, "36")
+                palette.next(&self.next)
             ));
         }
         rows

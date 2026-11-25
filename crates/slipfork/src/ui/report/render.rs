@@ -211,8 +211,8 @@ impl ReportRenderer {
             writeln!(
                 out,
                 "{} {}",
-                self.palette.tint("✓", "32"),
-                self.palette.tint(kind.word(), "32")
+                self.palette.icon_ok(),
+                self.palette.ok(kind.word())
             )?;
         }
         if let Some(Verdict::Failed(failure) | Verdict::Refused(failure)) = &report.verdict {
@@ -225,7 +225,7 @@ impl ReportRenderer {
                 out,
                 "{} {}",
                 self.palette.meta("next:"),
-                self.palette.tint(remedy, "36")
+                self.palette.next(remedy)
             )?;
         }
         Ok(())

@@ -1,12 +1,10 @@
 //! Byte-exact status-frame and append-only emission pins.
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use super::StatusLine;
 use crate::boot::build::LiveSteps;
 use crate::boot::progress::BootProgress;
-use crate::boot::render::status_line;
 use crate::ui::report::Palette;
 use crate::ui::report::Pane;
 
@@ -37,21 +35,14 @@ fn the_status_frame_is_exactly_carriage_return_erase_and_the_line() {
 }
 
 #[test]
-fn the_plain_fallback_line_carries_zero_escapes_and_zero_carriage_returns() {
-    let line = status_line(
-        '⠋',
-        crate::boot::render::BarProgress::outer(1, 3),
-        "Booting demo",
-        Duration::from_millis(10),
-        110,
-    );
-    assert!(!line.contains('\u{1b}'), "{line:?}");
-    assert!(!line.contains('\r'), "{line:?}");
-    let rows = [
-        Palette::new(false).icon_ok() + " row",
-        Palette::new(false).meta("1ms"),
-    ];
-    for row in rows {
+fn the_plain_palette_rows_carry_zero_escapes_and_zero_carriage_returns() {
+    let palette = Palette::new(false);
+    for row in [
+        palette.icon_ok() + " row",
+        palette.meta("1ms"),
+        palette.ready("✓ Ready"),
+        palette.next("slipfork up"),
+    ] {
         assert!(!row.contains('\u{1b}') && !row.contains('\r'), "{row:?}");
     }
 }

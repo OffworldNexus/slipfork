@@ -4,7 +4,7 @@
 //! additionally owns one in-place status line (`\r\x1b[2K` + the rendered line) — its prefix
 //! written only by `ui::report::live::Pane` — carrying the spinner, counter, verb/target, elapsed
 //! clock, and tail phase. A pipe, `NO_COLOR` terminal, or
-//! unmeasurable terminal gets plain `println!` lines with zero escapes and zero `\r`.
+//! unmeasurable terminal gets plain newline-terminated lines with zero escapes and zero `\r`.
 //!
 //! The daemon's `plan` frame latches the plan positions before row 1; `--json` passes through.
 
@@ -15,7 +15,6 @@ mod progress;
 mod render;
 mod status;
 
-use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -29,12 +28,15 @@ use crate::ui::report::Pane;
 use self::build::Narrative;
 use self::progress::BootProgress;
 use self::render as text;
-pub use self::render::{OuterWidths, completed_row};
-use self::status::{StatusLine, Ticker};
+use self::status::{Append, StatusLine, Ticker};
 
-pub use self::render::dropped_row;
+// The curated boot surface. The library crate's integration tests consume these; the binary
+// target compiles the same module tree but imports none of them, hence the scoped allowance.
 #[allow(unused_imports)]
-pub use self::render::{BarProgress, outer_verb, outer_widths, pane_geometry, status_line};
+pub use self::render::{
+    BarProgress, OuterWidths, completed_row, dropped_row, outer_verb, outer_widths, pane_geometry,
+    panel_line,
+};
 
 /// One live boot pane; drop it (via [`BootTui::finish`]) before printing the final result.
 pub struct BootTui {
@@ -54,6 +56,8 @@ pub struct BootTui {
     progress: BootProgress,
     /// The live build/hook narrative: phase rows, collapse, and the failure block.
     narrative: Narrative,
+    /// The plain append sink used whenever no status line owns the cursor.
+    append: Append,
 }
 
 /// The measured terminal size, or `None` when it cannot be measured (zero rows included).
@@ -105,6 +109,7 @@ impl BootTui {
             widths: OuterWidths::default(),
             progress,
             narrative,
+            append: Append,
         }
     }
 
@@ -156,7 +161,7 @@ impl BootTui {
             status.emit(&[text.to_owned()]);
             return;
         }
-        println!("{text}");
+        self.append.row(text);
     }
 
     /// Stops the ticker, erases the status line, then prints the held verdict rows.
@@ -168,16 +173,8 @@ impl BootTui {
             status.erase();
         }
         self.status = None;
-        let mut stdout = std::io::stdout().lock();
-        for row in self.verdict.drain(..) {
-            let _ = writeln!(stdout, "{row}");
-        }
-        let _ = stdout.flush();
-        let mut stderr = std::io::stderr().lock();
-        for row in self.diagnosis.drain(..) {
-            let _ = writeln!(stderr, "{row}");
-        }
-        let _ = stderr.flush();
+        self.append.rows(&std::mem::take(&mut self.verdict));
+        self.append.diagnoses(std::mem::take(&mut self.diagnosis));
     }
 
     /// Routes one narrative action through the one status-line emitter or plain stdout.
@@ -199,7 +196,7 @@ impl BootTui {
                     if self.status.is_some() {
                         self.diagnosis.push(row);
                     } else {
-                        eprintln!("{row}");
+                        self.append.diagnose(&row);
                     }
                 }
             }
@@ -217,9 +214,7 @@ impl BootTui {
             status.emit(rows);
             return;
         }
-        for row in rows {
-            println!("{row}");
-        }
+        self.append.rows(rows);
     }
 
     /// Latches the announced rows and their plan positions from the one `plan` frame.
@@ -357,7 +352,7 @@ impl BootTui {
             self.verdict.push(text);
             return;
         }
-        println!("{text}");
+        self.append.row(&text);
     }
 
     fn stopped_event(&mut self, event: &Value) {

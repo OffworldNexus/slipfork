@@ -144,13 +144,13 @@ impl Outcome {
         match self {
             Self::Ok(Done::Declined) => palette.meta("•"),
             Self::Ok(Done::Finished) => palette.icon_info(),
-            Self::Ok(_) | Self::Cached => palette.tint("✓", "32"),
+            Self::Ok(_) | Self::Cached => palette.icon_ok(),
             Self::Skipped => palette.meta("•"),
             Self::Running => "→".to_owned(),
             Self::Failed { .. } | Self::Refused => palette.error("✗"),
             Self::Problem => palette.error("!"),
             Self::Stopped => palette.meta("○"),
-            Self::Orphaned => palette.tint("•", "33"),
+            Self::Orphaned => palette.warn("•"),
         }
     }
 

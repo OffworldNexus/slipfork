@@ -303,7 +303,7 @@ fn render_world(
             line.push_str(&table.line(&widths.header, &cells));
         }
         PsWorldState::Live => {
-            line.push_str(&palette.tint("●", "32"));
+            line.push_str(&palette.ok("●"));
             line.push(' ');
             let pid = match world.supervisor_pid {
                 Some(pid) if options.verbose => palette.meta(&format!("pid {pid}")),

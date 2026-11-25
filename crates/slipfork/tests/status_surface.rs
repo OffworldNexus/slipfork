@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use slipfork::boot::{
-    BarProgress, completed_row, outer_verb, outer_widths, pane_geometry, status_line,
+    BarProgress, completed_row, outer_verb, outer_widths, pane_geometry, panel_line,
 };
 use slipfork::status::{self, Options};
 use slipfork::ui::elapsed_text;
@@ -312,10 +312,12 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
 
     let elapsed = Duration::from_millis(1_200);
     let six_of_ten = BarProgress::outer(6, 10);
-    let panel = status_line('-', six_of_ten, "Starting api…", elapsed, 120);
+    let panel =
+        console::strip_ansi_codes(&panel_line('-', six_of_ten, "Starting api…", elapsed, 120))
+            .into_owned();
     assert_eq!(
         panel,
-        "- [##############..........]   6/10  60% · Starting api… · 1.2s"
+        "- [██████████████░░░░░░░░░░]   6/10  60% · Starting api… · 1.2s"
     );
     let cells = panel
         .split_once('[')
@@ -323,19 +325,21 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
         .map(|(cells, _)| cells)
         .expect("the panel keeps its bar");
     assert_eq!(cells.chars().count(), 24, "{panel}");
-    assert_eq!(cells.matches('#').count(), 14, "{panel}");
+    assert_eq!(cells.matches('█').count(), 14, "{panel}");
     assert_eq!(
-        status_line('-', six_of_ten, "Starting api…", elapsed, 40),
+        console::strip_ansi_codes(&panel_line('-', six_of_ten, "Starting api…", elapsed, 40))
+            .into_owned(),
         "-  6/10  60% · Starting api… · 1.2s"
     );
     assert_eq!(
-        status_line('-', six_of_ten, "Starting api…", elapsed, 79),
+        console::strip_ansi_codes(&panel_line('-', six_of_ten, "Starting api…", elapsed, 79))
+            .into_owned(),
         "-  6/10  60% · Starting api… · 1.2s"
     );
     assert!(!panel.contains(ANSI), "{panel}");
     assert!(!panel.contains('\r'), "{panel}");
 
-    let mid_build = status_line(
+    let mid_build = console::strip_ansi_codes(&panel_line(
         '⠸',
         BarProgress {
             done: 0,
@@ -346,29 +350,35 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
         "[1/2] image api · step 3/4 RUN",
         Duration::from_millis(200),
         110,
-    );
+    ))
+    .into_owned();
     assert_eq!(
         mid_build,
-        "⠸ [######..................]  0/2  25% · [1/2] image api · step 3/4 RUN · 0.2s"
+        "⠸ [██████░░░░░░░░░░░░░░░░░░]  0/2  25% · [1/2] image api · step 3/4 RUN · 0.2s"
     );
 
     for spinner in ['|', '/', '-', '\\'] {
-        let line = status_line(
+        let raw = panel_line(
             spinner,
             BarProgress::outer(3, 10),
             "Restarting api…",
             Duration::from_millis(50),
             80,
         );
+        assert!(
+            raw.contains('\u{1b}'),
+            "the styled build keeps its SGR: {raw:?}"
+        );
+        let line = console::strip_ansi_codes(&raw).into_owned();
         assert!(line.starts_with(spinner), "{line}");
-        assert!(!line.contains(ANSI) && !line.contains('\r'), "{line}");
+        assert!(!line.contains('\u{1b}') && !line.contains('\r'), "{line}");
         let cells = line
             .split_once('[')
             .and_then(|(_, rest)| rest.split_once(']'))
             .map(|(bar, _)| bar)
-            .unwrap_or_else(|| panic!("the ASCII line keeps its bar: {line}"));
+            .unwrap_or_else(|| panic!("the plain line keeps its bar: {line}"));
         assert_eq!(
-            cells.matches('#').count() + cells.matches('.').count(),
+            cells.matches('█').count() + cells.matches('░').count(),
             24,
             "{line}"
         );

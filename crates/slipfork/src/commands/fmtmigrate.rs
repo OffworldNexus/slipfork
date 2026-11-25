@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use serde_json::json;
 use slipfork_forkfile::Diagnostics;
 
-use crate::ui::report::Palette;
+use crate::ui::report::{DiffRole, Palette};
 use crate::ui::report::{Failure, Report, StreamKind};
 
 use super::Session;
@@ -229,19 +229,9 @@ fn tint_diff(diff: &str, color: bool) -> String {
     let palette = Palette::new(color);
     let mut out = String::new();
     for line in diff.lines() {
-        let code = if line.starts_with("---") || line.starts_with("+++") || line.starts_with("@@") {
-            Some("1")
-        } else if line.starts_with('+') {
-            Some("32")
-        } else if line.starts_with('-') {
-            Some("31")
-        } else {
-            None
-        };
-        if let Some(code) = code {
-            out.push_str(&palette.tint(line, code));
-        } else {
-            out.push_str(line);
+        match DiffRole::of(line) {
+            Some(role) => out.push_str(&palette.diff(role, line)),
+            None => out.push_str(line),
         }
         out.push('\n');
     }

@@ -78,10 +78,10 @@ pub fn run(
     let palette = Palette::new(renderer.color());
     let mut lines = Vec::new();
     if ready {
-        lines.push(palette.tint("✓ Ready", "32;1"));
+        lines.push(palette.headline_ok("✓ Ready"));
     } else {
         let failed = doctor.checks().iter().filter(|check| !check.ok).count();
-        lines.push(palette.tint(&format!("✗ {failed} issue(s) found"), "31;1"));
+        lines.push(palette.headline_bad(&format!("✗ {failed} issue(s) found")));
     }
     let separator = palette.meta("·");
     let widths = widths(&doctor);

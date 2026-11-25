@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use super::{
     BarProgress, OuterWidths, completed_row, dropped_row, outer_widths, panel_line, percent_of,
-    status_line,
 };
 use crate::ui::report::Palette;
 use crate::ui::report::{Counter, Done, Outcome, Row};
@@ -21,14 +20,7 @@ fn an_overfull_fraction_clamps_to_a_full_bar_and_one_hundred_percent() {
         num: 4,
         den: 3,
     };
-    let plain = status_line('⠋', progress, "start web", Duration::from_secs(1), 120);
-    assert!(plain.contains("3/3"), "{plain:?}");
-    assert!(plain.contains("100%"), "{plain:?}");
-    assert!(
-        plain.contains(&format!("[{}]", "#".repeat(24))),
-        "a full 24-cell bar: {plain:?}"
-    );
-    assert!(!plain.contains("panicked"), "{plain:?}");
+    assert_eq!(super::filled(4, 3, 24), 24, "a full 24-cell bar");
 
     let styled = panel_line('⠋', progress, "start web", Duration::from_secs(1), 120);
     assert!(styled.contains(&"█".repeat(24)), "{styled:?}");

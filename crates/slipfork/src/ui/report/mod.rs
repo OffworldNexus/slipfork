@@ -22,7 +22,7 @@ pub use exit::emit_stdout;
 pub use failure::{Failure, split_remedy};
 pub use live::Pane;
 pub use model::{Entry, Report, Section, StreamKind, Verdict, VerdictKind, digest_cell};
-pub use palette::{Palette, Verdict as RunVerdict};
+pub use palette::{DiffRole, Palette, Verdict as RunVerdict};
 pub use render::ReportRenderer;
 pub use row::{Counter, Done, FailureFacts, Outcome, Row, RowLevel, StepSettlement};
 pub use runs::RunRow;

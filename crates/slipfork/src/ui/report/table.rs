@@ -169,7 +169,6 @@ fn push_padded(out: &mut String, cell: &str, width: usize, align: Align) {
 #[cfg(test)]
 mod tests {
     use super::{Column, ColumnWidths, Table};
-    use crate::ui::report::paint::paint;
     use crate::ui::report::visible_width;
 
     const PREFIX: [Column; 2] = [Column::left(), Column::right().at_least(6)];
@@ -205,7 +204,7 @@ mod tests {
     fn styled_cells_measure_like_their_plain_text() {
         let columns = [Column::left(), Column::right()];
         let table = Table::new(&columns);
-        let styled = paint("api", "1;32", true);
+        let styled = crate::ui::report::Palette::new(true).ready("api");
         let rows = vec![vec![styled.clone(), "3ms".to_owned()]];
         let widths = table.widths(&rows);
         assert_eq!(visible_width(&styled), 3);

@@ -320,7 +320,7 @@ fn golden_two_level_rows_pin_every_styled_and_no_color_byte() {
         format!(
             "  {} {}",
             styled.meta("next:"),
-            styled.tint("slipfork logs -r b2ebd7", "36")
+            styled.next("slipfork logs -r b2ebd7")
         ),
         styled.header_line(
             "b2ebd7",
@@ -355,7 +355,7 @@ fn golden_two_level_rows_pin_every_styled_and_no_color_byte() {
         format!(
             "  {} {}",
             plain.meta("next:"),
-            plain.tint("slipfork logs -r b2ebd7", "36")
+            plain.next("slipfork logs -r b2ebd7")
         ),
         plain.header_line(
             "b2ebd7",
