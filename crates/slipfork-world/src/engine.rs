@@ -1,3 +1,4 @@
+mod observe;
 pub(crate) mod readiness;
 mod teardown;
 
@@ -262,12 +263,16 @@ impl WorldEngine for BtrfsEngine {
         self.flush_store()?;
         // A checkout is snapshotted with `SNAP_CREATE_V2` only when it is itself a subvolume. A
         // plain directory is never modified: its tree is copied into the fork path afterwards.
+        // Every fork lands flat at `<family_root>/.forks/<fork>` under `<fork>--<root_world>`,
+        // no matter how deep the parent checkout sits (`specs/03` §7.3).
+        let family = layout::fork_family(project, world)?;
         let project_is_subvolume = btrfs::is_subvolume_path(project)?;
-        let forks_dir = layout::project_forks_dir(project);
+        let forks_dir = layout::project_forks_dir(&family.root);
         fs::create_dir_all(&forks_dir).map_err(|source| Error::io("create", &forks_dir, source))?;
-        let project_snapshot = layout::project_fork_path(project, fork);
+        let project_snapshot = layout::project_fork_path(&family.root, fork);
+        let forked = StoreLayout::fork_world_name(&family.root_world, fork);
         let world_source = self.layout.world(world);
-        let world_snapshot = self.layout.fork_world(world, fork);
+        let world_snapshot = self.layout.world(&forked);
         // Every flat sibling resource clone belongs to the fork too (live PGDATA, AOF, buckets).
         let mut jobs = vec![(world_source, world_snapshot.clone())];
         if project_is_subvolume {
@@ -276,14 +281,13 @@ impl WorldEngine for BtrfsEngine {
         for (kind, pod) in self.world_clones(world)? {
             jobs.push((
                 self.layout.world_clone(world, kind, &pod),
-                self.layout.fork_world_clone(world, fork, kind, &pod),
+                self.layout.world_clone(&forked, kind, &pod),
             ));
         }
         // Snapshot live `svc-*` service rootfses in the same Btrfs transaction so the fork pays
         // zero extra `SNAP_CREATE_V2` commits for services and inherits warm runtime caches.
         let parent_pods = self.layout.world_pods(world);
         if parent_pods.is_dir() {
-            let forked = StoreLayout::fork_world_name(world, fork);
             let fork_pods = self.layout.world_pods(&forked);
             fs::create_dir_all(&fork_pods)
                 .map_err(|source| Error::io("create", &fork_pods, source))?;
@@ -353,6 +357,8 @@ impl WorldEngine for BtrfsEngine {
         Ok(ForkPaths {
             project: project_snapshot,
             world: world_snapshot,
+            parent: family.parent,
+            root: family.root_world,
         })
     }
 
@@ -396,10 +402,12 @@ impl WorldEngine for BtrfsEngine {
                 target: format!("fork {fork}"),
             });
         }
-        // Sweep pod clones, flat resource clones, and `worlds/<fork>--<world>` BEFORE unlinking
-        // `.forks/<fork>`, so an interrupted drop keeps the fork addressable on retry instead of
-        // stranding orphan world subvolumes.
-        let forked = StoreLayout::fork_world_name(world, fork);
+        // Sweep pod clones, flat resource clones, and `worlds/<fork>--<root_world>` BEFORE
+        // unlinking `.forks/<fork>`, so an interrupted drop keeps the fork addressable on retry
+        // instead of stranding orphan world subvolumes. The family is resolved from the called
+        // project, so a drop issued at the root never compounds a nested world id.
+        let family = layout::fork_family(project, world)?;
+        let forked = StoreLayout::fork_world_name(&family.root_world, fork);
         teardown::sweep_pods_dir(&self.layout.world_pods(&forked))?;
         let worlds = self.layout.worlds_root();
         if worlds.is_dir() {
@@ -417,8 +425,8 @@ impl WorldEngine for BtrfsEngine {
                 }
             }
         }
-        teardown::destroy_world_if_present(&self.layout.fork_world(world, fork))?;
-        teardown::destroy_if_present(&layout::project_fork_path(project, fork))
+        teardown::destroy_world_if_present(&self.layout.world(&forked))?;
+        teardown::destroy_if_present(&layout::project_fork_path(&family.root, fork))
     }
 
     fn drop_world(&self, world: &WorldName) -> Result<()> {

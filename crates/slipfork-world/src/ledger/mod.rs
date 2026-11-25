@@ -25,8 +25,8 @@ use entity::WorldActiveModel;
 pub use entity::WorldState;
 
 pub use converge::{
-    ConvergeAction, ConvergeInput, ForkRow, LeaseState, LedgerRows, OrphanWorld, UnregisteredFork,
-    UntrackedKind, WorldFacts, WorldRow, plan_converge,
+    ConvergeAction, ConvergeInput, ForkRow, LeaseState, LedgerRows, OrphanPods, OrphanWorld,
+    UnregisteredFork, UntrackedKind, WorldFacts, WorldRow, plan_converge,
 };
 pub use db::{Access, STATE_FILE, StateDb, StatePaths};
 pub use error::{LedgerError, LedgerResult};

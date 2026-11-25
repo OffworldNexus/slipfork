@@ -7,6 +7,7 @@ SLIPFORK_TEST_ROOT ?=
 LIVE_RUNTIME_DIR ?= /dev/shm/sf-live-runtime
 LIVE_SUITES := \
 	slipfork-world/critical_btrfs_live \
+	slipfork-world/fork_flat_live \
 	slipfork-image/critical_oci_live \
 	slipfork-image/critical_dockerfile_live \
 	slipfork-world/critical_pod_runtime \

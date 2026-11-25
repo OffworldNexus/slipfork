@@ -31,13 +31,16 @@ impl RuntimePods {
         Ok(Self { root })
     }
 
+    /// `<runtime_dir>/slipfork/pods`: the tmpfs root holding one `<world>` directory per world.
+    #[must_use]
+    pub fn worlds_root(runtime_dir: &Path) -> PathBuf {
+        runtime_dir.join("slipfork").join("pods")
+    }
+
     /// `<runtime_dir>/slipfork/pods/<world>`: the one place that composes the world's tmpfs root.
     #[must_use]
     pub fn world_root(runtime_dir: &Path, world: &WorldName) -> PathBuf {
-        runtime_dir
-            .join("slipfork")
-            .join("pods")
-            .join(world.as_str())
+        Self::worlds_root(runtime_dir).join(world.as_str())
     }
 
     /// Removes one world's ephemeral pod root (bundles, `crun` container state, logs) after an

@@ -119,6 +119,7 @@ fn btrfs_lifecycle() {
     fs::create_dir_all(project.join("src")).expect("seed project tree");
     fs::write(project.join("src/main.rs"), "fn main() {}\n").expect("seed source");
     fs::write(project.join("Cargo.toml"), "[package]\nname = \"demo\"\n").expect("seed manifest");
+    fs::write(project.join("Forkfile"), "# forkfile: 0.1\n").expect("seed the Forkfile");
     fs::create_dir_all(project.join("src/nested")).expect("seed nested tree");
     fs::write(project.join("src/nested/main.rs"), "pub fn nested() {}\n")
         .expect("seed nested file");
@@ -565,6 +566,38 @@ fn fork_strips_managed_dirs_from_checkout() {
             dir.name
         );
     }
+
+    // A fork of a fork lands flat beside its parent: no nested `.forks`, no compounded id.
+    let child = ForkName::parse("feat-child").expect("valid fork name");
+    let parent_world = WorldName::parse("feat-one--demo").expect("valid parent world");
+    let child_paths = engine
+        .fork(&project.join(".forks/feat-one"), &parent_world, &child)
+        .expect("fork feat-child from feat-one");
+    assert_eq!(child_paths.project, project.join(".forks/feat-child"));
+    assert_eq!(
+        child_paths.world,
+        run.join(".slipfork-store/worlds/feat-child--demo")
+    );
+    assert!(
+        !run.join(".slipfork-store/worlds/feat-child--feat-one--demo")
+            .exists(),
+        "a fork world id never compounds its parent's id"
+    );
+    assert!(
+        !project.join(".forks/feat-one/.forks").exists(),
+        "forking a fork never nests a `.forks` inside the parent checkout"
+    );
+    engine
+        .drop_fork(&project, &world, &child, Dirtiness::Clean, false)
+        .expect("drop feat-child");
+    assert!(
+        !child_paths.project.exists() && !child_paths.world.exists(),
+        "the flat child is reaped"
+    );
+    assert!(
+        project.join(".forks/feat-one").is_dir(),
+        "dropping the child never removes its parent"
+    );
 
     for name in ["feat-one", "feat-two", "feat-three"] {
         let fork = ForkName::parse(name).expect("valid fork name");

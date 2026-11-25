@@ -1,13 +1,15 @@
-//! Pure convergence planner matrix (`specs/03` §7.4): rows plus observed facts in, ordered
-//! actions out. No database, no disk, no clock.
+//! Pure planner matrix plus real-disk observation for the orphan-pods row (`specs/03` §7.4):
+//! rows plus observed facts in, ordered actions out. No database, no clock.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::path::PathBuf;
 
 use slipfork_world::ledger::{
     ConvergeAction, ConvergeInput, ForkRow, LeaseState, OrphanWorld, UnregisteredFork,
     UntrackedKind, WorldFacts, WorldRow, WorldState, plan_converge,
 };
+use slipfork_world::{BtrfsEngine, Lease, NodeKey, StoreLayout};
 
 macro_rules! has {
     ($plan:expr, $pattern:pat) => {
@@ -159,6 +161,7 @@ fn input() -> ConvergeInput {
             store_root: PathBuf::from(STORE),
             name: "ghost--test1".to_owned(),
         }],
+        orphan_pods: Vec::new(),
     }
 }
 
@@ -208,6 +211,11 @@ fn settle(mut input: ConvergeInput) -> ConvergeInput {
                 input.untracked.retain(|fork| fork.name != *name);
             }
             ConvergeAction::DestroyOrphan { .. } => {}
+            ConvergeAction::SweepOrphanPods { world_name, .. } => {
+                input
+                    .orphan_pods
+                    .retain(|pods| pods.world_name != *world_name);
+            }
         }
     }
     input.worlds.retain(|world| !deleted.contains(&world.id));
@@ -329,4 +337,267 @@ fn settled_plan_is_empty() {
     assert!(!rows.contains_key(&13));
     assert!(settled.untracked.is_empty());
     assert!(settled.orphan_worlds.is_empty());
+}
+
+/// §7.4 row 6: ephemeral pods of a world the ledger has no row for are swept exactly once, while a
+/// known live row's own pods are owned by its facts and never touched.
+#[test]
+fn orphan_pods_sweep_is_idempotent_and_spares_known_rows() {
+    let tmp = tempfile::Builder::new()
+        .prefix("slipfork-ledger-orphan-pods")
+        .tempdir_in("/var/tmp")
+        .expect("create a disk temp directory");
+    let store = tmp.path().join(".slipfork-store");
+    let runtime = tmp.path().join("runtime");
+    let engine = BtrfsEngine::new(StoreLayout::at(store.clone()));
+
+    let root_checkout = tmp.path().join("root");
+    fs::create_dir_all(&root_checkout).expect("create the root checkout");
+    let live_checkout = tmp.path().join(".forks/live");
+    fs::create_dir_all(&live_checkout).expect("create the live fork checkout");
+
+    // A ghost world owns pods on both sides but has no ledger row.
+    let ghost_runtime = runtime.join("slipfork/pods/ghost/web");
+    let ghost_store = store.join("pods/ghost/web");
+    fs::create_dir_all(&ghost_runtime).expect("plant the runtime ghost pods");
+    fs::create_dir_all(&ghost_store).expect("plant the store ghost pods");
+
+    // A known live fork with a real lease and real runtime pods.
+    let live_world = store.join("worlds/live--root");
+    fs::create_dir_all(&live_world).expect("create the live world data");
+    let lease = Lease {
+        v: 1,
+        world: "live--root".to_owned(),
+        origin: "root".to_owned(),
+        world_epoch: "epoch".to_owned(),
+        spec: "spec".to_owned(),
+        head: NodeKey::base("amd64", "sha256:live", "linux/amd64"),
+        seeds: Vec::new(),
+        services: BTreeMap::new(),
+        effects: BTreeMap::new(),
+    };
+    lease
+        .write_atomic(&live_world.join(".slipfork-lease.json"))
+        .expect("write the live lease");
+    let live_runtime = runtime.join("slipfork/pods/live--root");
+    fs::create_dir_all(live_runtime.join("web")).expect("plant the live runtime pods");
+
+    // A world owned by another store on the same per-user runtime root: never this store's orphan.
+    let other_store = tmp.path().join("other-store");
+    let other_checkout = tmp.path().join("other-root");
+    fs::create_dir_all(&other_checkout).expect("create the other store checkout");
+    let other_world = other_store.join("worlds/other--root");
+    fs::create_dir_all(&other_world).expect("create the other store world data");
+    let other_lease = Lease {
+        v: 1,
+        world: "other--root".to_owned(),
+        origin: "other--root".to_owned(),
+        world_epoch: "epoch".to_owned(),
+        spec: "spec".to_owned(),
+        head: NodeKey::base("amd64", "sha256:other", "linux/amd64"),
+        seeds: Vec::new(),
+        services: BTreeMap::new(),
+        effects: BTreeMap::new(),
+    };
+    other_lease
+        .write_atomic(&other_world.join(".slipfork-lease.json"))
+        .expect("write the other store lease");
+    let other_runtime = runtime.join("slipfork/pods/other--root");
+    fs::create_dir_all(other_runtime.join("web")).expect("plant the other runtime pods");
+    fs::create_dir_all(other_store.join("pods/other--root/web"))
+        .expect("plant the other store pods");
+
+    let root_row = WorldRow {
+        id: 1,
+        checkout_path: root_checkout,
+        world_name: "root".to_owned(),
+        store_root: store.clone(),
+        state: WorldState::Stopped,
+        supervisor_pid: None,
+        pods_dir: None,
+        started_at_ms: None,
+        problem: None,
+        updated_at_ms: 0,
+    };
+    let live_row = WorldRow {
+        id: 2,
+        checkout_path: live_checkout,
+        world_name: "live--root".to_owned(),
+        store_root: store.clone(),
+        state: WorldState::Live,
+        supervisor_pid: Some(4242),
+        pods_dir: None,
+        started_at_ms: Some(1),
+        problem: None,
+        updated_at_ms: 1,
+    };
+    let other_row = WorldRow {
+        id: 3,
+        checkout_path: other_checkout,
+        world_name: "other--root".to_owned(),
+        store_root: other_store,
+        state: WorldState::Live,
+        supervisor_pid: Some(4242),
+        pods_dir: None,
+        started_at_ms: Some(1),
+        problem: None,
+        updated_at_ms: 1,
+    };
+    let rows = ledger_rows(vec![root_row, live_row, other_row]);
+    let alive = BTreeSet::from([4242_i64]);
+
+    let observed = engine
+        .observe(&rows, &alive, &runtime)
+        .expect("observe the store");
+    assert!(
+        observed.facts[&2].pod_dirs.contains(&live_runtime),
+        "a live row with a NULL pods_dir still owns its canonical runtime pods"
+    );
+    let first = plan_converge(&observed);
+    let sweeps: Vec<&ConvergeAction> = first
+        .iter()
+        .filter(|action| matches!(action, ConvergeAction::SweepOrphanPods { .. }))
+        .collect();
+    assert_eq!(sweeps.len(), 1, "exactly one orphan sweep: {first:?}");
+    let ConvergeAction::SweepOrphanPods {
+        store_root,
+        world_name,
+        pod_dirs,
+    } = sweeps[0]
+    else {
+        unreachable!("filtered above")
+    };
+    assert_eq!(store_root, &store, "the action names the owning store");
+    assert_eq!(world_name, "ghost");
+    let mut expected = vec![
+        store.join("pods/ghost"),
+        runtime.join("slipfork/pods/ghost"),
+    ];
+    expected.sort();
+    assert_eq!(pod_dirs, &expected, "both pod roots, sorted");
+    assert!(
+        !first
+            .iter()
+            .any(|action| matches!(action, ConvergeAction::SweepPods { world_id: 2, .. })),
+        "a known live row's pods are never swept: {first:?}"
+    );
+    assert!(
+        !first.iter().any(|action| matches!(
+            action,
+            ConvergeAction::SweepOrphanPods { world_name, .. } if world_name == "live--root"
+        )),
+        "a known live row is never an orphan: {first:?}"
+    );
+    assert!(
+        !first.iter().any(|action| matches!(
+            action,
+            ConvergeAction::SweepOrphanPods { world_name, .. } if world_name == "other--root"
+        )),
+        "another store's live world is known and never swept: {first:?}"
+    );
+
+    // A tiny real executor: removing each listed world pod root settles the orphan.
+    for action in &first {
+        if let ConvergeAction::SweepOrphanPods { pod_dirs, .. } = action {
+            for dir in pod_dirs {
+                fs::remove_dir_all(dir).expect("sweep the orphan pod root");
+            }
+        }
+    }
+    let second = plan_converge(
+        &engine
+            .observe(&rows, &alive, &runtime)
+            .expect("re-observe the store"),
+    );
+    assert!(
+        second.is_empty(),
+        "a settled store plans nothing: {second:?}"
+    );
+}
+
+/// The clone disjunct of `world_data_exists`: a missing checkout with only a flat
+/// `<world>.pg.pg` sibling keeps the row `broken` instead of destroying it.
+#[test]
+fn missing_checkout_with_a_clone_keeps_the_row_broken() {
+    let tmp = tempfile::Builder::new()
+        .prefix("slipfork-ledger-clone-disjunct")
+        .tempdir_in("/var/tmp")
+        .expect("create a disk temp directory");
+    let store = tmp.path().join(".slipfork-store");
+    let runtime = tmp.path().join("runtime");
+    fs::create_dir_all(&runtime).expect("create the runtime root");
+    let engine = BtrfsEngine::new(StoreLayout::at(store.clone()));
+    let root_checkout = tmp.path().join("root");
+    fs::create_dir_all(&root_checkout).expect("create the root checkout");
+    fs::create_dir_all(store.join("worlds/gone--root.pg.pg"))
+        .expect("plant the flat clone sibling");
+
+    let root_row = WorldRow {
+        id: 1,
+        checkout_path: root_checkout,
+        world_name: "root".to_owned(),
+        store_root: store.clone(),
+        state: WorldState::Stopped,
+        supervisor_pid: None,
+        pods_dir: None,
+        started_at_ms: None,
+        problem: None,
+        updated_at_ms: 0,
+    };
+    let gone_row = WorldRow {
+        id: 2,
+        checkout_path: tmp.path().join(".forks/gone"),
+        world_name: "gone--root".to_owned(),
+        store_root: store.clone(),
+        state: WorldState::Stopped,
+        supervisor_pid: None,
+        pods_dir: None,
+        started_at_ms: None,
+        problem: None,
+        updated_at_ms: 0,
+    };
+    let rows = ledger_rows(vec![root_row, gone_row]);
+    let observed = engine
+        .observe(&rows, &BTreeSet::new(), &runtime)
+        .expect("observe the store");
+    assert!(
+        observed.facts[&2].world_data_exists,
+        "the clone sibling proves the world data exists"
+    );
+    assert!(
+        !observed.facts[&2].checkout_exists,
+        "the checkout is absent"
+    );
+
+    let plan = plan_converge(&observed);
+    assert!(
+        plan.iter()
+            .any(|action| matches!(action, ConvergeAction::MarkBroken { world_id: 2, .. })),
+        "a missing checkout keeps the row broken: {plan:?}"
+    );
+    assert!(
+        !plan
+            .iter()
+            .any(|action| matches!(action, ConvergeAction::DeleteRow { world_id: 2, .. })),
+        "the clone sibling forbids a row delete: {plan:?}"
+    );
+    assert!(
+        !plan
+            .iter()
+            .any(|action| matches!(action, ConvergeAction::DestroyWorldData { world_id: 2, .. })),
+        "the clone sibling forbids destroying the data: {plan:?}"
+    );
+}
+
+fn ledger_rows(worlds: Vec<WorldRow>) -> slipfork_world::ledger::LedgerRows {
+    slipfork_world::ledger::LedgerRows {
+        worlds,
+        forks: vec![ForkRow {
+            world_id: 2,
+            root_id: 1,
+            parent_id: 1,
+            name: "live".to_owned(),
+            branch: String::new(),
+        }],
+    }
 }

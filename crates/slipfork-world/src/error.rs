@@ -39,6 +39,15 @@ pub enum Error {
     UnsupportedPath { path: PathBuf },
     /// A world/fork/pod name violates `[a-z0-9][a-z0-9._-]*`.
     InvalidName { kind: NameKind, name: String },
+    /// A checkout's world id does not belong to that checkout's family.
+    ForeignFamily {
+        /// The checkout path the caller ran from.
+        checkout: PathBuf,
+        /// The world id the caller passed.
+        world: String,
+        /// The canonical `<fork>--<root>` id for that checkout.
+        expected: String,
+    },
     /// `drop`/`destroy` met uncommitted changes without `--force`.
     RefusedDirtyCheckout { target: String },
     /// A fork checkout copy met a mount point nested inside the checkout.
@@ -148,9 +157,18 @@ impl fmt::Display for Error {
                 let kind = kind.label();
                 write!(
                     f,
-                    "invalid {kind} name `{name}`\nnext: use lowercase letters, digits, `.`, `_`, `-`, starting with a letter or digit"
+                    "invalid {kind} name `{name}`\nnext: use lowercase letters, digits, `.`, `_`, `-`, starting with a letter or digit (fork names cannot contain `--`)"
                 )
             }
+            Self::ForeignFamily {
+                checkout,
+                world,
+                expected,
+            } => write!(
+                f,
+                "`{world}` is not the world of checkout `{}`\nnext: run this from the checkout's family root; this checkout is `{expected}`",
+                checkout.display()
+            ),
             Self::RefusedDirtyCheckout { target } => write!(
                 f,
                 "`{target}` has uncommitted changes\nnext: commit or stash them, or re-run with `--force` to discard the checkout"
