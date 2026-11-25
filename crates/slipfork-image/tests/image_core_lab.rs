@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use slipfork_image::{
     Architecture, BuildArgs, BuildContext, BuildEvent, BuildRequest, Command, DockerfileParser,
@@ -432,6 +432,125 @@ fn a_real_tar_layer_unpacks_a_dot_root_entry_onto_disk() {
         "#!/bin/sh\n"
     );
     let _ = fs::remove_dir_all(&root);
+}
+
+/// M3.143: every materialized entry keeps the mtime its layer header states. Without this, Debian's
+/// baked `/var/lib/apt/lists/*InRelease` looks freshly fetched, the mirror answers `304`, and `apt`
+/// rejects the image-build-era `Valid-Until`. A file written after unpacking (a `RUN`) keeps `now`.
+#[test]
+fn unpacked_layers_keep_header_mtimes_and_later_writes_stay_fresh() {
+    const BAKED: u64 = 1_793_836_800; // 2026-11-05T00:00:00Z
+    const PATCHED: u64 = 1_793_577_600; // 2026-11-02T00:00:00Z
+    let start = SystemTime::now();
+    let root = lab("unpack-mtime");
+    let rootfs = root.join("rootfs");
+
+    let mut base = tar::Builder::new(Vec::new());
+    let mut dir = tar::Header::new_gnu();
+    dir.set_entry_type(tar::EntryType::Directory);
+    dir.set_size(0);
+    dir.set_mode(0o755);
+    dir.set_mtime(BAKED);
+    dir.set_path("opt/").expect("directory path");
+    dir.set_cksum();
+    base.append(&dir, &b""[..]).expect("append the directory");
+
+    let mut file = tar::Header::new_gnu();
+    file.set_entry_type(tar::EntryType::Regular);
+    file.set_size(6);
+    file.set_mode(0o644);
+    file.set_mtime(BAKED);
+    file.set_path("opt/state.txt").expect("file path");
+    file.set_cksum();
+    base.append(&file, &b"baked\n"[..])
+        .expect("append the file");
+
+    let mut link = tar::Header::new_gnu();
+    link.set_entry_type(tar::EntryType::Symlink);
+    link.set_size(0);
+    link.set_mode(0o777);
+    link.set_mtime(BAKED);
+    link.set_path("opt/current").expect("link path");
+    link.set_link_name("state.txt").expect("link target");
+    link.set_cksum();
+    base.append(&link, &b""[..]).expect("append the symlink");
+
+    let mut patch = tar::Builder::new(Vec::new());
+    let mut later = tar::Header::new_gnu();
+    later.set_entry_type(tar::EntryType::Regular);
+    later.set_size(7);
+    later.set_mode(0o644);
+    later.set_mtime(PATCHED);
+    later.set_path("opt/later.txt").expect("file path");
+    later.set_cksum();
+    patch
+        .append(&later, &b"later\n\n"[..])
+        .expect("append the patched file");
+
+    let unpacker = LayerUnpacker::new(&rootfs);
+    let base_layer = gzip_layer(&base.into_inner().expect("base tar"));
+    unpacker
+        .apply(
+            &mut base_layer.as_slice(),
+            "application/vnd.oci.image.layer.v1.tar+gzip",
+        )
+        .expect("unpack the base layer");
+    let baked = UNIX_EPOCH + Duration::from_secs(BAKED);
+    for path in ["opt", "opt/state.txt", "opt/current"] {
+        let entry = fs::symlink_metadata(rootfs.join(path)).expect("stat the unpacked entry");
+        assert_eq!(
+            entry.modified().expect("read the mtime"),
+            baked,
+            "`{path}` must keep the layer header's mtime (a symlink via nofollow)"
+        );
+    }
+
+    let patch_layer = gzip_layer(&patch.into_inner().expect("patch tar"));
+    unpacker
+        .apply(
+            &mut patch_layer.as_slice(),
+            "application/vnd.oci.image.layer.v1.tar+gzip",
+        )
+        .expect("unpack the patch layer");
+    let patched = UNIX_EPOCH + Duration::from_secs(PATCHED);
+    assert_eq!(
+        fs::symlink_metadata(rootfs.join("opt/later.txt"))
+            .expect("stat the patched file")
+            .modified()
+            .expect("read the mtime"),
+        patched,
+        "each layer keeps its own header mtime"
+    );
+    assert_eq!(
+        fs::symlink_metadata(rootfs.join("opt/state.txt"))
+            .expect("stat the untouched file")
+            .modified()
+            .expect("read the mtime"),
+        baked,
+        "a later layer never re-stamps an untouched file"
+    );
+
+    // A `RUN` writes after unpacking: the resulting file keeps `now`, never a layer timestamp.
+    fs::write(rootfs.join("opt/written.txt"), b"run\n").expect("write a run artifact");
+    let written = fs::metadata(rootfs.join("opt/written.txt"))
+        .expect("stat the run artifact")
+        .modified()
+        .expect("read the mtime");
+    // The kernel stamps mtimes from its coarse tick, which may trail `Clock::now` by a jiffy.
+    let earliest = start - Duration::from_secs(1);
+    assert!(
+        written >= earliest,
+        "a file written after unpacking keeps `now`, saw {written:?} before {earliest:?}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+fn gzip_layer(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(bytes).expect("gzip the layer");
+    encoder.finish().expect("finish the gzip layer")
 }
 
 /// Real `--target` semantics: stages walk in declaration order and stop right after the requested

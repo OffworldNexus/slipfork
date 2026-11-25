@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use slipfork_image::{
     BuildArgs, BuildEvent, BuildRequest, CacheMounts, Command, CrunStepRuntime, ExternalImage,
@@ -37,6 +37,30 @@ fn output_tail(log: &[(Stream, String)]) -> String {
         .join("\n");
     let start = joined.len().saturating_sub(LIMIT);
     joined.get(start..).unwrap_or(&joined).to_owned()
+}
+
+/// Child output without a terminal escape sequence or a trailing CR, so `Get:`/`Hit:` matching is
+/// exact even when a base exports `APT::Color`.
+fn clean_line(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            if chars.next() == Some('[') {
+                // Skip CSI parameter/intermediate bytes, stopping after the final byte.
+                for next in chars.by_ref() {
+                    if !('\u{20}'..='\u{3f}').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        if ch != '\r' {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 /// Runs one build against a bound [`StepLog`], keeping every `(stream, line)` for failure tails.
@@ -858,9 +882,13 @@ fn external_copy_from_image_lifecycle() {
     let _ = fs::remove_dir_all(&run);
 }
 
-/// A real `debian:trixie-slim` build: `RUN` is container root (so `apt-get` installs system
-/// packages), `USER app`/`USER postgres` run as the accounts the image itself defines, and the
-/// image's own `/etc/passwd` is never replaced by a synthetic host file.
+/// A real Debian build on `python:3.9-slim` (Debian trixie): the Python 3.9 image is end-of-life,
+/// so its tag is frozen at Oct 2025 and ships baked `/var/lib/apt/lists/*InRelease` whose
+/// `Valid-Until` is long past — the deterministic owner case. An unpack that stamped `now` makes
+/// `apt` trust the expired list; the restored image-build mtime makes it re-fetch. `RUN` is
+/// container root (so `apt-get` installs system packages), `USER app`/`USER postgres` run as the
+/// accounts the image itself defines, and the image's own `/etc/passwd` is never replaced by a
+/// synthetic host file.
 #[test]
 fn debian_root_build_installs_system_packages_and_switches_named_users() {
     let crun = crun_path();
@@ -881,6 +909,59 @@ fn debian_root_build_installs_system_packages_and_switches_named_users() {
         arch,
         "slipfork-tests/0.1".to_owned(),
     );
+    // M3.143: the base carries `/var/lib/apt/lists/*InRelease` stamped at its own build date. An
+    // unpack that wrote `now` made `apt` send a future `If-Modified-Since`, the mirror answered
+    // `304`, and the image-era `Valid-Until` (long expired) aborted `apt-get update`. Stream the
+    // cold pull: this base is 50+ MB and a silent fetch looks hung.
+    let base = {
+        let mut events = |event: BuildEvent<'_>| match event {
+            BuildEvent::Line { text, .. } | BuildEvent::Note { text } => println!("{text}"),
+            BuildEvent::Step(_) => {}
+        };
+        let mut log = StepLog::with_events(&mut events);
+        https
+            .pull_row(
+                &ImageReference::parse("python:3.9-slim").expect("base reference"),
+                "python:3.9-slim",
+                &mut log,
+            )
+            .expect("pull the base once to inspect its baked apt lists")
+    };
+    // The frozen tag ships three fixed `*InRelease` header mtimes; the security list is one of them.
+    const BAKED_SECURITY_INSTANT: u64 = 1_761_923_001;
+    let lists = base.rootfs.join("var/lib/apt/lists");
+    let in_release = fs::read_dir(&lists)
+        .expect("the base carries baked apt lists")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name().is_some_and(|name| {
+                name.to_string_lossy()
+                    .ends_with("trixie-security_InRelease")
+            })
+        })
+        .expect("the base ships the baked `trixie-security` InRelease");
+    let baked = fs::metadata(&in_release)
+        .expect("stat the baked InRelease")
+        .modified()
+        .expect("read the baked mtime");
+    let build_start = SystemTime::now();
+    assert_eq!(
+        baked,
+        UNIX_EPOCH + Duration::from_secs(BAKED_SECURITY_INSTANT),
+        "`{}` must keep the frozen layer header mtime, not `now`",
+        in_release.display()
+    );
+    println!(
+        "M3.143 evidence: {} mtime {:?} ({} days old)",
+        in_release.display(),
+        baked,
+        build_start
+            .duration_since(baked)
+            .expect("the baked lists predate this build")
+            .as_secs()
+            / 86_400
+    );
     let builder = NativeImageBuilder::new(
         Arc::clone(&engine) as Arc<dyn WorldEngine>,
         https,
@@ -893,7 +974,7 @@ fn debian_root_build_installs_system_packages_and_switches_named_users() {
     let dockerfile = context.join("Dockerfile");
     fs::write(
         &dockerfile,
-        "FROM debian:trixie-slim\n\
+        "FROM python:3.9-slim\n\
          RUN whoami\n\
          RUN grep -q 'Sandbox::User \"root\"' \"$APT_CONFIG\"\n\
          RUN apt-get update && apt-get install -y --no-install-recommends curl postgresql\n\
@@ -919,6 +1000,25 @@ fn debian_root_build_installs_system_packages_and_switches_named_users() {
             output_tail(&log)
         )
     });
+    let apt_lines: Vec<String> = log
+        .iter()
+        .filter(|(stream, _)| *stream == Stream::Stdout)
+        .map(|(_, line)| clean_line(line.trim_start()))
+        .collect();
+    assert!(
+        apt_lines
+            .iter()
+            .any(|line| line.starts_with("Get:") && line.contains("InRelease")),
+        "`apt-get update` must `Get:` the stale `InRelease` instead of trusting a `now` mtime, saw:\n{}",
+        output_tail(&log)
+    );
+    assert!(
+        !apt_lines
+            .iter()
+            .any(|line| line.starts_with("Hit:") && line.contains("InRelease")),
+        "a `Hit:`/`304` for `InRelease` means the unpack still stamped `now`, saw:\n{}",
+        output_tail(&log)
+    );
     assert_eq!(
         snapshot_tree(&context),
         context_before,
@@ -958,6 +1058,14 @@ fn debian_root_build_installs_system_packages_and_switches_named_users() {
         uid,
         "initdb output is host-uid-owned even though it ran as postgres inside"
     );
+    assert!(
+        fs::metadata(&pg_version)
+            .expect("stat PG_VERSION")
+            .modified()
+            .expect("read the PG_VERSION mtime")
+            >= build_start,
+        "a `RUN`-written file keeps `now`, never a layer mtime"
+    );
     assert_eq!(
         fs::metadata(report.rootfs.join("home/app"))
             .expect("stat /home/app")
@@ -974,7 +1082,7 @@ fn debian_root_build_installs_system_packages_and_switches_named_users() {
     // Fail-closed leg on the same store boot: `USER ghost` is metadata only, so the next `RUN`
     // resolves the account from the image's own `/etc/passwd` and must fail at line 3.
     let ghost = context.join("Ghostfile");
-    fs::write(&ghost, "FROM debian:trixie-slim\nUSER ghost\nRUN id\n")
+    fs::write(&ghost, "FROM python:3.9-slim\nUSER ghost\nRUN id\n")
         .expect("write the unknown-account Dockerfile");
     let ghost_request = BuildRequest {
         dockerfile: ghost,

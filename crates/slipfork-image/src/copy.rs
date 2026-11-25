@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::io::{self, Read};
-use std::os::unix::fs::{PermissionsExt, chown, lchown, symlink};
+use std::os::unix::fs::{chown, lchown, symlink};
 use std::path::{Path, PathBuf};
 
 use crate::context::{BuildContext, ContextEntry};
@@ -10,6 +10,7 @@ use crate::dockerfile::CopyOptions;
 use crate::error::{Error, Result};
 use crate::fetch;
 use crate::ignore::SourcePattern;
+use crate::metadata::{Mtime, set_mode, set_mtime};
 use crate::runtime::rooted;
 
 /// Where a `COPY`/`ADD` destination lands: the writable step rootfs plus the stage's current
@@ -77,7 +78,7 @@ pub(crate) fn copy_context(
         is_dir(context.entries(), single) || single == "."
     };
 
-    let mut directories = Vec::new();
+    let mut directories: Vec<(PathBuf, Mtime)> = Vec::new();
     for source in &sources {
         let matches = select(context.entries(), source)?;
         if matches.is_empty() {
@@ -101,12 +102,14 @@ pub(crate) fn copy_context(
             };
             copy_entry(&entry.absolute, &target, entry.is_dir, options)?;
             if entry.is_dir {
-                directories.push(target);
+                directories.push((target, source_mtime(&entry.absolute)?));
             }
         }
     }
-    for directory in directories.iter().rev() {
-        set_mode(directory, options.mode)?;
+    // A directory's mtime lands after every child: writing a child re-stamps its parent.
+    for (directory, mtime) in directories.iter().rev() {
+        apply_chmod(directory, options.mode)?;
+        set_mtime(directory, *mtime, true)?;
     }
     Ok(())
 }
@@ -125,7 +128,7 @@ pub(crate) fn copy_rootfs(
         let first = sources.first().map(String::as_str).unwrap_or("/");
         rooted(source_root, first).is_dir()
     };
-    let mut directories = Vec::new();
+    let mut directories: Vec<(PathBuf, Mtime)> = Vec::new();
     // An existing destination directory keeps its own mode; only directories this copy creates
     // receive `--chmod`.
     let dest_existed = dest_abs.exists();
@@ -137,13 +140,13 @@ pub(crate) fn copy_rootfs(
             let mut collected = Vec::new();
             walk(&source_abs, Path::new(""), &mut collected)?;
             if !dest_existed {
-                directories.push(dest_abs.clone());
+                directories.push((dest_abs.clone(), source_mtime(&source_abs)?));
             }
             for (relative, absolute, is_dir) in collected {
                 let target = dest_abs.join(&relative);
                 copy_entry(&absolute, &target, is_dir, options)?;
                 if is_dir {
-                    directories.push(target);
+                    directories.push((target, source_mtime(&absolute)?));
                 }
             }
         } else if dest_is_dir {
@@ -157,8 +160,9 @@ pub(crate) fn copy_rootfs(
             copy_entry(&source_abs, &dest_abs, false, options)?;
         }
     }
-    for directory in directories.iter().rev() {
-        set_mode(directory, options.mode)?;
+    for (directory, mtime) in directories.iter().rev() {
+        apply_chmod(directory, options.mode)?;
+        set_mtime(directory, *mtime, true)?;
     }
     Ok(())
 }
@@ -200,6 +204,8 @@ pub(crate) fn add_context(
             fs::create_dir_all(&dest_abs)
                 .map_err(|source| Error::io("create", &dest_abs, source))?;
             let mut archive = tar::Archive::new(archive);
+            // The `tar` crate restores header mtimes by default (`preserve_mtime: true`), so the
+            // `ADD` archive path needs no metadata pass of its own.
             archive
                 .unpack(&dest_abs)
                 .map_err(|source| Error::io("extract", &dest_abs, source))?;
@@ -207,7 +213,7 @@ pub(crate) fn add_context(
                 .map_err(|source| Error::io("chown", &dest_abs, source))?;
             // A destination directory that already existed keeps its mode; every entry the
             // archive materialized still takes `--chmod`.
-            set_mode_tree(&dest_abs, options.mode, created)?;
+            apply_chmod_tree(&dest_abs, options.mode, created)?;
         } else {
             plain.push(source.clone());
         }
@@ -284,45 +290,55 @@ fn is_dir(entries: &[ContextEntry], source: &str) -> bool {
 }
 
 fn copy_entry(source: &Path, dest: &Path, is_dir: bool, options: CopyOptions) -> Result<()> {
-    let mut symlink_entry = false;
+    let owner = options.owner;
     if is_dir {
         fs::create_dir_all(dest).map_err(|source| Error::io("create", dest, source))?;
-    } else {
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent).map_err(|source| Error::io("create", parent, source))?;
-        }
-        let metadata = fs::symlink_metadata(source)
-            .map_err(|source_err| Error::io("inspect", source, source_err))?;
-        if metadata.file_type().is_symlink() {
-            let target = fs::read_link(source)
-                .map_err(|source_err| Error::io("readlink", source, source_err))?;
-            let _ = fs::remove_file(dest);
-            symlink(&target, dest).map_err(|source_err| Error::io("symlink", dest, source_err))?;
-            symlink_entry = true;
-        } else {
-            fs::copy(source, dest).map_err(|source_err| Error::io("copy", dest, source_err))?;
-        }
-    }
-    let owner = options.owner;
-    let result = if is_dir {
         chown(dest, Some(owner.uid), Some(owner.gid))
-    } else {
-        lchown(dest, Some(owner.uid), Some(owner.gid))
-    };
-    result.map_err(|source| Error::io("chown", dest, source))?;
-    if symlink_entry || is_dir {
-        // Directory modes are applied by the caller once their children are written, so a
-        // `--chmod=555` directory never blocks its own contents.
+            .map_err(|source| Error::io("chown", dest, source))?;
+        // Directory mode and mtime are applied by the caller once their children are written, so a
+        // `--chmod=555` directory never blocks its own contents and a child never re-stamps it.
         return Ok(());
     }
-    set_mode(dest, options.mode)
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(|source| Error::io("create", parent, source))?;
+    }
+    let symlink_entry = fs::symlink_metadata(source)
+        .map_err(|source_err| Error::io("inspect", source, source_err))?
+        .file_type()
+        .is_symlink();
+    // Docker `COPY` preserves the source mtime; `fs::copy` and `symlink` stamp `now`, so the
+    // source timestamp is restored explicitly (on a symlink without following it).
+    let mtime = source_mtime(source)?;
+    if symlink_entry {
+        let target = fs::read_link(source)
+            .map_err(|source_err| Error::io("readlink", source, source_err))?;
+        let _ = fs::remove_file(dest);
+        symlink(&target, dest).map_err(|source_err| Error::io("symlink", dest, source_err))?;
+    } else {
+        fs::copy(source, dest).map_err(|source_err| Error::io("copy", dest, source_err))?;
+    }
+    lchown(dest, Some(owner.uid), Some(owner.gid))
+        .map_err(|source| Error::io("chown", dest, source))?;
+    if !symlink_entry {
+        apply_chmod(dest, options.mode)?;
+    }
+    set_mtime(dest, mtime, !symlink_entry)
+}
+
+/// The mtime a `COPY` must carry from `source` onto its destination.
+fn source_mtime(source: &Path) -> Result<Mtime> {
+    let metadata = fs::symlink_metadata(source)
+        .map_err(|source_err| Error::io("inspect", source, source_err))?;
+    let modified = metadata
+        .modified()
+        .map_err(|source_err| Error::io("read the mtime of", source, source_err))?;
+    Mtime::from_system_time(modified, source)
 }
 
 /// Applies a `--chmod` mode to one written entry; `None` leaves the copied mode alone.
-fn set_mode(path: &Path, mode: Option<u32>) -> Result<()> {
+fn apply_chmod(path: &Path, mode: Option<u32>) -> Result<()> {
     if let Some(mode) = mode {
-        fs::set_permissions(path, fs::Permissions::from_mode(mode & 0o7777))
-            .map_err(|source| Error::io("chmod", path, source))?;
+        set_mode(path, mode)?;
     }
     Ok(())
 }
@@ -331,12 +347,12 @@ fn set_mode(path: &Path, mode: Option<u32>) -> Result<()> {
 ///
 /// `root_is_new` is false when the destination directory predated the extraction, which keeps that
 /// directory's own mode; its extracted children still take `--chmod`.
-fn set_mode_tree(root: &Path, mode: Option<u32>, root_is_new: bool) -> Result<()> {
+fn apply_chmod_tree(root: &Path, mode: Option<u32>, root_is_new: bool) -> Result<()> {
     if mode.is_none() {
         return Ok(());
     }
     if root_is_new {
-        set_mode(root, mode)?;
+        apply_chmod(root, mode)?;
     }
     let mut collected = Vec::new();
     walk(root, Path::new(""), &mut collected)?;
@@ -344,7 +360,7 @@ fn set_mode_tree(root: &Path, mode: Option<u32>, root_is_new: bool) -> Result<()
         let metadata = fs::symlink_metadata(&absolute)
             .map_err(|source| Error::io("inspect", &absolute, source))?;
         if !metadata.file_type().is_symlink() {
-            set_mode(&absolute, mode)?;
+            apply_chmod(&absolute, mode)?;
         }
     }
     Ok(())
@@ -430,16 +446,31 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::thread;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use crate::dockerfile::{CopyOptions, ImageConfig, Owner};
     use crate::error::Error;
+    use crate::metadata::{Mtime, set_mtime};
 
     use super::{
-        BuildContext, Destination, add_context, copy_context, copy_rootfs, fs, set_mode_tree,
+        BuildContext, Destination, add_context, apply_chmod_tree, copy_context, copy_rootfs, fs,
     };
+
+    /// A fixed instant every `COPY` fixture source is stamped with, so a copy that writes `now`
+    /// cannot pass unnoticed.
+    const COPY_INSTANT: u64 = 1_800_000_000;
+
+    /// Pins one fixture entry's mtime; `File::open` also opens a directory for `set_times`.
+    fn stamp(path: &Path) {
+        fs::File::open(path)
+            .expect("open a fixture entry")
+            .set_times(
+                fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(COPY_INSTANT)),
+            )
+            .expect("stamp the fixture mtime");
+    }
 
     fn lab(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -658,6 +689,9 @@ mod tests {
     fn copy_chmod_applies_to_every_written_entry() {
         let (context_root, context) =
             context(&[("bin/run.sh", "#!/bin/sh\n"), ("bin/nested/x.txt", "x\n")]);
+        for relative in ["bin", "bin/nested", "bin/run.sh", "bin/nested/x.txt"] {
+            stamp(&context_root.join(relative));
+        }
         let rootfs = lab("rootfs-chmod");
         let options = CopyOptions::new(owner(&rootfs), Some(0o555));
 
@@ -678,6 +712,19 @@ mod tests {
                     & 0o777,
                 0o555,
                 "`{relative}` carries `--chmod`"
+            );
+        }
+        // The copy stamped `now`; both the file and the deferred directory loop must restore the
+        // source's instant instead.
+        let expected = UNIX_EPOCH + Duration::from_secs(COPY_INSTANT);
+        for relative in ["opt", "opt/nested", "opt/run.sh"] {
+            assert_eq!(
+                fs::metadata(rootfs.join(relative))
+                    .expect("stat a written entry")
+                    .modified()
+                    .expect("read the copied mtime"),
+                expected,
+                "`{relative}` carries the source mtime"
             );
         }
         assert_eq!(
@@ -702,8 +749,11 @@ mod tests {
         fs::set_permissions(&outside, fs::Permissions::from_mode(0o600))
             .expect("set the symlink target mode");
         symlink(&outside, tree.join("link")).expect("plant a symlink inside the tree");
+        let instant = Mtime::from_unix_secs(COPY_INSTANT, &tree.join("link"))
+            .expect("a fixed fixture instant fits `utimensat`");
+        set_mtime(&tree.join("link"), instant, false).expect("stamp the symlink fixture");
 
-        set_mode_tree(&tree, Some(0o750), true).expect("apply --chmod to the extracted tree");
+        apply_chmod_tree(&tree, Some(0o750), true).expect("apply --chmod to the extracted tree");
 
         for relative in ["", "nested", "run.sh", "nested/x.txt"] {
             assert_eq!(
@@ -724,6 +774,34 @@ mod tests {
                 & 0o777,
             0o600,
             "`--chmod` must never follow a symlink out of the tree"
+        );
+
+        // `COPY --chmod` of a symlink entry must skip the mode write entirely: `set_permissions`
+        // follows the link, so a container-absolute target would resolve inside the host root.
+        let rootfs = root.join("rootfs");
+        fs::create_dir_all(&rootfs).expect("create the copy destination rootfs");
+        copy_rootfs(
+            &tree,
+            &["link".to_owned()],
+            "/copied",
+            Destination::new(&rootfs, "/"),
+            CopyOptions::new(owner(&rootfs), Some(0o700)),
+        )
+        .expect("COPY --chmod a symlink entry");
+        let copied = fs::symlink_metadata(rootfs.join("copied")).expect("stat the copied link");
+        assert!(copied.file_type().is_symlink(), "the entry stays a symlink");
+        assert_eq!(
+            copied.modified().expect("read the copied link mtime"),
+            UNIX_EPOCH + Duration::from_secs(COPY_INSTANT),
+            "the copied symlink keeps its source mtime, read without following"
+        );
+        assert_eq!(
+            fs::metadata(&outside)
+                .expect("stat the symlink target")
+                .mode()
+                & 0o777,
+            0o600,
+            "`--chmod` of a symlink must never follow it onto its target"
         );
 
         let _ = fs::remove_dir_all(&root);

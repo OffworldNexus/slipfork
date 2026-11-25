@@ -12,6 +12,7 @@ live = []
 base64.workspace = true
 deunicode.workspace = true
 flate2.workspace = true
+libc.workspace = true
 percent-encoding.workspace = true
 serde.workspace = true
 serde_json.workspace = true

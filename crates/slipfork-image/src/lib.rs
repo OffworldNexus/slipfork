@@ -71,6 +71,7 @@ mod ignore;
 mod inputs;
 mod layout;
 mod manifest;
+mod metadata;
 mod plan;
 mod puller;
 mod reference;
