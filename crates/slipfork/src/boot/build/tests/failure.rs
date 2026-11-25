@@ -5,6 +5,16 @@ use serde_json::json;
 use super::super::{Action, Narrative};
 use crate::ui::Palette;
 
+fn printed_rows(actions: &[Action]) -> Vec<String> {
+    actions
+        .iter()
+        .filter_map(|action| match action {
+            Action::Print(row) => Some(row.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
 fn a_step_less_cached_image_uses_the_typed_cached_row_and_unknown_never_succeeds() {
     let plain = Palette::new(false);
@@ -125,7 +135,11 @@ fn a_failed_build_prints_the_failing_step_and_never_a_success_row() {
         }),
         plain,
     );
-    assert!(matches!(&started[0], Action::Print(row) if row == "→ [1/1] image  api  running"));
+    assert_eq!(
+        printed_rows(&started),
+        ["→ [1/1] image  api  running"],
+        "the cold image opens once at its first real instruction"
+    );
 
     let finished = narrative
         .finish_node(

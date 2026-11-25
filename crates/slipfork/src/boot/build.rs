@@ -9,6 +9,7 @@
 mod image;
 mod tally;
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
@@ -22,6 +23,7 @@ use super::failure;
 use super::phase::{tail_label, tail_phase};
 use super::render::{OuterWidths, outer_row, outer_verb};
 
+use super::layout::clamp_visible;
 pub(super) use super::layout::{Columns, gutter_line, wrap_gutter};
 #[cfg(test)]
 pub(super) use super::layout::{
@@ -32,8 +34,6 @@ pub(super) use super::phase::{LiveKey, LiveSteps, Phase};
 /// One routing decision from the narrative to the live driver.
 #[derive(Debug)]
 pub(super) enum Action {
-    /// A step started running in [`LiveSteps`]: print `→` into scrollback.
-    Begin(Phase),
     /// One child line was recorded in [`LiveSteps`]: print it wrapped at
     /// the owning row's gutter indent (`2` under an outer step, `4` under an inner build step).
     Output {
@@ -43,7 +43,7 @@ pub(super) enum Action {
     },
     /// One step settled: print its buffered settled rows in index order.
     Settle(String),
-    /// Print this row immediately (the outer image opener, build-end row, `-v` note, or gutter).
+    /// Print this row immediately (the once-only stream header, build-end row, `-v` note).
     Print(String),
     /// The verdict envelope (`✗ …`, optional `runtime:`, one `next:`), printed on stderr.
     Diagnose(String),
@@ -60,6 +60,8 @@ pub(super) struct Narrative {
     verbose: bool,
     /// Append-only: the step the previous printed line belonged to.
     last_printed: Option<LiveKey>,
+    /// Every key whose one `→` stream header was already emitted.
+    headed: BTreeSet<LiveKey>,
     /// The most recently started or outputting step.
     active: Option<LiveKey>,
 }
@@ -73,6 +75,7 @@ impl Narrative {
             outer: OuterWidths::default(),
             verbose,
             last_printed: None,
+            headed: BTreeSet::new(),
             active: None,
         }
     }
@@ -135,11 +138,12 @@ impl Narrative {
             Columns::from_outer(self.outer),
         );
         if let Ok(mut steps) = self.steps.lock() {
-            steps.begin(phase.clone());
+            steps.begin(phase);
         }
-        self.active = Some(key.clone());
-        self.last_printed = Some(key);
-        vec![Action::Begin(phase)]
+        self.active = Some(key);
+        // No row prints here: a step that streams nothing earns only its later verdict, and a
+        // streamed step earns one header at its first output line.
+        Vec::new()
     }
 
     /// One `step` frame: the instruction announced before it runs and how it settled.
@@ -160,20 +164,12 @@ impl Narrative {
         match event["state"].as_str().unwrap_or_default() {
             "started" => {
                 self.observe_outer("image", image);
+                let verb_width = self.tally(image).begin_step(index, total, width);
                 let mut actions = Vec::new();
-                let (outer_open, verb_width) = self.tally(image).begin_step(index, total, width);
-                if let Some((outer_index, outer_total)) = outer_open {
-                    actions.push(Action::Print(outer_row(
-                        "→",
-                        Some((outer_index, outer_total)),
-                        "image",
-                        image,
-                        "running",
-                        None,
-                        None,
-                        &self.outer,
-                        palette,
-                    )));
+                // A cold image opens `→ [i/n] image … running` at its first real instruction,
+                // never at `started` frame time (a cached image must print only its verdict).
+                if let Some(row) = self.image_header(image, palette) {
+                    actions.push(Action::Print(row));
                 }
                 actions.extend(self.tally(image).release().into_iter().map(Action::Settle));
                 let phase = Phase::new(
@@ -188,11 +184,9 @@ impl Narrative {
                     },
                 );
                 if let Ok(mut steps) = self.steps.lock() {
-                    steps.begin(phase.clone());
+                    steps.begin(phase);
                 }
-                self.active = Some(key.clone());
-                self.last_printed = Some(key);
-                actions.push(Action::Begin(phase));
+                self.active = Some(key);
                 actions
             }
             "done" => {
@@ -227,8 +221,10 @@ impl Narrative {
                     tally.millis += elapsed;
                 }
                 self.retire_key(&key);
-                // Rows are released later, in index order, at the next start or `finish_node`.
-                Vec::new()
+                // Release in plan index order right away: a completed step never waits for the
+                // next `started` frame, so a parallel late index cannot leak ahead of its peers.
+                let rows = self.tally(image).release();
+                rows.into_iter().map(Action::Settle).collect()
             }
             // A tail frame updates the existing live row in place: it never restarts the clock and
             // never prints a row of its own. The status line repaints on its next tick.
@@ -266,14 +262,9 @@ impl Narrative {
         }
     }
 
-    /// One `log` frame: records every line in [`LiveSteps`]; append-only re-anchors on step swaps.
-    pub(super) fn log(
-        &mut self,
-        event: &Value,
-        width: usize,
-        palette: Palette,
-        anchored_pane: bool,
-    ) -> Vec<Action> {
+    /// One `log` frame: records every line in [`LiveSteps`]; the first line of a streamed step
+    /// prints its one `→` header, later lines keep its gutter.
+    pub(super) fn log(&mut self, event: &Value, width: usize, palette: Palette) -> Vec<Action> {
         let stream = event["stream"].as_str().unwrap_or("stdout");
         let text = event["line"].as_str().unwrap_or_default();
         let candidates = keys_for(event);
@@ -290,32 +281,17 @@ impl Narrative {
             return Vec::new();
         };
         let mut actions = Vec::new();
-        if !anchored_pane && self.last_printed.as_ref() != Some(&key) {
-            if phase.is_inner() {
-                let same_image = matches!(
-                    &self.last_printed,
-                    Some(LiveKey::Step { image, .. }) if image == &phase.target
-                );
-                if !same_image
-                    && let Some(tally) = self
-                        .images
-                        .iter()
-                        .find(|tally| tally.image == phase.target && tally.outer.0 > 0)
-                {
-                    actions.push(Action::Print(outer_row(
-                        "→",
-                        Some(tally.outer),
-                        "image",
-                        &phase.target,
-                        "running",
-                        None,
-                        None,
-                        &self.outer,
-                        palette,
-                    )));
-                }
-            }
-            actions.push(Action::Print(phase.anchor_row(palette)));
+        if phase.is_inner()
+            && let Some(row) = self.image_header(&phase.target, palette)
+        {
+            actions.push(Action::Print(row));
+        }
+        // One header per key, ever: interleaved output from two live steps never repeats a header.
+        if self.headed.insert(key.clone()) {
+            actions.push(Action::Print(clamp_visible(
+                &phase.anchor_row(palette),
+                width,
+            )));
         }
         self.active = Some(key.clone());
         self.last_printed = Some(key);
@@ -395,8 +371,10 @@ impl Narrative {
         }
         self.active = None;
         self.last_printed = None;
-        // No tally may survive a verdict, so no provisional row can print afterwards.
+        // No tally may survive a verdict, so no provisional row can print afterwards, and a
+        // replacement run re-earns its own single headers.
         self.images.clear();
+        self.headed.clear();
         actions
     }
 
@@ -415,6 +393,37 @@ impl Narrative {
         }
         self.images.push(ImageTally::new(image));
         self.images.last_mut().expect("just pushed")
+    }
+
+    /// The image's one `→ [i/n] image <id> running` opener, emitted at its first inner step.
+    ///
+    /// A cached image has no inner steps, so it never earns this row; the verdict alone stays.
+    fn image_header(&mut self, image: &str, palette: Palette) -> Option<String> {
+        let sentinel = LiveKey::Boot {
+            kind: "image".to_owned(),
+            name: image.to_owned(),
+        };
+        if self.headed.contains(&sentinel) {
+            return None;
+        }
+        let tally = self.images.iter().find(|tally| tally.image == image)?;
+        if tally.last_index == 0 || tally.outer.0 == 0 || tally.outer.1 == 0 {
+            return None;
+        }
+        let (index, total) = tally.outer;
+        let row = outer_row(
+            "→",
+            Some((index, total)),
+            "image",
+            image,
+            "running",
+            None,
+            None,
+            &self.outer,
+            palette,
+        );
+        self.headed.insert(sentinel);
+        Some(row)
     }
 }
 

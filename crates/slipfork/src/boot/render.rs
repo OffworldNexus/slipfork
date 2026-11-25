@@ -368,18 +368,6 @@ fn filled(num: u64, den: u64, cells: u64) -> u64 {
     (num.saturating_mul(cells).saturating_add(den / 2) / den).min(cells)
 }
 
-/// The pipe header for a node that just started: `→ [ 4/12] resource pg`.
-#[must_use]
-pub fn header_row(step: u64, total: u64, kind: &str, name: &str) -> String {
-    let total = usize::try_from(total).unwrap_or(usize::MAX);
-    let step = usize::try_from(step).unwrap_or(0);
-    format!(
-        "→ [{}] {} {name}",
-        counter(step, total, digits(total)),
-        outer_verb(kind)
-    )
-}
-
 /// The world-ready verdict, with the primary URL always bold cyan and underlined.
 #[must_use]
 pub fn ready_row(url: &str, styled: bool) -> String {

@@ -54,11 +54,11 @@ fn settled_rows(actions: &[Action]) -> Vec<String> {
         .collect()
 }
 
-fn begins(actions: &[Action]) -> Vec<String> {
+fn printed_rows(actions: &[Action]) -> Vec<String> {
     actions
         .iter()
         .filter_map(|action| match action {
-            Action::Begin(phase) => Some(phase.started_row(Palette::new(false))),
+            Action::Print(row) => Some(row.clone()),
             _ => None,
         })
         .collect()
@@ -71,73 +71,48 @@ fn end_row(actions: &[Action]) -> Option<&str> {
     })
 }
 
+/// A started instruction only opens the live registry: it never prints a `→` row. A completed
+/// index releases immediately, in index order, the moment its predecessors are printed.
 #[test]
 fn out_of_order_completions_release_once_per_index_then_the_end_row() {
     let plain = Palette::new(false);
     let mut narrative = Narrative::new(false);
-    let mut actions = Vec::new();
-    let mut start_rows = Vec::new();
+    let from = "python:3.14-trixie AS base";
+    let copy = "--from=builder /app /app";
+    let mut announced = Vec::new();
     for event in [
-        frame(
-            "api",
-            1,
-            2,
-            "FROM",
-            "python:3.14-trixie AS base",
-            "started",
-            0,
-            4,
-        ),
-        frame(
-            "api",
-            2,
-            2,
-            "COPY",
-            "--from=builder /app /app",
-            "started",
-            0,
-            4,
-        ),
+        frame("api", 1, 2, "FROM", from, "started", 0, 4),
+        frame("api", 2, 2, "COPY", copy, "started", 0, 4),
     ] {
-        let step = narrative.step(&event, plain);
-        start_rows.extend(begins(&step));
-        actions.extend(step);
-    }
-    for event in [
-        frame(
-            "api",
-            2,
-            2,
-            "COPY",
-            "--from=builder /app /app",
-            "done",
-            20,
-            4,
-        ),
-        frame(
-            "api",
-            1,
-            2,
-            "FROM",
-            "python:3.14-trixie AS base",
-            "done",
-            5,
-            4,
-        ),
-    ] {
-        actions.extend(narrative.step(&event, plain));
+        announced.extend(narrative.step(&event, plain));
     }
     assert!(
-        settled_rows(&actions).is_empty(),
-        "a done frame must never settle a row directly: {actions:?}"
+        announced.is_empty(),
+        "a started instruction prints no `→` row: {announced:?}"
     );
+
+    let late = narrative.step(&frame("api", 2, 2, "COPY", copy, "done", 20, 4), plain);
+    assert!(
+        settled_rows(&late).is_empty(),
+        "index 2 waits for index 1: {late:?}"
+    );
+
+    let early = narrative.step(&frame("api", 1, 2, "FROM", from, "done", 5, 4), plain);
+    let rows = settled_rows(&early);
+    assert_eq!(
+        rows.len(),
+        2,
+        "one settled row per index, at once: {rows:?}"
+    );
+    assert!(rows[0].starts_with("  ✓ 1/2 from"), "{rows:?}");
+    assert!(rows[1].starts_with("  ✓ 2/2 copy"), "{rows:?}");
 
     let tail = narrative.finish_node("image", "api", &finished_frame(), plain);
     let tail = tail.expect("the image settles");
-    let rows = settled_rows(&tail);
-    assert_eq!(rows.len(), 2, "one settled row per index: {rows:?}");
-    assert!(rows[0].starts_with("  ✓ 1/2 from"), "{rows:?}");
-    assert!(rows[1].starts_with("  ✓ 2/2 copy"), "{rows:?}");
+    assert!(
+        settled_rows(&tail).is_empty(),
+        "already released rows never repeat at the image end: {tail:?}"
+    );
     let end = end_row(&tail).expect("the image end row");
     assert_eq!(
         Some(end),
@@ -165,55 +140,28 @@ fn out_of_order_completions_release_once_per_index_then_the_end_row() {
         !end.contains('\u{1b}'),
         "plain end row has no escapes: {end:?}"
     );
-    // `Begin` only repaints inside the anchored driver; the append-only driver prints it once.
-    assert_eq!(start_rows.len(), 2, "each start is announced exactly once");
-    assert_eq!(
-        start_rows.iter().filter(|row| row.contains("1/2")).count(),
-        1
-    );
-    assert_eq!(
-        start_rows.iter().filter(|row| row.contains("2/2")).count(),
-        1
-    );
 }
 
 #[test]
 fn a_provisional_external_pull_row_is_superseded_by_the_real_instruction() {
     let plain = Palette::new(false);
     let mut narrative = Narrative::new(false);
+    let from = "python:3.14-trixie AS base";
     let pre_pull = "--from=ghcr.io/astral-sh/uv:latest /uv /bin/";
     let real = "--from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/";
     let mut actions = Vec::new();
 
     // The external image pre-pull settles before instruction 1 is even announced.
     actions.extend(narrative.step(&frame("api", 2, 2, "COPY", pre_pull, "done", 1, 4), plain));
-    actions.extend(narrative.step(
-        &frame(
-            "api",
-            1,
-            2,
-            "FROM",
-            "python:3.14-trixie AS base",
-            "started",
-            0,
-            4,
-        ),
-        plain,
-    ));
-    actions.extend(narrative.step(
-        &frame(
-            "api",
-            1,
-            2,
-            "FROM",
-            "python:3.14-trixie AS base",
-            "done",
-            2,
-            4,
-        ),
-        plain,
-    ));
-    // The real COPY re-announces index 2: the provisional row must be dropped, not printed.
+    actions.extend(narrative.step(&frame("api", 1, 2, "FROM", from, "started", 0, 4), plain));
+    actions.extend(narrative.step(&frame("api", 1, 2, "FROM", from, "done", 2, 4), plain));
+    // The provisional row waits for its own real instruction, which supersedes it.
+    let between = settled_rows(&actions);
+    assert_eq!(
+        between.len(),
+        1,
+        "only index 1 released so far: {between:?}"
+    );
     actions.extend(narrative.step(&frame("api", 2, 2, "COPY", real, "started", 0, 4), plain));
     actions.extend(narrative.step(&frame("api", 2, 2, "COPY", real, "done", 26, 4), plain));
     let tail = narrative.finish_node("image", "api", &finished_frame(), plain);
@@ -247,7 +195,7 @@ fn a_provisional_external_pull_row_is_superseded_by_the_real_instruction() {
 fn a_failed_image_drops_every_buffered_row_and_tally() {
     let plain = Palette::new(false);
     let mut narrative = Narrative::new(false);
-    narrative.step(
+    let held = narrative.step(
         &frame(
             "api",
             1,
@@ -260,6 +208,7 @@ fn a_failed_image_drops_every_buffered_row_and_tally() {
         ),
         plain,
     );
+    assert!(settled_rows(&held).is_empty(), "{held:?}");
     let verdict = narrative.failed(
         &json!({
             "event": "failed",
@@ -394,11 +343,11 @@ fn cached_image_never_emits_inner_rows_and_service_failure_expands_at_outer_inde
         }),
         Some((3, 3)),
     );
-    assert_eq!(
-        begins(&begun),
-        ["→ [3/3] start  web  running  sh -c 'exit 7'"]
+    assert!(
+        begun.is_empty(),
+        "an outer started frame prints no `→` row: {begun:?}"
     );
-    narrative.log(
+    let streamed = narrative.log(
         &json!({
             "event": "log",
             "kind": "service",
@@ -408,7 +357,12 @@ fn cached_image_never_emits_inner_rows_and_service_failure_expands_at_outer_inde
         }),
         80,
         plain,
-        true,
+    );
+    let header = printed_rows(&streamed);
+    assert_eq!(
+        header,
+        ["→ [3/3] start  web  running  sh -c 'exit 7'"],
+        "the first streamed line prints the once-only outer header"
     );
     let failed = narrative.failed(
         &json!({
@@ -466,14 +420,10 @@ fn a_settled_service_keeps_its_started_command_and_states_ready() {
         }),
         Some((2, 2)),
     );
-    let begins: Vec<&str> = begun
-        .iter()
-        .filter_map(|action| match action {
-            Action::Begin(phase) => Some(phase.target.as_str()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(begins, ["web"], "the service registers one live phase");
+    assert!(
+        begun.is_empty(),
+        "a started service registers its live phase without printing: {begun:?}"
+    );
     let settled = narrative.finished(
         &json!({
             "event": "finished",

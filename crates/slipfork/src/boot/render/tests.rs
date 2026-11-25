@@ -3,8 +3,8 @@ use std::time::Duration;
 use serde_json::json;
 
 use super::{
-    BarProgress, Node, OuterWidths, completed_row, dropped_row, header_row, outer_widths,
-    panel_line, percent_of, status_line,
+    BarProgress, Node, OuterWidths, completed_row, dropped_row, outer_widths, panel_line,
+    percent_of, status_line,
 };
 
 /// M3.149: an overfull fraction (`4/3`, the shape a late `step` frame produces) must render a
@@ -119,8 +119,6 @@ fn drop_rows_share_one_plan_and_a_single_verdict() {
         .collect();
     let widths = outer_widths(&rows);
     assert_eq!((widths.kind, widths.target, widths.state), (6, 5, 0));
-    assert_eq!(header_row(1, 4, "stop", "jello"), "→ [1/4] stop jello");
-    assert_eq!(header_row(3, 4, "delete", "jello"), "→ [3/4] delete jello");
 
     let stop = Node {
         kind: "stop",

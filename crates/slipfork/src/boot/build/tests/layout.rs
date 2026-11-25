@@ -94,7 +94,6 @@ fn every_log_frame_streams_as_an_output_action_in_arrival_order() {
             }),
             80,
             plain,
-            true,
         );
         outputs.extend(actions.into_iter().filter_map(|action| match action {
             Action::Output {
@@ -118,6 +117,64 @@ fn every_log_frame_streams_as_an_output_action_in_arrival_order() {
         ],
         "every line is a live Output with the inner gutter indent"
     );
+}
+
+#[test]
+fn interleaved_streams_print_one_header_per_live_step_ever() {
+    let plain = Palette::new(false);
+    let mut narrative = Narrative::new(false);
+    narrative.step(
+        &json!({
+            "event": "step",
+            "image": "api",
+            "index": 1,
+            "total": 2,
+            "instruction": "RUN",
+            "args": "echo hi",
+            "state": "started",
+            "elapsed_ms": 0,
+            "instruction_width": 4,
+        }),
+        plain,
+    );
+    narrative.started(
+        &json!({
+            "event": "started",
+            "step": 2,
+            "total": 2,
+            "kind": "service",
+            "name": "web",
+            "command": "echo web",
+        }),
+        Some((2, 2)),
+    );
+
+    let mut printed = Vec::new();
+    let mut outputs = 0_usize;
+    for frame in [
+        json!({ "event": "log", "image": "api", "index": 1, "stream": "stdout", "line": "one" }),
+        json!({ "event": "log", "kind": "service", "name": "web", "stream": "stdout", "line": "two" }),
+        json!({ "event": "log", "image": "api", "index": 1, "stream": "stdout", "line": "three" }),
+        json!({ "event": "log", "kind": "service", "name": "web", "stream": "stderr", "line": "four" }),
+    ] {
+        for action in narrative.log(&frame, 80, plain) {
+            match action {
+                Action::Print(row) => printed.push(row),
+                Action::Output { .. } => outputs += 1,
+                _ => {}
+            }
+        }
+    }
+
+    assert_eq!(
+        printed,
+        [
+            "  → 1/2 run   echo hi".to_owned(),
+            "→ [2/2] start  web  running  echo web".to_owned(),
+        ],
+        "each interleaved key earns exactly one header"
+    );
+    assert_eq!(outputs, 4, "every line still streams as a gutter");
 }
 
 #[test]
@@ -152,7 +209,6 @@ fn a_failed_step_prints_one_verdict_row_and_never_repeats_streamed_lines() {
             }),
             80,
             plain,
-            true,
         );
     }
     let failed = narrative.failed(
@@ -243,23 +299,28 @@ fn twenty_streamed_lines_survive_and_the_failure_never_repeats_them() {
         plain,
     );
     let mut streamed = 0;
+    let mut headers = 0;
     for number in 1..=20 {
-        streamed += narrative
-            .log(
-                &json!({
-                    "event": "log",
-                    "image": "api",
-                    "index": 1,
-                    "stream": "stdout",
-                    "line": format!("line-{number:02}"),
-                }),
-                80,
-                plain,
-                true,
-            )
-            .len();
+        for action in narrative.log(
+            &json!({
+                "event": "log",
+                "image": "api",
+                "index": 1,
+                "stream": "stdout",
+                "line": format!("line-{number:02}"),
+            }),
+            80,
+            plain,
+        ) {
+            match action {
+                Action::Output { .. } => streamed += 1,
+                Action::Print(_) => headers += 1,
+                _ => {}
+            }
+        }
     }
     assert_eq!(streamed, 20, "all twenty lines stream live");
+    assert_eq!(headers, 1, "the step prints one header, never one per line");
 
     let failed = narrative.failed(
         &json!({
@@ -431,7 +492,6 @@ fn no_color_journals_emit_zero_escapes_and_zero_carriage_returns() {
         }),
         80,
         plain,
-        true,
     ));
     actions.extend(narrative.finished(
         &json!({
@@ -459,11 +519,6 @@ fn no_color_journals_emit_zero_escapes_and_zero_carriage_returns() {
     let mut texts = Vec::new();
     for action in &actions {
         match action {
-            Action::Begin(phase) => {
-                texts.push(phase.started_row(plain));
-                texts.push(phase.live_row('⠹', 1200, 80, plain));
-                texts.push(phase.settled_row(1200, plain));
-            }
             Action::Output {
                 text,
                 stream,

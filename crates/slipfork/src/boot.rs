@@ -130,9 +130,7 @@ impl BootTui {
                 self.apply(actions, palette);
             }
             "log" => {
-                let actions = self
-                    .narrative
-                    .log(event, self.width, palette, self.status.is_some());
+                let actions = self.narrative.log(event, self.width, palette);
                 self.apply(actions, palette);
             }
             "note" => {
@@ -186,7 +184,6 @@ impl BootTui {
     fn apply(&mut self, actions: Vec<build::Action>, palette: Palette) {
         for action in actions {
             match action {
-                build::Action::Begin(phase) => self.emit_rows(&[phase.started_row(palette)]),
                 build::Action::Output {
                     stream,
                     text,
@@ -278,7 +275,6 @@ impl BootTui {
             .unwrap_or("step")
             .to_owned();
         let step = event["step"].as_u64().unwrap_or(0);
-        let total = event["total"].as_u64().unwrap_or(0);
         if !self.progress.announced() {
             self.progress.remember(&kind, &name);
             self.refresh_widths();
@@ -292,18 +288,9 @@ impl BootTui {
                 .set_active(index, outer_total, text::outer_verb(&kind), &name);
         }
         let actions = self.narrative.started(event, position);
-        let narrated = !actions.is_empty();
-        // An image announces its instructions through `step` frames; it never needs its own row.
-        let spinning = !narrated && kind != "image";
-        self.sync_status(spinning);
-        if spinning && self.status.is_none() {
-            let (shown_step, shown_total) =
-                position.map_or((step, total), |(idx, tot)| (idx as u64, tot as u64));
-            println!(
-                "{}",
-                text::header_row(shown_step, shown_total, &kind, &name)
-            );
-        }
+        // No eager `→` row: an outer step that streams nothing earns only its later verdict, and a
+        // streaming one earns its single header from the first `log` line.
+        self.sync_status(true);
         self.apply(actions, palette);
     }
 

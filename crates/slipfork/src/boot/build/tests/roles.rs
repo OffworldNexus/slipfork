@@ -335,7 +335,7 @@ fn golden_two_level_rows_pin_every_styled_and_no_color_byte() {
 
     // Inner rows never carry `[` or the parent image target.
     for inner in [
-        inner_running.started_row(plain),
+        inner_running.anchor_row(plain),
         inner_running.live_row('⠸', 1200, 200, plain),
         inner_settled.settled_row(0, plain),
         inner_running.failed_row(plain),
@@ -369,7 +369,7 @@ fn identical_target_and_args_never_repeat_on_phase_settled_header_or_verdict() {
     );
     let plain = Palette::new(false);
     assert_eq!(
-        setup.started_row(plain),
+        setup.anchor_row(plain),
         "→ [2/3] setup    uv sync        running"
     );
     assert_eq!(

@@ -46,7 +46,7 @@ pub(super) fn tail_phase(value: &str) -> Option<TailPhase> {
 }
 
 /// The identity a streamed line inherits: one Dockerfile step, or one boot command step.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum LiveKey {
     Step { image: String, index: usize },
     Boot { kind: String, name: String },
@@ -100,15 +100,6 @@ impl Phase {
     /// The gutter indent owned by this row's child output: `4` inside a build, `2` under a step.
     pub(super) fn gutter_indent(&self) -> usize {
         if self.is_inner() { 4 } else { 2 }
-    }
-
-    /// The plain `→ …` row an append-only stream receives when a step starts.
-    pub(super) fn started_row(&self, palette: Palette) -> String {
-        if self.is_inner() {
-            self.inner_row("→", None, palette)
-        } else {
-            self.outer_row("→", "running", Some(self.shown_args()), None, palette)
-        }
     }
 
     /// The settled `✓ …` row that collapses the step.
@@ -367,7 +358,7 @@ mod tests {
         assert!(!settled.contains('\u{1b}'), "{settled:?}");
         assert!(!phase.failed_row(plain).contains('·'));
         assert!(!phase.anchor_row(plain).contains('·'));
-        assert!(!phase.started_row(plain).contains('·'));
+        assert!(!phase.anchor_row(plain).contains('·'));
     }
 
     #[test]

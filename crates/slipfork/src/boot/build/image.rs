@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::ui::Palette;
 
 use super::super::layout::{ImageEnd, ImageState, image_end_row};
-use super::{Action, Narrative};
+use super::{Action, LiveKey, Narrative};
 
 /// Parses a finished frame once; a missing or unexpected state is explicitly [`ImageState::Unknown`].
 fn state_from_frame(event: &Value) -> ImageState {
@@ -33,6 +33,12 @@ impl Narrative {
             return Vec::new();
         }
         self.streamed.push(image.to_owned());
+        // The image's step keys are spent: a later re-announcement of the same image re-earns its
+        // one header instead of silently inheriting a stale one.
+        self.headed.retain(|key| match key {
+            LiveKey::Step { image: keyed, .. } => keyed != image,
+            LiveKey::Boot { kind, name } => !(kind == "image" && name == image),
+        });
         let state = state_from_frame(event);
         let position = self.images.iter().position(|tally| tally.image == image);
         let mut actions = Vec::new();

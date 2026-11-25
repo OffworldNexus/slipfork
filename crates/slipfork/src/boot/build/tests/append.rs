@@ -59,7 +59,7 @@ fn the_inner_counter_pads_to_the_widest_instruction_total() {
         "python:3.13-slim".to_owned(),
         Columns::default(),
     )
-    .started_row(plain);
+    .anchor_row(plain);
     let tenth = Phase::new(
         LiveKey::Step {
             image: "api".to_owned(),
@@ -71,7 +71,7 @@ fn the_inner_counter_pads_to_the_widest_instruction_total() {
         "/code".to_owned(),
         Columns::default(),
     )
-    .started_row(plain);
+    .anchor_row(plain);
     assert!(first.starts_with("  →  1/11"), "{first}");
     assert!(tenth.starts_with("  → 10/11"), "{tenth}");
     assert_eq!(

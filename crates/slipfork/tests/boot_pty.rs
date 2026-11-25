@@ -200,8 +200,9 @@ fn boot_render_fixture() {
 }
 
 const INSTRUCTIONS: &[(&str, &str)] = &[
-    ("FROM", "python:3.13-slim"),
-    ("RUN", "apt-get update"),
+    ("FROM", "python:3.14-trixie"),
+    ("COPY", "--from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/"),
+    ("RUN", "apt-get update && apt-get install -y curl"),
     ("COPY", ". /app"),
     ("RUN", "pip install -r requirements.txt"),
     ("ENV", "PYTHONUNBUFFERED=1"),
@@ -209,8 +210,7 @@ const INSTRUCTIONS: &[(&str, &str)] = &[
     ("COPY", "templates /app/templates"),
     ("RUN", "pytest -q"),
     ("WORKDIR", "/app"),
-    ("EXPOSE", "8000"),
-    ("CMD", "python app.py"),
+    ("CMD", "uv run blastit"),
 ];
 
 fn plan(rows: &[(&str, &str)], total: u64) -> Value {
@@ -256,6 +256,18 @@ fn finished(executed: u64) -> Value {
     })
 }
 
+fn service_finished() -> Value {
+    json!({
+        "event": "finished",
+        "step": 2,
+        "total": 2,
+        "kind": "service",
+        "name": "web",
+        "state": "running",
+        "duration_ms": 1200,
+    })
+}
+
 fn frames(fixture: &str) -> Vec<Value> {
     match fixture {
         "cached" => vec![
@@ -270,15 +282,54 @@ fn frames(fixture: &str) -> Vec<Value> {
             }),
         ],
         "fresh" | "resize" => {
+            let total = u64::try_from(INSTRUCTIONS.len()).expect("tiny total");
             let mut frames = vec![
                 plan(&[("image", "api"), ("service", "web")], 2),
                 image_started(1, 2),
+                json!({
+                    "event": "started",
+                    "step": 2,
+                    "total": 2,
+                    "kind": "service",
+                    "name": "web",
+                    "command": "uv run blastit dev",
+                }),
             ];
-            for (position, (instruction, args)) in INSTRUCTIONS.iter().enumerate() {
-                let index = u64::try_from(position + 1).expect("tiny index");
-                let total = u64::try_from(INSTRUCTIONS.len()).expect("tiny total");
+            // The parallel `COPY --from` (2) announces before `FROM` (1); every step is announced
+            // before the completions, which arrive out of order (2 before 1, 6 before 5).
+            for index in [2u64, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11] {
+                let (instruction, args) = INSTRUCTIONS[usize::try_from(index - 1).expect("tiny")];
                 frames.push(step("api", index, total, instruction, args, "started"));
-                if index == 4 {
+                if index == 5 {
+                    // Only this step and the outer service stream child output, and their lines
+                    // interleave: each key still earns its one `→` header.
+                    for (event, stream, line) in [
+                        (
+                            json!({ "event": "log", "image": "api", "index": index, "stream": "stdout" }),
+                            "stdout",
+                            "Collecting pip",
+                        ),
+                        (
+                            json!({ "event": "log", "kind": "service", "name": "web", "stream": "stderr" }),
+                            "stderr",
+                            "web listening",
+                        ),
+                        (
+                            json!({ "event": "log", "image": "api", "index": index, "stream": "stdout" }),
+                            "stdout",
+                            "Successfully installed pip",
+                        ),
+                        (
+                            json!({ "event": "log", "kind": "service", "name": "web", "stream": "stdout" }),
+                            "stdout",
+                            "blastit dev ready",
+                        ),
+                    ] {
+                        let mut frame = event;
+                        frame["stream"] = json!(stream);
+                        frame["line"] = json!(line);
+                        frames.push(frame);
+                    }
                     frames.push(json!({
                         "event": "step",
                         "image": "api",
@@ -291,11 +342,13 @@ fn frames(fixture: &str) -> Vec<Value> {
                         "elapsed_ms": 3100,
                     }));
                 }
+            }
+            for index in [2u64, 1, 3, 4, 6, 5, 7, 8, 9, 10, 11] {
+                let (instruction, args) = INSTRUCTIONS[usize::try_from(index - 1).expect("tiny")];
                 frames.push(step("api", index, total, instruction, args, "done"));
             }
-            frames.push(finished(
-                u64::try_from(INSTRUCTIONS.len()).expect("tiny total"),
-            ));
+            frames.push(finished(total));
+            frames.push(service_finished());
             frames
         }
         "failing" => {
@@ -383,7 +436,7 @@ fn assert_prompt(output: &str, cols: u16) {
     );
 }
 
-fn assert_fixture(fixture: &str, rows: u16, cols: u16, expected: &[&str]) {
+fn assert_fixture(fixture: &str, rows: u16, cols: u16, expected: &[&str]) -> PtyRun {
     let run = spawn(fixture, rows, cols, None);
     assert!(
         run.status.success(),
@@ -396,6 +449,57 @@ fn assert_fixture(fixture: &str, rows: u16, cols: u16, expected: &[&str]) {
     assert_expected(&run.output, expected);
     if fixture == "fresh" {
         assert_all_inner_rows(&run.output);
+    }
+    run
+}
+
+/// Exactly one verdict per instruction (`n/11`), printed in plan index order with no repeats.
+fn assert_verdict_order(output: &str) {
+    let text = completed_transcript(output);
+    let verdicts: Vec<&str> = text
+        .lines()
+        .filter(|line| {
+            let line = line.trim_start();
+            (line.starts_with("✓ ") || line.starts_with("✗ ")) && line.contains("/11")
+        })
+        .collect();
+    assert_eq!(verdicts.len(), 11, "one verdict per instruction:\n{text}");
+    for (position, row) in verdicts.iter().enumerate() {
+        let counter = format!("{:>2}/11", position + 1);
+        assert!(
+            row.contains(&counter),
+            "row {position} must be {counter}: {row:?}\n{text}"
+        );
+    }
+    let unique: std::collections::BTreeSet<&str> = verdicts.iter().copied().collect();
+    assert_eq!(
+        unique.len(),
+        verdicts.len(),
+        "duplicate verdict rows:\n{text}"
+    );
+}
+
+/// Exactly one `→` header per streamed key in the whole capture, each carrying its identity.
+fn assert_stream_headers(output: &str, expected: &[&str]) {
+    let text = completed_transcript(output);
+    let headers: Vec<&str> = text
+        .lines()
+        .filter(|line| line.trim_start().starts_with('→'))
+        .collect();
+    assert_eq!(
+        headers.len(),
+        expected.len(),
+        "one header per streamed key:\n{text}"
+    );
+    for needle in expected {
+        assert_eq!(
+            headers
+                .iter()
+                .filter(|row| row.trim_start() == *needle)
+                .count(),
+            1,
+            "{needle:?} must print exactly one header:\n{text}"
+        );
     }
 }
 
@@ -415,23 +519,51 @@ fn assert_all_inner_rows(output: &str) {
 #[test]
 fn cached_up_at_110x30_and_80x24_is_append_only() {
     for (rows, cols) in [(30, 110), (24, 80)] {
-        assert_fixture("cached", rows, cols, &["[1/2] image  api  cached  8ms"]);
+        let run = assert_fixture("cached", rows, cols, &["[1/2] image  api  cached  8ms"]);
+        assert!(
+            !completed_transcript(&run.output).contains('→'),
+            "a cached step that streams nothing prints no header:\n{}",
+            run.output
+        );
     }
 }
 
 #[test]
 fn fresh_eleven_instruction_build_at_110x30_and_80x24_is_append_only() {
     for (rows, cols) in [(30, 110), (24, 80)] {
-        assert_fixture(
+        let run = assert_fixture(
             "fresh",
             rows,
             cols,
             &[
                 "→ [1/2] image  api  running",
+                "→  5/11 run      pip install -r requirements.txt",
+                "→ [2/2] start  web  running  uv run blastit dev",
                 "  ✓  1/11 from",
                 "  ✓ 10/11",
                 "built 11 steps",
+                "✓ [2/2] start  web  running  uv run blastit dev  1.2s",
             ],
+        );
+        assert_verdict_order(&run.output);
+        assert_stream_headers(
+            &run.output,
+            &[
+                "→ [1/2] image  api  running",
+                "→  5/11 run      pip install -r requirements.txt",
+                "→ [2/2] start  web  running  uv run blastit dev",
+            ],
+        );
+        let text = completed_transcript(&run.output);
+        assert_eq!(
+            text.matches("✓ [2/2] start  web  running").count(),
+            1,
+            "the streaming service row settles exactly once:\n{text}"
+        );
+        assert_eq!(
+            text.matches("1.2s").count(),
+            1,
+            "the service verdict carries its speed once:\n{text}"
         );
     }
 }
@@ -439,18 +571,35 @@ fn fresh_eleven_instruction_build_at_110x30_and_80x24_is_append_only() {
 #[test]
 fn failing_build_streams_gutter_lines_and_one_verdict_at_110x30_and_80x24() {
     for (rows, cols) in [(30, 110), (24, 80)] {
-        assert_fixture(
+        let run = assert_fixture(
             "failing",
             rows,
             cols,
             &[
                 "→ [1/2] image  api  running",
+                "→  4/11 run      apt-get install -y blastit",
                 "    │ installing blastit",
                 "    ┃ E: Unable to locate package blastit",
-                "  ✗  4/11 run",
+                "  ✗  4/11 run      apt-get install -y blastit",
                 "✗ RUN api failed (exit 1)",
                 "  next: slipfork logs -r 5be421",
             ],
+        );
+        let text = completed_transcript(&run.output);
+        assert_eq!(
+            text.matches("  ✗  4/11").count(),
+            1,
+            "the failing step prints one `✗` row:\n{text}"
+        );
+        let lines: Vec<&str> = text.lines().collect();
+        let verdict = lines
+            .iter()
+            .position(|line| line.trim_start().starts_with("✗ ") && line.contains("/11"))
+            .expect("the failing instruction row");
+        let above = &lines[verdict.saturating_sub(2)..verdict];
+        assert!(
+            above.iter().any(|line| line.contains('│')),
+            "the streamed output sits above the verdict:\n{text}"
         );
     }
 }
@@ -476,6 +625,15 @@ fn a_resize_from_110x30_to_80x24_mid_run_keeps_every_row_and_narrows_the_status_
         &["  ✓  1/11 from", "  ✓ 10/11", "built 11 steps"],
     );
     assert_all_inner_rows(&run.output);
+    assert_verdict_order(&run.output);
+    assert_stream_headers(
+        &run.output,
+        &[
+            "→ [1/2] image  api  running",
+            "→  5/11 run      pip install -r requirements.txt",
+            "→ [2/2] start  web  running  uv run blastit dev",
+        ],
+    );
 }
 
 /// Every expected row appears exactly once, as a complete line, in arrival order.
