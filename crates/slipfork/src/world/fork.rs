@@ -97,7 +97,8 @@ impl Session {
                     }
                     "forkfile" => "restore the file, then retry `slipfork fork`".to_owned(),
                     "boot-failed" => {
-                        "read `.slipfork/supervisor.log`, then run `slipfork up`".to_owned()
+                        "run `slipfork logs` for the failing step, then retry `slipfork up`"
+                            .to_owned()
                     }
                     _ => "run `slipfork status` to inspect the world".to_owned(),
                 };

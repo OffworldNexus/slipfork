@@ -3,10 +3,11 @@
 //! The head walks the build context, so it is computed before the daemon lock is taken; the pod
 //! list that distinguishes Idle from heal is read only after the lock is released.
 
+mod append;
 mod heal;
 mod plan;
 
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -234,24 +235,20 @@ impl Core {
         })?;
         let pods_dir = RuntimePods::world_root(&self.host.runtime_dir, &world);
         let log_dir = project.join(".slipfork");
-        fs::create_dir_all(&log_dir).map_err(|error| {
-            Failure::new(
-                "log-dir",
-                format!("create `{}`: {error}", log_dir.display()),
-            )
-        })?;
-        let log_path = log_dir.join("supervisor.log");
-        let log = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .map_err(|error| {
-                Failure::new(
-                    "log-open",
-                    format!("open `{}`: {error}", log_path.display()),
-                )
-            })?;
+        fs::create_dir_all(&log_dir).map_err(|error| append::dir_refusal(&log_dir, &error))?;
+        // A read-only historical `supervisor.log` rotates instead of bricking `up`; the effective
+        // path is what failure tails read and what the user is told about, exactly once.
+        let log = append::AppendLog::open_or_rotate(&log_dir, "supervisor")?;
+        let (log_file, log_path, note) = log.into_parts();
         let mut command = Command::new(&self.host.exe);
+        match &note {
+            Some(note) => {
+                command.env(append::UP_NOTE_ENV, note);
+            }
+            None => {
+                command.env_remove(append::UP_NOTE_ENV);
+            }
+        }
         command
             .arg("__supervise")
             .arg("--project")
@@ -270,7 +267,7 @@ impl Core {
             .current_dir(&project)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::from(log))
+            .stderr(Stdio::from(log_file))
             .spawn()
             .map_err(|error| {
                 Failure::new(

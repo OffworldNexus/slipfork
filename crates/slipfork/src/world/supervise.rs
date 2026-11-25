@@ -16,7 +16,9 @@ use slipfork_world::{
 use crate::commands::Session;
 use crate::world::features::WorldFeatures;
 use crate::world::runtime::capture::RunTarget;
-use crate::world::runtime::frames::{StepPin, failure_facts, log_frame, note_frame};
+use crate::world::runtime::frames::{
+    ROTATION_NOTE, StepPin, UP_NOTE_ENV, failure_facts, log_frame, note_frame,
+};
 
 use super::{HostEnv, SuperviseArgs, fail, runtime::WorldBoot, runtime::WorldRuntime};
 
@@ -38,7 +40,7 @@ impl Session {
             Ok(()) => ExitCode::SUCCESS,
             Err(message) => fail(
                 message,
-                "inspect `.slipfork/supervisor.log`",
+                "inspect `.slipfork/supervisor.log` for the boot cause",
                 crate::ui::Palette::new(self.color()),
             ),
         }
@@ -82,6 +84,22 @@ fn supervisor_main(
         &env.store_root_for(project),
     )?;
     let emitter = Arc::new(Mutex::new(Emitter { open: true }));
+    // A denied append rotated the boot log before spawn; narrate it once on the typed stream.
+    if let Some(note) = env.env.get(UP_NOTE_ENV).filter(|note| !note.is_empty()) {
+        let pin = StepPin {
+            step: 1,
+            total: 1,
+            label: "up",
+            name: "up",
+            image: None,
+            index: None,
+        };
+        if let Ok(mut emitter) = emitter.lock() {
+            let mut frame = note_frame(&pin, note);
+            frame["kind"] = json!(ROTATION_NOTE);
+            emitter.send(frame);
+        }
+    }
     let runtime = Arc::new(WorldRuntime::new(WorldBoot {
         project,
         world: world.clone(),

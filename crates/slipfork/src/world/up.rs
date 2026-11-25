@@ -15,6 +15,7 @@ use crate::commands::{Session, emit};
 use crate::daemon::{DaemonClient, DaemonError};
 
 use super::features::WorldFeatures;
+use super::runtime::frames::ROTATION_NOTE;
 use super::{DownArgs, RestartArgs, Targets, UpArgs, WorldIdentities, fail};
 
 impl Session {
@@ -162,6 +163,14 @@ impl Session {
                 if event["event"].as_str() == Some("failed") && tui.failed() {
                     return;
                 }
+                // The daemon rotated a read-only `supervisor.log`; one plain line, never verbose-only
+                // and never forwarded to the pane (no double row under `-v`, dropped under `--json`).
+                if event["kind"].as_str() == Some(ROTATION_NOTE) {
+                    if !args.json {
+                        tui.line(event["text"].as_str().unwrap_or_default());
+                    }
+                    return;
+                }
                 if let Some(value) = event["remedy"].as_str() {
                     remedy = Some(value.to_owned());
                 }
@@ -196,7 +205,8 @@ impl Session {
                     if line > 0 {
                         format!("fix Forkfile:{line}, then run `slipfork up`")
                     } else {
-                        "read `.slipfork/supervisor.log`, then run `slipfork up`".to_owned()
+                        "run `slipfork logs` for the failing step, then retry `slipfork up`"
+                            .to_owned()
                     }
                 });
                 self.lifecycle_failure(&error, &next, args.json, tui.failed())

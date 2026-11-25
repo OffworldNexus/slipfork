@@ -7,6 +7,15 @@ use slipfork_image::StepEvent;
 use slipfork_world::run_log::RunRecord;
 use slipfork_world::snapshot::TailPhase;
 
+/// Environment key the daemon uses to hand one boot narration line to `__supervise`.
+///
+/// Mirrors `crate::daemon::lifecycle::up::append::UP_NOTE_ENV`; each side of the process boundary
+/// states its own literal because the two module trees are private to `world` and `daemon`.
+pub(crate) const UP_NOTE_ENV: &str = "SLIPFORK_UP_NOTE";
+
+/// Frame-kind marker for the one log-rotation note; the frame vocabulary owns every kind name.
+pub(crate) const ROTATION_NOTE: &str = "log-rotation";
+
 impl StepPin<'_> {
     /// Parses a `step` frame's `phase` label through the one wire vocabulary owned here.
     #[cfg(test)]
@@ -157,7 +166,7 @@ pub(crate) fn failure_facts(frame: &mut Value, record: Option<&RunRecord>, plumb
         .as_str()
         .map(|id| format!("slipfork logs -r {id}"))
         .or_else(|| frame["remedy"].as_str().map(str::to_owned))
-        .unwrap_or_else(|| "inspect `.slipfork/supervisor.log`".to_owned());
+        .unwrap_or_else(|| "run `slipfork logs` for the failing step".to_owned());
     frame["next"] = json!(next);
     if let Some(message) = frame["message"].as_str() {
         let body = message
