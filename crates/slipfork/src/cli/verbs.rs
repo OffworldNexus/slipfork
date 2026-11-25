@@ -41,7 +41,7 @@ const STYLES: Styles = Styles::styled()
     max_term_width = 100,
 )]
 pub struct Cli {
-    /// Add supervisor lineage and resource detail to status rows.
+    /// Add supervisor pid and resource detail to status rows.
     #[arg(short = 'v', long, global = true)]
     pub verbose: bool,
 

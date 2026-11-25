@@ -3,7 +3,7 @@
 //! Nothing downstream inspects `serde_json::Value` keys or sniffs authority strings: every field is
 //! typed here, including the `Forkfile` domain filter mirror.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -16,6 +16,87 @@ pub struct PsReply {
     /// Every owned world, with forks nested under their parent.
     #[serde(default)]
     pub worlds: Vec<PsWorld>,
+}
+
+/// Nests the already-built rows into the reply tree from the ledger's parent edges.
+///
+/// A fork sits under its immediate parent row, or under its root row when the parent row is gone;
+/// a cycle (which the ledger never writes) still surfaces every row as a remainder. The daemon and
+/// the daemonless reader both build through this one projection, so their trees cannot drift.
+#[must_use]
+pub fn assemble_reply(rows: &LedgerRows, mut built: BTreeMap<i64, PsWorld>) -> PsReply {
+    let known: BTreeSet<i64> = rows.worlds.iter().map(|row| row.id).collect();
+    let mut children: BTreeMap<i64, Vec<i64>> = BTreeMap::new();
+    for fork in &rows.forks {
+        if !built.contains_key(&fork.world_id) {
+            continue;
+        }
+        let parent = if known.contains(&fork.parent_id) {
+            fork.parent_id
+        } else if known.contains(&fork.root_id) {
+            fork.root_id
+        } else {
+            continue;
+        };
+        children.entry(parent).or_default().push(fork.world_id);
+    }
+    let nested: BTreeSet<i64> = children.values().flatten().copied().collect();
+    let mut worlds = Vec::new();
+    for row in &rows.worlds {
+        if !nested.contains(&row.id)
+            && let Some(world) = take(row.id, &children, &mut built)
+        {
+            worlds.push(world);
+        }
+    }
+    while let Some(id) = built.keys().next().copied() {
+        if let Some(world) = take(id, &children, &mut built) {
+            worlds.push(world);
+        }
+    }
+    PsReply { worlds }
+}
+
+/// Takes one assembled subtree out of `built`, nesting its children in project order.
+fn take(
+    id: i64,
+    children: &BTreeMap<i64, Vec<i64>>,
+    built: &mut BTreeMap<i64, PsWorld>,
+) -> Option<PsWorld> {
+    let mut world = built.remove(&id)?;
+    if let Some(kids) = children.get(&id) {
+        for &kid in kids {
+            if let Some(child) = take(kid, children, built) {
+                world.forks.push(child);
+            }
+        }
+    }
+    world
+        .forks
+        .sort_by(|left, right| left.project.cmp(&right.project));
+    Some(world)
+}
+
+/// The one `!` line for a checkout the ledger still owns but disk no longer has.
+#[must_use]
+pub fn checkout_problem(fork: Option<&str>, world: &str) -> String {
+    match fork {
+        Some(fork) => format!("checkout missing — run `slipfork drop {fork}`"),
+        None => format!("checkout missing — restore it or run `slipfork down {world}`"),
+    }
+}
+
+/// Appends exactly one remedy when a ledger's broken-row text stops at the problem.
+#[must_use]
+pub fn with_remedy(problem: &str, fork: Option<&str>, world: &str) -> String {
+    if problem.contains("slipfork ") {
+        return problem.to_owned();
+    }
+    let remedy = match fork {
+        Some(fork) => format!("run `slipfork drop {fork}`"),
+        None => format!("restore it or run `slipfork down {world}`"),
+    };
+    format!("{problem} — {remedy}")
 }
 
 /// The ancestor row ids of `id`: the immediate parent first, the root row last.
@@ -104,9 +185,6 @@ pub struct PsWorld {
     /// Ancestor fork names of this row, immediate parent first, the root world name last.
     #[serde(default)]
     pub lineage: Vec<String>,
-    /// Reserved for wire compatibility; the ledger now owns every stopped fork as a row.
-    #[serde(default)]
-    pub stopped_forks: Vec<PsStoppedFork>,
     /// Forks nested under this world.
     #[serde(default)]
     pub forks: Vec<PsWorld>,
@@ -131,7 +209,6 @@ impl PsWorld {
             services: Vec::new(),
             problem: None,
             lineage: Vec::new(),
-            stopped_forks: Vec::new(),
             forks: Vec::new(),
         }
     }
@@ -148,15 +225,6 @@ pub enum PsWorldState {
     Stopped,
     /// The ledger and disk disagree; `problem` is the only honest row.
     Broken,
-}
-
-/// One stopped fork found under a parent world's `.forks` directory.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PsStoppedFork {
-    /// Fork name, the `.forks/<name>` directory entry.
-    pub name: String,
-    /// Absolute fork checkout path on disk.
-    pub path: PathBuf,
 }
 
 /// One service, image, or backing resource row.

@@ -6,9 +6,11 @@
 //! [`Table`], so each column has a single start index across the whole tree.
 
 use serde_json::Value;
-use slipfork_world::{FORKS_DIR, ProjectScope};
+use slipfork_world::ProjectScope;
 
-use crate::ps::{PsReply, PsStoppedFork, PsWorld, PsWorldState};
+use std::collections::BTreeSet;
+
+use crate::ps::{PsReply, PsWorld, PsWorldState};
 use crate::ui::Palette;
 use crate::ui::table::{Column, ColumnWidths, Table};
 
@@ -17,7 +19,8 @@ use super::rows::{DomainRows, RoutedRow, SupportRow, WorldRows, project};
 
 pub use super::model::no_world_line;
 
-const HEADER: [Column; 4] = [
+const HEADER: [Column; 5] = [
+    Column::left(),
     Column::left(),
     Column::left(),
     Column::left(),
@@ -52,9 +55,6 @@ impl Widths {
         let mut support = Vec::new();
         for rows in worlds {
             header.push(header_cells(rows.world, options));
-            for fork in &rows.world.stopped_forks {
-                header.push(fork_cells(fork, options));
-            }
             for domain in &rows.domains {
                 for row in &domain.rows {
                     route.push(route_cells(row));
@@ -91,17 +91,19 @@ fn header_cells(world: &PsWorld, options: &Options) -> Vec<String> {
         display_name(world).to_owned(),
         display_path(&world.path, options.home.as_deref()),
         state.to_owned(),
+        lineage_text(world),
         pid,
     ]
 }
 
-fn fork_cells(fork: &PsStoppedFork, options: &Options) -> Vec<String> {
-    vec![
-        fork.name.clone(),
-        display_path(&fork.path, options.home.as_deref()),
-        "stopped".to_owned(),
-        String::new(),
-    ]
+/// The dim `← parent ← root` ancestry suffix; a root has none and an absent column collapses.
+fn lineage_text(world: &PsWorld) -> String {
+    world
+        .lineage
+        .iter()
+        .map(|name| format!("← {name}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn route_cells(row: &RoutedRow) -> Vec<String> {
@@ -144,11 +146,6 @@ pub fn render(reply: &PsReply, options: &Options) -> String {
         }
         render_world(&mut out, rows, options, palette, &widths);
     }
-    let stopped: Vec<&PsStoppedFork> = projected
-        .iter()
-        .flat_map(|rows| rows.world.stopped_forks.iter())
-        .collect();
-    render_stopped_forks(&mut out, &stopped, options, palette, &widths);
     out
 }
 
@@ -177,9 +174,10 @@ fn scope_fork(reply: &PsReply, fork_path: &std::path::Path, name: &str, world: &
     let mut worlds = Vec::new();
     flatten(&reply.worlds, &mut worlds);
     if let Some(found) = worlds.iter().find(|world| world.project == fork_path) {
-        return PsReply {
-            worlds: vec![(*found).clone()],
-        };
+        // Strictly one fork: its descendants stay out of this view.
+        let mut row = (*found).clone();
+        row.forks.clear();
+        return PsReply { worlds: vec![row] };
     }
     // The scope already proved the checkout exists, so no second disk probe happens here.
     PsReply {
@@ -197,27 +195,33 @@ fn scope_project(
 ) -> PsReply {
     let mut live = Vec::new();
     flatten(&reply.worlds, &mut live);
-    let forks_dir = root.join(FORKS_DIR);
-    let mut rows: Vec<PsWorld> = live
+    let mut rows: Vec<PsWorld> = Vec::new();
+    retain_family(&reply.worlds, &mut rows);
+    let known: BTreeSet<&std::path::Path> = live
         .iter()
-        .filter(|world| world.project.starts_with(&forks_dir))
-        .map(|world| (*world).clone())
+        .filter(|row| row.fork.is_some())
+        .map(|row| row.project.as_path())
         .collect();
-    rows.sort_by(|left, right| left.project.cmp(&right.project));
-    let stopped: Vec<PsStoppedFork> = forks
+    let mut stopped: Vec<PsWorld> = forks
         .iter()
-        .filter(|fork| !rows.iter().any(|row| row.project == fork.path))
-        .map(|fork| PsStoppedFork {
-            name: fork.name.clone(),
-            path: fork.path.clone(),
+        .filter(|fork| !known.contains(fork.path.as_path()))
+        .map(|fork| {
+            let mut row = PsWorld::stopped(
+                &fork.path,
+                &slipfork_world::world_id_for_project(&fork.path),
+                Some(&fork.name),
+            );
+            // A flat `.forks/<name>` checkout is a child of this root world by construction.
+            row.lineage = vec![world.to_owned()];
+            row
         })
         .collect();
     let mut root_row = live
         .iter()
         .find(|row| row.project == root)
         .map_or_else(|| PsWorld::stopped(root, world, None), |row| (*row).clone());
+    rows.append(&mut stopped);
     root_row.forks = rows;
-    root_row.stopped_forks = stopped;
     if let Some(problem) = problem {
         root_row.problem = Some(match root_row.problem.take() {
             Some(existing) => format!("{existing}; {problem}"),
@@ -229,8 +233,34 @@ fn scope_project(
     }
 }
 
-fn flatten<'a>(worlds: &'a [PsWorld], out: &mut Vec<&'a PsWorld>) {
+/// Retains every fork subtree from the reply in its ledger order, skipping the root row.
+///
+/// A fork keeps its own nested children, so `ps` inside the project root shows the same
+/// `(depth, name)` tree the daemon sent instead of re-flattening it at the root.
+fn retain_family(worlds: &[PsWorld], out: &mut Vec<PsWorld>) {
     for world in worlds {
+        if world.fork.is_some() {
+            out.push(world.clone());
+        } else {
+            retain_family(&world.forks, out);
+        }
+    }
+}
+
+/// Flattens every world in display order: at each sibling level the live and broken rows come
+/// first, then the dim `○` stopped rows, so a live fork never renders below a stopped one.
+fn flatten<'a>(worlds: &'a [PsWorld], out: &mut Vec<&'a PsWorld>) {
+    for world in worlds
+        .iter()
+        .filter(|world| world.state != PsWorldState::Stopped)
+    {
+        out.push(world);
+        flatten(&world.forks, out);
+    }
+    for world in worlds
+        .iter()
+        .filter(|world| world.state == PsWorldState::Stopped)
+    {
         out.push(world);
         flatten(&world.forks, out);
     }
@@ -245,36 +275,62 @@ fn render_world(
 ) {
     let world = rows.world;
     let table = Table::new(&HEADER);
-    if world.state == PsWorldState::Stopped {
-        out.push_str(&palette.meta("○ "));
-        let cells = vec![
-            palette.meta(display_name(world)),
-            palette.meta(&display_path(&world.path, options.home.as_deref())),
-            palette.status("stopped"),
-            String::new(),
-        ];
-        out.push_str(&table.line(&widths.header, &cells));
-        out.push('\n');
-    } else {
-        out.push_str(&palette.tint("●", "32"));
-        out.push(' ');
-        let pid = match world.supervisor_pid {
-            Some(pid) if options.verbose => palette.meta(&format!("pid {pid}")),
-            _ => String::new(),
-        };
-        let cells = vec![
-            palette.value(display_name(world)),
-            palette.path(&display_path(&world.path, options.home.as_deref())),
-            String::new(),
-            pid,
-        ];
-        out.push_str(&table.line(&widths.header, &cells));
-        out.push('\n');
+    let lineage = palette.meta(&lineage_text(world));
+    let path = display_path(&world.path, options.home.as_deref());
+    match world.state {
+        PsWorldState::Stopped => {
+            out.push_str(&palette.meta("○ "));
+            let cells = vec![
+                palette.meta(display_name(world)),
+                palette.meta(&path),
+                palette.status("stopped"),
+                lineage,
+                String::new(),
+            ];
+            out.push_str(&table.line(&widths.header, &cells));
+            out.push('\n');
+        }
+        PsWorldState::Broken => {
+            out.push_str(&palette.error("✗"));
+            out.push(' ');
+            let cells = vec![
+                palette.value(display_name(world)),
+                palette.path(&path),
+                String::new(),
+                lineage,
+                String::new(),
+            ];
+            out.push_str(&table.line(&widths.header, &cells));
+            out.push('\n');
+        }
+        PsWorldState::Live => {
+            out.push_str(&palette.tint("●", "32"));
+            out.push(' ');
+            let pid = match world.supervisor_pid {
+                Some(pid) if options.verbose => palette.meta(&format!("pid {pid}")),
+                _ => String::new(),
+            };
+            let cells = vec![
+                palette.value(display_name(world)),
+                palette.path(&path),
+                String::new(),
+                lineage,
+                pid,
+            ];
+            out.push_str(&table.line(&widths.header, &cells));
+            out.push('\n');
+        }
     }
 
     if let Some(problem) = &world.problem {
         out.push_str(&palette.error(&format!("! {problem}")));
         out.push('\n');
+    }
+
+    // A stopped or broken row is honest by itself: nothing runs, so no domain, support, or
+    // fabricated `orphaned` child prints below it.
+    if matches!(world.state, PsWorldState::Broken | PsWorldState::Stopped) {
+        return;
     }
 
     let support = !rows.support.is_empty();
@@ -285,33 +341,6 @@ fn render_world(
     }
     if support {
         render_support(out, &rows.support, palette, widths);
-    }
-}
-
-/// Every world's stopped `.forks/<name>` checkouts render in one trailing block after all live
-/// world trees, on the shared header grid, so a live fork never renders below a stopped one.
-fn render_stopped_forks(
-    out: &mut String,
-    forks: &[&PsStoppedFork],
-    options: &Options,
-    palette: Palette,
-    widths: &Widths,
-) {
-    if forks.is_empty() {
-        return;
-    }
-    out.push('\n');
-    let table = Table::new(&HEADER);
-    for fork in forks {
-        out.push_str(&palette.meta("○ "));
-        let cells = vec![
-            palette.meta(&fork.name),
-            palette.meta(&display_path(&fork.path, options.home.as_deref())),
-            palette.status("stopped"),
-            String::new(),
-        ];
-        out.push_str(&table.line(&widths.header, &cells));
-        out.push('\n');
     }
 }
 

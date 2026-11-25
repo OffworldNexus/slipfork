@@ -134,9 +134,19 @@ impl Session {
     }
 
     fn render_status(&self, json: bool, verbose: bool, scoped: bool) -> ExitCode {
-        let value = match DaemonClient::connect_existing(&self.host) {
+        let reply = match DaemonClient::connect_existing(&self.host) {
             Ok(Some(mut client)) => match client.call_streaming("ps", json!({}), &mut |_| {}) {
-                Ok(value) => value,
+                Ok(value) => match status::parse(&value) {
+                    Ok(reply) => reply,
+                    Err(error) => {
+                        return self.report(
+                            "status-reply",
+                            &format!("cannot decode the daemon's ps reply: {error}"),
+                            "run `slipfork status --json` and report the payload",
+                            json,
+                        );
+                    }
+                },
                 Err(error) => {
                     return self.report(
                         &error.code,
@@ -146,23 +156,26 @@ impl Session {
                     );
                 }
             },
-            Ok(None) => json!({ "worlds": [] }),
+            // No daemon answers: read `state.db` read-only and never converge or write.
+            Ok(None) => match status::offline(&self.host.state_dir) {
+                Ok(reply) => reply,
+                Err(error) => {
+                    return self.report(
+                        "status-ledger",
+                        &format!(
+                            "cannot read {}/state.db: {error}",
+                            self.host.state_dir.display()
+                        ),
+                        "run `slipfork doctor` and check the state directory",
+                        json,
+                    );
+                }
+            },
             Err(error) => {
                 return self.report(
                     &error.code,
                     &error.message,
                     "check that XDG_RUNTIME_DIR is readable and retry",
-                    json,
-                );
-            }
-        };
-        let reply = match status::parse(&value) {
-            Ok(reply) => reply,
-            Err(error) => {
-                return self.report(
-                    "status-reply",
-                    &format!("cannot decode the daemon's ps reply: {error}"),
-                    "run `slipfork status --json` and report the payload",
                     json,
                 );
             }

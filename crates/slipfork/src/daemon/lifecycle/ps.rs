@@ -5,7 +5,7 @@
 //! owned supervisor, an answering control socket, and the pods behind it. Untracked checkouts are
 //! converged into the ledger before `ps`, so this module never rescans `.forks`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -17,12 +17,11 @@ use super::core::{Core, World, ledger_failure};
 use crate::daemon::Failure;
 use crate::daemon::rpc::{key_of, pid_alive, world_answers, world_call};
 use crate::daemon::view;
-use crate::ps::{PsKind, PsReply, PsService, PsWorld, PsWorldState, lineage};
+use crate::ps::{PsKind, PsReply, PsService, PsWorld, PsWorldState, assemble_reply, lineage};
 
 impl Core {
     pub(crate) fn ps(&mut self) -> Result<PsReply, Failure> {
         let rows = self.ledger.list().map_err(ledger_failure)?;
-        let known: BTreeSet<i64> = rows.worlds.iter().map(|row| row.id).collect();
         let fork_names: BTreeMap<i64, String> = rows
             .forks
             .iter()
@@ -51,44 +50,21 @@ impl Core {
                 &pods,
             );
             let mut world = view.ps_json(state);
-            // The ledger's one-line divergence is the only problem a broken row renders.
-            world.problem = row.problem.clone().or_else(|| world.problem.take());
+            // The ledger's one-line divergence is the only problem a broken row renders, and it
+            // always carries exactly one remedy.
             if state == PsWorldState::Broken {
+                let fork = fork_names.get(&row.id).map(String::as_str);
+                if let Some(problem) = row.problem.clone().or_else(|| world.problem.take()) {
+                    world.problem = Some(crate::ps::with_remedy(&problem, fork, &row.world_name));
+                }
                 world.services.clear();
+            } else {
+                world.problem = row.problem.clone().or_else(|| world.problem.take());
             }
             world.lineage = lineage(&rows, row.id);
             built.insert(row.id, world);
         }
-        // `children` is the tree: a fork nests under its parent row, or under its root row when
-        // the immediate parent row is gone.
-        let mut children: BTreeMap<i64, Vec<i64>> = BTreeMap::new();
-        for fork in &rows.forks {
-            let parent = if known.contains(&fork.parent_id) {
-                fork.parent_id
-            } else if known.contains(&fork.root_id) {
-                fork.root_id
-            } else {
-                continue;
-            };
-            children.entry(parent).or_default().push(fork.world_id);
-        }
-        let nested: BTreeSet<i64> = children.values().flatten().copied().collect();
-        let mut worlds = Vec::new();
-        for row in &rows.worlds {
-            if nested.contains(&row.id) {
-                continue;
-            }
-            if let Some(world) = assemble(row.id, &children, &mut built) {
-                worlds.push(world);
-            }
-        }
-        // A cycle can never be written by the ledger, but a remainder must still be visible.
-        while let Some(id) = built.keys().next().copied() {
-            if let Some(world) = assemble(id, &children, &mut built) {
-                worlds.push(world);
-            }
-        }
-        Ok(PsReply { worlds })
+        Ok(assemble_reply(&rows, built))
     }
 
     /// The ledger row's state joined to the daemon's owned world.
@@ -112,26 +88,6 @@ impl Core {
         };
         (state, alive, booting)
     }
-}
-
-/// Takes one assembled subtree out of `worlds`, nesting its children in id order.
-fn assemble(
-    id: i64,
-    children: &BTreeMap<i64, Vec<i64>>,
-    worlds: &mut BTreeMap<i64, PsWorld>,
-) -> Option<PsWorld> {
-    let mut world = worlds.remove(&id)?;
-    if let Some(kids) = children.get(&id) {
-        for &kid in kids {
-            if let Some(child) = assemble(kid, children, worlds) {
-                world.forks.push(child);
-            }
-        }
-    }
-    world
-        .forks
-        .sort_by(|left, right| left.project.cmp(&right.project));
-    Some(world)
 }
 
 /// The running pods a live world reports over its control socket.
@@ -275,7 +231,6 @@ impl WorldView {
             booting: self.booting,
             services: self.service_rows().to_vec(),
             problem: self.problem.clone(),
-            stopped_forks: Vec::new(),
             forks: Vec::new(),
             lineage: Vec::new(),
         }
@@ -289,11 +244,7 @@ fn evaluate(
     world: &str,
 ) -> (Option<slipfork_forkfile::Forkfile>, Option<String>) {
     if !project.is_dir() {
-        let message = match fork {
-            Some(fork) => format!("checkout missing — run `slipfork drop {fork}`"),
-            None => format!("checkout missing — restore it or run `slipfork down {world}`"),
-        };
-        return (None, Some(message));
+        return (None, Some(crate::ps::checkout_problem(fork, world)));
     }
     match fs::read_to_string(project.join("Forkfile")) {
         Ok(source) => match slipfork_forkfile::compile(&source) {

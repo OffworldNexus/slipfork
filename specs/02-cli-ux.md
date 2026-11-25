@@ -77,7 +77,7 @@ flowchart TD
 Worlds are **flat**: one header per world, a blank line between worlds, and no ports or uptime ages in human output. Every domain has the same shape — its URL, then `<path>  -> <target>  <kind>  <status>`:
 
 ```text
-● demo  ~/demo
+● demo       ~/demo
   http://demo.localhost
     /     -> web      service              running
     /api  -> api      service              running
@@ -86,12 +86,43 @@ Worlds are **flat**: one header per world, a blank line between worlds, and no p
   support
     worker  service       running
     pg      postgres 18   running
-  ○ feat-auth  ~/demo/.forks/feat-auth  stopped
+
+○ feat-auth  ~/demo/.forks/feat-auth  stopped  ← demo
 ```
 
-A non-default route mode is the only suffix: `(strip-prefix)`, `(rewrite /v1)` or `(exact)`. `support` holds workers and resources; `--json` keeps `state` (`live`/`stopped`), `port`, `started_at_ms`, `url`, `routes` (each `{prefix, port, mode, domain?}`), `orphaned` and `stopped_forks`.
+Every world frame is its own block after a blank line, so the header grid pads `demo` to the longer `feat-auth` name.
 
-A `stopped_forks[]` entry is stopped by membership alone — no duplicate boolean rides on it — and a stopped row carries no `supervisor_pid` or `started_at_ms`.
+A non-default route mode is the only suffix: `(strip-prefix)`, `(rewrite /v1)` or `(exact)`. `support` holds workers and resources; `--json` keeps `state` (`live`/`stopped`/`broken`), `port`, `started_at_ms`, `url`, `routes` (each `{prefix, port, mode, domain?}`), `orphaned` and `lineage` (immediate parent first, root last).
+
+Every fork is a ledger row: a stopped fork prints as a `○` row exactly like a stopped root, and a running one as a `●` header with the dim `← parent ← root` suffix. Dropping a parent re-parents its forks, so the next `ps` reads `salut ← test1`:
+
+```text
+● test1    ~/slproj/test1
+  http://test1.localhost
+    /  -> web  service  running
+
+● bonjour  ~/slproj/test1/.forks/bonjour  ← test1
+  http://bonjour--test1.localhost
+    /  -> web  service  running
+
+● salut    ~/slproj/test1/.forks/salut    ← bonjour ← test1
+  http://salut--test1.localhost
+    /  -> web  service  running
+```
+
+```text
+$ slipfork drop bonjour -f
+$ slipfork ps
+● test1  ~/slproj/test1
+  http://test1.localhost
+    /  -> web  service  running
+
+● salut  ~/slproj/test1/.forks/salut  ← test1
+  http://salut--test1.localhost
+    /  -> web  service  running
+```
+
+A stopped row is stopped by its ledger state alone — no duplicate boolean rides on it — and carries no `supervisor_pid` or `started_at_ms`.
 
 When state cannot be honest, `ps` names the one real problem instead of inventing rows:
 
@@ -148,6 +179,8 @@ A successful `up` restores `\x1b[r`, clears row `rows`, and prints `✓ Ready ->
 The fork then boots the ordinary `up` path, reaching all 8 demo components ready and first `200 OK` at a median `~5.5s` on the 4-vCPU dev VM (`< 8.0s` ceiling on 2-vCPU CI runners); a warm fork prints `cached` images and `up to date` setup/hooks and re-runs nothing.
 
 A failed `fork` rolls back atomically: it stops its supervisor and pods and drops the ledger entry before unlinking snapshots, so no half-booted fork survives. `slipfork drop <name>` stops the fork and deletes its project, data and log snapshots, refusing a dirty checkout without `-f`.
+
+`drop` is a single-node splice: in `salut ← bonjour ← test1`, dropping `bonjour` re-parents `salut` onto `test1` in the same transaction, so the next `ps` reads `salut ← test1`, `merci ← salut ← test1` keeps serving `200 OK`, and only `bonjour`'s subvolumes are destroyed.
 
 ## 6. Unified real-PTY `shell`, `logs`, `doctor` and the daily verbs
 

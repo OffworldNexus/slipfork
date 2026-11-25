@@ -12,7 +12,7 @@ use crate::ui::paint;
 pub struct Options {
     /// Emit ANSI escapes.
     pub color: bool,
-    /// Add supervisor lineage to every world header.
+    /// Add supervisor pid to live status headers.
     pub verbose: bool,
     /// `$HOME`, used to shorten project paths to `~/…`.
     pub home: Option<PathBuf>,
@@ -36,7 +36,7 @@ impl Options {
         self
     }
 
-    /// Enables the lineage column.
+    /// Enables the supervisor pid column.
     #[must_use]
     pub fn with_verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;

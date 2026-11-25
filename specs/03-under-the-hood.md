@@ -490,7 +490,7 @@ flowchart LR
 - **Single-node `drop`:** Dropping `bonjour` in `salut ← bonjour ← test1` splices `salut.parent_id = bonjour.parent_id` via `delete_world_row` and destroys only `bonjour`'s subvolumes, keeping `-f` strictly "discard dirty work in `bonjour`" without cascade data loss.
 - **Single `plan` frame on `drop`:** `drop` announces one upfront `plan` frame (`pod <id>` rows when live + `fork snapshots <name>`, deleting `PrepFrame::fixed`), advancing `[1/N]..[N/N]` instead of `[1/1]..[4/4]`.
 - **Target resolution:** Inside `<root>` or `<root>/.forks/*`, bare `<name>` resolves within that family (`UNIQUE(root_id, name)`, `name != root_world`); outside, bare `<name>` resolves if unique or fails closed (for example `next: slipfork drop salut--test1`).
-- **Honest `ps` & `status` rows:** Both render root first, live forks in `(depth, name)` order with dim `← parent ← root` (`lineage: [...]` in `--json`), trailing dim `○` stopped forks, `✗`/`!` broken rows with zero sub-rows, and dim `stale` on offline daemonless `live` rows.
+- **Honest `ps` & `status` rows:** Both render root first, live forks in `(depth, name)` order with dim `← parent ← root` (`lineage: [...]` in `--json`), `✗`/`!` broken rows with zero sub-rows, and dim `○` stopped rows with zero sub-rows. A daemonless `status`/`ps` reads `state.db` read-only through `ForkLedger::open_reader`, so every ledger row prints as the `○ stopped` it really is — no daemon writes, no convergence, and a missing `state.db` is `○ No worlds running`.
 
 ### 7.4 Deterministic convergence (`plan_converge` + `ConvergeExecutor`)
 

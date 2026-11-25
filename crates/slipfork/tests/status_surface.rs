@@ -3,6 +3,8 @@
 //! The renderer journey feeds real `ps` JSON through the public typed renderer; the CLI cases run
 //! the real binary against a daemon-free `/var/tmp` runtime.
 
+#![recursion_limit = "256"]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -15,7 +17,9 @@ use slipfork::boot::{
 };
 use slipfork::status::{self, Options};
 use slipfork::ui::table::visible_width;
-use slipfork_world::LogStore;
+use slipfork_world::{
+    ForkLedger, ForkName, ForkRequest, LogStore, RootRequest, StatePaths, WorldName,
+};
 
 #[test]
 fn mountinfo_unescapes_octal_and_picks_the_longest_containing_mount() {
@@ -605,12 +609,8 @@ fn a_forty_character_fork_name_never_shears() {
                 "world": format!("{long}--demo"),
                 "fork": long,
                 "url": format!("http://{long}--demo.localhost"),
-                "supervisor_pid": 2, "alive": true, "booting": false,
-                "services": [{ "id": "api", "kind": "service", "running": true, "port": 8000 }]
-            }],
-            "stopped_forks": [{
-                "name": long,
-                "path": format!("/home/me/demo/.forks/{long}")
+                "state": "stopped", "alive": false, "booting": false,
+                "services": []
             }]
         }]
     }));
@@ -637,6 +637,316 @@ fn a_forty_character_fork_name_never_shears() {
         column_start(live, "~/demo"),
         "a long stopped fork keeps the world path column: {text}"
     );
+}
+
+#[test]
+fn scoping_the_project_root_keeps_the_three_deep_tree_once() {
+    let root = scratch("scope-lineage");
+    let demo = root.join("demo");
+    let forks = demo.join(".forks");
+    for path in [
+        &demo,
+        &forks.join("bonjour"),
+        &forks.join("salut"),
+        &forks.join("merci"),
+    ] {
+        fs::create_dir_all(path).expect("create the lab project");
+        fs::write(path.join("Forkfile"), "# forkfile: 0.1\n").expect("write the Forkfile");
+    }
+    let mut bonjour = slipfork::ps::PsWorld {
+        project: forks.join("bonjour"),
+        path: forks.join("bonjour"),
+        world: "bonjour--demo".to_owned(),
+        fork: Some("bonjour".to_owned()),
+        state: slipfork::ps::PsWorldState::Stopped,
+        lineage: vec!["demo".to_owned()],
+        ..slipfork::ps::PsWorld::default()
+    };
+    let mut salut = slipfork::ps::PsWorld {
+        project: forks.join("salut"),
+        path: forks.join("salut"),
+        world: "salut--demo".to_owned(),
+        fork: Some("salut".to_owned()),
+        lineage: vec!["bonjour".to_owned(), "demo".to_owned()],
+        ..slipfork::ps::PsWorld::default()
+    };
+    let merci = slipfork::ps::PsWorld {
+        project: forks.join("merci"),
+        path: forks.join("merci"),
+        world: "merci--demo".to_owned(),
+        fork: Some("merci".to_owned()),
+        lineage: vec!["salut".to_owned(), "bonjour".to_owned(), "demo".to_owned()],
+        ..slipfork::ps::PsWorld::default()
+    };
+    salut.forks.push(merci);
+    bonjour.forks.push(salut);
+    let mut reply = slipfork::ps::PsReply::default();
+    let mut root_row = slipfork::ps::PsWorld {
+        project: demo.clone(),
+        path: demo.clone(),
+        world: "demo".to_owned(),
+        ..slipfork::ps::PsWorld::default()
+    };
+    root_row.forks.push(bonjour);
+    reply.worlds.push(root_row);
+
+    let scoped = status::scope(&reply, &slipfork_world::ProjectScope::resolve(&demo));
+    let names: Vec<&str> = scoped.worlds[0]
+        .forks
+        .iter()
+        .map(|fork| fork.fork.as_deref().unwrap_or("root"))
+        .collect();
+    assert_eq!(
+        names,
+        vec!["bonjour"],
+        "the tree keeps its shape: {scoped:?}"
+    );
+    assert_eq!(scoped.worlds[0].forks[0].forks.len(), 1);
+    let inside = status::scope(
+        &reply,
+        &slipfork_world::ProjectScope::resolve(&forks.join("salut")),
+    );
+    assert!(
+        inside.worlds[0].forks.is_empty(),
+        "one fork only: {inside:?}"
+    );
+    assert_eq!(inside.worlds[0].fork.as_deref(), Some("salut"));
+    let text = status::render(&scoped, &Options::new(false).with_home(Some(root.clone())));
+    let headers = |name: &str| {
+        text.lines()
+            .filter(|line| {
+                line.starts_with(&format!("● {name} ")) || line.starts_with(&format!("○ {name} "))
+            })
+            .count()
+    };
+    for name in ["bonjour", "salut", "merci"] {
+        assert_eq!(headers(name), 1, "{name} renders exactly once: {text}");
+    }
+    fs::remove_dir_all(&root).expect("remove the scratch lab");
+}
+
+#[test]
+fn a_three_deep_lineage_prints_dim_left_arrows() {
+    let reply = reply(json!({
+        "worlds": [{
+            "project": "/home/me/test1", "path": "/home/me/test1", "world": "test1",
+            "url": "http://test1.localhost", "supervisor_pid": 1, "alive": true,
+            "booting": false,
+            "services": [],
+            "forks": [{
+                "project": "/home/me/test1/.forks/bonjour",
+                "path": "/home/me/test1/.forks/bonjour",
+                "world": "bonjour--test1", "fork": "bonjour",
+                "url": "http://bonjour--test1.localhost",
+                "supervisor_pid": 2, "alive": true, "booting": false,
+                "lineage": ["test1"],
+                "services": [],
+                "forks": [{
+                    "project": "/home/me/test1/.forks/salut",
+                    "path": "/home/me/test1/.forks/salut",
+                    "world": "salut--test1", "fork": "salut",
+                    "url": "http://salut--test1.localhost",
+                    "supervisor_pid": 3, "alive": true, "booting": false,
+                    "lineage": ["bonjour", "test1"],
+                    "services": [],
+                    "forks": [{
+                        "project": "/home/me/test1/.forks/merci",
+                        "path": "/home/me/test1/.forks/merci",
+                        "world": "merci--test1", "fork": "merci",
+                        "url": "http://merci--test1.localhost",
+                        "supervisor_pid": 4, "alive": true, "booting": false,
+                        "lineage": ["salut", "bonjour", "test1"],
+                        "services": []
+                    }]
+                }]
+            }]
+        }]
+    }));
+    let home = Some(PathBuf::from("/home/me"));
+    let text = status::render(&reply, &Options::new(false).with_home(home.clone()));
+    for (name, lineage) in [
+        ("bonjour", "← test1"),
+        ("salut", "← bonjour ← test1"),
+        ("merci", "← salut ← bonjour ← test1"),
+    ] {
+        let line = text
+            .lines()
+            .find(|line| line.starts_with(&format!("● {name} ")))
+            .unwrap_or_else(|| panic!("missing the {name} header: {text}"));
+        assert!(line.ends_with(lineage), "{name} lineage: {line}");
+    }
+    assert!(
+        !text.contains(ANSI),
+        "lineage is plain without colour: {text}"
+    );
+    let root = text
+        .lines()
+        .find(|line| line.starts_with("● test1"))
+        .expect("the root header");
+    assert!(!root.contains('←'), "a root has no lineage: {root}");
+    let coloured = status::render(&reply, &Options::new(true).with_home(home));
+    assert!(
+        coloured.contains("\u{1b}[38;5;244m← bonjour ← test1\u{1b}[0m"),
+        "lineage must be dim: {coloured}"
+    );
+}
+
+#[test]
+fn the_offline_reader_renders_the_ledger_and_splices_a_dropped_parent() {
+    let root = scratch("offline-ledger");
+    let project = root.join("test1");
+    for name in ["bonjour", "salut", "merci", "ghost"] {
+        let checkout = project.join(".forks").join(name);
+        fs::create_dir_all(&checkout).expect("create the fork checkout");
+        fs::write(
+            checkout.join("Forkfile"),
+            format!("# forkfile: 0.1\n# {name}\n"),
+        )
+        .expect("write the fork Forkfile");
+    }
+    fs::write(project.join("Forkfile"), "# forkfile: 0.1\n# test1\n")
+        .expect("write the root Forkfile");
+    let state = root.join("state/slipfork");
+    fs::create_dir_all(&state).expect("create the state directory");
+    // `sun_path` is 108 bytes: the pods socket needs a short runtime directory.
+    let runtime = tempfile::Builder::new()
+        .prefix("sf")
+        .tempdir_in("/var/tmp")
+        .expect("create the runtime directory");
+    let paths = StatePaths::new(state.clone());
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(state.join("daemon.lock"))
+        .expect("open the daemon lock");
+    let ledger = ForkLedger::open_writer(paths, lock).expect("open the ledger writer");
+    let test1 = ledger
+        .register_root(RootRequest {
+            name: WorldName::parse("test1").expect("valid world name"),
+            checkout_path: project.clone(),
+            store_root: root.join("store"),
+            now_ms: 1,
+        })
+        .expect("register the root");
+    ledger.mark_stopped(test1.id, 2).expect("stop the root");
+    let mut parent = test1.id;
+    let mut bonjour_id = 0;
+    let now = |step: i64| 10 + step;
+    let fork = |name: &str, parent_id: i64, step: i64| {
+        ledger
+            .begin_fork(ForkRequest {
+                root_id: test1.id,
+                name: ForkName::parse(name).expect("valid fork name"),
+                parent_id,
+                runtime_dir: runtime.path().to_path_buf(),
+                branch: name.to_owned(),
+                now_ms: now(step),
+            })
+            .expect("begin the fork")
+    };
+    for (step, name) in ["bonjour", "salut", "merci"].into_iter().enumerate() {
+        let row = fork(name, parent, step as i64);
+        if name == "bonjour" {
+            bonjour_id = row.world_id;
+        }
+        ledger
+            .mark_stopped(row.world_id, now(step as i64 + 1))
+            .expect("stop the fork");
+        parent = row.world_id;
+    }
+    // A vanished checkout is the one `!` row; a `creating` row is not a world yet.
+    let ghost = fork("ghost", test1.id, 8);
+    ledger
+        .mark_stopped(ghost.world_id, now(9))
+        .expect("stop ghost");
+    ledger
+        .mark_broken(
+            ghost.world_id,
+            "checkout missing — run `slipfork drop ghost`",
+            now(10),
+        )
+        .expect("mark ghost broken");
+    fs::remove_dir_all(project.join(".forks/ghost")).expect("remove the ghost checkout");
+    let wip = fork("wip", test1.id, 11);
+    assert_eq!(wip.name, "wip", "the half-created fork stays `creating`");
+
+    // The pure reader: root first, lineage immediate-parent-first, and no phantom rows.
+    let reply = status::offline(&state).expect("read the ledger");
+    assert_eq!(reply.worlds.len(), 1, "one root: {reply:?}");
+    let salut = reply.worlds[0].forks[0].forks[0].clone();
+    assert_eq!(salut.fork.as_deref(), Some("salut"));
+    assert_eq!(
+        salut.lineage,
+        vec!["bonjour".to_owned(), "test1".to_owned()]
+    );
+    let merci = salut.forks[0].clone();
+    assert_eq!(
+        merci.lineage,
+        vec!["salut".to_owned(), "bonjour".to_owned(), "test1".to_owned()]
+    );
+    let home = Some(root.clone());
+    let text = status::render(&reply, &Options::new(false).with_home(home.clone()));
+    assert!(
+        text.contains("○ salut") && text.contains("stopped  ← bonjour ← test1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("✗ ghost") && text.contains("! checkout missing — run `slipfork drop ghost`"),
+        "{text}"
+    );
+    assert_eq!(text.matches("! checkout missing").count(), 1, "{text}");
+    assert!(!text.contains("wip") && !text.contains(ANSI), "{text}");
+    assert!(
+        reply.worlds[0]
+            .forks
+            .iter()
+            .all(|fork| fork.fork.as_deref() != Some("wip")),
+        "a creating row is not a world yet: {reply:?}"
+    );
+
+    // The CLI with no daemon reads the same rows; `--json` keeps the typed schema unchanged.
+    let output = isolated(&root, &["status"]);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("status is UTF-8");
+    assert!(
+        stdout.contains("○ test1") && stdout.contains("← bonjour ← test1"),
+        "{stdout}"
+    );
+    let json = isolated(&root, &["status", "--json"]);
+    let parsed: Value = serde_json::from_slice(&json.stdout).expect("status --json parses");
+    assert_eq!(parsed["worlds"][0]["world"], "test1");
+    assert_eq!(parsed["worlds"][0]["forks"][0]["fork"], "bonjour");
+    assert!(parsed["worlds"][0].get("stopped_forks").is_none());
+
+    // Dropping `bonjour` splices `salut` to the root; `merci` keeps re-parented lineage.
+    ledger
+        .delete_world_row(bonjour_id)
+        .expect("drop bonjour splices its child");
+    let spliced = status::offline(&state).expect("read the spliced ledger");
+    let salut = spliced.worlds[0]
+        .forks
+        .iter()
+        .find(|fork| fork.fork.as_deref() == Some("salut"))
+        .expect("salut is reparented onto the root")
+        .clone();
+    assert_eq!(salut.fork.as_deref(), Some("salut"));
+    assert_eq!(
+        salut.lineage,
+        vec!["test1".to_owned()],
+        "salut is re-parented"
+    );
+    assert_eq!(
+        salut.forks[0].lineage,
+        vec!["salut".to_owned(), "test1".to_owned()],
+        "merci follows the splice"
+    );
+    let text = status::render(&spliced, &Options::new(false).with_home(home));
+    assert!(text.contains("stopped  ← test1"), "{text}");
+
+    drop(ledger);
+    fs::remove_dir_all(&root).expect("remove the scratch lab");
 }
 
 #[test]
@@ -684,6 +994,26 @@ fn the_empty_state_is_dim_and_exits_zero() {
             "○ No worlds running\n"
         );
     }
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_unreadable_ledger_fails_closed_with_one_remedy() {
+    let root = scratch("bad-ledger");
+    // `state.db` exists but is not a database: the reader must name it, never print an empty tree.
+    fs::create_dir_all(root.join("state/slipfork/state.db"))
+        .expect("plant a directory at the path");
+    let output = isolated(&root, &["status"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stderr.matches("error:").count(), 1, "{stderr}");
+    assert_eq!(stderr.matches("next:").count(), 1, "{stderr}");
+    assert!(stderr.contains("state.db"), "{stderr}");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("No worlds running"));
+    let json = isolated(&root, &["status", "--json"]);
+    let parsed: Value = serde_json::from_slice(&json.stdout).expect("the error object parses");
+    assert_eq!(parsed["error"]["code"], "status-ledger");
+    assert!(parsed["error"]["next"].is_string(), "{parsed}");
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -887,16 +1217,22 @@ fn stopped_forks_and_honest_problems_render_without_fabrication() {
             "url": "http://demo.localhost", "supervisor_pid": 11, "alive": true,
             "booting": false,
             "services": [{ "id": "api", "kind": "service", "running": true }],
-            "stopped_forks": [{
-                "name": "feat-auth",
-                "path": "/home/me/demo/.forks/feat-auth"
+            "forks": [{
+                "project": "/home/me/demo/.forks/feat-auth",
+                "path": "/home/me/demo/.forks/feat-auth",
+                "world": "feat-auth--demo",
+                "fork": "feat-auth",
+                "url": "http://feat-auth--demo.localhost",
+                "state": "stopped", "alive": false, "booting": false,
+                "lineage": ["demo"],
+                "services": []
             }]
         }]
     }));
     let plain = status::render(&stopped, &Options::new(false).with_home(home.clone()));
     assert!(
-        plain.contains("○ feat-auth  ~/demo/.forks/feat-auth  stopped"),
-        "a stopped fork renders one dim row with its shortened path: {plain}"
+        plain.contains("○ feat-auth  ~/demo/.forks/feat-auth  stopped  ← demo"),
+        "a stopped ledger row renders dim with its lineage: {plain}"
     );
     assert!(
         plain.contains("api") && plain.contains("running"),
@@ -942,24 +1278,86 @@ fn stopped_forks_and_honest_problems_render_without_fabrication() {
         "a live pod must stay running under an invalid Forkfile: {text}"
     );
 
+    // A broken row is one `!` line and one remedy: no `✗` sub-rows, no fabricated `orphaned`.
     let missing = reply(json!({
         "worlds": [{
-            "project": "/home/me/demo", "path": "/home/me/demo", "world": "demo",
-            "url": "http://demo.localhost", "supervisor_pid": 11, "alive": true,
-            "booting": false,
+            "project": "/home/me/demo/.forks/feat-auth",
+            "path": "/home/me/demo/.forks/feat-auth",
+            "world": "feat-auth--demo", "fork": "feat-auth",
+            "url": "http://feat-auth--demo.localhost",
+            "state": "broken", "alive": false, "booting": false,
+            "lineage": ["demo"],
             "problem": "checkout missing — run `slipfork drop feat-auth`",
-            "services": []
+            "services": [
+                { "id": "api", "kind": "service", "running": true },
+                { "id": "worker", "kind": "service", "running": true, "orphaned": true }
+            ]
         }]
     }));
-    let text = status::render(&missing, &Options::new(false));
+    let text = status::render(&missing, &Options::new(false).with_home(home.clone()));
+    assert_eq!(
+        text.lines().count(),
+        2,
+        "one header plus one problem: {text}"
+    );
     assert!(
         text.contains("! checkout missing — run `slipfork drop feat-auth`"),
         "{text}"
     );
-    assert!(!text.contains("orphaned"), "no fabricated rows: {text}");
+    assert_eq!(text.matches("checkout missing").count(), 1, "{text}");
+    assert!(
+        !text.contains("api") && !text.contains("orphaned"),
+        "{text}"
+    );
+    let coloured = status::render(&missing, &Options::new(true).with_home(home));
+    assert!(coloured.contains("\u{1b}[31m✗\u{1b}[0m"), "{coloured}");
+    assert!(coloured.contains("\u{1b}[31m! checkout"), "{coloured}");
+
+    // The wire owner stamps exactly one remedy; the renderer prints it verbatim.
+    assert_eq!(
+        slipfork::ps::with_remedy(
+            "checkout `/home/me/demo/.forks/feat-auth` is missing",
+            Some("feat-auth"),
+            "feat-auth--demo"
+        ),
+        "checkout `/home/me/demo/.forks/feat-auth` is missing — run `slipfork drop feat-auth`"
+    );
+    assert_eq!(
+        slipfork::ps::with_remedy(
+            "checkout missing — run `slipfork drop feat-auth`",
+            Some("feat-auth"),
+            "feat-auth--demo"
+        ),
+        "checkout missing — run `slipfork drop feat-auth`",
+        "an embedded remedy is never doubled"
+    );
+    assert_eq!(
+        slipfork::ps::with_remedy("ledger and disk disagree", None, "demo"),
+        "ledger and disk disagree — restore it or run `slipfork down demo`"
+    );
+    let bare = reply(json!({
+        "worlds": [{
+            "project": "/home/me/demo/.forks/feat-auth",
+            "path": "/home/me/demo/.forks/feat-auth",
+            "world": "feat-auth--demo", "fork": "feat-auth",
+            "url": "http://feat-auth--demo.localhost",
+            "state": "broken", "alive": false, "booting": false,
+            "problem": "checkout `/home/me/demo/.forks/feat-auth` is missing — run `slipfork drop feat-auth`",
+            "services": []
+        }]
+    }));
+    let text = status::render(&bare, &Options::new(false));
+    assert!(
+        text.contains(
+            "! checkout `/home/me/demo/.forks/feat-auth` is missing — run `slipfork drop feat-auth`"
+        ),
+        "{text}"
+    );
+    assert_eq!(text.matches("slipfork drop").count(), 1, "{text}");
 
     let value = serde_json::to_value(&stopped).expect("ps reply serializes");
-    assert_eq!(value["worlds"][0]["stopped_forks"][0]["name"], "feat-auth");
+    assert_eq!(value["worlds"][0]["forks"][0]["state"], "stopped");
+    assert_eq!(value["worlds"][0]["forks"][0]["lineage"][0], "demo");
     assert_eq!(
         value["worlds"][0]["services"][0]["running"], true,
         "JSON keeps the live service"
@@ -988,6 +1386,14 @@ fn a_stopped_fork_renders_after_every_live_world_tree() {
                 { "id": "worker", "kind": "service", "running": true }
             ],
             "forks": [{
+                "project": "/home/me/demo/.forks/tralala",
+                "path": "/home/me/demo/.forks/tralala",
+                "world": "tralala--demo",
+                "fork": "tralala",
+                "url": "http://tralala--demo.localhost",
+                "state": "stopped", "alive": false, "booting": false,
+                "services": []
+            }, {
                 "project": "/home/me/demo/.forks/feat-auth",
                 "path": "/home/me/demo/.forks/feat-auth",
                 "world": "feat-auth--demo",
@@ -996,8 +1402,7 @@ fn a_stopped_fork_renders_after_every_live_world_tree() {
                 "supervisor_pid": 12, "alive": true, "booting": false,
                 "services": [{ "id": "api", "kind": "service", "running": true, "port": 8000,
                                "routes": [{ "prefix": "/api", "port": 8000, "mode": "preserve" }] }]
-            }],
-            "stopped_forks": [{ "name": "tralala", "path": "/home/me/demo/.forks/tralala" }]
+            }]
         }]
     }));
     let text = status::render(
@@ -1080,14 +1485,29 @@ fn a_down_root_still_scopes_running_forks_and_stopped_siblings_from_disk() {
         "the down root renders stopped"
     );
     assert_eq!(scoped.worlds[0].world, "demo");
-    assert_eq!(scoped.worlds[0].forks.len(), 1);
-    assert_eq!(scoped.worlds[0].forks[0].fork.as_deref(), Some("feat-auth"));
-    assert_eq!(
-        scoped.worlds[0].stopped_forks.len(),
-        1,
-        "a copied plain checkout is a stopped fork: {scoped:?}"
+    assert_eq!(scoped.worlds[0].forks.len(), 2);
+    assert!(
+        scoped.worlds[0]
+            .forks
+            .iter()
+            .any(|fork| fork.fork.as_deref() == Some("feat-auth")),
+        "the live fork stays a row: {scoped:?}"
     );
-    assert_eq!(scoped.worlds[0].stopped_forks[0].name, "youpi");
+    let stopped_fork = scoped.worlds[0]
+        .forks
+        .iter()
+        .find(|fork| fork.fork.as_deref() == Some("youpi"))
+        .expect("a copied plain checkout is a stopped fork row");
+    assert_eq!(
+        stopped_fork.state,
+        slipfork::ps::PsWorldState::Stopped,
+        "a disk-only fork is a stopped ledger row"
+    );
+    assert_eq!(
+        stopped_fork.lineage,
+        vec!["demo".to_owned()],
+        "a flat .forks checkout is a child of the root world"
+    );
     let text = status::render(&scoped, &options);
     assert!(text.contains("○ demo"), "{text}");
     assert!(text.contains("● feat-auth"), "{text}");
