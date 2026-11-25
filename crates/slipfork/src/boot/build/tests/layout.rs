@@ -1,11 +1,9 @@
-//! Layout behavior: column padding, ANSI truncation, block order, and failure expansion.
+//! Layout behavior: column padding, ANSI truncation, append-only streaming, and failure output.
 
 use serde_json::json;
 
 use super::super::super::layout::truncate_visible;
-use super::super::{
-    Action, Columns, LiveKey, LiveSteps, Narrative, Phase, gutter_line, wrap_gutter,
-};
+use super::super::{Action, Columns, LiveKey, Narrative, Phase, gutter_line, wrap_gutter};
 use super::phase;
 use crate::ui::Palette;
 
@@ -64,68 +62,140 @@ fn gutter_lines_truncate_and_wrap_at_both_outer_and_inner_indents() {
 }
 
 #[test]
-fn block_rows_stack_every_phase_and_show_only_the_most_recent_tail() {
-    let first = phase(Columns::default());
-    let first_key = first.key.clone();
-    let second = Phase::new(
-        LiveKey::Boot {
-            kind: "service".to_owned(),
-            name: "worker".to_owned(),
-        },
-        Some((3, 3)),
-        "start".to_owned(),
-        "worker".to_owned(),
-        "sleep 3600".to_owned(),
-        Columns::default(),
-    );
-    let second_key = second.key.clone();
-    let mut steps = LiveSteps::new();
-    steps.begin(first);
-    steps.append_output(&first_key, "stdout".to_owned(), "old-line".to_owned());
-    steps.begin(second);
-    steps.append_output(&second_key, "stdout".to_owned(), "fresh-1".to_owned());
-    steps.append_output(&second_key, "stderr".to_owned(), "fresh-2".to_owned());
-
-    let rows = steps.block_rows('⠹', 80, Palette::new(false));
-    assert!(rows[0].starts_with("⠹ [2/4] RUN  api  "), "{rows:?}");
-    assert!(rows[1].starts_with("⠹ [3/3] start  worker  "), "{rows:?}");
-    assert!(rows.iter().any(|row| row.contains("│ fresh-1")), "{rows:?}");
-    assert!(rows.iter().any(|row| row.contains("┃ fresh-2")), "{rows:?}");
-    assert!(
-        !rows.iter().any(|row| row.contains("old-line")),
-        "only the most recently active step shows a tail: {rows:?}"
-    );
-}
-
-#[test]
-fn a_failed_step_expands_both_streams_in_arrival_order() {
+fn every_log_frame_streams_as_an_output_action_in_arrival_order() {
     let plain = Palette::new(false);
-    let mut steps = LiveSteps::new();
-    let phase = phase(Columns::default());
-    let key = phase.key.clone();
-    steps.begin(phase);
+    let mut narrative = Narrative::new(false);
+    narrative.step(
+        &json!({
+            "event": "step",
+            "image": "api",
+            "index": 1,
+            "total": 2,
+            "instruction": "RUN",
+            "args": "sh -c 'burst'",
+            "state": "started",
+            "elapsed_ms": 0,
+        }),
+        plain,
+    );
+    let mut outputs = Vec::new();
     for (stream, line) in [
         ("stdout", "installing blastit"),
         ("stderr", "E: Unable to locate package blastit"),
         ("stdout", "cleanup"),
     ] {
-        assert!(
-            steps
-                .append_output(&key, stream.to_owned(), line.to_owned())
-                .is_some(),
-            "the live step records every line"
+        let actions = narrative.log(
+            &json!({
+                "event": "log",
+                "image": "api",
+                "index": 1,
+                "stream": stream,
+                "line": line,
+            }),
+            80,
+            plain,
+            true,
+        );
+        outputs.extend(actions.into_iter().filter_map(|action| match action {
+            Action::Output {
+                stream,
+                text,
+                indent,
+            } => Some((stream, text, indent)),
+            _ => None,
+        }));
+    }
+    assert_eq!(
+        outputs,
+        [
+            ("stdout".to_owned(), "installing blastit".to_owned(), 4),
+            (
+                "stderr".to_owned(),
+                "E: Unable to locate package blastit".to_owned(),
+                4
+            ),
+            ("stdout".to_owned(), "cleanup".to_owned(), 4),
+        ],
+        "every line is a live Output with the inner gutter indent"
+    );
+}
+
+#[test]
+fn a_failed_step_prints_one_verdict_row_and_never_repeats_streamed_lines() {
+    let plain = Palette::new(false);
+    let mut narrative = Narrative::new(false);
+    narrative.step(
+        &json!({
+            "event": "step",
+            "image": "api",
+            "index": 1,
+            "total": 2,
+            "instruction": "RUN",
+            "args": "apt-get update",
+            "state": "started",
+            "elapsed_ms": 0,
+        }),
+        plain,
+    );
+    for (stream, line) in [
+        ("stdout", "installing blastit"),
+        ("stderr", "E: Unable to locate package blastit"),
+        ("stdout", "cleanup"),
+    ] {
+        narrative.log(
+            &json!({
+                "event": "log",
+                "image": "api",
+                "index": 1,
+                "stream": stream,
+                "line": line,
+            }),
+            80,
+            plain,
+            true,
         );
     }
-    let live = steps.take(&key).expect("the failed step is still live");
-    let rows = live.expansion_rows(80, plain);
-    assert!(rows[0].starts_with("✗ [2/4] RUN  api"), "{rows:?}");
-    let lines: Vec<&str> = rows[1..].iter().map(String::as_str).collect();
+    let failed = narrative.failed(
+        &json!({
+            "event": "failed",
+            "phase": "run",
+            "target": "api",
+            "exit_code": 1,
+            "run_id": "5be421",
+            "next": "slipfork logs -r 5be421",
+        }),
+        plain,
+    );
+    let printed: Vec<&str> = failed
+        .iter()
+        .filter_map(|action| match action {
+            Action::Print(row) => Some(row.as_str()),
+            _ => None,
+        })
+        .collect();
     assert_eq!(
-        lines,
+        printed,
+        ["  ✗ 1/2 run  apt-get update"],
+        "the verdict is one `✗` row, not a re-print of the stream"
+    );
+    assert!(
+        !failed
+            .iter()
+            .any(|action| matches!(action, Action::Output { .. })),
+        "already streamed output is never replayed: {failed:?}"
+    );
+    let diagnosis: Vec<&str> = failed
+        .iter()
+        .filter_map(|action| match action {
+            Action::Diagnose(row) => Some(row.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        diagnosis,
         [
-            "  │ installing blastit",
-            "  ┃ E: Unable to locate package blastit",
-            "  │ cleanup",
+            "✗ RUN api failed (exit 1)",
+            "  next: slipfork logs -r 5be421"
         ]
     );
 }
@@ -156,114 +226,10 @@ fn a_degenerate_width_keeps_the_elapsed_cell_and_drops_the_args() {
 }
 
 #[test]
-fn twenty_line_failing_step_caps_live_region_at_eight_and_expands_all_twenty_to_scrollback() {
+fn twenty_streamed_lines_survive_and_the_failure_never_repeats_them() {
     let plain = Palette::new(false);
     let mut narrative = Narrative::new(false);
-    narrative.started(
-        &json!({
-            "event": "started",
-            "step": 1,
-            "total": 2,
-            "kind": "image",
-            "name": "api",
-        }),
-        Some((1, 2)),
-    );
-    let start_actions = narrative.step(
-        &json!({
-            "event": "step",
-            "image": "api",
-            "index": 1,
-            "total": 2,
-            "instruction": "RUN",
-            "args": "sh -c 'burst'",
-            "state": "started",
-            "elapsed_ms": 0,
-        }),
-        plain,
-    );
-    assert!(
-        matches!(&start_actions[0], Action::Print(row) if row == "→ [1/2] image  api  running"),
-        "the first step opens the outer parent row once: {start_actions:?}"
-    );
-    for number in 1..=20 {
-        let stream = if number % 2 == 0 { "stderr" } else { "stdout" };
-        narrative.log(
-            &json!({
-                "event": "log",
-                "image": "api",
-                "index": 1,
-                "stream": stream,
-                "line": format!("line-{number:02}"),
-            }),
-            80,
-            plain,
-            true,
-        );
-    }
-
-    // While running, the region paint caps the visible tail at 8 lines (1 inner phase + 8 gutter).
-    let live_paint = narrative
-        .steps()
-        .lock()
-        .expect("live steps lock")
-        .block_rows('⠹', 80, plain);
-    assert_eq!(live_paint.len(), 9, "{live_paint:?}");
-    assert!(live_paint[0].starts_with("  ⠹ 1/2 run  sh -c 'burst'"));
-    assert!(!live_paint[0].contains('['), "{live_paint:?}");
-    assert!(!live_paint.iter().any(|row| row.contains("line-12")));
-    assert!(live_paint.iter().any(|row| row.contains("    │ line-13")));
-    assert!(live_paint.iter().any(|row| row.contains("    ┃ line-20")));
-
-    // On failure, all 20 captured lines expand into scrollback at indent 4 after `  ✗ 1/2 run …`.
-    let failed_actions = narrative.failed(
-        &json!({
-            "event": "failed",
-            "phase": "run",
-            "target": "api",
-            "exit_code": 1,
-            "run_id": "5be421",
-            "next": "slipfork logs -r 5be421",
-        }),
-        80,
-        plain,
-        true,
-    );
-    let held: Vec<String> = failed_actions
-        .iter()
-        .filter_map(|action| match action {
-            Action::Hold(row) => Some(row.clone()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        held.len(),
-        21,
-        "1 failed inner phase row + 20 gutter lines: {held:?}"
-    );
-    assert_eq!(held[0], "  ✗ 1/2 run  sh -c 'burst'");
-    for (number, row) in held.iter().enumerate().skip(1) {
-        let glyph = if number % 2 == 0 { '┃' } else { '│' };
-        assert_eq!(row, &format!("    {glyph} line-{number:02}"));
-    }
-    let diagnosis: Vec<&str> = failed_actions
-        .iter()
-        .filter_map(|action| match action {
-            Action::Diagnose(row) => Some(row.as_str()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        diagnosis,
-        [
-            "✗ RUN api failed (exit 1)",
-            "  next: slipfork logs -r 5be421"
-        ]
-    );
-
-    // Append-only (`!anchored_pane`) already streamed every line live, so `failed` never repeats it.
-    let mut append = Narrative::new(false);
-    append.step(
+    narrative.step(
         &json!({
             "event": "step",
             "image": "api",
@@ -278,7 +244,7 @@ fn twenty_line_failing_step_caps_live_region_at_eight_and_expands_all_twenty_to_
     );
     let mut streamed = 0;
     for number in 1..=20 {
-        streamed += append
+        streamed += narrative
             .log(
                 &json!({
                     "event": "log",
@@ -289,12 +255,13 @@ fn twenty_line_failing_step_caps_live_region_at_eight_and_expands_all_twenty_to_
                 }),
                 80,
                 plain,
-                false,
+                true,
             )
             .len();
     }
-    assert_eq!(streamed, 20);
-    let append_failed = append.failed(
+    assert_eq!(streamed, 20, "all twenty lines stream live");
+
+    let failed = narrative.failed(
         &json!({
             "event": "failed",
             "phase": "run",
@@ -303,15 +270,25 @@ fn twenty_line_failing_step_caps_live_region_at_eight_and_expands_all_twenty_to_
             "run_id": "5be421",
             "next": "slipfork logs -r 5be421",
         }),
-        80,
         plain,
-        false,
+    );
+    let printed: Vec<&str> = failed
+        .iter()
+        .filter_map(|action| match action {
+            Action::Print(row) => Some(row.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        printed,
+        ["  ✗ 1/2 run  sh -c 'burst'"],
+        "the append-only failure keeps one `✗` row"
     );
     assert!(
-        !append_failed
+        !failed
             .iter()
-            .any(|action| matches!(action, Action::Hold(_))),
-        "append-only failure must not repeat already-printed lines: {append_failed:?}"
+            .any(|action| matches!(action, Action::Output { .. })),
+        "the twenty already-streamed lines are not replayed"
     );
 }
 
@@ -376,8 +353,6 @@ fn append_only_tail_prints_one_line_per_phase_and_none_when_settled_or_anchored(
         printed(&narrative.step(&tail("recording"), Palette::new(true))).is_empty(),
         "an anchored pane repaints the row in place instead of printing"
     );
-    // `--json` is gated in `BootTui::observe` before the narrative ever sees the frame, so it
-    // cannot produce this line either.
 }
 
 #[test]
@@ -402,4 +377,113 @@ fn engine_notes_stay_hidden_by_default_and_dim_under_verbose_without_a_gutter() 
         "  \u{1b}[38;5;244msealed sha256:deadbeef: reusing cache\u{1b}[0m"
     );
     assert!(!row.contains('│') && !row.contains('┃'), "{row:?}");
+}
+
+#[test]
+fn no_color_journals_emit_zero_escapes_and_zero_carriage_returns() {
+    let plain = Palette::new(false);
+    let mut narrative = Narrative::new(false);
+    let mut actions = Vec::new();
+    actions.extend(narrative.started(
+        &json!({
+            "event": "started",
+            "step": 2,
+            "total": 2,
+            "kind": "service",
+            "name": "web",
+            "command": "python3 -m http.server 8195",
+        }),
+        Some((2, 2)),
+    ));
+    actions.extend(narrative.step(
+        &json!({
+            "event": "step",
+            "image": "api",
+            "index": 1,
+            "total": 1,
+            "instruction": "RUN",
+            "args": "echo hi",
+            "state": "started",
+            "elapsed_ms": 0,
+        }),
+        plain,
+    ));
+    actions.extend(narrative.step(
+        &json!({
+            "event": "step",
+            "image": "api",
+            "index": 1,
+            "total": 1,
+            "instruction": "RUN",
+            "args": "echo hi",
+            "state": "done",
+            "elapsed_ms": 4,
+        }),
+        plain,
+    ));
+    actions.extend(narrative.log(
+        &json!({
+            "event": "log",
+            "image": "api",
+            "index": 1,
+            "stream": "stdout",
+            "line": "hi",
+        }),
+        80,
+        plain,
+        true,
+    ));
+    actions.extend(narrative.finished(
+        &json!({
+            "event": "finished",
+            "step": 2,
+            "total": 2,
+            "kind": "service",
+            "name": "web",
+            "state": "ready",
+            "duration_ms": 1200,
+        }),
+        plain,
+    ));
+    actions.extend(narrative.failed(
+        &json!({
+            "event": "failed",
+            "phase": "run",
+            "target": "web",
+            "exit_code": 1,
+            "next": "slipfork logs -r 5be421",
+        }),
+        plain,
+    ));
+
+    let mut texts = Vec::new();
+    for action in &actions {
+        match action {
+            Action::Begin(phase) => {
+                texts.push(phase.started_row(plain));
+                texts.push(phase.live_row('⠹', 1200, 80, plain));
+                texts.push(phase.settled_row(1200, plain));
+            }
+            Action::Output {
+                text,
+                stream,
+                indent,
+            } => {
+                texts.push(gutter_line(stream, text, 80, plain, *indent));
+            }
+            Action::Settle(row) | Action::Print(row) | Action::Diagnose(row) => {
+                texts.push(row.clone());
+            }
+        }
+    }
+    for text in &texts {
+        assert!(
+            !text.contains('\u{1b}'),
+            "NO_COLOR/pipe output is escape-free: {text:?}"
+        );
+        assert!(
+            !text.contains('\r'),
+            "NO_COLOR/pipe output is carriage-return-free: {text:?}"
+        );
+    }
 }

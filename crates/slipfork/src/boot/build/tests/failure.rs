@@ -170,14 +170,12 @@ fn a_failed_build_prints_the_failing_step_and_never_a_success_row() {
             "run_id": "5be421",
             "next": "slipfork logs -r 5be421",
         }),
-        80,
         plain,
-        true,
     );
     let held: Vec<&String> = failed
         .iter()
         .filter_map(|action| match action {
-            Action::Hold(row) => Some(row),
+            Action::Print(row) => Some(row),
             _ => None,
         })
         .collect();
@@ -186,6 +184,7 @@ fn a_failed_build_prints_the_failing_step_and_never_a_success_row() {
         Some("  ✗ 5/7 run  apt-get update"),
         "the failing instruction keeps its own row: {held:?}"
     );
+    assert_eq!(held.len(), 1, "the verdict prints one `✗` row: {held:?}");
     let diagnosis: Vec<&String> = failed
         .iter()
         .filter_map(|action| match action {

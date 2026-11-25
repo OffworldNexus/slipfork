@@ -1,13 +1,13 @@
 //! Pure rendering shared by the `slipfork` binary and its public tests.
 //!
-//! The binary is the composition root; this library target exposes only the side-effect-free
-//! status renderer and the `ps` schema so both can be asserted without a daemon.
+//! The binary is the composition root; this library target exposes the append-only boot driver
+//! (completed rows in scrollback plus one `\r`-rewritten status line) and the `ps` schema so both
+//! can be asserted without a daemon.
 
 #[path = "daemon/ps.rs"]
 pub mod ps;
 
-/// The pure boot-pane renderer: exact rows, bars, and status lines, shared with the live driver.
-#[path = "boot/render.rs"]
+/// The pure boot renderer and its live driver: rows, bars, and status lines shared with the binary.
 pub mod boot;
 
 /// The one output-mode/colour layer, shared with the binary so both draw through one `paint`.

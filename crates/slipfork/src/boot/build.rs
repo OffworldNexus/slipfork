@@ -3,7 +3,7 @@
 //! The daemon's `step`, `log`, and `note` frames are the whole story — every instruction is
 //! announced before it runs, several steps may run at once inside the single [`LiveSteps`]
 //! registry, and every step settles independently as one row. [`super::BootTui`] routes each
-//! [`Action`] to the anchored region (a colour TTY) or straight to stdout/stderr (a pipe /
+//! [`Action`] to the status line (a colour TTY) or straight to stdout/stderr (a pipe /
 //! `NO_COLOR`), so both shapes tell the same story and `--json` never reaches here at all.
 
 mod image;
@@ -16,10 +16,10 @@ use slipfork_world::snapshot::TailPhase;
 
 use crate::ui::Palette;
 use crate::ui::elapsed_text;
-use crate::world::StepPin;
 
 use self::tally::ImageTally;
 use super::failure;
+use super::phase::{tail_label, tail_phase};
 use super::render::{OuterWidths, outer_row, outer_verb};
 
 pub(super) use super::layout::{Columns, gutter_line, wrap_gutter};
@@ -32,26 +32,25 @@ pub(super) use super::phase::{LiveKey, LiveSteps, Phase};
 /// One routing decision from the narrative to the live driver.
 #[derive(Debug)]
 pub(super) enum Action {
-    /// A step started running in [`LiveSteps`]: repaint the region (TTY) or print `→` (append).
+    /// A step started running in [`LiveSteps`]: print `→` into scrollback.
     Begin(Phase),
-    /// One child line was recorded in [`LiveSteps`]: repaint the region (TTY) or print wrapped at
+    /// One child line was recorded in [`LiveSteps`]: print it wrapped at
     /// the owning row's gutter indent (`2` under an outer step, `4` under an inner build step).
     Output {
         stream: String,
         text: String,
         indent: usize,
     },
-    /// One step settled: repaint the region to release its block rows, then print the settled row.
+    /// One step settled: print its buffered settled rows in index order.
     Settle(String),
     /// Print this row immediately (the outer image opener, build-end row, `-v` note, or gutter).
     Print(String),
-    /// Narrative scrollback printed on stdout once the scroll region is restored.
-    Hold(String),
     /// The verdict envelope (`✗ …`, optional `runtime:`, one `next:`), printed on stderr.
     Diagnose(String),
 }
 
-/// The one boot narrative: shares [`LiveSteps`] with [`super::pane::Pane`] and tracks image totals.
+/// The one boot narrative: shares [`LiveSteps`] with [`super::status::StatusLine`] and tracks
+/// image totals.
 #[derive(Debug)]
 pub(super) struct Narrative {
     steps: Arc<Mutex<LiveSteps>>,
@@ -78,7 +77,7 @@ impl Narrative {
         }
     }
 
-    /// Handle to the single live-step registry, injected into [`super::pane::Pane`].
+    /// Handle to the single live-step registry, injected into [`super::status::StatusLine`].
     pub(super) fn steps(&self) -> Arc<Mutex<LiveSteps>> {
         Arc::clone(&self.steps)
     }
@@ -232,9 +231,9 @@ impl Narrative {
                 Vec::new()
             }
             // A tail frame updates the existing live row in place: it never restarts the clock and
-            // never prints a row of its own. The anchored pane repaints on its next tick.
+            // never prints a row of its own. The status line repaints on its next tick.
             "tail" => {
-                let Some(phase) = event["phase"].as_str().and_then(StepPin::tail_phase) else {
+                let Some(phase) = event["phase"].as_str().and_then(tail_phase) else {
                     return Vec::new();
                 };
                 let (open, changed) = {
@@ -247,7 +246,7 @@ impl Narrative {
                     }
                     (steps.phase(&key).cloned(), changed)
                 };
-                // An anchored pane repaints the row in place; only a pipe / `NO_COLOR` / CI log
+                // The status line repaints the row in place; only a pipe / `NO_COLOR` / CI log
                 // gets a line, and only for a real, non-`Executing` phase transition.
                 if !changed || palette.color() || phase == TailPhase::Executing {
                     return Vec::new();
@@ -281,7 +280,7 @@ impl Narrative {
         let target = event["name"].as_str();
         let matched = self.steps.lock().ok().and_then(|mut steps| {
             let key = steps.resolve_key(&candidates, target, self.active.as_ref())?;
-            let phase = steps.append_output(&key, stream.to_owned(), text.to_owned())?;
+            let phase = steps.touch(&key)?;
             Some((key, phase))
         });
         let Some((key, phase)) = matched else {
@@ -369,15 +368,9 @@ impl Narrative {
         self.streamed.iter().any(|done| done == image)
     }
 
-    /// The failure block: on an anchored TTY, expands the failing phase row and its FULL output
-    /// into scrollback; on an append-only stream, lines already printed live are never repeated.
-    pub(super) fn failed(
-        &mut self,
-        event: &Value,
-        width: usize,
-        palette: Palette,
-        anchored_pane: bool,
-    ) -> Vec<Action> {
+    /// The failure block: the failing step was already streamed line by line, so only its `✗` row
+    /// and the remedy envelope are printed here.
+    pub(super) fn failed(&mut self, event: &Value, palette: Palette) -> Vec<Action> {
         let mut actions = Vec::new();
         let target = event["target"].as_str().or_else(|| event["name"].as_str());
         let live = self
@@ -395,14 +388,7 @@ impl Narrative {
             |live| live.phase.verb.clone(),
         );
         if let Some(live) = &live {
-            if anchored_pane {
-                for row in live.expansion_rows(width, palette) {
-                    actions.push(Action::Hold(row));
-                }
-            } else {
-                // Append-only already streamed the child lines; still mark the failing step once.
-                actions.push(Action::Print(live.phase.failed_row(palette)));
-            }
+            actions.push(Action::Print(live.phase.failed_row(palette)));
         }
         for row in failure::envelope(event, &verb, self.verbose, palette, step_less) {
             actions.push(Action::Diagnose(row));
@@ -445,7 +431,7 @@ fn tail_row(phase: &Phase, millis: u64, palette: Palette) -> String {
     row.push_str("  ");
     row.push_str(&palette.meta(&elapsed_text(millis)));
     if let Some(tail) = phase.tail {
-        row.push_str(&palette.meta(&format!(" · {}", StepPin::tail_label(tail))));
+        row.push_str(&palette.meta(&format!(" · {}", tail_label(tail))));
     }
     row
 }

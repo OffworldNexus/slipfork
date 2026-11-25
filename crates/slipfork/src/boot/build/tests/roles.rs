@@ -32,15 +32,15 @@ fn the_build_end_row_carries_outer_slot_steps_and_time() {
         target: 7,
         state: 0,
     };
-    let row = image_done_row(1, 3, "api", 6, 12_300, &widths, Palette::new(false));
+    let row = image_done_row(1, 3, "api", 6, 6, 12_300, &widths, Palette::new(false));
     assert_eq!(row, "✓ [1/3] image  api      built 6 steps  12.3s");
     assert_eq!(
-        image_done_row(1, 3, "api", 1, 80, &widths, Palette::new(false)),
+        image_done_row(1, 3, "api", 1, 1, 80, &widths, Palette::new(false)),
         "✓ [1/3] image  api      built 1 step  80ms"
     );
     assert!(!row.contains('\u{1b}'), "plain rows stay colourless");
     assert_eq!(
-        image_done_row(1, 3, "api", 6, 12_300, &widths, Palette::new(true)),
+        image_done_row(1, 3, "api", 6, 6, 12_300, &widths, Palette::new(true)),
         "\u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      \u{1b}[32mbuilt\u{1b}[0m 6 steps  \u{1b}[38;5;244m12.3s\u{1b}[0m"
     );
 }
@@ -82,7 +82,7 @@ fn a_built_row_counts_only_executed_steps_and_cached_never_says_built() {
             1,
             3,
             "api",
-            ImageEnd::new(ImageState::Built, Some(3), 1200, None),
+            ImageEnd::new(ImageState::Built, Some(3), Some(3), 1200, None),
             &widths,
             pale
         ),
@@ -93,7 +93,7 @@ fn a_built_row_counts_only_executed_steps_and_cached_never_says_built() {
             1,
             3,
             "api",
-            ImageEnd::new(ImageState::Cached, None, 8, None),
+            ImageEnd::new(ImageState::Cached, None, None, 8, None),
             &widths,
             pale
         ),
@@ -104,7 +104,7 @@ fn a_built_row_counts_only_executed_steps_and_cached_never_says_built() {
             1,
             3,
             "api",
-            ImageEnd::new(ImageState::Built, None, 0, None),
+            ImageEnd::new(ImageState::Built, None, None, 0, None),
             &widths,
             pale
         ),
@@ -115,7 +115,7 @@ fn a_built_row_counts_only_executed_steps_and_cached_never_says_built() {
         1,
         3,
         "api",
-        ImageEnd::new(ImageState::Unknown, None, 0, None),
+        ImageEnd::new(ImageState::Unknown, None, None, 0, None),
         &widths,
         pale,
     );
@@ -254,7 +254,7 @@ fn golden_two_level_rows_pin_every_styled_and_no_color_byte() {
         outer_start.settled_row(195, styled),
         inner_running.live_row('⠸', 1200, 200, styled),
         inner_settled.settled_row(0, styled),
-        image_done_row(1, 3, "api", 6, 12_300, &widths, styled),
+        image_done_row(1, 3, "api", 6, 6, 12_300, &widths, styled),
         styled.verdict(&verdict_model),
         format!(
             "  {} {}",
@@ -289,7 +289,7 @@ fn golden_two_level_rows_pin_every_styled_and_no_color_byte() {
         outer_start.settled_row(195, plain),
         inner_running.live_row('⠸', 1200, 200, plain),
         inner_settled.settled_row(0, plain),
-        image_done_row(1, 3, "api", 6, 12_300, &widths, plain),
+        image_done_row(1, 3, "api", 6, 6, 12_300, &widths, plain),
         plain.verdict(&verdict_model),
         format!(
             "  {} {}",

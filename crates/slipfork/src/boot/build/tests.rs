@@ -2,6 +2,7 @@
 
 use super::{Columns, LiveKey, Phase};
 
+mod append;
 mod failure;
 mod layout;
 mod order;

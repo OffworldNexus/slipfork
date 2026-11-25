@@ -268,9 +268,7 @@ fn a_failed_image_drops_every_buffered_row_and_tally() {
             "exit_code": 1,
             "next": "slipfork logs -r 5be421",
         }),
-        80,
         plain,
-        true,
     );
     assert!(narrative.images.is_empty(), "no tally survives a verdict");
     let tail = narrative.finish_node("image", "api", &finished_frame(), plain);
@@ -421,18 +419,20 @@ fn cached_image_never_emits_inner_rows_and_service_failure_expands_at_outer_inde
             "exit_code": 7,
             "next": "slipfork logs -r 5be421",
         }),
-        80,
         plain,
-        true,
     );
-    let held: Vec<&str> = failed
+    let printed: Vec<&str> = failed
         .iter()
         .filter_map(|action| match action {
-            Action::Hold(row) => Some(row.as_str()),
+            Action::Print(row) => Some(row.as_str()),
             _ => None,
         })
         .collect();
-    assert_eq!(held, ["✗ [3/3] start  web  failed", "  ┃ bind failed"]);
+    assert_eq!(
+        printed,
+        ["✗ [3/3] start  web  failed"],
+        "append-only failure prints the verdict row and never replays the stream"
+    );
     let diagnosis: Vec<&str> = failed
         .iter()
         .filter_map(|action| match action {

@@ -1,7 +1,7 @@
-//! Pure boot-pane text: exact rows, bars, and panel lines with no terminal state.
+//! Pure boot text: exact rows, bars, and status lines with no terminal state.
 //!
-//! The live driver owns the scroll region and the ticker thread; this module owns every byte
-//! those drivers print. Every colour role comes from the shipped [`Palette`], so a `NO_COLOR`,
+//! The append-only driver owns the one status line and the ticker thread; this module owns every
+//! byte those drivers print. Every colour role comes from the shipped [`Palette`], so a `NO_COLOR`,
 //! `TERM=dumb`, piped, or `--json` invocation emits zero `ESC[` bytes. Failure copy lives in the
 //! binary's `boot::failure`, and the live build narrative in `boot::build`.
 
@@ -22,6 +22,27 @@ pub(crate) fn push_padded(out: &mut String, styled: &str, plain_len: usize, widt
     for _ in 0..width.saturating_sub(plain_len) {
         out.push(' ');
     }
+}
+
+/// The decimal width of `total`, so `1/11` and `10/11` share one right-aligned counter column.
+#[must_use]
+pub const fn digits(total: usize) -> usize {
+    let mut width = 1;
+    let mut value = total;
+    while value >= 10 {
+        value /= 10;
+        width += 1;
+    }
+    width
+}
+
+/// One right-aligned `i/N` counter; an unknown total (`0`) prints unpadded as before.
+#[must_use]
+pub fn counter(index: usize, total: usize, index_width: usize) -> String {
+    if index == 0 || total == 0 || index_width == 0 {
+        return format!("{index}/{total}");
+    }
+    format!("{index:>index_width$}/{total}")
 }
 
 /// The outer boot verb for one planned `kind` (`"service"` renders as `"start"`).
@@ -84,7 +105,7 @@ pub fn outer_row(
         && index > 0
         && total > 0
     {
-        row.push_str(&palette.meta(&format!("[{index}/{total}]")));
+        row.push_str(&palette.meta(&format!("[{}]", counter(index, total, digits(total)))));
         row.push(' ');
     }
     push_padded(
@@ -129,33 +150,6 @@ pub fn outer_row(
         row.pop();
     }
     row
-}
-
-/// One live outer task row: neutral Braille spinner, dim `[i/n]`, magenta kind, bold target,
-/// green `running`, and dim live elapsed in the same columns [`completed_row`] settles into.
-#[must_use]
-pub fn running_row(
-    kind: &str,
-    name: &str,
-    index: usize,
-    total: usize,
-    spinner: char,
-    millis: u64,
-    widths: &OuterWidths,
-) -> String {
-    let palette = Palette::new(true);
-    let mark = spinner.to_string();
-    outer_row(
-        &mark,
-        (index > 0 && total > 0).then_some((index, total)),
-        outer_verb(kind),
-        name,
-        "running",
-        None,
-        Some(millis),
-        widths,
-        palette,
-    )
 }
 
 /// Below this many columns the anchored bar is dropped for the counter/percent/elapsed panel.
@@ -266,7 +260,7 @@ impl<'a> Node<'a> {
     }
 }
 
-/// The anchored panel's cell count, or `None` when the terminal is too narrow for a bar.
+/// The status-line bar's cell count, or `None` when the terminal is too narrow for a bar.
 #[must_use]
 pub fn pane_geometry(width: usize) -> Option<usize> {
     (width >= NARROW).then_some(BAR_CELLS)
@@ -295,6 +289,7 @@ pub fn panel_line(
 
 /// One `\r`-rewritten colourless status line; carries zero escapes and zero carriage returns.
 #[must_use]
+#[allow(dead_code)]
 pub fn status_line(
     spinner: char,
     progress: BarProgress,
@@ -322,7 +317,7 @@ fn assemble(
 ) -> String {
     let progress = progress.clamped();
     let colour = palette.color();
-    let counter = format!("{}/{}", progress.done, progress.total);
+    let count = counter(progress.done, progress.total, digits(progress.total));
     let pct = format!("{}%", percent_of(progress.num, progress.den));
     let seconds = format!("{:.1}s", elapsed.as_secs_f64());
     // The spinner is content, never a keyword or a copyable command: neutral on every surface.
@@ -340,7 +335,7 @@ fn assemble(
             palette.meta(&"░".repeat(empty)),
         )
     };
-    let counter = palette.meta(&counter);
+    let counter = palette.meta(&count);
     let pct = palette.tint(&pct, "1");
     let label = palette.tint(label, "1");
     let seconds = palette.meta(&seconds);
@@ -373,10 +368,16 @@ fn filled(num: u64, den: u64, cells: u64) -> u64 {
     (num.saturating_mul(cells).saturating_add(den / 2) / den).min(cells)
 }
 
-/// The pipe header for a node that just started: `→ [4/12] resource pg`.
+/// The pipe header for a node that just started: `→ [ 4/12] resource pg`.
 #[must_use]
 pub fn header_row(step: u64, total: u64, kind: &str, name: &str) -> String {
-    format!("→ [{step}/{total}] {} {name}", outer_verb(kind))
+    let total = usize::try_from(total).unwrap_or(usize::MAX);
+    let step = usize::try_from(step).unwrap_or(0);
+    format!(
+        "→ [{}] {} {name}",
+        counter(step, total, digits(total)),
+        outer_verb(kind)
+    )
 }
 
 /// The world-ready verdict, with the primary URL always bold cyan and underlined.

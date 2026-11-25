@@ -1,9 +1,7 @@
-//! The phase row and the single live-step registry shared by [`super::build`] and [`super::pane`].
 //!
 //! One Dockerfile instruction or one boot command step owns a [`LiveStep`] in [`LiveSteps`] from
-//! the moment it is announced until it settles. Every child output line is retained in full so a
-//! failed step always expands its complete output into scrollback; the [`LIVE_LINES`] cap applies
-//! strictly inside [`LiveSteps::block_rows`] when painting the anchored region.
+//! the moment it is announced until it settles. The status line reads the most recently active
+//! step's [`Phase`] so it can keep the spinner, counter, and elapsed clock live.
 //!
 //! Two levels share one phase: an outer boot row at column 0 (`[i/n] KIND target detail`) and an
 //! indented inner Dockerfile row (`  n/N INSTRUCTION args`, no target, no brackets). The level is
@@ -15,13 +13,37 @@ use slipfork_world::snapshot::TailPhase;
 
 use crate::ui::Palette;
 use crate::ui::elapsed_text;
-use crate::world::StepPin;
 
-use super::layout::{Columns, compose_live, gutter_line, wrap_gutter};
-use super::render::{outer_row, push_padded};
+use super::layout::{Columns, compose_live};
+use super::render::{counter, digits, outer_row, push_padded};
 
-/// The tail of streamed output painted inside the anchored region while a step runs.
-pub(super) const LIVE_LINES: usize = 8;
+/// The typed [`TailPhase`] vocabulary is shared with the wire layer; this render-side
+/// mirror exists because `lib.rs` also compiles `boot` while `world/` is binary-only.
+mod steps;
+pub(super) use steps::LiveSteps;
+
+/// The wire label one tail frame writes (`sealing`, `recording`, `publishing`, …).
+pub(super) const fn tail_label(phase: TailPhase) -> &'static str {
+    match phase {
+        TailPhase::Cloning => "cloning",
+        TailPhase::Executing => "executing",
+        TailPhase::Sealing => "sealing",
+        TailPhase::Recording => "recording",
+        TailPhase::Publishing => "publishing",
+    }
+}
+
+/// Parses one `step` frame's `phase` label back into the typed tail phase.
+pub(super) fn tail_phase(value: &str) -> Option<TailPhase> {
+    match value {
+        "cloning" => Some(TailPhase::Cloning),
+        "executing" => Some(TailPhase::Executing),
+        "sealing" => Some(TailPhase::Sealing),
+        "recording" => Some(TailPhase::Recording),
+        "publishing" => Some(TailPhase::Publishing),
+        _ => None,
+    }
+}
 
 /// The identity a streamed line inherits: one Dockerfile step, or one boot command step.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,7 +179,7 @@ impl Phase {
         u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
-    /// The anchored live row, laid out so `width` is spent on the args, never the progress cell.
+    /// The one in-place status line for this phase, laid out so `width` is spent on the args.
     ///
     /// This is the only shape that appends the `· sealing`/`· recording`/… tail suffix: the
     /// suffix describes work happening right now, so it never survives into a settled row. The
@@ -206,8 +228,11 @@ impl Phase {
         let mut prefix = String::from("  ");
         prefix.push_str(mark);
         prefix.push(' ');
-        if let Some((index, total)) = self.count {
-            prefix.push_str(&palette.meta(&format!("{index}/{total}")));
+        if let Some((index, total)) = self.count
+            && index > 0
+            && total > 0
+        {
+            prefix.push_str(&palette.meta(&counter(index, total, digits(total))));
             prefix.push(' ');
         }
         let keyword = self.verb.to_lowercase();
@@ -221,23 +246,17 @@ impl Phase {
     }
 
     /// The one live suffix (`  elapsed · label`); only [`Phase::live_row`] paints it.
-    ///
-    /// A settled, failed, or anchor row composes the same prefix and args but never this suffix,
-    /// so the tail label cannot survive past the running row.
     fn inner_suffix(&self, elapsed: &str, palette: Palette) -> String {
         let mut suffix = format!("  {elapsed}");
         if let Some(tail) = self.tail
             && tail != TailPhase::Executing
         {
-            suffix.push_str(&palette.meta(&format!(" · {}", StepPin::tail_label(tail))));
+            suffix.push_str(&palette.meta(&format!(" · {}", tail_label(tail))));
         }
         suffix
     }
 
     /// `  ✓ n/N instruction  args  elapsed` — no target, no brackets, indent 2.
-    ///
-    /// This shape never carries the live tail suffix: a settled row only reports what ran and how
-    /// long it took.
     fn inner_row(&self, mark: &str, millis: Option<u64>, palette: Palette) -> String {
         let mut row = self.inner_prefix(mark, palette);
         let args = self.args.trim();
@@ -287,199 +306,11 @@ impl Phase {
     }
 }
 
-/// One running step in [`LiveSteps`]: its phase row, full child output, and activity stamp.
-#[derive(Debug)]
-pub(super) struct LiveStep {
-    pub(super) phase: Phase,
-    /// Every captured line in arrival order, across both streams.
-    pub(super) output: Vec<(String, String)>,
-    pub(super) touched: u64,
-}
-
-impl LiveStep {
-    /// The failed step's full scrollback block: its phase row, then every line in arrival order.
-    ///
-    /// The one ordered `output` vector is the contract: an interleaved `out`/`err`/`out` step
-    /// expands in exactly that order, matching `slipfork logs -r` and the run capture.
-    pub(super) fn expansion_rows(&self, width: usize, palette: Palette) -> Vec<String> {
-        let mut rows = vec![self.phase.failed_row(palette)];
-        let indent = self.phase.gutter_indent();
-        for (stream, text) in &self.output {
-            rows.extend(wrap_gutter(stream, text, width, palette, indent));
-        }
-        rows
-    }
-}
-
-/// The single live-step registry: owns every running phase and every child line it produced.
-#[derive(Debug, Default)]
-pub(super) struct LiveSteps {
-    steps: Vec<LiveStep>,
-    tick: u64,
-}
-
-impl LiveSteps {
-    pub(super) fn new() -> Self {
-        Self::default()
-    }
-
-    /// Registers `phase` as running, replacing any stale entry with the same key.
-    pub(super) fn begin(&mut self, phase: Phase) {
-        self.steps.retain(|step| step.phase.key != phase.key);
-        self.tick = self.tick.wrapping_add(1);
-        self.steps.push(LiveStep {
-            phase,
-            output: Vec::new(),
-            touched: self.tick,
-        });
-    }
-
-    /// Appends one child line in full to `key` and marks that step most recently active.
-    pub(super) fn append_output(
-        &mut self,
-        key: &LiveKey,
-        stream: String,
-        text: String,
-    ) -> Option<Phase> {
-        let step = self.steps.iter_mut().find(|step| &step.phase.key == key)?;
-        self.tick = self.tick.wrapping_add(1);
-        step.output.push((stream, text));
-        step.touched = self.tick;
-        Some(step.phase.clone())
-    }
-
-    /// Applies one tail phase to the live row with that exact key, keeping the elapsed clock.
-    pub(super) fn set_tail(&mut self, key: &LiveKey, phase: TailPhase) -> bool {
-        let Some(step) = self.steps.iter_mut().find(|step| &step.phase.key == key) else {
-            return false;
-        };
-        self.tick = self.tick.wrapping_add(1);
-        step.touched = self.tick;
-        step.phase.set_tail(phase);
-        true
-    }
-
-    /// The running phase for `key`, if that row is still live.
-    pub(super) fn phase(&self, key: &LiveKey) -> Option<&Phase> {
-        self.steps
-            .iter()
-            .find(|step| &step.phase.key == key)
-            .map(|step| &step.phase)
-    }
-
-    /// Resolves the live step key from explicit frame keys, or `fallback` when none were pinned.
-    pub(super) fn resolve_key(
-        &self,
-        candidates: &[LiveKey],
-        target: Option<&str>,
-        fallback: Option<&LiveKey>,
-    ) -> Option<LiveKey> {
-        for key in candidates {
-            if self.steps.iter().any(|step| &step.phase.key == key) {
-                return Some(key.clone());
-            }
-        }
-        if let Some(target) = target
-            && let Some(step) = self
-                .steps
-                .iter()
-                .rev()
-                .find(|step| step.phase.target == target)
-        {
-            return Some(step.phase.key.clone());
-        }
-        if candidates.is_empty()
-            && target.is_none()
-            && let Some(key) = fallback
-            && self.steps.iter().any(|step| &step.phase.key == key)
-        {
-            return Some(key.clone());
-        }
-        None
-    }
-
-    /// Removes and returns one settled step by exact key.
-    pub(super) fn take(&mut self, key: &LiveKey) -> Option<LiveStep> {
-        let position = self.steps.iter().position(|step| &step.phase.key == key)?;
-        Some(self.steps.remove(position))
-    }
-
-    /// Removes and returns a boot command step matching `(kind, name)` or `target == name`.
-    pub(super) fn take_boot(&mut self, kind: &str, name: &str) -> Option<LiveStep> {
-        let position = self
-            .steps
-            .iter()
-            .position(|step| {
-                matches!(
-                    &step.phase.key,
-                    LiveKey::Boot { kind: planned, name: planned_name }
-                        if planned == kind && planned_name == name
-                )
-            })
-            .or_else(|| self.steps.iter().position(|step| step.phase.target == name))?;
-        Some(self.steps.remove(position))
-    }
-
-    /// Removes the failing step, clears any sibling phases, and returns the failing step in full.
-    pub(super) fn take_failure(
-        &mut self,
-        target: Option<&str>,
-        active: Option<&LiveKey>,
-    ) -> Option<LiveStep> {
-        let position = target
-            .and_then(|target| {
-                self.steps
-                    .iter()
-                    .rposition(|step| step.phase.target == target)
-            })
-            .or_else(|| {
-                active.and_then(|key| self.steps.iter().rposition(|step| &step.phase.key == key))
-            })
-            .or_else(|| self.steps.len().checked_sub(1));
-        let removed = position.map(|index| self.steps.remove(index));
-        self.steps.clear();
-        removed
-    }
-
-    /// Clears every running step when the region restores.
-    pub(super) fn clear(&mut self) {
-        self.steps.clear();
-    }
-
-    /// Most recently started surviving step key.
-    pub(super) fn last_key(&self) -> Option<LiveKey> {
-        self.steps.last().map(|step| step.phase.key.clone())
-    }
-
-    /// Paints stacked phase rows plus at most [`LIVE_LINES`] tail lines of the newest active step.
-    pub(super) fn block_rows(&self, spinner: char, width: usize, palette: Palette) -> Vec<String> {
-        let mut rows: Vec<String> = self
-            .steps
-            .iter()
-            .map(|step| {
-                step.phase
-                    .live_row(spinner, step.phase.elapsed_millis(), width, palette)
-            })
-            .collect();
-        if let Some(tail) = self.steps.iter().max_by_key(|step| step.touched) {
-            let start = tail.output.len().saturating_sub(LIVE_LINES);
-            let indent = tail.phase.gutter_indent();
-            rows.extend(
-                tail.output[start..]
-                    .iter()
-                    .map(|(stream, text)| gutter_line(stream, text, width, palette, indent)),
-            );
-        }
-        rows
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{LiveKey, LiveSteps, Phase};
+    use super::{LiveKey, LiveSteps, Phase, tail_label};
     use crate::boot::layout::Columns;
     use crate::ui::Palette;
-    use crate::world::StepPin;
     use slipfork_world::snapshot::TailPhase;
 
     fn inner() -> Phase {
@@ -564,14 +395,17 @@ mod tests {
     }
 
     #[test]
-    fn a_degenerate_width_deliberately_overflows_with_the_tail_suffix() {
+    fn a_degenerate_width_clamps_to_the_tail_suffix_with_an_ellipsis() {
         let mut phase = inner();
         phase.set_tail(TailPhase::Sealing);
         let row = phase.live_row('⠼', 3200, 12, Palette::new(false));
-        assert_eq!(row, "3.2s · sealing", "the progress cell is never sheared");
         assert!(
-            console::measure_text_width(&row) > 12,
-            "the suffix deliberately wins over the width instead of being cut: {row:?}"
+            console::measure_text_width(&row) <= 12,
+            "the row is clamped to the terminal width: {row:?}"
+        );
+        assert!(
+            row.ends_with('…'),
+            "the clamped row ends in an ellipsis instead of overflowing: {row:?}"
         );
         assert!(!row.contains("blastit"), "{row:?}");
     }
@@ -627,10 +461,7 @@ mod tests {
             let row = steps.steps[0]
                 .phase
                 .live_row('⠼', 3200, 200, Palette::new(false));
-            assert!(
-                row.contains(StepPin::tail_label(phase)),
-                "{phase:?} row: {row:?}"
-            );
+            assert!(row.contains(tail_label(phase)), "{phase:?} row: {row:?}");
         }
     }
 }

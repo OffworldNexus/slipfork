@@ -3,13 +3,14 @@
 //! The bottom bar must never double count a build: before an image finishes it contributes only
 //! its settled inner step fraction (`inner_done / inner_total`), and after its single `finished`
 //! frame it contributes exactly one outer slot. The model owns the announced plan (so every outer
-//! row keeps its `[i/n]` position), both levels, and the label, so [`super::pane`] only paints.
+//! row keeps its `[i/n]` position), both levels, and the label, so [`super::status::StatusLine`]
+//! only paints.
 
 use std::collections::BTreeSet;
 
 use serde_json::Value;
 
-use super::render::BarProgress;
+use super::render::{BarProgress, counter, digits};
 
 /// The outer plan step currently running, when no image build owns the bar.
 #[derive(Debug, Clone)]
@@ -136,7 +137,11 @@ impl BootProgress {
     /// Counts one settled outer slot and remembers the row, clamped to a known plan total so a
     /// duplicate `finished` frame can never push `done` past `total`.
     pub(super) fn advance(&mut self, kind: &str, name: &str) {
-        self.finished.insert((kind.to_owned(), name.to_owned()));
+        // A duplicate `finished`/`up-to-date` frame for the same `(kind, name)` (the reconcile
+        // frame and the boot-scheduler frame) settles the row once: the first insert wins.
+        if !self.finished.insert((kind.to_owned(), name.to_owned())) {
+            return;
+        }
         let next = self.outer_done.saturating_add(1);
         self.outer_done = if self.outer_total > 0 {
             next.min(self.outer_total)
@@ -273,15 +278,20 @@ impl BootProgress {
         .clamped()
     }
 
-    /// The bar's active label: `[1/3] image api · step 3/6 RUN`, then `[2/3] setup uv sync`.
+    /// The bar's active label: `[1/3] image api · step  3/11 RUN`, then `[2/3] setup uv sync`.
     pub(super) fn label(&self) -> String {
         if let Some(building) = &self.building {
             let detail = format!(
-                "image {} · step {}/{} {}",
-                building.image, building.step, building.steps, building.verb
+                "image {} · step {} {}",
+                building.image,
+                counter(building.step, building.steps, digits(building.steps)),
+                building.verb
             );
             return if building.index > 0 && building.total > 0 {
-                format!("[{}/{}] {detail}", building.index, building.total)
+                format!(
+                    "[{}] {detail}",
+                    counter(building.index, building.total, digits(building.total))
+                )
             } else {
                 detail
             };
@@ -291,8 +301,10 @@ impl BootProgress {
             && active.total > 0
         {
             return format!(
-                "[{}/{}] {} {}",
-                active.index, active.total, active.kind, active.target
+                "[{}] {} {}",
+                counter(active.index, active.total, digits(active.total)),
+                active.kind,
+                active.target
             );
         }
         self.title.clone()

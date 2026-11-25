@@ -67,11 +67,23 @@ pub(super) fn wrap_gutter(
     if text.is_empty() {
         return vec![format!("{lead}{glyph} ")];
     }
-    text.chars()
-        .collect::<Vec<_>>()
-        .chunks(budget)
-        .map(|chunk| format!("{lead}{glyph} {}", chunk.iter().collect::<String>()))
-        .collect()
+    let mut rows = Vec::new();
+    let mut current = String::new();
+    let mut used = 0usize;
+    for ch in text.chars() {
+        let cell = console::measure_text_width(&ch.to_string());
+        if used > 0 && used + cell > budget {
+            rows.push(format!("{lead}{glyph} {current}"));
+            current.clear();
+            used = 0;
+        }
+        current.push(ch);
+        used += cell;
+    }
+    if !current.is_empty() {
+        rows.push(format!("{lead}{glyph} {current}"));
+    }
+    rows
 }
 
 /// One image outcome parsed once from a `finished` frame. Exhaustive, so a new state is explicit.
@@ -90,6 +102,8 @@ pub(super) struct ImageEnd {
     pub(super) state: ImageState,
     /// Steps that really ran; `None` means an older frame carried no count (print plain `built`).
     pub(super) executed: Option<usize>,
+    /// The image's whole instruction total, so a mixed run can say `cached 9 · built 2`.
+    pub(super) total: Option<usize>,
     pub(super) millis: u64,
     pub(super) at: Option<(usize, usize)>,
 }
@@ -98,12 +112,14 @@ impl ImageEnd {
     pub(super) const fn new(
         state: ImageState,
         executed: Option<usize>,
+        total: Option<usize>,
         millis: u64,
         at: Option<(usize, usize)>,
     ) -> Self {
         Self {
             state,
             executed,
+            total,
             millis,
             at,
         }
@@ -134,13 +150,19 @@ pub(super) fn image_end_row(
             palette,
         ),
         ImageState::Built => {
-            let detail = end.executed.map_or_else(
-                || "built".to_owned(),
-                |executed| {
-                    let plural = if executed == 1 { "step" } else { "steps" };
-                    format!("built {executed} {plural}")
-                },
-            );
+            let detail = match (end.executed, end.total) {
+                (Some(executed), Some(total)) if total > 0 => {
+                    if executed == 0 {
+                        "cached".to_owned()
+                    } else if executed >= total {
+                        built_steps(executed)
+                    } else {
+                        format!("cached {} · built {executed}", total - executed)
+                    }
+                }
+                (Some(executed), _) => built_steps(executed),
+                (None, _) => "built".to_owned(),
+            };
             outer_row(
                 &palette.icon_ok(),
                 count,
@@ -195,6 +217,12 @@ pub(super) fn image_end_row(
     }
 }
 
+/// `built N step(s)` for a fully executed image.
+fn built_steps(executed: usize) -> String {
+    let plural = if executed == 1 { "step" } else { "steps" };
+    format!("built {executed} {plural}")
+}
+
 /// The failed build-end outer row: `✗ [1/3] image  api      failed at 2/6`.
 #[cfg(test)]
 pub(super) fn image_failed_row(
@@ -209,7 +237,7 @@ pub(super) fn image_failed_row(
         index,
         image_count,
         image,
-        ImageEnd::new(ImageState::Failed, None, 0, at),
+        ImageEnd::new(ImageState::Failed, None, None, 0, at),
         widths,
         palette,
     )
@@ -217,11 +245,13 @@ pub(super) fn image_failed_row(
 
 /// The successful build-end outer row: `✓ [1/3] image  api      built 6 steps  12.3s`.
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn image_done_row(
     index: usize,
     total: usize,
     image: &str,
     steps: usize,
+    instruction_total: usize,
     millis: u64,
     widths: &OuterWidths,
     palette: Palette,
@@ -230,7 +260,13 @@ pub(super) fn image_done_row(
         index,
         total,
         image,
-        ImageEnd::new(ImageState::Built, Some(steps), millis, None),
+        ImageEnd::new(
+            ImageState::Built,
+            Some(steps),
+            Some(instruction_total),
+            millis,
+            None,
+        ),
         widths,
         palette,
     )
@@ -242,6 +278,62 @@ pub(super) fn image_done_row(
 /// a suffix wider than the row — the whole progress suffix wins over the identity columns, so the
 /// cell that proves liveness is never the cell that disappears.
 pub(super) fn compose_live(prefix: String, args: &str, suffix: String, width: usize) -> String {
+    clamp_visible(&compose_live_unclamped(prefix, args, suffix, width), width)
+}
+
+/// Truncates any styled row to `width` visible cells without splitting an SGR sequence.
+pub(super) fn clamp_visible(styled: &str, width: usize) -> String {
+    if visible_width_escaped(styled) <= width {
+        return styled.to_owned();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut used = 0usize;
+    let mut chars = styled.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
+            out.push(ch);
+            out.push(chars.next().unwrap_or('['));
+            for ch in chars.by_ref() {
+                out.push(ch);
+                if ('@'..='~').contains(&ch) {
+                    break;
+                }
+            }
+            continue;
+        }
+        let cell = console::measure_text_width(&ch.to_string());
+        if used + cell > width.saturating_sub(1) {
+            break;
+        }
+        out.push(ch);
+        used += cell;
+    }
+    out.push('…');
+    out
+}
+
+fn visible_width_escaped(styled: &str) -> usize {
+    let mut used = 0usize;
+    let mut chars = styled.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for ch in chars.by_ref() {
+                if ('@'..='~').contains(&ch) {
+                    break;
+                }
+            }
+        } else {
+            used += console::measure_text_width(&ch.to_string());
+        }
+    }
+    used
+}
+
+fn compose_live_unclamped(prefix: String, args: &str, suffix: String, width: usize) -> String {
     let args = args.trim();
     let prefix_width = console::measure_text_width(&prefix);
     let suffix_width = console::measure_text_width(&suffix);
@@ -295,13 +387,21 @@ fn fit_args(args: &str, available: usize) -> String {
 
 /// Truncates `text` to at most `max` visible characters, ending in `…` when it was cut.
 pub(super) fn truncate_visible(text: &str, max: usize) -> String {
-    let length = text.chars().count();
-    if length <= max {
+    if console::measure_text_width(text) <= max {
         return text.to_owned();
     }
     if max == 0 {
         return String::new();
     }
-    let head: String = text.chars().take(max.saturating_sub(1)).collect();
+    let mut head = String::new();
+    let mut used = 0usize;
+    for ch in text.chars() {
+        let cell = console::measure_text_width(&ch.to_string());
+        if used + cell > max.saturating_sub(1) {
+            break;
+        }
+        head.push(ch);
+        used += cell;
+    }
     format!("{head}…")
 }

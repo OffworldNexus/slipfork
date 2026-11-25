@@ -9,11 +9,13 @@ use slipfork_world::snapshot::TailPhase;
 
 impl StepPin<'_> {
     /// Parses a `step` frame's `phase` label through the one wire vocabulary owned here.
+    #[cfg(test)]
     pub(crate) fn tail_phase(value: &str) -> Option<TailPhase> {
         tail_phase_from_wire(value)
     }
 
     /// The label a typed tail phase writes on a `step` frame.
+    #[allow(dead_code)]
     pub(crate) const fn tail_label(phase: TailPhase) -> &'static str {
         tail_wire_label(phase)
     }
@@ -31,6 +33,7 @@ const fn tail_wire_label(phase: TailPhase) -> &'static str {
 }
 
 /// Parses the JSON `phase` label back into the typed phase.
+#[cfg(test)]
 fn tail_phase_from_wire(value: &str) -> Option<TailPhase> {
     match value {
         "cloning" => Some(TailPhase::Cloning),

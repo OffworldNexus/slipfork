@@ -27,26 +27,32 @@ fn state_from_frame(event: &Value) -> ImageState {
 impl Narrative {
     /// Settles an image's outer slot and always returns its typed end row.
     fn settle_image(&mut self, image: &str, event: &Value, palette: Palette) -> Vec<Action> {
-        let state = state_from_frame(event);
-        let position = self.images.iter().position(|tally| tally.image == image);
-        if position.is_none() && self.streamed_image(image) {
+        // An image settles exactly once: mark it before any tally work so a duplicate
+        // `finished`/`up-to-date` frame (in either order) returns zero rows.
+        if self.streamed_image(image) {
             return Vec::new();
         }
+        self.streamed.push(image.to_owned());
+        let state = state_from_frame(event);
+        let position = self.images.iter().position(|tally| tally.image == image);
         let mut actions = Vec::new();
-        let (outer, at, tally_millis) = match position {
+        let (outer, at, tally_millis, tally_total) = match position {
             Some(position) => {
                 let mut tally = self.images.remove(position);
                 let outer = tally.outer;
                 let at = tally.failure_at();
+                // The image's instruction total comes from its own `step` frames; the frame's
+                // `total` is the outer PLAN step count and must never be read as instructions.
+                let total = tally.total;
                 if tally.is_unused() {
-                    (outer, at, 0)
+                    (outer, at, 0, total)
                 } else {
                     let (rows, _, millis) = tally.settle();
                     actions.extend(rows.into_iter().map(Action::Settle));
-                    (outer, at, millis)
+                    (outer, at, millis, total)
                 }
             }
-            None => ((0, 0), None, 0),
+            None => ((0, 0), None, 0, 0),
         };
         self.observe_outer("image", image);
         let millis = event["duration_ms"]
@@ -56,15 +62,15 @@ impl Narrative {
         let executed = event["executed"]
             .as_u64()
             .and_then(|count| usize::try_from(count).ok());
+        let total = (tally_total > 0).then_some(tally_total);
         actions.push(Action::Print(image_end_row(
             outer.0,
             outer.1,
             image,
-            ImageEnd::new(state, executed, millis, at),
+            ImageEnd::new(state, executed, total, millis, at),
             &self.outer,
             palette,
         )));
-        self.streamed.push(image.to_owned());
         actions
     }
 
