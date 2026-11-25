@@ -3,6 +3,7 @@
 //! `model` owns the report vocabulary, `row` owns typed row states, `failure` owns the one
 //! `error:`/`next:` projection, `wall` owns the injected local clock, and `render` writes it all.
 
+mod exit;
 mod failure;
 mod live;
 mod model;
@@ -11,6 +12,7 @@ mod row;
 mod stream;
 mod wall;
 
+pub use exit::emit_stdout;
 pub use failure::Failure;
 pub use live::Pane;
 pub use model::{Entry, Report, Section, StreamKind, Verdict, VerdictKind, digest_cell};

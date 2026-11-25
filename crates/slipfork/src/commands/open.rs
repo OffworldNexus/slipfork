@@ -4,8 +4,9 @@ use std::process::{Command, ExitCode, Stdio};
 
 use serde_json::json;
 
-use crate::commands::{Session, emit};
+use crate::commands::Session;
 use crate::ui::Palette;
+use crate::ui::report::Report;
 use crate::world::WorldIdentities;
 
 /// Parsed `slipfork open` arguments.
@@ -53,11 +54,12 @@ impl Session {
         let url = if args.service.is_some() {
             if candidates.len() > 1 {
                 if !args.json {
-                    let mut text = String::new();
-                    for candidate in &candidates {
-                        text.push_str(&format!("{}\n", Palette::new(self.color()).url(candidate)));
-                    }
-                    let _ = emit(&text);
+                    let palette = Palette::new(self.color());
+                    let lines: Vec<String> = candidates
+                        .iter()
+                        .map(|candidate| palette.url(candidate))
+                        .collect();
+                    let _ = self.renderer().emit_lines_exit(lines);
                 }
                 return self.report(
                     "ambiguous-target",
@@ -72,30 +74,29 @@ impl Session {
         };
         let headless = self.host.ssh || !self.host.display;
         if args.json {
-            return emit(&format!(
-                "{}\n",
-                json!({ "url": url, "opened": !headless && self.host.opener.is_some() })
-            ));
+            return self.renderer().json_exit(
+                &json!({ "url": url, "opened": !headless && self.host.opener.is_some() }),
+            );
         }
+        let palette = Palette::new(self.color());
         if headless {
-            return emit(&format!(
-                "{} {}\nnext: open it on a machine with a browser\n",
-                Palette::new(self.color()).icon_info(),
-                Palette::new(self.color()).url(&url)
-            ));
+            return self.renderer().emit_lines_exit(vec![
+                format!("{} {}", palette.icon_info(), palette.url(&url)),
+                "next: open it on a machine with a browser".to_owned(),
+            ]);
         }
         let Some(opener) = &self.host.opener else {
-            return emit(&format!(
-                "{}\nnext: install xdg-open, or open the URL in a browser\n",
-                Palette::new(self.color()).url(&url)
-            ));
+            return self.renderer().emit_lines_exit(vec![
+                palette.url(&url),
+                "next: install xdg-open, or open the URL in a browser".to_owned(),
+            ]);
         };
         match Command::new(opener).arg(&url).stdin(Stdio::null()).status() {
-            Ok(status) if status.success() => emit(&format!(
-                "{} Opened {}\n",
-                Palette::new(self.color()).icon_ok(),
-                Palette::new(self.color()).url(&url)
-            )),
+            Ok(status) if status.success() => self.renderer().emit_exit(&Report::notice(format!(
+                "{} Opened {}",
+                palette.icon_ok(),
+                palette.url(&url)
+            ))),
             _ => self.report(
                 "open-failed",
                 &format!("cannot open {url}"),

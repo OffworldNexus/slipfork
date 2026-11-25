@@ -182,6 +182,43 @@ class ToolsTests(unittest.TestCase):
         self.assertIn("docs/design/spec.md", reasons)
         self.assertIn("[derived]", reasons["docs/design/spec.md"])
 
+    def test_guard_rejects_raw_print_outside_the_renderer_allowlist(self) -> None:
+        tmp_path = self.tmp_path
+        repo = _git_repo(tmp_path)
+        open_file = repo / "crates" / "slipfork" / "src" / "commands" / "open.rs"
+        open_file.parent.mkdir(parents=True)
+        open_file.write_text('fn open() { println!("x"); }\n', encoding="utf-8")
+
+        violations, _ = guard_mod.inspect(repo)
+        reasons = {v.path: v.reason for v in violations}
+        self.assertIn("crates/slipfork/src/commands/open.rs", reasons)
+        self.assertIn("raw print", reasons["crates/slipfork/src/commands/open.rs"])
+
+        open_file.write_text("fn open() {}\n", encoding="utf-8")
+        boot_file = repo / "crates" / "slipfork" / "src" / "boot.rs"
+        boot_file.write_text('fn boot() { println!("live"); }\n', encoding="utf-8")
+        violations, _ = guard_mod.inspect(repo)
+        self.assertEqual(
+            [v for v in violations if "raw print" in v.reason],
+            [],
+            "a clean file and the allowlisted boot sink pass",
+        )
+
+    def test_guard_flags_raw_print_in_report_model_and_secret(self) -> None:
+        repo = _git_repo(self.tmp_path)
+        for relative in (
+            "crates/slipfork/src/ui/report/model.rs",
+            "crates/slipfork/src/commands/secret.rs",
+        ):
+            planted = repo / relative
+            planted.parent.mkdir(parents=True, exist_ok=True)
+            planted.write_text('fn f() { println!("x"); }\n', encoding="utf-8")
+            violations, _ = guard_mod.inspect(repo)
+            reasons = {v.path: v.reason for v in violations}
+            self.assertIn(relative, reasons)
+            self.assertIn("raw print", reasons[relative])
+            planted.unlink()
+
     def test_critical_guard_allows_untracked_addition_and_blocks_unauthorized_edit(
         self,
     ) -> None:

@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 
 use crate::ps::{PsReply, PsWorld, PsWorldState};
 use crate::ui::Palette;
+use crate::ui::report::Outcome;
 use crate::ui::table::{Column, ColumnWidths, Table};
 
 use super::model::{Options, display_name, display_path, parse as decode};
@@ -64,7 +65,7 @@ impl Widths {
                 support.push(vec![
                     row.keyword.clone(),
                     row.target.clone(),
-                    row.state.word.to_owned(),
+                    row.state.plain(),
                     row.command.clone().unwrap_or_default(),
                 ]);
             }
@@ -79,9 +80,9 @@ impl Widths {
 
 fn header_cells(world: &PsWorld, options: &Options) -> Vec<String> {
     let state = if world.state == PsWorldState::Stopped {
-        "stopped"
+        Outcome::Stopped.plain()
     } else {
-        ""
+        String::new()
     };
     let pid = match world.supervisor_pid {
         Some(pid) if options.verbose && state.is_empty() => format!("pid {pid}"),
@@ -112,7 +113,7 @@ fn route_cells(row: &RoutedRow) -> Vec<String> {
         "->".to_owned(),
         row.target.clone(),
         row.kind.clone().unwrap_or_default(),
-        row.state.word.to_owned(),
+        row.state.plain(),
     ]
 }
 
@@ -130,23 +131,25 @@ pub fn parse(value: &Value) -> Result<PsReply, String> {
 pub fn render(reply: &PsReply, options: &Options) -> String {
     let mut worlds = Vec::new();
     flatten(&reply.worlds, &mut worlds);
-    if worlds.is_empty() {
-        return format!(
-            "{}\n",
-            Palette::new(options.color).meta("○ No worlds running")
-        );
-    }
-    let projected: Vec<WorldRows<'_>> = worlds.iter().map(|world| project(world)).collect();
-    let widths = Widths::measure(&projected, options);
     let palette = Palette::new(options.color);
-    let mut out = String::new();
-    for (index, rows) in projected.iter().enumerate() {
-        if index > 0 {
-            out.push('\n');
+    let mut lines = Vec::new();
+    if worlds.is_empty() {
+        lines.push(palette.meta("○ No worlds running"));
+    } else {
+        let projected: Vec<WorldRows<'_>> = worlds.iter().map(|world| project(world)).collect();
+        let widths = Widths::measure(&projected, options);
+        for (index, rows) in projected.iter().enumerate() {
+            if index > 0 {
+                lines.push(String::new());
+            }
+            render_world(&mut lines, rows, options, palette, &widths);
         }
-        render_world(&mut out, rows, options, palette, &widths);
     }
-    out
+    let mut text = lines.join("\n");
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    text
 }
 
 /// Keeps the canonical project or the one fork that contains the caller's cwd.
@@ -264,7 +267,7 @@ fn flatten<'a>(worlds: &'a [PsWorld], out: &mut Vec<&'a PsWorld>) {
 }
 
 fn render_world(
-    out: &mut String,
+    lines: &mut Vec<String>,
     rows: &WorldRows<'_>,
     options: &Options,
     palette: Palette,
@@ -274,22 +277,22 @@ fn render_world(
     let table = Table::new(&HEADER);
     let lineage = palette.meta(&lineage_text(world));
     let path = display_path(&world.path, options.home.as_deref());
+    let mut line = String::new();
     match world.state {
         PsWorldState::Stopped => {
-            out.push_str(&palette.meta("○ "));
+            line.push_str(&palette.meta("○ "));
             let cells = vec![
                 palette.meta(display_name(world)),
                 palette.meta(&path),
-                palette.status("stopped"),
+                Outcome::Stopped.state(palette),
                 lineage,
                 String::new(),
             ];
-            out.push_str(&table.line(&widths.header, &cells));
-            out.push('\n');
+            line.push_str(&table.line(&widths.header, &cells));
         }
         PsWorldState::Broken => {
-            out.push_str(&palette.error("✗"));
-            out.push(' ');
+            line.push_str(&palette.error("✗"));
+            line.push(' ');
             let cells = vec![
                 palette.value(display_name(world)),
                 palette.path(&path),
@@ -297,12 +300,11 @@ fn render_world(
                 lineage,
                 String::new(),
             ];
-            out.push_str(&table.line(&widths.header, &cells));
-            out.push('\n');
+            line.push_str(&table.line(&widths.header, &cells));
         }
         PsWorldState::Live => {
-            out.push_str(&palette.tint("●", "32"));
-            out.push(' ');
+            line.push_str(&palette.tint("●", "32"));
+            line.push(' ');
             let pid = match world.supervisor_pid {
                 Some(pid) if options.verbose => palette.meta(&format!("pid {pid}")),
                 _ => String::new(),
@@ -314,14 +316,13 @@ fn render_world(
                 lineage,
                 pid,
             ];
-            out.push_str(&table.line(&widths.header, &cells));
-            out.push('\n');
+            line.push_str(&table.line(&widths.header, &cells));
         }
     }
+    lines.push(line);
 
     if let Some(problem) = &world.problem {
-        out.push_str(&palette.error(&format!("! {problem}")));
-        out.push('\n');
+        lines.push(palette.error(&format!("! {problem}")));
     }
 
     // A stopped or broken row is honest by itself: nothing runs, so no domain, support, or
@@ -334,31 +335,31 @@ fn render_world(
     let groups = rows.domains.len() + usize::from(support);
     for (index, domain) in rows.domains.iter().enumerate() {
         let last = index + 1 == groups;
-        render_domain(out, domain, last, palette, widths);
+        render_domain(lines, domain, last, palette, widths);
     }
     if support {
-        render_support(out, &rows.support, palette, widths);
+        render_support(lines, &rows.support, palette, widths);
     }
 }
 
 fn render_domain(
-    out: &mut String,
+    lines: &mut Vec<String>,
     domain: &DomainRows,
     last: bool,
     palette: Palette,
     widths: &Widths,
 ) {
-    out.push_str("  ");
-    out.push_str(&palette.meta(if last { "└─ " } else { "├─ " }));
-    out.push_str(&palette.url(&format!("http://{}", domain.host)));
-    out.push('\n');
+    let mut header = String::from("  ");
+    header.push_str(&palette.meta(if last { "└─ " } else { "├─ " }));
+    header.push_str(&palette.url(&format!("http://{}", domain.host)));
+    lines.push(header);
     let branch = if last { "   " } else { "│  " };
     let table = Table::new(&ROUTE);
     for (index, row) in domain.rows.iter().enumerate() {
-        out.push_str("  ");
-        out.push_str(&palette.meta(branch));
+        let mut line = String::from("  ");
+        line.push_str(&palette.meta(branch));
         let last_row = index + 1 == domain.rows.len();
-        out.push_str(&palette.meta(if last_row { "└─ " } else { "├─ " }));
+        line.push_str(&palette.meta(if last_row { "└─ " } else { "├─ " }));
         let cells = [
             palette.meta(&row.path),
             palette.meta("->"),
@@ -367,22 +368,22 @@ fn render_domain(
                 Some(kind) => palette.kind(kind),
                 None => String::new(),
             },
-            palette.status(row.state.word),
+            row.state.state(palette),
         ];
-        out.push_str(&table.line(&widths.route, &cells));
-        out.push('\n');
+        line.push_str(&table.line(&widths.route, &cells));
+        lines.push(line);
     }
 }
 
-fn render_support(out: &mut String, rows: &[SupportRow], palette: Palette, widths: &Widths) {
-    out.push_str("  ");
-    out.push_str(&palette.meta("└─ "));
-    out.push_str(&palette.meta("support"));
-    out.push('\n');
+fn render_support(lines: &mut Vec<String>, rows: &[SupportRow], palette: Palette, widths: &Widths) {
+    let mut header = String::from("  ");
+    header.push_str(&palette.meta("└─ "));
+    header.push_str(&palette.meta("support"));
+    lines.push(header);
     let table = Table::new(&SUPPORT);
     for (index, row) in rows.iter().enumerate() {
-        out.push_str("     ");
-        out.push_str(&palette.meta(if index + 1 == rows.len() {
+        let mut line = String::from("     ");
+        line.push_str(&palette.meta(if index + 1 == rows.len() {
             "└─ "
         } else {
             "├─ "
@@ -390,10 +391,10 @@ fn render_support(out: &mut String, rows: &[SupportRow], palette: Palette, width
         let cells = [
             palette.verb(&row.keyword),
             palette.value(&row.target),
-            palette.status(row.state.word),
+            row.state.state(palette),
             row.command.clone().unwrap_or_default(),
         ];
-        out.push_str(&table.line(&widths.support, &cells));
-        out.push('\n');
+        line.push_str(&table.line(&widths.support, &cells));
+        lines.push(line);
     }
 }

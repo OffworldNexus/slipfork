@@ -210,6 +210,7 @@ fn from_state_maps_every_shipped_word_and_rejects_unknown_states() {
         ("pulled", Outcome::Ok(Done::Pulled)),
         ("ready", Outcome::Ok(Done::Ready)),
         ("running", Outcome::Ok(Done::Running)),
+        ("starting", Outcome::Ok(Done::Starting)),
         ("restarted", Outcome::Ok(Done::Restarted)),
         ("stopped", Outcome::Ok(Done::Stopped)),
         ("declined", Outcome::Ok(Done::Declined)),

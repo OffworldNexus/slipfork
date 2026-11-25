@@ -9,8 +9,8 @@ use std::process::ExitCode;
 
 use serde_json::json;
 
-use crate::commands::emit;
 use crate::ui::Palette;
+use crate::ui::report::ReportRenderer;
 use crate::ui::table::{Column, ColumnWidths, Table};
 use crate::world::HostEnv;
 
@@ -51,7 +51,12 @@ impl Check {
 }
 
 /// Renders and prints the doctor verdict; exit 1 when any row fails.
-pub fn run(host: &HostEnv, cwd: &std::path::Path, json: bool, color: bool) -> ExitCode {
+pub fn run(
+    host: &HostEnv,
+    cwd: &std::path::Path,
+    json: bool,
+    renderer: &ReportRenderer,
+) -> ExitCode {
     let doctor = Doctor::probe(host, cwd);
     let ready = doctor.is_ready();
     if json {
@@ -67,21 +72,16 @@ pub fn run(host: &HostEnv, cwd: &std::path::Path, json: bool, color: bool) -> Ex
                 }),
             })
             .collect();
-        let status = emit(&format!(
-            "{}\n",
-            json!({ "ready": ready, "checks": checks })
-        ));
+        let status = renderer.json_exit(&json!({ "ready": ready, "checks": checks }));
         return if ready { status } else { ExitCode::FAILURE };
     }
-    let palette = Palette::new(color);
-    let mut out = String::new();
+    let palette = Palette::new(renderer.color());
+    let mut lines = Vec::new();
     if ready {
-        out.push_str(&palette.tint("✓ Ready", "32;1"));
-        out.push('\n');
+        lines.push(palette.tint("✓ Ready", "32;1"));
     } else {
         let failed = doctor.checks().iter().filter(|check| !check.ok).count();
-        out.push_str(&palette.tint(&format!("✗ {failed} issue(s) found"), "31;1"));
-        out.push('\n');
+        lines.push(palette.tint(&format!("✗ {failed} issue(s) found"), "31;1"));
     }
     let separator = palette.meta("·");
     let widths = widths(&doctor);
@@ -98,17 +98,16 @@ pub fn run(host: &HostEnv, cwd: &std::path::Path, json: bool, color: bool) -> Ex
             .map(|part| part.render(&palette))
             .collect::<Vec<_>>()
             .join(&format!(" {separator} "));
-        out.push_str(&table.line(&widths, &[mark, check.name.to_owned(), detail]));
-        out.push('\n');
+        lines.push(table.line(&widths, &[mark, check.name.to_owned(), detail]));
         if let Some(next) = &check.next {
-            out.push_str(&format!(
-                "     {} {}\n",
+            lines.push(format!(
+                "     {} {}",
                 palette.kind("next:"),
                 palette.command(next)
             ));
         }
     }
-    let status = emit(&out);
+    let status = renderer.emit_lines_exit(lines);
     if ready { status } else { ExitCode::FAILURE }
 }
 

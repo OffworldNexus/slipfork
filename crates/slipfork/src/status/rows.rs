@@ -5,6 +5,7 @@
 //! domain. Services, resources, and orphaned pods without a route land in `support`.
 
 use crate::ps::{PsBucketPolicy, PsKind, PsService, PsWorld};
+use crate::ui::report::{Done, Outcome};
 use slipfork_ingress::{route_authorities, route_host};
 
 /// One domain authority and the sub-paths mapped onto it.
@@ -26,7 +27,7 @@ pub struct RoutedRow {
     /// `s3 (private)`/`s3 (public-read)` tag, when the target is not a service.
     pub kind: Option<String>,
     /// Lifecycle word.
-    pub state: State,
+    pub state: Outcome,
 }
 
 /// One unrouted service, resource, or orphaned pod.
@@ -37,23 +38,9 @@ pub struct SupportRow {
     /// Service or resource id.
     pub target: String,
     /// Lifecycle word.
-    pub state: State,
+    pub state: Outcome,
     /// Declared `run:` command, printed plain in the final column when known.
     pub command: Option<String>,
-}
-
-/// The lifecycle word shown in the final column.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct State {
-    /// The word a human reads.
-    pub word: &'static str,
-}
-
-impl State {
-    const RUNNING: Self = Self { word: "running" };
-    const FAILED: Self = Self { word: "failed" };
-    const STARTING: Self = Self { word: "starting" };
-    const ORPHANED: Self = Self { word: "orphaned" };
 }
 
 /// One world's domains and support group.
@@ -127,15 +114,15 @@ fn push_row(domains: &mut Vec<DomainRows>, host: String, row: RoutedRow) {
     }
 }
 
-fn state(service: &PsService, booting: bool) -> State {
+fn state(service: &PsService, booting: bool) -> Outcome {
     if booting {
-        State::STARTING
+        Outcome::Ok(Done::Starting)
     } else if !service.running {
-        State::FAILED
+        Outcome::Failed { at: None }
     } else if service.orphaned {
-        State::ORPHANED
+        Outcome::Orphaned
     } else {
-        State::RUNNING
+        Outcome::Ok(Done::Running)
     }
 }
 
@@ -150,5 +137,35 @@ fn descriptor(service: &PsService) -> String {
         PsKind::Cdn => "cdn".to_owned(),
         PsKind::Image => "image".to_owned(),
         PsKind::Service => "service".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::state;
+    use crate::ps::{PsKind, PsService};
+    use crate::ui::report::{Done, Outcome};
+
+    fn service() -> PsService {
+        PsService {
+            id: "api".to_owned(),
+            kind: PsKind::Service,
+            running: true,
+            port: Some(8000),
+            version: None,
+            cdn: None,
+            policy: None,
+            pid: None,
+            routes: Vec::new(),
+            orphaned: false,
+            image: None,
+            command: None,
+        }
+    }
+
+    #[test]
+    fn a_booting_service_projects_the_typed_starting_state() {
+        assert_eq!(state(&service(), true), Outcome::Ok(Done::Starting));
+        assert_eq!(Outcome::Ok(Done::Starting).plain(), "starting");
     }
 }

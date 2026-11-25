@@ -3,20 +3,19 @@
 //! The composition root hands this session the working directory and the color
 //! decision; nothing here reads the environment or probes the terminal.
 
-use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::daemon::{DaemonClient, DaemonError};
-use crate::ui::report::{Failure, Report, ReportRenderer};
-use crate::ui::{Palette, Terminal, UiMode};
+use crate::ui::report::{Failure, Report, ReportRenderer, StreamKind};
+use crate::ui::{Terminal, UiMode};
 use crate::world::HostEnv;
 use crate::{doctor, status};
 
-// `mod auth;` is dormant past 0.1.0: OSPP pairing returns in a later release.
-// mod auth;
+pub(crate) use crate::ui::report::emit_stdout as emit;
+
 mod docker;
 mod env;
 mod exec;
@@ -28,7 +27,6 @@ mod runs;
 mod secret;
 mod streams;
 mod timeparse;
-// pub use auth::AuthArgs;
 pub use docker::{DockerArgs, DockerVerb};
 pub use env::EnvArgs;
 pub use exec::{ExecArgs, TargetArgs};
@@ -88,7 +86,10 @@ impl Session {
 
     /// The one daemon connect sink: the ephemeral hint prints here exactly once.
     pub(crate) fn connect(&self) -> Result<DaemonClient, DaemonError> {
-        DaemonClient::connect(self.host(), &mut |notice| eprintln!("{notice}"))
+        let renderer = self.renderer();
+        DaemonClient::connect(self.host(), &mut |notice| {
+            let _ = renderer.emit_notice(StreamKind::Stderr, &notice.to_string());
+        })
     }
 
     /// The output mode resolved once by the composition root.
@@ -205,21 +206,19 @@ impl Session {
             };
         }
         if scoped && other_worlds && reply.worlds.is_empty() {
-            return emit(&status::no_world_line(
-                &self.cwd,
-                self.host.home.as_deref(),
-                self.color(),
-            ));
+            let text = status::no_world_line(&self.cwd, self.host.home.as_deref(), self.color());
+            return self.renderer().emit_text_exit(StreamKind::Stdout, &text);
         }
         let options = status::Options::new(self.color())
             .with_home(self.host.home.clone())
             .with_verbose(verbose);
-        emit(&status::render(&reply, &options))
+        let text = status::render(&reply, &options);
+        self.renderer().emit_text_exit(StreamKind::Stdout, &text)
     }
 
     /// Prints the three host requirements and their remedies.
     pub fn doctor(&self, json: bool) -> ExitCode {
-        doctor::run(&self.host, &self.cwd, json, self.color())
+        doctor::run(&self.host, &self.cwd, json, &self.renderer())
     }
 
     /// The one refusal for a host verb that never reached the daemon.
@@ -250,17 +249,18 @@ impl Session {
     /// One failure renderer: a JSON object under `--json`, `error:`/`next:` lines otherwise.
     pub(crate) fn report(&self, code: &str, message: &str, next: &str, json: bool) -> ExitCode {
         let (message, next) = message_and_next(message, next);
+        let failure = Failure::new(code, message, next);
         if json {
-            let message = message.strip_prefix("✗ ").unwrap_or(&message).to_owned();
-            let _ = emit(&format!(
-                "{}\n",
-                json!({ "error": { "code": code, "message": message, "next": next } })
-            ));
-            return ExitCode::FAILURE;
+            let _ = self.renderer().json_exit(&failure.json());
+        } else {
+            let _ = self.renderer().emit(&Report::failure(failure));
         }
-        let _ = self
-            .renderer()
-            .emit(&Report::failure(Failure::new(code, message, next)));
+        ExitCode::FAILURE
+    }
+
+    /// Renders one typed failure through the report layer, in either mode.
+    pub(crate) fn failure(&self, failure: Failure) -> ExitCode {
+        let _ = self.renderer().emit(&Report::failure(failure));
         ExitCode::FAILURE
     }
 
@@ -281,56 +281,10 @@ impl Session {
             json,
         )
     }
-
-    /// The `fmt`/`migrate` failure renderer: the same nested error object plus a `details` map.
-    fn report_details(
-        &self,
-        code: &str,
-        message: &str,
-        details: Option<Value>,
-        next: &str,
-        json: bool,
-    ) -> ExitCode {
-        let (message, next) = message_and_next(message, next);
-        if json {
-            let mut error = json!({ "code": code, "message": message, "next": next });
-            if let Some(details) = details {
-                error["details"] = details;
-            }
-            let _ = emit(&format!("{}\n", json!({ "error": error })));
-            return ExitCode::FAILURE;
-        }
-        self.report(code, &message, &next, false)
-    }
 }
 
 /// Splits a daemon message at its trailing `next: …` line; the message's own remedy wins.
 pub(crate) fn message_and_next(message: &str, fallback: &str) -> (String, String) {
     let (body, embedded) = crate::ui::split_remedy(message);
     (body, embedded.unwrap_or_else(|| fallback.to_owned()))
-}
-
-/// Writes one already-rendered chunk to stdout without panicking on a closed pipe.
-///
-/// A reader that stops early (`logs -r --json | head`) closes stdout: that is the stream ending
-/// cleanly, not a failure, so it exits `0` and writes nothing to stderr.
-pub(crate) fn emit(text: &str) -> ExitCode {
-    let mut stdout = io::stdout().lock();
-    match stdout
-        .write_all(text.as_bytes())
-        .and_then(|()| stdout.flush())
-    {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
-        Err(error) => {
-            for line in crate::ui::failure_block(
-                &format!("failed to write output: {error}"),
-                "check that stdout is writable",
-                Palette::new(false),
-            ) {
-                eprintln!("{line}");
-            }
-            ExitCode::FAILURE
-        }
-    }
 }

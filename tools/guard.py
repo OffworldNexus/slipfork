@@ -11,6 +11,8 @@ Inspects tracked + staged + untracked non-ignored files and refuses:
 3. Any `[derived]`, `[guessed]`, or `[hallucinated]` marker inside `specs/` or `docs/`
    (learned from an unrelated external audit: missing external facts must halt in `HUMAN.md`,
    never be invented!).
+4. Any `println!`/`eprintln!`/`print!`/`eprint!` in `crates/slipfork/src/**/*.rs` outside the
+   documented renderer/journal allowlist: user-facing output must flow through `ui::report`.
 
 The guard never assumes `docs/` still exists: the clean-sheet tree carries `specs/` first.
 """
@@ -41,6 +43,29 @@ GOLDEN_FOLDER = ("tests", "golden")
 ALLOWED_ENV_FILES = frozenset({".env.example"})
 SPEC_GUESS_RE = re.compile(r"\[(?:derived|guessed|hallucinated)\]", re.IGNORECASE)
 SPEC_ROOTS = frozenset({"specs", "docs"})
+
+# One `print`-family macro invocation; lexical only, no `#[cfg(test)]` exemption.
+RAW_PRINT_RE = re.compile(r"\b(?:println|eprintln|print|eprint)!\s*\(")
+RAW_PRINT_SCOPE = ("crates", "slipfork", "src")
+
+# The finite allowlist, one justification each; never widen it to make a branch pass.
+RAW_PRINT_ALLOWLIST = {
+    PurePosixPath(
+        "crates/slipfork/src/ui/report/render.rs"
+    ): "the one Report renderer writes section bytes",
+    PurePosixPath(
+        "crates/slipfork/src/ui/report/exit.rs"
+    ): "the stderr block for an unwritable stdout",
+    PurePosixPath(
+        "crates/slipfork/src/boot.rs"
+    ): "live boot append sink coordinates with the painted PTY line",
+    PurePosixPath(
+        "crates/slipfork/src/daemon"
+    ): "detached daemon journal has no terminal renderer",
+    PurePosixPath(
+        "crates/slipfork/src/world/supervise.rs"
+    ): "supervisor journal survives a dead client",
+}
 
 EXIT_OK = 0
 EXIT_VIOLATIONS = 1
@@ -127,6 +152,18 @@ def _is_spec_markdown(path: PurePosixPath) -> bool:
     )
 
 
+def _in_raw_print_scope(path: PurePosixPath) -> bool:
+    return (
+        path.parts[: len(RAW_PRINT_SCOPE)] == RAW_PRINT_SCOPE and path.suffix == ".rs"
+    )
+
+
+def _raw_print_allowed(path: PurePosixPath) -> bool:
+    return any(
+        path == prefix or prefix in path.parents for prefix in RAW_PRINT_ALLOWLIST
+    )
+
+
 def check_file(
     root: Path, path: PurePosixPath, size: int | None
 ) -> tuple[Violation, ...]:
@@ -170,6 +207,21 @@ def check_file(
                     f"forbidden {match.group(0)!r} guess marker in specs — block in HUMAN.md instead of inventing specs",
                 )
             )
+    if (
+        _in_raw_print_scope(path)
+        and not _raw_print_allowed(path)
+        and (root / path).is_file()
+    ):
+        text = (root / path).read_text(encoding="utf-8", errors="replace")
+        for number, line in enumerate(text.splitlines(), start=1):
+            if RAW_PRINT_RE.search(line):
+                violations.append(
+                    Violation(
+                        str(path),
+                        f"raw print at line {number}: route CLI output through ui::report",
+                    )
+                )
+                break
     return tuple(violations)
 
 

@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use serde_json::{Value, json};
 use slipfork_forkfile::FeatureEdit;
 
-use crate::commands::{Session, emit};
+use crate::commands::Session;
 use crate::ui::Palette;
 use crate::ui::table::{Column, Table};
 
@@ -86,12 +86,12 @@ impl Session {
                 }
                 out.insert(component.clone(), Value::Object(rows));
             }
-            return emit(&format!("{}\n", Value::Object(out)));
+            return self.renderer().json_exit(&Value::Object(out));
         }
         let palette = Palette::new(self.color());
         let multiple = components.len() > 1;
         let table = table();
-        let mut text = String::new();
+        let mut lines = Vec::new();
         for (component, variables) in components {
             let rows: Vec<(&str, &Value)> = variables
                 .as_object()
@@ -106,7 +106,7 @@ impl Session {
                     .collect::<Vec<_>>(),
             );
             if multiple {
-                text.push_str(&format!("{}\n", palette.label(component)));
+                lines.push(palette.label(component));
             }
             for (key, info) in rows {
                 let value = display(info);
@@ -117,11 +117,10 @@ impl Session {
                 } else {
                     palette.value(&value)
                 };
-                text.push_str(&table.line(&widths, &[palette.key(key), palette.meta("="), shown]));
-                text.push('\n');
+                lines.push(table.line(&widths, &[palette.key(key), palette.meta("="), shown]));
             }
         }
-        emit(&text)
+        self.renderer().emit_lines_exit(lines)
     }
 }
 

@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use slipfork_forkfile::FeatureEdit;
 use slipfork_forkfile::ast::Forkfile;
 
-use crate::commands::{Session, emit};
+use crate::commands::Session;
 use crate::ui::Palette;
 use crate::ui::table::{Column, Table};
 use crate::world::WorldIdentities;
@@ -145,17 +145,14 @@ impl Session {
                     })
                 })
                 .collect();
-            return emit(&format!(
-                "{}\n",
-                json!({
-                    "project": self.cwd().display().to_string(),
-                    "world": world,
-                    "no_default": config.no_default,
-                    "edits": config.edits,
-                    "active": resolved.active(),
-                    "features": features,
-                })
-            ));
+            return self.renderer().json_exit(&json!({
+                "project": self.cwd().display().to_string(),
+                "world": world,
+                "no_default": config.no_default,
+                "edits": config.edits,
+                "active": resolved.active(),
+                "features": features,
+            }));
         }
         let palette = Palette::new(self.color());
         let table = Table::new(&COLUMNS);
@@ -189,22 +186,21 @@ impl Session {
             ]);
         }
         let widths = table.widths(&plain);
-        let mut text = String::new();
+        let mut lines = Vec::new();
         for row in &styled {
-            text.push_str(&table.line(&widths, row));
-            text.push('\n');
+            lines.push(table.line(&widths, row));
         }
         if !config.is_default() {
-            text.push_str(&format!("{}\n", palette.meta(&summary(&config))));
+            lines.push(palette.meta(&summary(&config)));
         }
         if changed {
-            text.push_str(&format!(
-                "{} {}\n",
+            lines.push(format!(
+                "{} {}",
                 palette.kind("next:"),
                 palette.command("run `slipfork up` to apply these features")
             ));
         }
-        emit(&text)
+        self.renderer().emit_lines_exit(lines)
     }
 }
 

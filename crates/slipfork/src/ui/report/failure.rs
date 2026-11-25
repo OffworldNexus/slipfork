@@ -21,6 +21,8 @@ pub struct Failure {
     pub next: String,
     /// Typed settlement facts, when a step produced them.
     pub facts: Option<FailureFacts>,
+    /// Optional typed details inside the `--json` `error` object (`fmt`/`migrate` paths).
+    pub details: Option<serde_json::Value>,
 }
 
 impl Failure {
@@ -41,7 +43,15 @@ impl Failure {
             message: message.into().trim().to_owned(),
             next,
             facts: None,
+            details: None,
         }
+    }
+
+    /// Carries typed details inside the `--json` `error` object.
+    #[must_use]
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
     }
 
     /// Builds a lifecycle failure whose message may already carry its own `next:` tail.
@@ -79,6 +89,7 @@ impl Failure {
             message,
             next: facts.next.clone(),
             facts: Some(facts),
+            details: None,
         }
     }
 
@@ -95,13 +106,15 @@ impl Failure {
             .chain(lines)
             .collect::<Vec<_>>()
             .join("\n");
-        serde_json::json!({
-            "error": {
-                "code": self.code,
-                "message": message,
-                "next": self.next,
-            }
-        })
+        let mut error = serde_json::json!({
+            "code": self.code,
+            "message": message,
+            "next": self.next,
+        });
+        if let Some(details) = &self.details {
+            error["details"] = details.clone();
+        }
+        serde_json::json!({ "error": error })
     }
 
     /// The exact stderr lines a human reads: `error:` body plus exactly one `next:` remedy.

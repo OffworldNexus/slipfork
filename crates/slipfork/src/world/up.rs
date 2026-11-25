@@ -487,7 +487,7 @@ impl Session {
         already_rendered: bool,
     ) -> ExitCode {
         if json_mode {
-            println!("{}", failure.json());
+            let _ = self.renderer().emit_json(&failure.json());
             return ExitCode::FAILURE;
         }
         if already_rendered {

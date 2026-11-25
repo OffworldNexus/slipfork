@@ -53,6 +53,8 @@ pub enum Done {
     Ready,
     /// A process that is running.
     Running,
+    /// A world or service still coming up.
+    Starting,
     /// A step that settled without a more specific verb.
     Settled,
     /// One inner step of a live build.
@@ -95,6 +97,7 @@ impl Done {
             Self::Pulled => "pulled".to_owned(),
             Self::Ready => "ready".to_owned(),
             Self::Running => "running".to_owned(),
+            Self::Starting => "starting".to_owned(),
             Self::Settled => "done".to_owned(),
             Self::Step => String::new(),
             Self::Restarted => "restarted".to_owned(),
@@ -162,6 +165,7 @@ impl Outcome {
             "pulled" => Some(Self::Ok(Done::Pulled)),
             "ready" => Some(Self::Ok(Done::Ready)),
             "running" => Some(Self::Ok(Done::Running)),
+            "starting" => Some(Self::Ok(Done::Starting)),
             "restarted" => Some(Self::Ok(Done::Restarted)),
             "stopped" => Some(Self::Ok(Done::Stopped)),
             "declined" | "up to date" | "up-to-date" => Some(Self::Ok(Done::Declined)),
