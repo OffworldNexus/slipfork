@@ -65,7 +65,7 @@ const COLUMNS: [Column; 6] = [
 ];
 
 /// Renders the whole catalog: one dim header row and one row per recorded run.
-pub(crate) fn render_runs(rows: &[RunRow], color: bool, clock: LocalClock) -> Vec<String> {
+pub(crate) fn render_runs(rows: &[RunRow], color: bool, clock: &LocalClock) -> Vec<String> {
     let table = Table::new(&COLUMNS);
     let header = [
         paint("#run_id", "2", color),
@@ -129,7 +129,7 @@ mod tests {
             row("c91e04", "failed", 1_234),
             row("0a1b2c", "ready", 7),
         ];
-        let lines = render_runs(&rows, false, LocalClock::fixed(0));
+        let lines = render_runs(&rows, false, &LocalClock::fixed(0));
         assert_eq!(lines.len(), 4, "{lines:?}");
         let body = &lines[1..];
         let id_column = body[0].find("#b7f2a1").expect("id column");
@@ -242,7 +242,7 @@ mod tests {
         // The rendered table itself carries the deduplicated step and zero escapes.
         run.target = "uv sync".to_owned();
         run.command = "uv sync".to_owned();
-        let lines = render_runs(&[run], false, LocalClock::fixed(0));
+        let lines = render_runs(&[run], false, &LocalClock::fixed(0));
         assert!(lines[1].contains("uv sync"), "{lines:?}");
         assert!(!lines[1].contains("uv sync uv sync"), "{lines:?}");
         assert!(!lines[1].contains('\u{1b}'), "{lines:?}");

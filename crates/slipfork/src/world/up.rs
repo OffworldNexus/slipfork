@@ -131,7 +131,7 @@ impl Session {
         let mut nodes = Vec::new();
         let mut tui = BootTui::boot(
             self.ui(),
-            self.terminal().width,
+            self.terminal().cols,
             &format!("Booting {}", resolved.world.as_str()),
             args.verbose,
         );
@@ -225,7 +225,7 @@ impl Session {
         let mut world = resolved.world.as_str().to_owned();
         let mut tui = BootTui::rows(
             self.ui(),
-            self.terminal().width,
+            self.terminal().cols,
             &format!("Stopping {world}"),
         );
         let outcome = client.call_streaming(
@@ -301,7 +301,7 @@ impl Session {
         let mut nodes = Vec::new();
         let mut tui = BootTui::boot(
             self.ui(),
-            self.terminal().width,
+            self.terminal().cols,
             &format!("Restarting {}", resolved.world.as_str()),
             args.verbose,
         );

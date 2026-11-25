@@ -39,7 +39,7 @@ pub(crate) struct Renderer {
 
 /// One v3 replay row: `  HH:MM:SS.mmm │ line`, with the clock resolved once for the invocation.
 fn replay_row(
-    clock: LocalClock,
+    clock: &LocalClock,
     palette: Palette,
     ts_ms: Option<u64>,
     glyph: &str,
@@ -59,7 +59,7 @@ impl Renderer {
         gutter: bool,
         timestamps: bool,
         clocked: bool,
-        clock: LocalClock,
+        clock: &LocalClock,
     ) -> Self {
         Self {
             palette: Palette::new(color),
@@ -67,7 +67,7 @@ impl Renderer {
             gutter,
             timestamps,
             clocked,
-            clock,
+            clock: clock.clone(),
             width: 0,
             rows: 0,
             verdict: None,
@@ -76,17 +76,17 @@ impl Renderer {
         }
     }
 
-    pub(super) fn new(color: bool, json: bool, timestamps: bool, clock: LocalClock) -> Self {
+    pub(super) fn new(color: bool, json: bool, timestamps: bool, clock: &LocalClock) -> Self {
         Self::blank(color, json, true, timestamps, false, clock)
     }
 
     /// The `exec`/`shell` renderer: the command's own stdout and stderr, byte for byte.
-    pub(crate) fn exec(color: bool, json: bool, clock: LocalClock) -> Self {
+    pub(crate) fn exec(color: bool, json: bool, clock: &LocalClock) -> Self {
         Self::blank(color, json, false, false, false, clock)
     }
 
     /// The `logs -r <id>` renderer: one recorded run's clocked stream-gutter rows.
-    pub(super) fn replay(color: bool, json: bool, timestamps: bool, clock: LocalClock) -> Self {
+    pub(super) fn replay(color: bool, json: bool, timestamps: bool, clock: &LocalClock) -> Self {
         Self::blank(color, json, false, timestamps, true, clock)
     }
 
@@ -162,7 +162,7 @@ impl Renderer {
             _ if self.clocked => {
                 // The v3 replay row: 2-space indent, a dim clock in the gutter, then the glyph.
                 let glyph = self.palette.gutter(stream);
-                let row = replay_row(self.clock, self.palette, ts_ms, &glyph, line);
+                let row = replay_row(&self.clock, self.palette, ts_ms, &glyph, line);
                 self.rows += 1;
                 self.write(&format!("{row}\n"));
             }
@@ -303,7 +303,7 @@ mod tests {
         let clock = LocalClock::fixed(2 * 3600);
         assert_eq!(
             replay_row(
-                clock,
+                &clock,
                 Palette::new(false),
                 Some(1_782_907_200_000),
                 "│",
@@ -312,7 +312,7 @@ mod tests {
             "  14:00:00.000 │ line"
         );
         assert_eq!(
-            replay_row(clock, Palette::new(false), None, "┃", "line"),
+            replay_row(&clock, Palette::new(false), None, "┃", "line"),
             "  ┃ line"
         );
     }

@@ -18,6 +18,7 @@ use std::time::Duration;
 use slipfork_ingress::IngressHandoff;
 
 use super::socket_path;
+use crate::ui::report::{Failure, Report, ReportRenderer};
 use crate::world::HostEnv;
 
 /// How long one handoff may block on the daemon socket before the listener moves on.
@@ -74,31 +75,45 @@ impl Mode {
 ///
 /// The `:80` ingress must run as the developer: a root-run handoff would connect to the root
 /// user's `daemon.sock` and proxy nobody's worlds, so both modes fail closed instead.
-pub fn run(host: &HostEnv, mode: Mode, listener: Option<TcpListener>) -> ExitCode {
+pub fn run(
+    host: &HostEnv,
+    mode: Mode,
+    listener: Option<TcpListener>,
+    renderer: &ReportRenderer,
+) -> ExitCode {
     if host.uid == 0 {
-        eprintln!("error: the :80 ingress must run as the developer, not root");
-        eprintln!("next: sudo systemctl enable --now slipfork-ingress.socket");
-        return ExitCode::FAILURE;
+        return fail(
+            renderer,
+            "ingress-root",
+            "the :80 ingress must run as the developer, not root",
+            "sudo systemctl enable --now slipfork-ingress.socket",
+        );
     }
     match mode {
         Mode::Activated => match forward_activated(host) {
             Ok(()) => ExitCode::SUCCESS,
-            Err(error) => report(
-                &format!("cannot hand the :80 connection to the daemon: {error}"),
+            Err(error) => fail(
+                renderer,
+                "ingress-handoff",
+                format!("cannot hand the :80 connection to the daemon: {error}"),
                 next_for(&error),
             ),
         },
         Mode::Listen(_) => {
             let Some(listener) = listener else {
-                return report(
+                return fail(
+                    renderer,
+                    "ingress-listener",
                     "the ingress has no bound listener",
                     "run `slipfork __ingress --listen 127.0.0.1:80`",
                 );
             };
-            match forward_listener(&listener, &socket_path(host)) {
+            match forward_listener(&listener, &socket_path(host), renderer) {
                 Ok(()) => ExitCode::SUCCESS,
-                Err(error) => report(
-                    &format!("cannot accept on the ingress listener: {error}"),
+                Err(error) => fail(
+                    renderer,
+                    "ingress-listener",
+                    format!("cannot accept on the ingress listener: {error}"),
                     next_for(&error),
                 ),
             }
@@ -106,9 +121,9 @@ pub fn run(host: &HostEnv, mode: Mode, listener: Option<TcpListener>) -> ExitCod
     }
 }
 
-fn report(message: &str, next: &str) -> ExitCode {
-    eprintln!("error: {message}");
-    eprintln!("next: {next}");
+/// Emits one typed ingress failure and returns the failure exit status.
+fn fail(renderer: &ReportRenderer, code: &str, message: impl Into<String>, next: &str) -> ExitCode {
+    let _ = renderer.emit(&Report::failure(Failure::new(code, message, next)));
     ExitCode::FAILURE
 }
 
@@ -142,7 +157,11 @@ fn forward_activated(host: &HostEnv) -> io::Result<()> {
 /// # Errors
 ///
 /// Returns the fatal `accept(2)` failure that ends the loop.
-fn forward_listener(listener: &TcpListener, daemon_socket: &Path) -> io::Result<()> {
+fn forward_listener(
+    listener: &TcpListener,
+    daemon_socket: &Path,
+    renderer: &ReportRenderer,
+) -> io::Result<()> {
     let mut sequence = 0_u64;
     for incoming in listener.incoming() {
         let connection = match incoming {
@@ -152,8 +171,11 @@ fn forward_listener(listener: &TcpListener, daemon_socket: &Path) -> io::Result<
         };
         sequence += 1;
         if let Err(error) = hand_off(&connection, daemon_socket, sequence) {
-            eprintln!("error: cannot hand an ingress connection to the daemon: {error}");
-            eprintln!("next: {}", next_for(&error));
+            let _ = renderer.emit(&Report::failure(Failure::new(
+                "ingress-accept",
+                format!("cannot hand an ingress connection to the daemon: {error}"),
+                next_for(&error),
+            )));
         }
     }
     Ok(())

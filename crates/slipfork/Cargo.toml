@@ -48,6 +48,7 @@ base64.workspace = true
 clap.workspace = true
 getrandom.workspace = true
 hex.workspace = true
+jiff.workspace = true
 clap_complete.workspace = true
 clap_mangen.workspace = true
 console.workspace = true

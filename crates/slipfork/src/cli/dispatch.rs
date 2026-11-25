@@ -7,12 +7,12 @@ use std::process::ExitCode;
 
 use clap::error::ErrorKind;
 use clap::{ColorChoice, CommandFactory, FromArgMatches};
-use serde_json::json;
 
 use crate::commands::{
     DockerArgs, DockerVerb, EnvArgs, ExecArgs, FeaturesArgs, FmtArgs, LogsArgs, MigrateArgs,
     OpenArgs, SecretArgs, SecretVerb, Session, TargetArgs, emit,
 };
+use crate::ui::report::{Failure, Report, ReportRenderer};
 use crate::world::{DownArgs, DropArgs, ForkArgs, RestartArgs, SuperviseArgs, UpArgs};
 
 use super::verbs::{Cli, Command, DockerCommand, SecretCommand};
@@ -22,14 +22,15 @@ const USAGE_NEXT: &str = "run `slipfork --help` to see the available surface.";
 
 /// Parses `argv` with clap, then dispatches the one parsed command.
 pub fn run(argv: Vec<OsString>, session: Session) -> ExitCode {
+    let renderer = session.renderer();
     let command = Cli::command().color(choice(session.color()));
     let matches = match command.try_get_matches_from(&argv) {
         Ok(matches) => matches,
-        Err(error) => return usage_failure(error, &argv, session.json_requested()),
+        Err(error) => return usage_failure(error, &argv, &renderer),
     };
     let cli = match Cli::from_arg_matches(&matches) {
         Ok(cli) => cli,
-        Err(error) => return usage_failure(error, &argv, session.json_requested()),
+        Err(error) => return usage_failure(error, &argv, &renderer),
     };
     if cli.manpage {
         return emit(&super::manpage::render());
@@ -54,6 +55,7 @@ fn choice(color: bool) -> ColorChoice {
 fn dispatch(cli: Cli, session: Session) -> ExitCode {
     let json = cli.json;
     let verbose = cli.verbose;
+    let renderer = session.renderer().with_verbose(verbose);
     let Some(command) = cli.command else {
         return session.status(json, verbose);
     };
@@ -119,7 +121,7 @@ fn dispatch(cli: Cli, session: Session) -> ExitCode {
                 return usage_error(
                     "`exec` needs `--` before the command, e.g. `slipfork exec api -- pytest -q`",
                     "run `slipfork exec --help` to see the shipped form",
-                    json,
+                    &renderer,
                 );
             }
             session.exec(&ExecArgs {
@@ -216,14 +218,16 @@ fn dispatch(cli: Cli, session: Session) -> ExitCode {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
                 Err(error) => {
-                    eprintln!(
-                        "error: could not write completions: {error}\nnext: re-run `slipfork completions {shell}` with stdout open"
-                    );
+                    let _ = renderer.emit(&Report::failure(Failure::new(
+                        "completions",
+                        format!("could not write completions: {error}"),
+                        format!("re-run `slipfork completions {shell}` with stdout open"),
+                    )));
                     ExitCode::from(1)
                 }
             }
         }
-        Command::Help { command } => print_help(command.as_deref(), session.color(), json),
+        Command::Help { command } => print_help(command.as_deref(), &renderer),
         Command::Version => emit(&format!("slipfork {}\n", env!("CARGO_PKG_VERSION"))),
         Command::Supervise {
             project,
@@ -240,43 +244,31 @@ fn dispatch(cli: Cli, session: Session) -> ExitCode {
 }
 
 /// Prints the overview, or one verb's long help, with the invocation's colour decision.
-fn print_help(topic: Option<&str>, color: bool, json: bool) -> ExitCode {
-    let mut command = Cli::command().color(choice(color));
+fn print_help(topic: Option<&str>, renderer: &ReportRenderer) -> ExitCode {
+    let mut command = Cli::command().color(choice(renderer.color()));
     let Some(topic) = topic else {
         let _ = command.print_long_help();
-        println!();
+        renderer.blank_line();
         return ExitCode::SUCCESS;
     };
     match command.find_subcommand_mut(topic) {
         Some(subcommand) => {
             let _ = subcommand.print_long_help();
-            println!();
+            renderer.blank_line();
             ExitCode::SUCCESS
         }
-        None => usage_error(&format!("unknown command `{topic}`"), USAGE_NEXT, json),
+        None => usage_error(&format!("unknown command `{topic}`"), USAGE_NEXT, renderer),
     }
 }
 
-/// Renders one usage failure as `error:` plus exactly one `next:` and exits `2`.
-///
-/// Under `--json` the same rejection becomes one nested `error` object with the standard remedy.
-fn usage_error(message: &str, next: &str, json: bool) -> ExitCode {
-    if json {
-        let first = message.lines().next().unwrap_or("invalid command line");
-        let first = first.strip_prefix("error: ").unwrap_or(first);
-        println!(
-            "{}",
-            json!({ "error": { "code": "usage", "message": first, "next": USAGE_NEXT } })
-        );
-        return ExitCode::from(2);
-    }
-    eprintln!("error: {message}");
-    eprintln!("next: {next}");
+/// Renders one usage failure as `error:` plus exactly one `next:` (or one JSON error object).
+fn usage_error(message: &str, next: &str, renderer: &ReportRenderer) -> ExitCode {
+    let _ = renderer.emit(&Report::failure(Failure::new("usage", message, next)));
     ExitCode::from(2)
 }
 
 /// Renders clap's help/version output as-is, and every rejection as one line plus one remedy.
-fn usage_failure(error: clap::Error, argv: &[OsString], json: bool) -> ExitCode {
+fn usage_failure(error: clap::Error, argv: &[OsString], renderer: &ReportRenderer) -> ExitCode {
     match error.kind() {
         ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
             let _ = error.print();
@@ -287,7 +279,7 @@ fn usage_failure(error: clap::Error, argv: &[OsString], json: bool) -> ExitCode 
                 return usage_error(
                     "unknown argument `lsp` (the language server is now the standalone slipfork-lsp binary)",
                     "install `slipfork-lsp` and point your editor at it",
-                    json,
+                    renderer,
                 );
             }
             let rendered = error.to_string();
@@ -295,12 +287,7 @@ fn usage_failure(error: clap::Error, argv: &[OsString], json: bool) -> ExitCode 
                 .lines()
                 .find(|line| line.starts_with("error:"))
                 .unwrap_or("error: invalid command line");
-            if json {
-                return usage_error(first, USAGE_NEXT, true);
-            }
-            eprintln!("{first}");
-            eprintln!("next: {USAGE_NEXT}");
-            ExitCode::from(2)
+            usage_error(first, USAGE_NEXT, renderer)
         }
     }
 }

@@ -3,66 +3,24 @@
 //! Nothing below this module reads `std::env`, `/proc`, the terminal, or the working directory:
 //! `main` calls these functions once and injects the resulting plain values.
 
-use std::ffi::{OsStr, OsString};
-use std::io::IsTerminal;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use slipfork_image::RegistryCredentials;
 
 use crate::mounts;
-use crate::ui::UiMode;
+use crate::ui::Terminal;
+use crate::ui::report::WallZone;
 use crate::world::HostEnv;
 
-/// The terminal contract resolved once for this invocation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Terminal {
-    /// How this invocation renders its result.
-    pub mode: UiMode,
-    /// Visible columns for live panes; `80` for every non-interactive invocation.
-    pub width: usize,
-    /// Whether stdin is a real terminal, resolved once by the composition root.
-    pub stdin_tty: bool,
-}
-
-/// Resolves the output mode and the terminal width exactly once, so no library module has to
-/// probe `/dev/tty` for itself.
+/// Resolves the output mode, terminal geometry, and stdin tty exactly once.
 pub fn terminal(args: &[OsString]) -> Terminal {
-    let mode = detect_ui(args);
-    let width = if mode.interactive() {
-        crossterm::terminal::size().map_or(80, |(width, rows)| {
-            crate::ui::normalize_size(usize::from(width), usize::from(rows)).0
-        })
-    } else {
-        80
-    };
-    Terminal {
-        mode,
-        width,
-        stdin_tty: std::io::stdin().is_terminal(),
-    }
+    Terminal::detect(args)
 }
 
-/// Resolves the one output mode for this invocation.
-///
-/// `--json` wins over everything; a real terminal becomes [`UiMode::Interactive`] with `color`
-/// gated by `NO_COLOR` and `TERM=dumb`; anything else is [`UiMode::Plain`], so a pipe can never
-/// carry an escape or a carriage return.
-pub fn detect_ui(args: &[OsString]) -> UiMode {
-    let tty = std::io::stdout().is_terminal();
-    let color = tty
-        && std::env::var_os("NO_COLOR").is_none()
-        && !std::env::var_os("TERM").is_some_and(|term| term == "dumb");
-    let json = args
-        .iter()
-        .take_while(|argument| argument.as_os_str() != OsStr::new("--"))
-        .any(|argument| argument == "--json");
-    if json {
-        UiMode::Json
-    } else if tty {
-        UiMode::Interactive { color }
-    } else {
-        UiMode::Plain
-    }
+/// Resolves the one local wall clock for this invocation, reading `$TZ` then `/etc/localtime`.
+pub fn wall_zone() -> WallZone {
+    WallZone::from_time_zone(jiff::tz::TimeZone::system())
 }
 
 /// Assembles the injected host environment for this invocation.

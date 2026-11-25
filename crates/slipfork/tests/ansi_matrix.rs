@@ -17,6 +17,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 use slipfork::surface::VERBS;
+use slipfork::ui::report::{Failure, Report, ReportRenderer, WallZone};
+use slipfork::ui::{Terminal, UiMode};
 
 const ESCAPE: char = '\u{1b}';
 
@@ -431,4 +433,73 @@ fn vt_grid_prompt_survives_up_restart_down_and_fork() {
             run.output
         );
     }
+}
+
+/// `__ingress --listen` on an already-bound port emits one plain `error:` + `next:` pair whose
+/// strings are exactly the `--json` `{"error":{code,message,next}}` projection.
+#[test]
+fn an_ingress_bind_failure_is_plain_and_matches_its_json_projection() {
+    let root = scratch();
+    let holder = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a throwaway port");
+    let port = holder.local_addr().expect("read the throwaway port").port();
+    let address = format!("127.0.0.1:{port}");
+    let mut command = command(root.as_path());
+    command.args(["__ingress", "--listen", &address]);
+    let run = pty::run(command, None, None);
+    let text = run.output.replace('\r', "");
+    assert!(
+        !text.contains(ESCAPE),
+        "a NO_COLOR PTY must stay pure: {text:?}"
+    );
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    assert_eq!(lines.len(), 2, "one error line and one remedy: {text:?}");
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.starts_with("next:"))
+            .count(),
+        1,
+        "exactly one next: line: {text:?}"
+    );
+    let error_line = lines[0];
+    assert!(
+        error_line.starts_with(&format!("error: cannot bind {address}: ")),
+        "the bind error names the blocked address: {text:?}"
+    );
+    let next = "next: choose a free address or stop the process holding this port";
+    assert_eq!(lines[1], next, "{text:?}");
+    let message = error_line
+        .strip_prefix("error: ")
+        .expect("the human line carries the error prefix");
+    let remedy = next.strip_prefix("next: ").expect("the remedy prefix");
+    let terminal = Terminal {
+        cols: 80,
+        rows: 0,
+        mode: UiMode::Json,
+        stdin_tty: false,
+    };
+    let renderer = ReportRenderer::new(terminal, WallZone::fixed(0).expect("a utc fixture zone"));
+    let mut json = Vec::new();
+    let mut json_err = Vec::new();
+    renderer
+        .emit_to(
+            &Report::failure(Failure::new("ingress-bind", message, remedy)),
+            &mut json,
+            &mut json_err,
+        )
+        .expect("render the error projection");
+    assert!(json_err.is_empty(), "a json failure stays on stdout");
+    let projection: Value = serde_json::from_slice(&json).expect("one json object");
+    assert_eq!(projection["error"]["code"], "ingress-bind");
+    assert_eq!(projection["error"]["message"], message);
+    assert_eq!(projection["error"]["next"], remedy);
+    assert!(
+        !run.status.success(),
+        "a bind failure exits non-zero: {text:?}"
+    );
+    drop(holder);
+    std::fs::remove_dir_all(&root).expect("remove the scratch lab tree");
 }

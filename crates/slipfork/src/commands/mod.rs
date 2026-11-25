@@ -9,9 +9,9 @@ use std::process::ExitCode;
 
 use serde_json::{Value, json};
 
-use crate::compose::Terminal;
 use crate::daemon::{DaemonClient, DaemonError};
-use crate::ui::{Palette, UiMode};
+use crate::ui::report::ReportRenderer;
+use crate::ui::{Palette, Terminal, UiMode};
 use crate::world::HostEnv;
 use crate::{doctor, status};
 
@@ -76,8 +76,14 @@ impl Session {
 
     /// The wall clock resolved once by the composition root.
     #[must_use]
-    pub(crate) fn clock(&self) -> LocalClock {
-        self.clock
+    pub(crate) fn clock(&self) -> &LocalClock {
+        &self.clock
+    }
+
+    /// The one report renderer for this invocation.
+    #[must_use]
+    pub(crate) fn renderer(&self) -> ReportRenderer {
+        ReportRenderer::new(self.terminal, self.clock.zone().clone())
     }
 
     /// The output mode resolved once by the composition root.
@@ -96,12 +102,6 @@ impl Session {
     #[must_use]
     pub fn color(&self) -> bool {
         self.terminal.mode.color()
-    }
-
-    /// Whether this invocation asked for the machine-readable object.
-    #[must_use]
-    pub fn json_requested(&self) -> bool {
-        self.terminal.mode.json()
     }
 
     /// Switches to `--json` once clap has confirmed the flag was really typed.

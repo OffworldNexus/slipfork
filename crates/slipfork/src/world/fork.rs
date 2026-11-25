@@ -43,7 +43,7 @@ impl Session {
         };
         let mut tui = BootTui::boot(
             self.ui(),
-            self.terminal().width,
+            self.terminal().cols,
             &format!("Forking {}", args.name.as_deref().unwrap_or("fork")),
             args.verbose,
         );
@@ -121,7 +121,7 @@ impl Session {
         };
         let mut tui = BootTui::rows(
             self.ui(),
-            self.terminal().width,
+            self.terminal().cols,
             &format!("Dropping {}", args.name),
         );
         let outcome = client.call_streaming(
