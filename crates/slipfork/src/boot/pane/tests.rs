@@ -1,5 +1,74 @@
 use super::rows::{Slot, TaskRows};
+use crate::boot::region::RESTORE_MARGINS;
 use crate::boot::render::{Node, completed_row, outer_widths, running_row};
+
+/// Every `ESC[<row>;1H` address in `bytes`, in order.
+fn addressed_rows(bytes: &str) -> Vec<usize> {
+    let bytes = bytes.as_bytes();
+    let mut rows = Vec::new();
+    let mut index = 0;
+    while index + 2 < bytes.len() {
+        if bytes[index] == 0x1b && bytes[index + 1] == b'[' {
+            let mut at = index + 2;
+            let start = at;
+            let mut value = 0_usize;
+            while at < bytes.len() && bytes[at].is_ascii_digit() {
+                value = value * 10 + usize::from(bytes[at] - b'0');
+                at += 1;
+            }
+            if at > start
+                && bytes.get(at) == Some(&b';')
+                && bytes.get(at + 1) == Some(&b'1')
+                && bytes.get(at + 2) == Some(&b'H')
+            {
+                rows.push(value);
+                index = at + 3;
+                continue;
+            }
+        }
+        index += 1;
+    }
+    rows
+}
+
+/// The production exit stream clears only pane-owned rows, resets margins (which homes the cursor),
+/// and re-parks LAST so the verdict can never land on row 1.
+#[test]
+fn exit_sequence_clears_pane_rows_then_homes_and_parks_last() {
+    let stream = super::exit_sequence(29, 2, 30, 28);
+    assert_eq!(
+        stream,
+        "\x1b[29;1H\r\x1b[2K\x1b[28;1H\r\x1b[2K\x1b[30;1H\r\x1b[2K\x1b[r\x1b[28;1H\r"
+    );
+
+    assert_eq!(
+        stream.matches(RESTORE_MARGINS).count(),
+        1,
+        "the margins reset appears exactly once"
+    );
+    let reset_at = stream.find(RESTORE_MARGINS).expect("the margin reset");
+    assert_eq!(&stream[reset_at..], "\x1b[r\x1b[28;1H\r");
+    assert_eq!(
+        addressed_rows(&stream[..reset_at]),
+        [29, 28, 30],
+        "only pane-owned rows are addressed before the reset"
+    );
+    assert_eq!(
+        addressed_rows(&stream[reset_at + RESTORE_MARGINS.len()..]),
+        [28],
+        "the only address after the reset is the final park"
+    );
+    assert!(
+        stream.ends_with("\x1b[28;1H\r"),
+        "the park is the last bytes"
+    );
+
+    assert!(!stream.contains("\x1b[J"));
+    assert!(!stream.contains("\x1bc"));
+    for alt in ["\x1b[?1049", "\x1b[?47", "\x1b[?1047"] {
+        assert!(!stream.contains(alt), "no alt-screen: {alt:?}");
+    }
+}
 
 /// A three-line block places its phase row on top and its two output lines below it, in order.
 #[test]

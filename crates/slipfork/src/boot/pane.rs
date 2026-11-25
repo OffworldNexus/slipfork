@@ -1,7 +1,9 @@
 //! The `DECSTBM` fixed bottom bar with one live row per running task.
 //!
 //! Rows `1..rows-1` hold settled rows above [`LiveSteps`]'s bottom block; row `rows` is the
-//! 120ms-refreshed panel, re-applied on `SIGWINCH`. Every escape is emitted only for a colour TTY.
+//! 120ms-refreshed panel, re-applied on `SIGWINCH`. `region.rs` owns the margins; this pane owns
+//! every row address, and nothing is written after the final verdict row. Every escape is emitted
+//! only for a colour TTY.
 
 use std::io::Write;
 use std::sync::{Arc, Mutex};
@@ -11,7 +13,7 @@ use crate::ui::Palette;
 
 use super::build::LiveSteps;
 use super::progress::BootProgress;
-use super::region::ScrollRegionGuard;
+use super::region::{RESTORE_MARGINS, ScrollRegionGuard};
 use super::render::{OuterWidths, panel_line, running_row, status_line};
 
 use self::rows::{Slot, TaskRows};
@@ -28,6 +30,29 @@ const BRAILLE: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
 /// A pane exists only for a colour terminal, so its block is always styled.
 const PALETTE: Palette = Palette::new(true);
+
+/// The one row-clear shape: address `row`, carriage-return, erase the line. Every pane-owned row
+/// address goes through this literal so no call site can drift.
+fn clear_row(row: usize) -> String {
+    format!("\x1b[{row};1H\r\x1b[2K")
+}
+
+/// The pure exit stream: one clear per narrative block row, the panel row, the margins reset
+/// (which homes the cursor), then the park address as the LAST byte. `restore` writes exactly these
+/// bytes and then disarms the guard, so the verdict lands on the pane-owned park row, never row 1.
+fn exit_sequence(region_bottom: usize, block_rows: usize, rows: usize, park: usize) -> String {
+    let mut stream = String::new();
+    for offset in 0..block_rows {
+        let row = region_bottom.saturating_sub(offset);
+        if row > 0 {
+            stream.push_str(&clear_row(row));
+        }
+    }
+    stream.push_str(&clear_row(rows));
+    stream.push_str(RESTORE_MARGINS);
+    stream.push_str(&format!("\x1b[{park};1H\r"));
+    stream
+}
 
 /// The one shared live region: task rows, the injected [`LiveSteps`], the panel, and its guard.
 pub(super) struct Pane {
@@ -77,14 +102,20 @@ impl Pane {
             block_rows: 0,
         };
         // A missing probe (`None`) or one reporting the panel row cannot rule out a prompt hiding
-        // there, and `install` clears that row; one full-screen scroll while no region is set
-        // keeps the prompt visible. The region scroll in `seed_flow` then frees the margin.
+        // there. One full-screen scroll while no region is set keeps that prompt visible, so the
+        // pane's own `clear_row(rows)` can erase its panel row without overwriting it; the region
+        // scroll in `seed_flow` then frees the margin.
         if rows >= 3 && prompt_row.is_none_or(|row| row >= rows) {
             let mut stdout = std::io::stdout().lock();
             let _ = write!(stdout, "\r\n");
             let _ = stdout.flush();
         }
         pane.guard = ScrollRegionGuard::install(rows);
+        if pane.guard.is_some() {
+            let mut stdout = std::io::stdout().lock();
+            let _ = write!(stdout, "{}", clear_row(rows));
+            let _ = stdout.flush();
+        }
         let flow = pane.seed_flow(prompt_row);
         pane.tasks = TaskRows::new(flow, region_bottom);
         pane.draw();
@@ -96,7 +127,18 @@ impl Pane {
         if self.cols == cols && self.rows == rows {
             return;
         }
-        self.guard = None;
+        // A growing terminal leaves the old pane-owned panel bar frozen on its old row; clear it
+        // before the margins reset. A shrink is covered by clearing the new panel row after install.
+        if rows > self.rows && self.guard.is_some() {
+            let mut stdout = std::io::stdout().lock();
+            let _ = write!(stdout, "{}", clear_row(self.rows));
+            let _ = stdout.flush();
+        }
+        // A `SIGWINCH` transition is margins-only: reset the old region in place (never the
+        // destructive exit move/erase) and install the new one below.
+        if let Some(guard) = self.guard.as_mut() {
+            guard.reset();
+        }
         self.cols = cols;
         self.rows = rows;
         self.line_len = 0;
@@ -105,7 +147,12 @@ impl Pane {
         self.guard = ScrollRegionGuard::install(rows);
         if self.guard.is_some() {
             let mut stdout = std::io::stdout().lock();
-            let _ = write!(stdout, "\x1b[{};1H", self.tasks.next_row());
+            let _ = write!(
+                stdout,
+                "{}\x1b[{};1H",
+                clear_row(rows),
+                self.tasks.next_row()
+            );
             let _ = stdout.flush();
         }
         self.draw();
@@ -161,7 +208,7 @@ impl Pane {
             self.scroll_up(&mut stdout, 1);
         }
         if let Some(row) = slot.row() {
-            let _ = write!(stdout, "\x1b[{row};1H\r\x1b[2K{text}");
+            let _ = write!(stdout, "{}{text}", clear_row(row));
         }
         let _ = stdout.flush();
     }
@@ -175,7 +222,7 @@ impl Pane {
         for offset in 0..self.block_rows {
             let row = self.region_bottom.saturating_sub(offset);
             if row > 0 {
-                let _ = write!(stdout, "\x1b[{row};1H\r\x1b[2K");
+                let _ = write!(stdout, "{}", clear_row(row));
             }
         }
         self.block_rows = 0;
@@ -184,30 +231,33 @@ impl Pane {
         }
     }
 
-    /// Clears the panel row and the narrative block, restores the region, and parks the cursor.
+    /// Clears the panel row and the narrative block, parks the cursor, then restores the margins.
     pub(super) fn restore(&mut self) {
         if let Ok(mut steps) = self.steps.lock() {
             steps.clear();
         }
-        let had_region = self.guard.take().is_some();
+        let had_region = self.guard.is_some();
         let mut stdout = std::io::stdout().lock();
         if had_region {
-            for offset in 0..self.block_rows {
-                let row = self.region_bottom.saturating_sub(offset);
-                if row > 0 {
-                    let _ = write!(stdout, "\x1b[{row};1H\r\x1b[2K");
-                }
-            }
+            // The pane owns every row address; `region_bottom` is never a park target because the
+            // verdict would land on the last settled row. A full grid parks on the panel row.
+            let park = self.tasks.free_row().unwrap_or(self.rows);
+            let _ = stdout.write_all(
+                exit_sequence(self.region_bottom, self.block_rows, self.rows, park).as_bytes(),
+            );
             self.block_rows = 0;
-            // A full grid has no blank task row left; park on the panel row below the region
-            // instead of leaving the cursor at (1,1) after the `ESC[r` reset.
-            let row = self.tasks.free_row().unwrap_or(self.rows);
-            let _ = write!(stdout, "\x1b[{row};1H\x1b[2K");
         } else if self.line_len > 0 {
             let _ = write!(stdout, "\r{}\r", " ".repeat(self.line_len));
             self.line_len = 0;
         }
         let _ = stdout.flush();
+        drop(stdout);
+        // The exit stream already reset the margins (homing the cursor) and re-parked it; the
+        // guard must not emit a second `ESC[r` after the park.
+        if let Some(guard) = self.guard.as_mut() {
+            guard.disarm();
+        }
+        self.guard = None;
     }
 
     /// Seeds the flow cursor from the prompt line and scrolls a bottom prompt out of the way.
@@ -305,7 +355,7 @@ impl Pane {
                 })
                 .collect();
             for (slot, row) in live {
-                let _ = write!(stdout, "\x1b[{slot};1H\r\x1b[2K{row}");
+                let _ = write!(stdout, "{}{row}", clear_row(slot));
             }
             // Clear every row a previous, longer block owned...
             let span = self.block_rows.max(block.len());
@@ -316,19 +366,19 @@ impl Pane {
                 if row == 0 {
                     break;
                 }
-                let _ = write!(stdout, "\x1b[{row};1H\r\x1b[2K");
+                let _ = write!(stdout, "{}", clear_row(row));
             }
             // ...then paint top-down: the phase row sits above its output, oldest line first.
             for (text, row) in block
                 .iter()
                 .zip(block_slots(self.region_bottom, block.len()))
             {
-                let _ = write!(stdout, "\x1b[{row};1H\r\x1b[2K{text}");
+                let _ = write!(stdout, "{}{text}", clear_row(row));
             }
             self.block_rows = block.len();
             // The panel is always painted inside the saved cursor, so no task row or panel draw
             // ever moves the flow cursor the next allocation depends on.
-            let _ = write!(stdout, "\x1b[{};1H\x1b[2K{line}\x1b[K\x1b8", self.rows);
+            let _ = write!(stdout, "{}{line}\x1b[K\x1b8", clear_row(self.rows));
         } else {
             // No region (a terminal shorter than three rows): degrade to one `\r` line, the one
             // colourless shape that never assumes cursor addressing.
