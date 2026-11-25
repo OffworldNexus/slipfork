@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use slipfork_forkfile::{FeatureEdit, FeatureSet};
 use slipfork_world::{
     BootEvent, BootFailure, BootGraph, BootKind, BootScheduler, BootState, BootStep, EpochState,
-    EventSink, ImageStamp, StampStore, StepExecutor, StepOutcome, StepStamp, WorldPlan, WorldStamp,
+    EventSink, StampStore, StepExecutor, StepOutcome, StepStamp, WorldPlan, WorldStamp,
     WorldStampStore, plan_epoch, write_pg_checkpoint,
 };
 
@@ -319,23 +319,9 @@ fn trusted_stamp_refuses_to_adopt_parent_dev_images_when_features_differ() {
     );
 
     let dev_epoch = epoch(&dev_plan, &dev);
-    let mut images = std::collections::BTreeMap::new();
-    images.insert(
-        "backend".to_owned(),
-        ImageStamp {
-            rootfs: "/store/images/steps/dev-stage".to_owned(),
-            env: Vec::new(),
-            argv: Vec::new(),
-            workdir: "/project/api".to_owned(),
-        },
-    );
     let store = WorldStampStore::new(&world);
     store
-        .save(&WorldStamp::checkpoint(
-            &dev_plan,
-            dev_epoch.clone(),
-            images,
-        ))
+        .save(&WorldStamp::checkpoint(&dev_plan, dev_epoch.clone()))
         .expect("save parent dev stamp");
     write_pg_checkpoint(&pg, &dev_epoch).expect("save paired pg stamp");
 
@@ -395,7 +381,7 @@ fn fork_world_stamp_persists_and_gates_before_start_and_pre_deploy_hooks() {
     let (dev, _, _) = sample_features();
     let world_plan = plan(vec![before, pre]);
     let stamp_epoch = epoch(&world_plan, &dev);
-    let checkpoint = WorldStamp::checkpoint(&world_plan, stamp_epoch, Default::default());
+    let checkpoint = WorldStamp::checkpoint(&world_plan, stamp_epoch);
     assert_eq!(checkpoint.before_start.len(), 1);
     assert_eq!(checkpoint.pre_deploy.len(), 1);
 
@@ -662,7 +648,7 @@ fn current_epoch_services_carry_no_resource_edges_and_skip_the_pre_deploy_barrie
 
     let (dev, _, _) = sample_features();
     let dir = lab("conditional-current");
-    let checkpoint = WorldStamp::checkpoint(&plan, epoch(&plan, &dev), Default::default());
+    let checkpoint = WorldStamp::checkpoint(&plan, epoch(&plan, &dev));
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let release_rx = Arc::new(Mutex::new(release_rx));
     let up_to_date = Arc::new(Mutex::new(Vec::new()));

@@ -16,7 +16,7 @@ pub use schedule::{
     StepExecutor, StepOutcome, classify_service,
 };
 pub use stamp::{
-    EpochState, ImageStamp, PG_STAMP_FILE, StampStore, StepStamp, WORLD_STAMP_FILE, WorldStamp,
+    EpochState, PG_STAMP_FILE, StampStore, StepStamp, WORLD_STAMP_FILE, WorldStamp,
     WorldStampStore, epoch_for, plan_epoch, step_digest, write_pg_checkpoint, write_pg_checkpoints,
 };
 

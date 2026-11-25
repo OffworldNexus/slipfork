@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use slipfork_forkfile::FeatureSet;
 use slipfork_forkfile::ast::Forkfile;
 use slipfork_world::{
-    BtrfsEngine, StoreLayout, WorldEngine, WorldName, WorldPlan, is_subvolume_path,
+    BtrfsEngine, NodeKey, StoreLayout, WorldEngine, WorldName, WorldPlan, is_subvolume_path,
 };
 
 /// The on-disk heads schema version; an unknown version is stale and fails closed.
@@ -23,6 +23,8 @@ pub(crate) const HEADS_VERSION: u32 = 1;
 /// One image's sealed rootfs plus the OCI metadata every pod derived from it inherits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ImageHead {
+    /// Sealed content key of this image in the snapshot graph; the lease pins it.
+    pub(crate) key: NodeKey,
     /// Read-only sealed rootfs subvolume.
     pub(crate) rootfs: PathBuf,
     /// Image `config.Env` entries, inherited verbatim.
@@ -160,7 +162,7 @@ mod tests {
     use std::fs;
 
     use slipfork_forkfile::FeatureSet;
-    use slipfork_world::{WorldName, world_plan_with};
+    use slipfork_world::{NodeKey, WorldName, world_plan_with};
 
     use super::{HEADS_VERSION, ImageHead, WorldHeads};
 
@@ -210,6 +212,7 @@ mod tests {
             images: BTreeMap::from([(
                 "web".to_owned(),
                 ImageHead {
+                    key: NodeKey::from_digest([7; 32]),
                     rootfs: rootfs.into(),
                     inherited_env: vec!["PORT=8080".to_owned()],
                     argv: Vec::new(),

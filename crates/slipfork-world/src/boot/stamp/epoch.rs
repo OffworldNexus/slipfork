@@ -21,35 +21,15 @@ pub const WORLD_STAMP_FILE: &str = ".slipfork-world-stamp.json";
 /// The PG sibling checkpoint written at `worlds/<world>.pg.<pod>/.slipfork-pg-stamp.json`.
 pub const PG_STAMP_FILE: &str = ".slipfork-pg-stamp.json";
 
-/// One resolved image rootfs plus the runtime facts a fork reuses without rebuilding.
-///
-/// The parent stamp records these so a fork with a matching `world_epoch` adopts the already
-/// sealed subvolume (`cached`, `~1ms`) instead of re-evaluating `Dockerfile` args — keeping e.g.
-/// `arg VITE_CDN_URL = static-cdn.url` from changing the digest on every fork.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ImageStamp {
-    /// Read-only subvolume the image resolved to.
-    pub rootfs: String,
-    /// Image `config.Env` entries inherited verbatim.
-    #[serde(default)]
-    pub env: Vec<String>,
-    /// `ENTRYPOINT` followed by `CMD`.
-    #[serde(default)]
-    pub argv: Vec<String>,
-    /// Image `config.WorkingDir`.
-    #[serde(default)]
-    pub workdir: String,
-}
-
 /// Resolved world state plus the epoch shared with every resource clone at `CHECKPOINT`.
+///
+/// Images are not recorded here: the daemon owns every sealed image key in `WorldHeads` and the
+/// lease, so a stamp only gates epoch-paired hooks and `@<tool>` digests.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldStamp {
     /// Epoch shared with every paired PG stamp.
     #[serde(default)]
     pub world_epoch: String,
-    /// Resolved image rootfs + runtime facts per image id.
-    #[serde(default)]
-    pub images: BTreeMap<String, ImageStamp>,
     /// Completed `@<tool>` / `when changed(...)` digests.
     #[serde(default)]
     pub tools: BTreeMap<String, String>,
@@ -62,16 +42,11 @@ pub struct WorldStamp {
 }
 
 impl WorldStamp {
-    /// Builds the checkpoint for a completed boot: epoch, resolved images, and step digests.
+    /// Builds the checkpoint for a completed boot: epoch plus every hook/`@<tool>` digest.
     #[must_use]
-    pub fn checkpoint(
-        plan: &WorldPlan,
-        epoch: String,
-        images: BTreeMap<String, ImageStamp>,
-    ) -> Self {
+    pub fn checkpoint(plan: &WorldPlan, epoch: String) -> Self {
         let mut stamp = Self {
             world_epoch: epoch,
-            images,
             ..Self::default()
         };
         for (index, step) in plan.steps.iter().enumerate() {

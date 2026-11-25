@@ -56,7 +56,7 @@ pub struct BuildReport {
     /// Sealed rootfs of the target stage.
     pub rootfs: PathBuf,
     /// Content key of the final materialized node.
-    pub key: String,
+    pub key: slipfork_world::NodeKey,
     /// Accumulated `ENV`/`WORKDIR`/`USER`/`EXPOSE`/`CMD`/`ENTRYPOINT` metadata.
     pub config: ImageConfig,
     /// Steps served from sealed subvolumes.
@@ -317,7 +317,7 @@ impl NativeImageBuilder {
 
         Ok(BuildReport {
             rootfs: store.node_dir(&planned.final_key),
-            key: planned.final_key.as_hex(),
+            key: planned.final_key,
             config: planned.final_config,
             cache_hits: hits,
             cache_misses: misses,

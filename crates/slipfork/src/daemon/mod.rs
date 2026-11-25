@@ -12,6 +12,7 @@ mod host;
 mod identity;
 pub(crate) mod image;
 mod ingress;
+mod lease;
 mod lifecycle;
 mod lock;
 mod reconcile;
@@ -383,12 +384,16 @@ impl Daemon {
     ) -> Result<Option<Value>, Failure> {
         // Decide under the daemon lock, then release it: heal/reconcile run typed world calls
         // that must never block `ps`/`ping`, exactly like the `logs` stream path.
-        // The head digest walks the build context, so it is computed before taking the lock.
-        let current = lifecycle::up::fingerprint_for(params)?;
-        let action = self.core()?.up_plan(params, current)?;
+        // The head walks the build context, so it is computed before taking the lock.
+        let (project, world, _) = self.up_target(params)?;
+        let host = { self.core()?.host().clone() };
+        let desired = crate::daemon::lease::prepare(&host, &project, &world)
+            .ok()
+            .map(|(head, _)| head);
+        let action = self.core()?.up_plan(params, desired.as_ref())?;
         match action {
-            lifecycle::up::UpAction::Heal(plan) => {
-                let reply = lifecycle::up::heal(*plan, emit)?;
+            lifecycle::up::UpAction::Idle(plan) => {
+                let reply = lifecycle::up::settle(*plan, emit)?;
                 emit(json!({
                     "event": "ready",
                     "url": reply["url"],
@@ -399,7 +404,7 @@ impl Daemon {
             }
             lifecycle::up::UpAction::Reconcile => {
                 let (project, world, no_cache) = self.up_target(params)?;
-                self.preplan(&project, &world, no_cache, emit)?;
+                let planned = self.preplan(&project, &world, no_cache, emit)?;
                 let plan = self
                     .core()?
                     .detach_live(&rpc::key_of(&project))
@@ -407,14 +412,14 @@ impl Daemon {
                         Failure::new("no-world", "no world is running in this directory")
                     })?;
                 lifecycle::up::reconcile(plan);
-                let mut session = self.core()?.begin_up(params)?;
+                let mut session = self.core()?.begin_up(params, planned)?;
                 session.plan_already_announced();
                 session.run(self, emit).map(Some)
             }
             lifecycle::up::UpAction::Boot => {
                 let (project, world, no_cache) = self.up_target(params)?;
-                self.preplan(&project, &world, no_cache, emit)?;
-                let mut session = self.core()?.begin_up(params)?;
+                let planned = self.preplan(&project, &world, no_cache, emit)?;
+                let mut session = self.core()?.begin_up(params, planned)?;
                 session.plan_already_announced();
                 session.run(self, emit).map(Some)
             }

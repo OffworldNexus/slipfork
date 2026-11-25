@@ -8,6 +8,9 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use slipfork_world::control::{PROTOCOL_VERSION, Request};
 
+use slipfork_world::WorldName;
+
+use super::lease::{self, Planned};
 use super::registry::RegistryEntry;
 use super::rpc::{world_answers, world_call_within};
 use super::{Daemon, Failure};
@@ -31,6 +34,10 @@ pub(super) struct BootSession {
     pods_dir: PathBuf,
     /// Project directory the world boots from.
     project: PathBuf,
+    /// Store root the published lease is written under.
+    store_root: PathBuf,
+    /// The preplanned head and the exact lease `ready` must persist verbatim.
+    planned: Planned,
     /// Fork name when this boot is a fork world.
     fork: Option<String>,
     /// The daemon already streamed a merged `plan` frame (a fork's prep rows plus world steps).
@@ -47,6 +54,8 @@ impl BootSession {
         child: Child,
         pods_dir: PathBuf,
         project: PathBuf,
+        store_root: PathBuf,
+        planned: Planned,
     ) -> Self {
         let supervisor_pid = child.id();
         Self {
@@ -56,6 +65,8 @@ impl BootSession {
             supervisor_pid,
             pods_dir,
             project,
+            store_root,
+            planned,
             fork: None,
             plan_announced: false,
             stopped: false,
@@ -153,9 +164,33 @@ impl BootSession {
                     let child = self.child.take().ok_or_else(|| {
                         Failure::new("supervisor-spawn", "the world supervisor disappeared")
                     })?;
-                    // The head walks the build context; compute it before taking the core lock.
-                    let recorded = super::lifecycle::up::fingerprint(&self.project);
-                    daemon.core()?.publish(&self.key, entry, child, recorded)?;
+                    let Ok(world_name) = WorldName::parse(&world) else {
+                        self.fail_boot(daemon)?;
+                        return Err(Failure::new("world-state", "the world published no name"));
+                    };
+                    // The plan was sealed before the boot; a checkout edit during the boot must
+                    // fail closed instead of publishing a stale head. This probe is pure and
+                    // runs outside the core lock.
+                    let drifted = lease::desired_for(&self.project, &world_name)
+                        .map_or(true, |head| head.spec != self.planned.0.spec);
+                    if drifted {
+                        self.stop();
+                        daemon.core()?.forget(&self.key);
+                        lease::remove(&self.store_root, &world_name);
+                        return Err(Failure::new(
+                            "checkout-drift",
+                            "the checkout changed while the world was booting\nnext: run `slipfork up` again",
+                        ));
+                    }
+                    // Write the preplanned lease verbatim, never re-deriving it under the lock.
+                    if let Err(failure) =
+                        lease::write(&self.store_root, &world_name, &self.planned.1)
+                    {
+                        self.stop();
+                        daemon.core()?.forget(&self.key);
+                        return Err(failure);
+                    }
+                    daemon.core()?.publish(&self.key, entry, child)?;
                     // Only a persisted registry entry may announce `✓ Ready` / `{"event":"ready"}`.
                     let url = event["url"].clone();
                     emit(event);
@@ -189,8 +224,8 @@ impl BootSession {
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .map_or(0, |since| since.as_millis() as u64),
                         };
-                        let recorded = super::lifecycle::up::fingerprint(&self.project);
-                        daemon.core()?.publish(&self.key, entry, child, recorded)?;
+                        daemon.core()?.publish(&self.key, entry, child)?;
+                        daemon.core()?.remove_lease(&self.project, world);
                     } else {
                         self.stop();
                         daemon.core()?.forget(&self.key);

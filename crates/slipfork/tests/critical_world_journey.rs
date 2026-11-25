@@ -22,8 +22,8 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use slipfork_world::{
-    BtrfsEngine, Dirtiness, LogStore, STORE_DIR, StoreLayout, WorldEngine, WorldName,
-    is_subvolume_path,
+    BtrfsEngine, Dirtiness, LEASE_FILE, Lease, LogStore, STORE_DIR, StoreLayout, WorldEngine,
+    WorldName, is_subvolume_path,
 };
 
 const BTRFS_SUPER_MAGIC: u64 = 0x9123_683E;
@@ -3303,6 +3303,29 @@ fn changed_build_inputs_rebuild_and_restart_converges() {
         failed_output.contains("exit 9"),
         "the edited command's exit code must surface:\n{failed_output}"
     );
+    // A failed build must never detach the live world: the old image still serves immediately.
+    let still_serving = journey.slipfork(&project, &["exec", "web", "--", "cat", "/seed.txt"]);
+    assert!(still_serving.status.success(), "{}", stderr(&still_serving));
+    assert_eq!(
+        stdout(&still_serving).trim(),
+        seed_one,
+        "a failed `up` must leave the old world serving its last image"
+    );
+    let ps = journey.slipfork(&project, &["ps", "--json"]);
+    assert!(ps.status.success(), "{}", stderr(&ps));
+    let reply: serde_json::Value = serde_json::from_slice(&ps.stdout).expect("ps --json");
+    let world = reply["worlds"]
+        .as_array()
+        .and_then(|worlds| worlds.iter().find(|world| world["world"] == "converge"))
+        .unwrap_or_else(|| panic!("`ps --json` must list the live world: {reply}"));
+    let web = world["services"]
+        .as_array()
+        .and_then(|services| services.iter().find(|service| service["id"] == "web"))
+        .unwrap_or_else(|| panic!("`ps --json` must list the `web` service: {reply}"));
+    assert_eq!(
+        web["running"], true,
+        "a failed `up` must leave the live pod running: {reply}"
+    );
 
     // 4. A succeeding Dockerfile edit rebuilds with a new image run id, then stays cached.
     fs::write(project.join("Dockerfile"), CONVERGE_DOCKERFILE_THREE)
@@ -3436,10 +3459,19 @@ fn changed_build_inputs_rebuild_and_restart_converges() {
         "the rebuilt image must hold the edited COPY content"
     );
 
-    // 5b. A world with no recorded head (a pre-digest boot or a lost fingerprint file) must
-    // still reconcile on a copied-file edit; the old mtime heuristic would serve the stale image.
-    let fingerprints = journey.run.join("state/slipfork/worlds-fingerprints.json");
-    fs::remove_file(&fingerprints).expect("drop the recorded head");
+    // 5b. A world whose lease was lost (a pre-digest boot or a removed lease file) must still
+    // reconcile on a copied-file edit; the old mtime heuristic would serve the stale image.
+    let lease_path = journey
+        .store_root
+        .join("worlds")
+        .join("converge")
+        .join(LEASE_FILE);
+    let lease = Lease::read(&lease_path).expect("the live world writes its lease");
+    assert!(
+        lease.is_consistent(),
+        "the live world's lease head must match its entries"
+    );
+    fs::remove_file(&lease_path).expect("drop the recorded head");
     fs::write(project.join("seed.txt"), &seed_three).expect("edit the copied context again");
     let lost_head = journey.slipfork(&project, &["up"]);
     assert!(

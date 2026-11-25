@@ -15,7 +15,8 @@ LIVE_SUITES := \
 	slipfork/critical_heads_live \
 	slipfork/critical_status_live \
 	slipfork/critical_fork_live \
-	slipfork/critical_registry_live
+	slipfork/critical_registry_live \
+	slipfork/image_rpc
 
 .PHONY: fmt clippy test check coverage guard test-tools live-test lsp-assets js-test typecheck packages-check docs-check docs-serve install uninstall
 

@@ -55,6 +55,7 @@ crossterm.workspace = true
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 slipfork-forkfile = { path = "../slipfork-forkfile" }
 slipfork-image = { path = "../slipfork-image" }
 slipfork-ingress = { path = "../slipfork-ingress" }

@@ -11,7 +11,7 @@ use std::time::Duration;
 use slipfork_forkfile::{FeatureSet, ast::Forkfile};
 use slipfork_ospp::FileSecretVault;
 use slipfork_world::{
-    BootFailure, BootState, BootStep, BtrfsEngine, Dirtiness, ImageStamp, PodEnv, PodHost, PodSpec,
+    BootFailure, BootState, BootStep, BtrfsEngine, Dirtiness, PodEnv, PodHost, PodSpec,
     PostgresLauncher, ResourceKind, ResourceNode, ServiceNode, StoreLayout, Stream, WorldEngine,
     WorldHost, WorldName, WorldPlan, WorldStampStore, WorldSupervisor, WorldTools, control,
     write_bundle,
@@ -497,24 +497,6 @@ impl WorldRuntime {
     /// `<mount>/.slipfork-store/worlds/<world>`.
     pub(super) fn world_dir(&self) -> PathBuf {
         self.layout.world(&self.world)
-    }
-
-    /// Resolved rootfs + runtime facts per image id, recorded in the world stamp.
-    pub(super) fn image_stamps(&self) -> BTreeMap<String, ImageStamp> {
-        self.heads
-            .iter()
-            .map(|(image, head)| {
-                (
-                    image.clone(),
-                    ImageStamp {
-                        rootfs: head.rootfs.display().to_string(),
-                        env: head.inherited_env.clone(),
-                        argv: head.argv.clone(),
-                        workdir: head.workdir.clone(),
-                    },
-                )
-            })
-            .collect()
     }
 
     /// Stops an empty world immediately and sweeps ephemeral pod rootfs clones.

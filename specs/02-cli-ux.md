@@ -100,7 +100,11 @@ A project root keeps its whole family visible after `slipfork down`: the root ro
 
 ## 4. `up` reconciliation and the `DECSTBM` bottom bar
 
-Repeating `slipfork up` is idempotent (`0ms`) only when the `Forkfile` content digest and feature set are unchanged. After an edit it reconciles: pods no longer declared stop and show `orphaned` until then, and added or changed services boot. `--no-cache` skips that check entirely: it never heals or idles, reconciles even an unchanged world, and rebuilds every image from its `FROM` down; the following plain `up` is cached again.
+Repeating `slipfork up` on an unchanged world is Idle (`~0.1s`): the detector prints exactly one `• [1/1] world <w> up to date` row plus `✓ Ready -> <url>`, never an image row. Idle requires the live world's lease (`worlds/<world>/.slipfork-lease.json`) to name the same head as the daemon's fresh plan: the canonical `Forkfile`, resolved features, world plan, and every image's `Dockerfile` + copied-context digest.
+
+A matching head with a pod down heals only that service, and `restart` on a matching head restarts every pod in place on the leased images: one settled `✓ [1/1] restarting <w> restarted` row, then a `running` row per recycled service, with no rebuild and no dangling `→` header. A changed head reconciles while the old world keeps serving: pods no longer declared stop and show `orphaned`, and added or changed services boot.
+
+`--no-cache` never idles or heals: it re-plans, reconciles even an unchanged world, and rebuilds every image from its `FROM` down; the following plain `up` is cached again.
 
 On an interactive ANSI TTY with `rows >= 3`, `up`, `restart` and `fork` establish a VT100 scroll region (`\x1b[1;{rows-1}r`); finished tasks scroll above a one-line `apt`-style panel on row `rows`.
 

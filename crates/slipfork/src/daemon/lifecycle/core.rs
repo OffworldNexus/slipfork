@@ -16,7 +16,8 @@ use slipfork_world::{LogStore, WorldName};
 use super::super::Failure;
 use super::super::rpc::{key_of, pid_alive, world_answers, world_call};
 use super::plan;
-use crate::daemon::registry::{self, Fingerprint, RegistryEntry};
+use crate::daemon::lease::Head;
+use crate::daemon::registry::{self, RegistryEntry};
 use crate::world::HostEnv;
 
 /// One owned world: either still booting, or live with its supervisor child.
@@ -52,7 +53,7 @@ impl World {
 
 /// What one `restart` must do, decided under the daemon lock and executed outside it.
 pub(crate) enum RestartAction {
-    /// The live world still matches the recorded head: restart its pods in place.
+    /// The live world still leases the desired head: restart its pods in place.
     Restarted(Value),
     /// The head changed on disk: pre-plan images, stop the live world, then boot the edited plan.
     Reconcile,
@@ -135,9 +136,7 @@ impl Core {
         key: &str,
         entry: RegistryEntry,
         child: Child,
-        recorded: Option<Fingerprint>,
     ) -> Result<(), Failure> {
-        let _ = registry::store_fingerprint(&self.state_dir, &entry.project, recorded.as_ref());
         self.worlds.insert(
             key.to_owned(),
             World::Live {
@@ -156,7 +155,7 @@ impl Core {
                 World::Live { entry, .. } => (entry.project, entry.world),
             };
             Self::report_retain(self.retain_runs(&project, &name));
-            let _ = registry::store_fingerprint(&self.state_dir, &project, None);
+            self.remove_lease(&project, &name);
         }
         self.ingress = None;
         let _ = self.persist();
@@ -211,7 +210,7 @@ impl Core {
     pub(crate) fn restart(
         &mut self,
         params: &Value,
-        current: Option<Fingerprint>,
+        current: Option<&Head>,
         emit: &mut dyn FnMut(Value),
     ) -> Result<RestartAction, Failure> {
         let project = super::up::project_path(params)?;
@@ -231,9 +230,10 @@ impl Core {
             }
             World::Live { entry, .. } => entry.world.clone(),
         };
-        // The same staleness check `up` uses: an edited `Forkfile`, `Dockerfile`, or copied
-        // context stops the old world and boots the new plan instead of restarting stale pods.
-        if self.world_stale(&project, current) {
+        // The same head check `up` uses: an edited `Forkfile`, feature set, `Dockerfile`, or
+        // copied context stops the old world and boots the new plan instead of restarting stale
+        // pods. An unchanged head restarts both pods in place on the images already leased.
+        if !self.head_matches(&project, &world, current) {
             // The caller detaches only after the daemon sealed the edited images.
             return Ok(RestartAction::Reconcile);
         }
@@ -253,10 +253,30 @@ impl Core {
         // Every declared step is announced before the first row so the CLI measures its six
         // columns once; `restart` itself is one operation, hence `total = 1`.
         plan::emit(&plan::world_rows(&project), 1, emit);
-        emit(json!({
-            "event": "started", "step": 1, "total": 1, "kind": "restarting",
-            "label": subject,
-        }));
+        // Learn which pods this call will recycle before it runs, so the settled row can name
+        // each one instead of leaving a dangling `→ restarting` header.
+        let mut targets: Vec<String> = world_call(
+            &pods_dir,
+            &Request::List {
+                v: PROTOCOL_VERSION,
+                id: "daemon-restart-list".to_owned(),
+            },
+        )
+        .ok()
+        .and_then(|reply| slipfork_world::pod_statuses(&reply).ok())
+        .map(|pods| {
+            pods.into_iter()
+                .filter(|pod| pod.running)
+                .filter(|pod| service.as_ref().is_none_or(|id| id == &pod.id))
+                .map(|pod| pod.id)
+                .collect()
+        })
+        .unwrap_or_default();
+        if let Some(service) = &service
+            && !targets.iter().any(|id| id == service)
+        {
+            targets.push(service.clone());
+        }
         let request = Request::Restart {
             v: PROTOCOL_VERSION,
             id: "daemon-restart".to_owned(),
@@ -264,16 +284,16 @@ impl Core {
         };
         let reply = world_call(&pods_dir, &request)
             .map_err(|message| Failure::new("restart-failed", message))?;
-        // Exactly one finished node, and only for a real `-s` target: an all-services restart is
-        // a world-wide operation, so labelling the world a `service` would fabricate a component.
-        if let Some(service) = &service {
+        let elapsed = started.elapsed().as_millis() as u64;
+        emit(json!({
+            "event": "finished", "step": 1, "total": 1, "kind": "restarting",
+            "name": subject, "state": "restarted",
+            "elapsed_ms": elapsed, "duration_ms": elapsed,
+        }));
+        for id in targets {
             emit(json!({
-                "event": "finished", "step": 1, "total": 1, "kind": "service",
-                "name": service, "state": "running",
-                "label": format!("Restarted {service}"),
-                "detail": format!("{} pod(s)", reply["restarted"]),
-                "elapsed_ms": started.elapsed().as_millis() as u64,
-                "duration_ms": started.elapsed().as_millis() as u64,
+                "event": "finished", "kind": "service", "name": id,
+                "state": "running", "elapsed_ms": 0, "duration_ms": 0,
             }));
         }
         self.ingress = None;

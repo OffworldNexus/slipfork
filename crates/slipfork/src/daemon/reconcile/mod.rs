@@ -17,7 +17,7 @@ use slipfork_image::{
     BuildArgs, BuildRequest, Cache, ImageReference, NativeImageBuilder, PulledImage,
     planned_instruction_width,
 };
-use slipfork_world::{LogStore, WorldName, world_plan_with};
+use slipfork_world::{LogStore, NodeKey, WorldName, world_plan_with};
 
 use super::Failure;
 use super::image::{ImageLab, now_ms, pull_externals};
@@ -73,6 +73,7 @@ pub(crate) fn build_world_heads(
     })?;
     let image_inputs = crate::world::image_inputs(project, &doc, &plan.images, &features);
     let lab = ImageLab::for_project(host, project)?;
+    let arch = lab.architecture.oci();
     let store = LogStore::at(host.store_root_for(project), world.clone());
     let puller = lab.puller(host);
     let step_host = lab.step_host(host)?;
@@ -98,6 +99,7 @@ pub(crate) fn build_world_heads(
             &features,
             world,
             node,
+            arch,
             &puller,
             &builder,
             &mut attempt,
@@ -130,7 +132,7 @@ pub(crate) fn build_world_heads(
                 ),
             )
         })?;
-        images.insert(reference, pulled_head(pulled));
+        images.insert(reference, pulled_head(pulled, arch));
     }
     let heads = WorldHeads {
         v: HEADS_VERSION,
@@ -158,6 +160,7 @@ fn build_image(
     features: &slipfork_forkfile::FeatureSet,
     world: &WorldName,
     node: &slipfork_world::ImageNode,
+    arch: &str,
     puller: &slipfork_image::OciPuller,
     builder: &NativeImageBuilder,
     attempt: &mut ImageAttempt<'_>,
@@ -165,7 +168,7 @@ fn build_image(
     if let Some(reference) = &node.from {
         let pulled = pull_row(puller, reference, attempt)?;
         let state = if pulled.cached { "cached" } else { "pulled" }.to_owned();
-        return Ok((pulled_head(pulled), state, None));
+        return Ok((pulled_head(pulled, arch), state, None));
     }
     let paths = node.paths(project);
     let source = fs::read_to_string(&paths.dockerfile).map_err(|error| {
@@ -220,6 +223,7 @@ fn build_image(
     }
     .to_owned();
     let head = ImageHead {
+        key: report.key,
         rootfs: report.rootfs,
         inherited_env: report
             .config
@@ -286,11 +290,13 @@ fn pull_reference(
 }
 
 /// The head one pulled image contributes: sealed rootfs, inherited env, and entrypoint+cmd.
-fn pulled_head(image: PulledImage) -> ImageHead {
+fn pulled_head(image: PulledImage, arch: &str) -> ImageHead {
     let state = if image.cached { "cached" } else { "pulled" }.to_owned();
     let mut argv = image.facts.entrypoint;
     argv.extend(image.facts.cmd);
+    let platform = format!("linux/{arch}");
     ImageHead {
+        key: NodeKey::base(arch, &image.digest, &platform),
         rootfs: image.rootfs,
         inherited_env: image.facts.env,
         argv,
@@ -326,13 +332,17 @@ impl super::Daemon {
     ) -> Result<Option<Value>, Failure> {
         // Drop the core guard before the reconcile arm re-locks it: a temporary `MutexGuard` in a
         // `match` scrutinee lives for the whole arm and would deadlock on the second `core()`.
-        let current = super::lifecycle::up::fingerprint_for(params)?;
-        let action = self.core()?.restart(params, current, emit)?;
+        let (project, world, _) = self.up_target(params)?;
+        let host = { self.core()?.host().clone() };
+        let desired = crate::daemon::lease::prepare(&host, &project, &world)
+            .ok()
+            .map(|(head, _)| head);
+        let action = self.core()?.restart(params, desired.as_ref(), emit)?;
         match action {
             super::lifecycle::core::RestartAction::Restarted(value) => Ok(Some(value)),
             super::lifecycle::core::RestartAction::Reconcile => {
                 let (project, world, no_cache) = self.up_target(params)?;
-                self.preplan(&project, &world, no_cache, emit)?;
+                let planned = self.preplan(&project, &world, no_cache, emit)?;
                 let plan = self
                     .core()?
                     .detach_live(&super::rpc::key_of(&project))
@@ -340,7 +350,7 @@ impl super::Daemon {
                         Failure::new("no-world", "no world is running in this directory")
                     })?;
                 super::lifecycle::up::reconcile(plan);
-                let mut session = self.core()?.begin_up(params)?;
+                let mut session = self.core()?.begin_up(params, planned)?;
                 session.plan_already_announced();
                 let mut reply = session.run(self, emit)?;
                 // The boot stream already printed `✓ Ready`; mark the reply so the CLI never
@@ -360,10 +370,19 @@ impl super::Daemon {
         world: &WorldName,
         no_cache: bool,
         emit: &mut dyn FnMut(Value),
-    ) -> Result<(), Failure> {
+    ) -> Result<crate::daemon::lease::Planned, Failure> {
         let rows = super::lifecycle::plan::world_rows(project);
         super::lifecycle::plan::emit(&rows, rows.len(), emit);
         let host = self.core()?.host().clone();
-        build_world_heads(&host, project, world, no_cache, emit).map(|_| ())
+        build_world_heads(&host, project, world, no_cache, emit)?;
+        // The planned lease derives from the just-sealed image keys; the boot writes it verbatim.
+        let planned = crate::daemon::lease::prepare(&host, project, world)?;
+        // gc runs only once the new heads are sealed, so unreachable nodes are reaped after a
+        // known-good plan; its entry keys (never the synthetic world key) are pinned.
+        if let Err(error) = crate::daemon::lease::collect_garbage(&host, project, Some(&planned.1))
+        {
+            eprintln!("slipfork daemon: snapshot gc: {error}");
+        }
+        Ok(planned)
     }
 }

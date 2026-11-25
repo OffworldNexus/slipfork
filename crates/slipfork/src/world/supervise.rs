@@ -191,7 +191,7 @@ fn supervisor_main(
             if let Err(error) = runtime.flush_store() {
                 eprintln!("slipfork: store flush: {error}");
             }
-            let checkpoint = WorldStamp::checkpoint(&plan, epoch.clone(), runtime.image_stamps());
+            let checkpoint = WorldStamp::checkpoint(&plan, epoch.clone());
             if let Err(error) = stamp_store.save(&checkpoint) {
                 eprintln!("slipfork: write world stamp: {error}");
             }
@@ -646,11 +646,7 @@ mod tests {
         let store = WorldStampStore::new(&world_dir);
         let epoch = plan_epoch(plan, features, &BTreeMap::new());
         store
-            .save(&WorldStamp::checkpoint(
-                plan,
-                epoch.clone(),
-                BTreeMap::new(),
-            ))
+            .save(&WorldStamp::checkpoint(plan, epoch.clone()))
             .expect("write the world stamp");
         write_pg_checkpoint(&pg_clone, &epoch).expect("write the PG stamp");
         (store, pg_clone)

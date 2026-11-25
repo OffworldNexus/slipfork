@@ -186,11 +186,24 @@ impl Core {
             self.discard_fork(&prepared);
             return Err(failure);
         }
+        let planned =
+            match crate::daemon::lease::prepare(&self.host, &prepared.project, &fork_world) {
+                Ok(planned) => planned,
+                Err(failure) => {
+                    self.discard_fork(&prepared);
+                    return Err(failure);
+                }
+            };
+        if let Err(error) =
+            crate::daemon::lease::collect_garbage(&self.host, &prepared.project, Some(&planned.1))
+        {
+            eprintln!("slipfork daemon: snapshot gc: {error}");
+        }
         let boot = json!({
             "project": prepared.project.clone(),
             "world": prepared.world.clone(),
         });
-        match self.begin_up(&boot) {
+        match self.begin_up(&boot, planned) {
             Ok(mut session) => {
                 session.reserve_fork(prepared.fork.clone());
                 session.plan_already_announced();
@@ -316,8 +329,7 @@ impl Core {
         let key = key_of(&prepared.project);
         // A boot that never registered answers `no-world`; the purge below still has to run.
         let _ = self.stop_world(&key, Duration::from_secs(10), &mut |_, _| {});
-        let _ =
-            crate::daemon::registry::store_fingerprint(&self.state_dir, &prepared.project, None);
+        self.remove_lease(&prepared.project, &prepared.world);
         self.worlds.remove(&key);
         self.ingress = None;
         let _ = self.persist();
@@ -489,7 +501,7 @@ impl Core {
             "project + world data",
             elapsed_ms(delete_started),
         ));
-        let _ = crate::daemon::registry::store_fingerprint(&self.state_dir, &fork_project, None);
+
         self.worlds.remove(&fork_key);
         self.ingress = None;
         self.persist()?;

@@ -6,6 +6,7 @@
 //! file, and a missing file — each with exactly one `next:` remedy. The lab is opt-in and fails
 //! closed without `SLIPFORK_TEST_ROOT`, a Btrfs mount, `btrfs`, and `crun`.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -153,6 +154,30 @@ fn text(output: &Output) -> String {
     )
 }
 
+/// The live pod pid of every service, read from the shipped `ps --json` wire schema.
+fn service_pids(project: &Path, env: &LabEnv, world: &str) -> BTreeMap<String, u32> {
+    let out = run(project, env, &["ps", "--json"]);
+    assert!(out.status.success(), "`ps --json`:\n{}", text(&out));
+    let reply: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("`ps --json` is one JSON object");
+    let row = reply["worlds"]
+        .as_array()
+        .and_then(|worlds| worlds.iter().find(|row| row["world"] == world))
+        .unwrap_or_else(|| panic!("`ps --json` must list `{world}`: {reply}"));
+    let services = row["services"]
+        .as_array()
+        .unwrap_or_else(|| panic!("`ps --json` carries services: {reply}"));
+    services
+        .iter()
+        .filter_map(|row| {
+            Some((
+                row["id"].as_str()?.to_owned(),
+                u32::try_from(row["pid"].as_u64()?).ok()?,
+            ))
+        })
+        .collect()
+}
+
 /// Asserts one fail-closed refusal with exactly one `next:` remedy and returns the whole output.
 fn refused(output: &Output, needle: &str) -> String {
     let all = text(output);
@@ -188,7 +213,8 @@ fn sealed(path: &Path) -> bool {
 fn heads_seal_warm_reuse_and_refuse_unsealed_corrupt_or_missing_files() {
     let root = test_root();
     let env = LabEnv::isolated(&root);
-    let world = format!("heads{}", unique_suffix());
+    let nonce = unique_suffix();
+    let world = format!("heads{nonce}");
     let project = root.join(&world);
     fs::create_dir_all(&project).expect("create the project");
     fs::write(
@@ -196,9 +222,11 @@ fn heads_seal_warm_reuse_and_refuse_unsealed_corrupt_or_missing_files() {
         "# forkfile: 0.1\n\nimage web . {\n  dockerfile Dockerfile\n}\n",
     )
     .expect("write Forkfile");
+    // The image store is shared per Btrfs mount, so a per-run nonce keeps the first plan `built`
+    // instead of inheriting a `cached` head from an earlier run of the identical Dockerfile.
     fs::write(
         project.join("Dockerfile"),
-        "FROM scratch\nWORKDIR /app\nENV PORT=8080\n",
+        format!("FROM scratch\nENV LAB_NONCE={nonce}\nWORKDIR /app\nENV PORT=8080\n"),
     )
     .expect("write Dockerfile");
     fs::write(project.join("seed.txt"), "seed").expect("write the build context");
@@ -300,4 +328,130 @@ fn supervise(project: &Path, env: &LabEnv, world: &str, heads: &Path) -> Output 
             heads.to_str().expect("utf-8 heads"),
         ],
     )
+}
+
+/// One unchanged world restarts both pods in place, and its next `up` is Idle with no image row.
+#[test]
+fn unchanged_head_restarts_two_pods_in_place_then_up_is_idle() {
+    let root = test_root();
+    let env = LabEnv::isolated(&root);
+    let world = format!("restart{}", unique_suffix());
+    let project = root.join(&world);
+    fs::create_dir_all(&project).expect("create the restart project");
+    fs::write(
+        project.join("Forkfile"),
+        "# forkfile: 0.1\n\nimage app . {\n  dockerfile Dockerfile\n  service api {\n    port 8080\n    route /\n    run: python3 -m http.server $port\n  }\n  service worker {\n    port 8081\n    run: python3 -m http.server $port\n  }\n}\n",
+    )
+    .expect("write Forkfile");
+    fs::write(
+        project.join("Dockerfile"),
+        "FROM python:3.13-slim\nWORKDIR /app\n",
+    )
+    .expect("write Dockerfile");
+
+    let up = run(&project, &env, &["up"]);
+    assert!(
+        up.status.success(),
+        "a two-pod world must boot:\n{}",
+        text(&up)
+    );
+    let lease_path = root
+        .join(".slipfork-store")
+        .join("worlds")
+        .join(&world)
+        .join(".slipfork-lease.json");
+    let lease = serde_json::from_str::<serde_json::Value>(
+        &fs::read_to_string(&lease_path).unwrap_or_else(|error| {
+            panic!(
+                "the daemon writes `{}`: {error}\nnext: inspect the isolated runtime",
+                lease_path.display()
+            )
+        }),
+    )
+    .expect("the daemon writes valid lease JSON");
+    let head = lease["head"].clone();
+    let ps = run(&project, &env, &["ps"]);
+    let listed = text(&ps);
+    for service in ["api", "worker"] {
+        assert!(
+            listed.contains(service) && listed.contains("running"),
+            "`ps` must show `{service}` running:\n{listed}"
+        );
+    }
+    let pids_before = service_pids(&project, &env, &world);
+    for service in ["api", "worker"] {
+        assert!(
+            pids_before.contains_key(service),
+            "`ps --json` must carry the `{service}` pod pid: {pids_before:?}"
+        );
+    }
+
+    let restart = run(&project, &env, &["restart"]);
+    assert!(
+        restart.status.success(),
+        "restarting an unchanged head must succeed:\n{}",
+        text(&restart)
+    );
+    let restart_text = text(&restart);
+    assert!(
+        restart_text.contains("restarting"),
+        "restart streams its settled phase row:\n{restart_text}"
+    );
+    assert!(
+        !restart_text
+            .lines()
+            .any(|line| line.trim_start().starts_with('→')),
+        "an unchanged restart never leaves a dangling `→` header:\n{restart_text}"
+    );
+    let settled = restart_text
+        .lines()
+        .rfind(|line| line.contains("restarting"))
+        .expect("one restarting row");
+    assert!(
+        settled.contains("restarted"),
+        "the restarting row must settle to `restarted`:\n{restart_text}"
+    );
+    let restarted = serde_json::from_str::<serde_json::Value>(
+        &fs::read_to_string(&lease_path).expect("the in-place restart keeps the lease"),
+    )
+    .expect("the lease stays valid JSON");
+    assert_eq!(
+        restarted["head"], head,
+        "an in-place restart never rewrites the leased head"
+    );
+    let ps = run(&project, &env, &["ps"]);
+    let listed = text(&ps);
+    for service in ["api", "worker"] {
+        assert!(
+            listed.contains(service) && listed.contains("running"),
+            "both pods are running after the in-place restart ({service}):\n{listed}"
+        );
+    }
+    let pids_after = service_pids(&project, &env, &world);
+    for service in ["api", "worker"] {
+        assert_ne!(
+            pids_before[service], pids_after[service],
+            "an in-place restart must recycle the `{service}` pod process: {pids_before:?} -> {pids_after:?}"
+        );
+    }
+
+    let idle = run(&project, &env, &["up"]);
+    assert!(
+        idle.status.success(),
+        "the idle up must succeed:\n{}",
+        text(&idle)
+    );
+    let idle_text = text(&idle);
+    let idle_row = format!("• [1/1] world  {world}  up to date  <1ms");
+    assert!(
+        idle_text.lines().any(|line| line == idle_row),
+        "a matching head prints exactly one `{idle_row}` row:\n{idle_text}"
+    );
+    assert!(
+        !idle_text.lines().any(|line| line.contains(" image ")),
+        "an idle `up` never prints an image row:\n{idle_text}"
+    );
+
+    let down = run(&project, &env, &["down"]);
+    assert!(down.status.success(), "down:\n{}", text(&down));
 }

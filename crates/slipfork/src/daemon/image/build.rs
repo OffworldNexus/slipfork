@@ -185,7 +185,7 @@ pub(crate) fn build(
             "fix the failing Dockerfile instruction and retry, or run `slipfork logs` after `up`",
         )
     })?;
-    let cache_key = report.key;
+    let cache_key = report.key.as_hex();
     let image_id = format!("sha256:{cache_key}");
     let digest = report.base_digest;
     let index = lab.store.images_root().join("built.json");

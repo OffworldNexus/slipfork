@@ -9,7 +9,7 @@ $ SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test
 
 ```mermaid
 flowchart LR
-  Unit["Algorithm Unit Tests\n(Forkfile AST, RFC 1123, SigV4,\nDAG edges, Merkle stamps)"] --> Lab["8 Btrfs/VM Live Suites + 8 Host Critical Suites\n(Btrfs + crun + PG18 + Redis 7 + native S3 +\nDECSTBM & shell PTY + <1.0s 8-component fork)"]
+  Unit["Algorithm Unit Tests\n(Forkfile AST, RFC 1123, SigV4,\nDAG edges, Merkle stamps)"] --> Lab["11 Btrfs/VM Live Suites + 8 Host Critical Suites\n(Btrfs + crun + PG18 + Redis 7 + native S3 +\nDECSTBM & shell PTY + <1.0s 8-component fork)"]
   Lab --> Pkg["Distro & ELF Release Gate\n(.deb, .rpm, pacman, .apk, install.sh)"]
 ```
 
@@ -67,4 +67,4 @@ flowchart LR
 
 ## 5. Running the Protected Live & Workspace Gates
 
-The eight Btrfs/VM live suites (`critical_btrfs_live`, `critical_oci_live`, `critical_dockerfile_live`, `critical_pod_runtime`, `critical_world_journey`, `critical_fork_live`, `critical_status_live`, `critical_registry_live`) run sequentially on real Btrfs + `crun` (`165.232.86.174` via `tools/do_vm.py sync && tools/do_vm.py test` or locally via real Btrfs `SLIPFORK_TEST_ROOT=<btrfs-mount> make live-test`) and **fail closed with a 1-line remedy** when Btrfs, namespaces, or `crun` are missing. Every other `critical_*` suite (`critical_ospp`, `critical_ingress`, `critical_cli_surface`, `critical_daemon`, `critical_host_verbs`, `critical_fmt_migrate`, `critical_forkfile`, `critical_lsp`) remains protected by `tools/critical_guard.py` and must stay green in the same gate (`cargo test --workspace`).
+The eleven Btrfs/VM live suites (`critical_btrfs_live`, `critical_oci_live`, `critical_dockerfile_live`, `critical_pod_runtime`, `pod_control_lab`, `critical_world_journey`, `critical_heads_live`, `critical_status_live`, `critical_fork_live`, `critical_registry_live`, `image_rpc`) run sequentially on real Btrfs + `crun` (`165.232.86.174` via `tools/do_vm.py sync && tools/do_vm.py test` or locally via real Btrfs `SLIPFORK_TEST_ROOT=<btrfs-mount> make live-test`) and **fail closed with a 1-line remedy** when Btrfs, namespaces, or `crun` are missing. Every other `critical_*` suite (`critical_ospp`, `critical_ingress`, `critical_cli_surface`, `critical_daemon`, `critical_host_verbs`, `critical_fmt_migrate`, `critical_forkfile`, `critical_lsp`) remains protected by `tools/critical_guard.py` and must stay green in the same gate (`cargo test --workspace`).
