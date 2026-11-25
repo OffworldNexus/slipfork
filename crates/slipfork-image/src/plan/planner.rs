@@ -233,6 +233,10 @@ impl<'a> BuildPlanner<'a> {
         for stage in self.stages {
             index += 1;
             let place = StepPlace::new(index, total, stage.line);
+            let from_args = match &stage.base {
+                StageBase::Image(reference) => reference.clone(),
+                StageBase::Stage(name) => name.clone(),
+            };
             let start = StageStart {
                 stage,
                 arch,
@@ -240,8 +244,9 @@ impl<'a> BuildPlanner<'a> {
                 place,
                 built: &built,
             };
-            let (config, current, base_digest, from_row) =
-                self.begin_stage(start, &mut all_nodes, &mut tasks)?;
+            let (config, current, base_digest, from_row) = self
+                .begin_stage(start, &mut all_nodes, &mut tasks)
+                .map_err(|error| crate::builder::at_from(error, place.line, &from_args))?;
             let mut folder = StageFolder::new(
                 StageScope {
                     request: self.request,

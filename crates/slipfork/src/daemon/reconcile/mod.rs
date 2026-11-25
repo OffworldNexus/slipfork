@@ -175,7 +175,13 @@ fn build_image(
     AttemptFailure,
 > {
     if let Some(reference) = &node.from {
-        let pulled = pull_row(puller, reference, attempt)?;
+        let pulled = attempt.pull(puller, reference).map_err(|error| {
+            AttemptFailure::engine(
+                format!("pull `{reference}` failed: {}", error.cause()),
+                &error,
+                None,
+            )
+        })?;
         let settle = if pulled.cached {
             ImageSettle::Cached
         } else {
@@ -273,43 +279,6 @@ fn build_image(
         state: settle.as_str().to_owned(),
     };
     Ok((head, settle, last, executed))
-}
-
-/// Pulls one `FROM`/resource reference with its own live `FROM` row.
-fn pull_row(
-    puller: &slipfork_image::OciPuller,
-    reference: &str,
-    attempt: &mut ImageAttempt<'_>,
-) -> Result<PulledImage, AttemptFailure> {
-    let parsed = ImageReference::parse(reference).map_err(|error| {
-        AttemptFailure::engine(
-            format!("pull `{reference}` failed: {}", error.cause()),
-            &error,
-            None,
-        )
-    })?;
-    attempt
-        .events(|log| {
-            log.announce("FROM", reference);
-            let started = Instant::now();
-            match puller.pull_into(&parsed, log) {
-                Ok(image) => {
-                    log.done(started.elapsed());
-                    Ok(image)
-                }
-                Err(error) => {
-                    log.failed(started.elapsed(), error.exit_code());
-                    Err(error)
-                }
-            }
-        })
-        .map_err(|error| {
-            AttemptFailure::engine(
-                format!("pull `{reference}` failed: {}", error.cause()),
-                &error,
-                None,
-            )
-        })
 }
 
 /// Pulls one reference with no image row (a resource included outside the plan's image list).

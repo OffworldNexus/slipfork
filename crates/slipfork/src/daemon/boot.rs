@@ -158,10 +158,14 @@ impl BootSession {
                     if let Some(reported) = event["pods_dir"].as_str() {
                         self.pods_dir = PathBuf::from(reported);
                     }
-                    // `forget` deletes a fork row and marks a root `stopped`, so a failed boot
-                    // never leaves a half-fork that blocks a retry.
-                    self.stop();
-                    daemon.core()?.forget(&self.key);
+                    // A failed service leaves the surviving pods serving: the supervisor keeps the
+                    // world init alive and names its `world`/`pods_dir` only then. Publish that
+                    // live row (with the head it sealed) so `status`, `restart`, heal and `down`
+                    // still see the world instead of reaping a cluster that is still serving.
+                    // Forks always roll back, and a boot that never entered the world stops.
+                    if self.keep_serving(daemon, &event).is_err() {
+                        self.fail_boot(daemon)?;
+                    }
                     return Err(Failure::new("boot-failed", message));
                 }
                 _ => {}
@@ -252,6 +256,35 @@ impl BootSession {
             slipfork_world::kill_group(pid);
         }
         slipfork_world::reap_world_tree(self.supervisor_pid, Some(&self.pods_dir), REAP_BUDGET);
+    }
+
+    /// Publishes a failed-but-serving root world, or rolls back a boot that never entered it.
+    ///
+    /// The supervisor names `world`/`pods_dir` only when surviving pods stayed in the world; the
+    /// images were sealed and the head planned before the boot, so the verbatim lease is still the
+    /// truth. Forks always roll back so no half-fork blocks a retry.
+    fn keep_serving(&mut self, daemon: &Daemon, event: &Value) -> Result<(), Failure> {
+        let Some(world) = event["world"].as_str().filter(|world| !world.is_empty()) else {
+            return self.fail_boot(daemon);
+        };
+        if self.fork.is_some() {
+            return self.fail_boot(daemon);
+        }
+        let Ok(world_name) = WorldName::parse(world) else {
+            return self.fail_boot(daemon);
+        };
+        let drifted = lease::desired_for(&self.project, &world_name)
+            .map_or(true, |head| head.spec != self.planned.0.spec);
+        if drifted {
+            return self.fail_boot(daemon);
+        }
+        lease::write(&self.store_root, &world_name, &self.planned.1)?;
+        let live = LiveFork {
+            supervisor_pid: i64::from(self.supervisor_pid),
+            pods_dir: self.pods_dir.clone(),
+            started_at_ms: now_ms(),
+        };
+        daemon.core()?.publish_live(&self.key, self.world_id, live)
     }
 
     /// Stops an unusable half-boot and settles its row before the failure is reported.

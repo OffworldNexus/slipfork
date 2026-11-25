@@ -199,7 +199,23 @@ impl NativeImageBuilder {
             self.cache == Cache::Cold,
         );
         let planned =
-            BuildPlanner::new(request, walked, &context, &resolver, self.architecture).plan()?;
+            match BuildPlanner::new(request, walked, &context, &resolver, self.architecture).plan()
+            {
+                Ok(planned) => planned,
+                Err(error) => {
+                    // A planner failure still names its instruction (a `COPY --from` missing stage, an
+                    // illegal line): publish that one instruction row and settle it as failed, so the
+                    // live view and the run capture both name what the engine rejected.
+                    if let Some((place, keyword, args)) = error
+                        .line()
+                        .and_then(|line| instruction_at(walked, &source, line))
+                    {
+                        log.started(place, keyword, &args);
+                        log.failed(Duration::ZERO, error.exit_code());
+                    }
+                    return Err(error);
+                }
+            };
 
         let store = SnapshotStore::new(&self.layout, self.world.as_ref());
         let cache_mounts = CacheMounts::new(self.layout.images_root());
@@ -322,6 +338,47 @@ fn is_fs(task: Option<&StepTask>) -> bool {
     matches!(task, Some(StepTask::Fs { .. }))
 }
 
+/// The walked instruction starting on `line`, with the `FROM`-first place it occupies.
+///
+/// A planner failure carries only the `Dockerfile` line; this maps it back onto the same row
+/// enumeration the build itself streams, so the rejected instruction can publish its row.
+fn instruction_at<'a>(
+    walked: &'a [Stage],
+    source: &'a str,
+    line: usize,
+) -> Option<(StepPlace, &'static str, String)> {
+    let total = walked
+        .iter()
+        .map(|stage| 1 + stage.instructions.len())
+        .sum();
+    let mut index = 0;
+    for stage in walked {
+        index += 1;
+        if stage.line == line {
+            let text = source
+                .lines()
+                .nth(line.checked_sub(1)?)
+                .unwrap_or_default()
+                .trim();
+            let args = text
+                .split_once(' ')
+                .map_or_else(String::new, |(_, rest)| rest.trim().to_owned());
+            return Some((StepPlace::new(index, total, line), "FROM", args));
+        }
+        for parsed in &stage.instructions {
+            index += 1;
+            if parsed.line == line {
+                return Some((
+                    StepPlace::new(index, total, line),
+                    parsed.instruction.keyword(),
+                    parsed.instruction.command_text(),
+                ));
+            }
+        }
+    }
+    None
+}
+
 /// The one `-v` note that proves where a settled step's seconds went.
 fn phase_note(place: StepPlace, timing: PhaseTiming) -> String {
     let split = [
@@ -341,6 +398,24 @@ fn phase_note(place: StepPlace, timing: PhaseTiming) -> String {
         place.total,
         timing.total().as_secs_f64(),
     )
+}
+
+/// Folds a `FROM` resolution failure into a step failure naming that `FROM` row.
+pub(crate) fn at_from(err: Error, line: usize, args: &str) -> Error {
+    match err {
+        Error::StepFailed { .. } | Error::Dockerfile { .. } => err,
+        other => Error::StepFailed {
+            line,
+            phase: "from",
+            instruction: args.into(),
+            message: other.cause(),
+            exit_code: other.exit_code(),
+            runtime: None,
+            next: other.remedy().unwrap_or_else(|| {
+                "check the reference and registry access, then retry".to_owned()
+            }),
+        },
+    }
 }
 
 /// Folds a step failure into a line-decorated `StepFailed` naming the instruction as written.

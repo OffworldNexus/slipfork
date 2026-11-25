@@ -302,6 +302,25 @@ impl OciPuller {
         }))
     }
 
+    /// The sealed image `reference` already pulls to, with no registry request at all.
+    ///
+    /// A recorded digest whose rootfs is still sealed means the whole pull is served from disk.
+    /// The daemon probes this before announcing a `FROM` row, so a cache hit settles as one
+    /// `cached` verdict with zero inner rows while a real pull opens its row first.
+    pub fn cached(&self, reference: &ImageReference) -> Result<Option<PulledImage>> {
+        let Some(digest) = self.layout.cached_ref(&reference.to_string()) else {
+            return Ok(None);
+        };
+        let image = self.layout.image(&digest);
+        if !image.exists() || !self.world.is_sealed(&image)? {
+            return Ok(None);
+        }
+        let path = self.layout.config(&digest);
+        let bytes = fs::read(&path).map_err(|source| Error::io("read", &path, source))?;
+        let facts = parse_config(&bytes, &path)?;
+        Ok(Some(self.pulled(image, digest, facts, true)))
+    }
+
     /// The real pull, run by exactly one thread per reference at a time.
     fn pull_uncached(
         &self,
@@ -311,15 +330,9 @@ impl OciPuller {
         // A recorded digest with a sealed rootfs means the whole pull is served from disk: no
         // registry session, no manifest request, and no "pull" line in the boot log.
         let key = reference.to_string();
-        if let Some(digest) = self.layout.cached_ref(&key) {
-            let image = self.layout.image(&digest);
-            if image.exists() && self.world.is_sealed(&image)? {
-                let path = self.layout.config(&digest);
-                let bytes = fs::read(&path).map_err(|source| Error::io("read", &path, source))?;
-                let facts = parse_config(&bytes, &path)?;
-                note(log, format!("sealed {digest}: reusing cache"));
-                return Ok(self.pulled(image, digest, facts, true));
-            }
+        if let Some(image) = self.cached(reference)? {
+            note(log, format!("sealed {}: reusing cache", image.digest));
+            return Ok(image);
         }
         let mut session = self.client.session(reference);
         let resolved = session.manifest(self.architecture)?;

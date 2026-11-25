@@ -193,6 +193,27 @@ impl<'a> StepLog<'a> {
         self.emit(BuildEvent::Note { text });
     }
 
+    /// Re-opens the instruction identity a caller announced on an earlier [`StepLog`] for the same
+    /// row, without emitting a second `started` frame.
+    ///
+    /// A caller that pauses around the log (probe a sealed cache, then pull) must settle on the
+    /// same [`StepLog`] instance it announced on; this restores that identity so the pause never
+    /// changes the row the later `done`/`failed` settles.
+    pub fn resume_at(
+        &mut self,
+        place: StepPlace,
+        instruction: &str,
+        args: &str,
+        provisional: bool,
+    ) {
+        self.current = Some(StepIdentity {
+            place,
+            instruction: instruction.to_owned(),
+            args: args.to_owned(),
+            provisional,
+        });
+    }
+
     /// Announces `instruction` before it executes, so a pull or context walk never looks frozen.
     ///
     /// `place` carries the instruction's index and `Dockerfile` line, so the caller can publish the

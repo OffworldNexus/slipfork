@@ -124,7 +124,10 @@ fn missing_final_newline_still_produces_a_real_hunk() {
     );
 }
 
-const DEMO: &str = include_str!("../../../../support/demo/Forkfile");
+/// The canonical demo, with any checkout line endings normalised to the formatter's LF output.
+fn demo() -> String {
+    include_str!("../../../../support/demo/Forkfile").replace("\r\n", "\n")
+}
 
 #[test]
 fn header_blank_is_preserved_when_authored_and_flush_when_not() {
@@ -236,8 +239,9 @@ fn trailing_blanks_inside_a_body_and_at_eof_are_removed() {
 
 #[test]
 fn demo_forkfile_round_trips_and_stays_clean_after_one_pass() {
-    let once = format(&parse(DEMO).expect("demo parses"));
-    assert_eq!(once, DEMO, "canonical demo must not churn");
+    let demo = demo();
+    let once = format(&parse(&demo).expect("demo parses"));
+    assert_eq!(once, demo, "canonical demo must not churn");
     let twice = format(&parse(&once).expect("formatted demo parses"));
     assert_eq!(once, twice);
     let check = format_check(&once).expect("formatted demo parses");

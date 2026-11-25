@@ -128,6 +128,15 @@ impl Error {
         }
     }
 
+    /// The `Dockerfile` line a failure names, when it names one.
+    #[must_use]
+    pub fn line(&self) -> Option<usize> {
+        match self {
+            Self::StepFailed { line, .. } | Self::Dockerfile { line, .. } => Some(*line),
+            _ => None,
+        }
+    }
+
     /// The container-runtime plumbing behind a failed `RUN`; `up -v` shows it, the default view
     /// stays a single human line.
     #[must_use]

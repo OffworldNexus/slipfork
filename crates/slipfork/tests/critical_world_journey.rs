@@ -450,12 +450,16 @@ impl Journey {
     fn project(&self, name: &str, forkfile: &str) -> PathBuf {
         let dir = self.run.join(name);
         fs::create_dir_all(&dir).expect("create project directory");
+        // Every journey shares one image store, so the content salt must be unique per journey
+        // *and* project: a process-wide salt let an earlier journey seal this exact image and
+        // serve a later `up` as `cached`, hiding the cold-build contract the journey asserts.
+        let journey = self.run.file_name().map_or_else(
+            || std::process::id().to_string(),
+            |token| token.to_string_lossy().into_owned(),
+        );
         let dockerfile = DOCKERFILE.replace(
             "WORKDIR /project",
-            &format!(
-                "RUN echo slipfork-build-{}\nWORKDIR /project",
-                std::process::id()
-            ),
+            &format!("RUN echo slipfork-build-{journey}-{name}\nWORKDIR /project"),
         );
         fs::write(dir.join("Dockerfile"), dockerfile).expect("write Dockerfile");
         fs::write(dir.join("Forkfile"), forkfile).expect("write Forkfile");
@@ -997,6 +1001,33 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+/// The one run id a pre-plan image failure's `next:` remedy names (`slipfork logs -r <id>`).
+fn failed_build_run(block: &str) -> String {
+    block
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("next: "))
+        .find_map(|remedy| {
+            remedy
+                .rsplit_once("slipfork logs -r ")
+                .map(|(_, id)| id.trim().trim_end_matches('`').to_owned())
+        })
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| panic!("the failure must name its recorded run:\n{block}"))
+}
+
+/// The shipped pre-plan image failure copy: one `error: … failed:` envelope and one `next:`
+/// remedy. The typed `✗ RUN … failed` verdict belongs to the run's replay.
+fn assert_image_failure_envelope(block: &str, cause: &str) {
+    assert!(
+        block
+            .lines()
+            .any(|line| line.trim_start().starts_with("error: ")
+                && line.contains("failed:")
+                && line.contains(cause)),
+        "`up` carries the image failure envelope naming `{cause}`:\n{block}"
+    );
+}
+
 /// The newest image-build run id recorded for `project`, or a panic naming the failed listing.
 fn latest_image_run(journey: &Journey, project: &Path) -> String {
     let runs = journey.slipfork(project, &["logs", "--runs", "--json"]);
@@ -1271,8 +1302,11 @@ fn world_up_restart_down_journey() {
     );
 
     assert!(
-        first_out.contains("→ [1/"),
-        "progress lines must carry a real `→ [i/n]` prefix:\n{first_out}"
+        first_out.lines().any(|line| {
+            line.strip_prefix("→ [")
+                .is_some_and(|rest| rest.trim_start().starts_with("1/") && rest.contains("] image"))
+        }),
+        "progress lines must carry a real `→ [i/n]` prefix (the index pads to the plan width):\n{first_out}"
     );
     assert!(
         first_out
@@ -1726,17 +1760,25 @@ fn world_up_restart_down_journey() {
         stdout(&piped)
     );
 
-    // 1d. Image build logs replay straight from `<store>/logs/<world>/<image>.log`.
-    let image_log = journey.store_root.join("logs").join("good").join("app.log");
+    // 1d. Image build output replays from the run catalog: the daemon seals every executed
+    // build as one run capture (`<store>/logs/<world>/runs/<run_id>.log`) and `logs <image>`
+    // resolves that newest record, so nothing is written to a pod-shaped `<image>.log` path.
+    let image_run = latest_image_run(&journey, &good);
+    let image_log = journey
+        .store_root
+        .join("logs")
+        .join("good")
+        .join("runs")
+        .join(format!("{image_run}.log"));
     assert!(
         wait_until(|| image_log.is_file(), Duration::from_secs(20)),
-        "the image builder must record `{}`",
+        "the image builder must record its run capture `{}`",
         image_log.display()
     );
     let image_logs = journey.slipfork(&good, &["logs", "app"]);
     assert!(
         image_logs.status.success(),
-        "`logs app` must read the capture file: {}",
+        "`logs app` must read the run capture: {}",
         stderr(&image_logs)
     );
     assert!(
@@ -1911,8 +1953,12 @@ fn world_up_restart_down_journey() {
         stderr(&down)
     );
     assert!(
-        stdout(&down).contains("→ [1/1] stopping broken"),
-        "down must stream its phase header:\n{}",
+        stdout(&down).lines().any(|line| line.starts_with('✓')
+            && line.contains("pod")
+            && line.contains("broken")
+            && line.contains("stopped"))
+            && stdout(&down).contains("✓ Stopped broken ("),
+        "down must settle the pod it stopped, then its verdict:\n{}",
         stdout(&down)
     );
 
@@ -2102,21 +2148,16 @@ fn world_up_restart_down_journey() {
         1,
         "an image failure prints exactly one `next:`:\n{build_failure}"
     );
-    let build_run = build_failure
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("next: slipfork logs -r "))
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| panic!("the image failure must name its run:\n{build_failure}"))
-        .to_owned();
+    let build_run = failed_build_run(&build_failure);
     let image_log = journey
         .store_root
         .join("logs")
         .join("buildfail")
-        .join("app.log");
+        .join("runs")
+        .join(format!("{build_run}.log"));
     assert!(
         image_log.is_file(),
-        "the failed build must leave `{}`",
+        "the failed build must leave its run capture `{}`",
         image_log.display()
     );
     let by_image = journey.slipfork(&buildfail, &["logs", "app"]);
@@ -2552,23 +2593,14 @@ fn world_up_restart_down_journey() {
         1,
         "an engine-step failure prints exactly one `next:`:\n{stage_block}"
     );
-    assert!(
-        stage_block.contains("✗ COPY app failed"),
-        "`up` names the failing instruction in its verdict:\n{stage_block}"
-    );
+    assert_image_failure_envelope(&stage_block, "no build stage named `Missing-Stage`");
     assert!(
         stage_block
             .lines()
             .any(|line| line.contains("┃ no build stage named `Missing-Stage`")),
         "`up` streams the failing step's `┃` reason line:\n{stage_block}"
     );
-    let stage_run = stage_block
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("next: slipfork logs -r "))
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| panic!("the COPY failure must name its run:\n{stage_block}"))
-        .to_owned();
+    let stage_run = failed_build_run(&stage_block);
     let stage_replay = journey.slipfork(&stagefail, &["logs", "-r", &stage_run]);
     assert!(
         stage_replay.status.success(),
@@ -2707,21 +2739,12 @@ fn world_up_restart_down_journey() {
         1,
         "a failed `FROM` prints exactly one `next:`:\n{from_block}"
     );
-    assert!(
-        from_block.contains("✗ FROM app failed"),
-        "`up` names the failing instruction in its verdict:\n{from_block}"
-    );
+    assert_image_failure_envelope(&from_block, "127.0.0.1:1");
     assert!(
         from_block.lines().any(|line| line.contains('┃')),
         "`up` streams the failed `FROM` step's `┃` reason line:\n{from_block}"
     );
-    let from_run = from_block
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("next: slipfork logs -r "))
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| panic!("the `FROM` failure must name its run:\n{from_block}"))
-        .to_owned();
+    let from_run = failed_build_run(&from_block);
     let from_replay = journey.slipfork(&fromfail, &["logs", "-r", &from_run]);
     assert!(
         from_replay.status.success(),
@@ -2830,21 +2853,12 @@ fn world_up_restart_down_journey() {
             .any(|line| line.contains('┃') && line.contains("not a valid image reference")),
         "`up` streams the step's one `┃` reason line:\n{bad_block}"
     );
-    assert!(
-        bad_block.contains("✗ FROM app failed") && !bad_block.contains("✗ image app failed"),
-        "`up`'s verdict names the `FROM` step:\n{bad_block}"
-    );
+    assert_image_failure_envelope(&bad_block, "not a valid image reference");
     assert!(
         !bad_block.contains("PULL"),
         "`from:` pulls never print a `PULL` verb:\n{bad_block}"
     );
-    let bad_run = bad_block
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("next: slipfork logs -r "))
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| panic!("the invalid `from:` must name its run:\n{bad_block}"))
-        .to_owned();
+    let bad_run = failed_build_run(&bad_block);
     let bad_replay = journey.slipfork(&badfrom, &["logs", "-r", &bad_run]);
     assert!(
         bad_replay.status.success(),
@@ -2932,18 +2946,8 @@ fn world_up_restart_down_journey() {
         1,
         "a step-less failure prints exactly one `next:`:\n{parse_block}"
     );
-    assert!(
-        parse_block.contains("✗ image app failed: ")
-            && parse_block.contains("instruction appears before any `FROM`"),
-        "`up` carries the reason in the verdict when no step exists:\n{parse_block}"
-    );
-    let parse_run = parse_block
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("next: slipfork logs -r "))
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| panic!("the parse failure must name its run:\n{parse_block}"))
-        .to_owned();
+    assert_image_failure_envelope(&parse_block, "instruction appears before any `FROM`");
+    let parse_run = failed_build_run(&parse_block);
     let parse_replay = journey.slipfork(&parsefail, &["logs", "-r", &parse_run]);
     assert!(
         parse_replay.status.success(),
@@ -2966,8 +2970,11 @@ fn world_up_restart_down_journey() {
     let down = journey.slipfork(&good, &["down"]);
     assert!(down.status.success(), "down: {}", stderr(&down));
     assert!(
-        stdout(&down).contains("→ [1/1] stopping good"),
-        "down must stream its phase header:\n{}",
+        stdout(&down)
+            .lines()
+            .any(|line| line.starts_with('✓') && line.contains("pod") && line.contains("stopped"))
+            && stdout(&down).contains("✓ Stopped good ("),
+        "down must settle the pods it stopped, then its verdict:\n{}",
         stdout(&down)
     );
 
@@ -3045,8 +3052,10 @@ fn world_up_restart_down_journey() {
         up_failure("restart failed", &good, &restart)
     );
     assert!(
-        stdout(&restart).contains("→ [1/1] restarting api"),
-        "restart must stream its phase header:\n{}",
+        stdout(&restart).lines().any(|line| line.starts_with('✓')
+            && line.contains("restarting")
+            && line.contains("api")),
+        "restart must settle its one recycling row:\n{}",
         stdout(&restart)
     );
     assert!(

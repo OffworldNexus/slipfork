@@ -160,7 +160,9 @@ impl<'a, 'm> StageFolder<'a, 'm> {
                     let variables = Variables::from_scope(&self.args, &self.config.env);
                     expand_spec(spec, &variables)
                 };
-                let origin = self.origin(expanded.from.as_deref(), place.line)?;
+                let origin = self
+                    .origin(expanded.from.as_deref(), place.line)
+                    .map_err(|error| crate::builder::at_line(error, place.line, instruction))?;
                 let mut parents = vec![self.current];
                 let mut extra = Vec::new();
                 if let Some(origin) = &origin {

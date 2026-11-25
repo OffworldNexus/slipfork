@@ -7,9 +7,10 @@
 
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use serde_json::{Value, json};
-use slipfork_image::{BuildEvent, StepEvent, StepLog, StepState, StepTrace};
+use slipfork_image::{BuildEvent, StepEvent, StepLog, StepPlace, StepState, StepTrace};
 use slipfork_world::run_log::RunNote;
 use slipfork_world::{ImageNode, LogStore, WorldPlan};
 
@@ -43,6 +44,16 @@ impl ImageSettle {
 /// the run capture that makes `slipfork logs -r <id>` resolve.
 pub(super) struct ImageAttempt<'a> {
     emit: &'a mut dyn FnMut(Value),
+    /// Frames held back while this attempt might still turn out to be a cache hit.
+    ///
+    /// A reused instruction performs no work, so a fully cached image must settle as one `cached`
+    /// verdict with zero inner rows (and no `→` opener). Frames are published the moment the
+    /// attempt proves it is really building (`tail`/output), and dropped when it settles cached.
+    withheld: Vec<Value>,
+    /// Whether the withheld frames were released and every later frame streams live.
+    live: bool,
+    /// Whether the attempt streamed at least one child output line.
+    lines: bool,
     total: usize,
     step: usize,
     label: String,
@@ -99,6 +110,9 @@ impl<'a> ImageAttempt<'a> {
         }));
         Ok(Self {
             emit,
+            withheld: Vec::new(),
+            live: false,
+            lines: false,
             total: plan.steps.len().max(1),
             step,
             label,
@@ -141,10 +155,70 @@ impl<'a> ImageAttempt<'a> {
         task(&mut StepLog::with_events(&mut bus))
     }
 
+    /// Pulls one `from:` reference as its single `FROM` row.
+    ///
+    /// The row is announced before the reference is parsed, so an invalid reference fails *as
+    /// that step*; the sealed cache is then probed without touching the registry, so a cache hit
+    /// settles as one `cached` verdict with zero inner rows while a real pull streams live.
+    pub(super) fn pull(
+        &mut self,
+        puller: &slipfork_image::OciPuller,
+        reference: &str,
+    ) -> slipfork_image::Result<slipfork_image::PulledImage> {
+        {
+            let mut bus = |event: BuildEvent<'_>| self.observe(event);
+            let mut log = StepLog::with_events(&mut bus);
+            log.announce("FROM", reference);
+        }
+        let parsed = slipfork_image::ImageReference::parse(reference)?;
+        if let Some(cached) = puller.cached(&parsed)? {
+            return Ok(cached);
+        }
+        self.stream();
+        let started = Instant::now();
+        let mut bus = |event: BuildEvent<'_>| self.observe(event);
+        let mut log = StepLog::with_events(&mut bus);
+        // The announce above used another `StepLog` (the probe had to run between them); re-open
+        // the same identity so this instance settles the row it announced, not a phantom.
+        log.resume_at(StepPlace::new(1, 1, 0), "FROM", reference, true);
+        match puller.pull_into(&parsed, &mut log) {
+            Ok(image) => {
+                log.done(started.elapsed());
+                Ok(image)
+            }
+            Err(error) => {
+                log.failed(started.elapsed(), error.exit_code());
+                Err(error)
+            }
+        }
+    }
+
+    /// Releases every frame held back while the attempt still looked like a cache hit.
+    fn stream(&mut self) {
+        if self.live {
+            return;
+        }
+        self.live = true;
+        for frame in std::mem::take(&mut self.withheld) {
+            (self.emit)(frame);
+        }
+    }
+
+    /// Emits a frame live, or holds it until this attempt proves it is doing real work.
+    fn publish(&mut self, frame: Value) {
+        if self.live {
+            (self.emit)(frame);
+        } else {
+            self.withheld.push(frame);
+        }
+    }
+
     /// Settles the image row and its capture; a cached attempt with no output drops its capture.
     ///
     /// A kept capture names the last instruction this attempt applied (or the `FROM` reference it
-    /// pulled), so a replay never has to guess which instruction produced its rows.
+    /// pulled), so a replay never has to guess which instruction produced its rows. Every row a
+    /// real build held back is released first; a cache hit drops them, so it settles as one
+    /// `cached` row.
     pub(super) fn finish(
         &mut self,
         settle: ImageSettle,
@@ -154,12 +228,14 @@ impl<'a> ImageAttempt<'a> {
     ) {
         let state = settle.as_str();
         let discard = !self.wrote && state == "cached";
-        if !discard {
-            let note = success_note(self.nodes, &self.image, last);
-            if let Some(run_id) = self.run.as_ref().and_then(RunTarget::run_id) {
-                let _ = self.notes.succeeded(Some(run_id), &note);
-            }
+        if discard {
+            self.withheld.clear();
+        } else {
+            self.stream();
         }
+        // The capture must settle in the catalog *before* its note is appended: `annotate_run`
+        // copies the newest record, so annotating first would let `finish` overwrite the phase,
+        // instruction, exit code and reason with empty fallbacks.
         let run_id = self.run.as_mut().and_then(|run| {
             if discard {
                 run.discard();
@@ -168,6 +244,10 @@ impl<'a> ImageAttempt<'a> {
                 run.finish(state, elapsed_ms)
             }
         });
+        if !discard {
+            let note = success_note(self.nodes, &self.image, last);
+            let _ = self.notes.succeeded(run_id.as_deref(), &note);
+        }
         let settlement = settlement(settle, elapsed_ms, run_id.as_deref());
         let mut frame = json!({
             "event": "finished",
@@ -188,12 +268,39 @@ impl<'a> ImageAttempt<'a> {
 
     /// Settles a failed attempt, keeping its capture and publishing the instruction that failed.
     pub(super) fn fail(&mut self, failure: AttemptFailure, elapsed_ms: u64) -> Failure {
+        self.wrote = true;
+        self.stream();
         let note = failure
             .note
             .map(|note| *note)
             .or_else(|| self.started.take())
             .or_else(|| self.dockerfile.as_deref().map(failed_note));
-        if let Some(run_id) = self.run.as_ref().and_then(RunTarget::run_id) {
+        // A step that printed nothing still explains itself in its own gutter: stream the engine's
+        // one-line cause under the failing row (never twice for a `RUN` that already printed its
+        // own output), and keep it in the run capture so a replay explains itself too.
+        let cause = self
+            .index
+            .is_some()
+            .then(|| failure.reason.clone())
+            .flatten()
+            .filter(|_| !self.lines);
+        if let Some(cause) = cause {
+            let frame = {
+                let pin = self.pin();
+                log_frame(&pin, "stderr", &cause)
+            };
+            if let Some(run) = self.run.as_mut() {
+                run.append_stream(slipfork_world::Stream::Stderr, &cause);
+            }
+            self.publish(frame);
+        }
+        // Settle the capture first, then patch the finished record with the failing instruction:
+        // `annotate_run` copies the newest record, so the reverse order loses the note.
+        let run_id = self
+            .run
+            .as_mut()
+            .and_then(|run| run.finish("failed", elapsed_ms));
+        if let Some(run_id) = run_id.as_deref() {
             let _ = self.notes.failed(
                 Some(run_id),
                 note.as_ref(),
@@ -201,11 +308,12 @@ impl<'a> ImageAttempt<'a> {
                 failure.reason.as_deref(),
             );
         }
-        let run_id = self
-            .run
-            .as_mut()
-            .and_then(|run| run.finish("failed", elapsed_ms));
         let (reason, next) = failure_parts(&failure.message);
+        // A failed attempt that minted a run capture names that replay as its one remedy; the
+        // descriptive engine message stays on the RPC error for `--json`, never as a second row.
+        let next = run_id
+            .as_deref()
+            .map_or(next, |id| format!("slipfork logs -r {id}"));
         let facts = FailureFacts {
             code: "image-build".to_owned(),
             kind: note
@@ -222,9 +330,11 @@ impl<'a> ImageAttempt<'a> {
             run_id: run_id.clone(),
             reason: failure.reason.clone().unwrap_or_else(|| reason.clone()),
             runtime_ms: Some(elapsed_ms),
-            next: next.clone(),
+            next,
         };
         let cause = failure.message.lines().next().unwrap_or(&failure.message);
+        // One durable attempt row: `critical_status_live` reads it as the image's `finished`
+        // frame carrying the run id, and the CLI prints the error envelope once for it.
         let mut frame = json!({
             "event": "finished",
             "step": self.step,
@@ -240,7 +350,20 @@ impl<'a> ImageAttempt<'a> {
         });
         frame["failure"] = json!(facts);
         (self.emit)(frame);
-        Failure::new("image-build", failure.message)
+        // A message that names no remedy yet still gets the one replay a failure owes the user.
+        let message = if failure
+            .message
+            .lines()
+            .any(|line| line.starts_with("next:"))
+        {
+            failure.message
+        } else {
+            match run_id.as_deref() {
+                Some(id) => format!("{}\nnext: slipfork logs -r {id}", failure.message),
+                None => failure.message,
+            }
+        };
+        Failure::new("image-build", message)
     }
 
     fn observe(&mut self, event: BuildEvent<'_>) {
@@ -249,7 +372,6 @@ impl<'a> ImageAttempt<'a> {
                 if step.state == StepState::Started {
                     self.index = Some(step.index);
                     self.inner_total = Some(step.total);
-                    self.wrote = true;
                     let note = started_note(self.dockerfile.as_deref(), &step);
                     if let Some(run_id) = self.run.as_ref().and_then(RunTarget::run_id) {
                         let _ = self.notes.started(Some(run_id), &note);
@@ -259,7 +381,15 @@ impl<'a> ImageAttempt<'a> {
                         run.step_row(&step_label(&step));
                     }
                 }
-                (self.emit)(step_frame(&self.image, &step));
+                // A tail is the first proof the instruction is being materialized rather than
+                // served from the step cache: every reused row and metadata row is a bare
+                // `started`+`done` pair, so only a tail (or child output) opens the build live.
+                if step.state == StepState::Tail || step.state == StepState::Failed {
+                    self.wrote = true;
+                    self.stream();
+                }
+                let frame = step_frame(&self.image, &step);
+                self.publish(frame);
             }
             BuildEvent::Line { stream, text } => {
                 // Stored and streamed raw: the viewer strips when its output cannot take colour.
@@ -268,6 +398,8 @@ impl<'a> ImageAttempt<'a> {
                     return;
                 }
                 self.wrote = true;
+                self.lines = true;
+                self.stream();
                 let stream = match stream {
                     slipfork_image::Stream::Stdout => slipfork_world::Stream::Stdout,
                     slipfork_image::Stream::Stderr => slipfork_world::Stream::Stderr,
@@ -279,7 +411,7 @@ impl<'a> ImageAttempt<'a> {
                     let pin = self.pin();
                     log_frame(&pin, stream.as_str(), text)
                 };
-                (self.emit)(frame);
+                self.publish(frame);
             }
             BuildEvent::Note { text } => {
                 let text = crate::ui::strip(text);
@@ -290,7 +422,7 @@ impl<'a> ImageAttempt<'a> {
                     let pin = self.pin();
                     note_frame(&pin, text.trim_end_matches('\r'))
                 };
-                (self.emit)(frame);
+                self.publish(frame);
             }
         }
     }
@@ -626,6 +758,113 @@ mod tests {
         );
     }
 
+    /// A cache hit performs no work: every held inner row is dropped and only the `cached` verdict
+    /// is published, while a real build releases the same rows in order.
+    #[test]
+    fn a_cache_hit_drops_held_inner_rows_and_a_build_releases_them() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let dir = tempfile::Builder::new()
+            .prefix("slipfork-progress-withhold-")
+            .tempdir_in("/var/tmp")
+            .expect("create a disk temp directory");
+        let store = LogStore::at(
+            dir.path().join("store"),
+            slipfork_world::WorldName::parse("demo").expect("valid world name"),
+        );
+
+        let frames = Rc::new(RefCell::new(Vec::new()));
+        {
+            let sink = Rc::clone(&frames);
+            let mut emit = move |frame: Value| sink.borrow_mut().push(frame);
+            let mut attempt = ImageAttempt {
+                emit: &mut emit,
+                withheld: Vec::new(),
+                live: false,
+                total: 1,
+                step: 1,
+                label: "image app".to_owned(),
+                image: "app".to_owned(),
+                index: None,
+                inner_total: None,
+                run: None,
+                notes: RunNotes::new(&store),
+                nodes: &[],
+                dockerfile: None,
+                started: None,
+                wrote: false,
+                lines: false,
+            };
+            attempt
+                .events(|log| {
+                    log.announce("FROM", "python:3.13-slim");
+                    log.done(Duration::ZERO);
+                    Ok(())
+                })
+                .expect("a cached pull never fails");
+            attempt.finish(ImageSettle::Cached, 3, None, 0);
+        }
+        let cached = frames.borrow();
+        assert_eq!(
+            cached
+                .iter()
+                .map(|frame| frame["event"].as_str().unwrap_or_default())
+                .collect::<Vec<_>>(),
+            ["finished"],
+            "a cache hit publishes only its verdict: {cached:?}"
+        );
+        assert_eq!(cached[0]["state"], "cached");
+        drop(cached);
+
+        frames.borrow_mut().clear();
+        {
+            let sink = Rc::clone(&frames);
+            let mut emit = move |frame: Value| sink.borrow_mut().push(frame);
+            let mut attempt = ImageAttempt {
+                emit: &mut emit,
+                withheld: Vec::new(),
+                live: false,
+                total: 1,
+                step: 1,
+                label: "image app".to_owned(),
+                image: "app".to_owned(),
+                index: None,
+                inner_total: None,
+                run: None,
+                notes: RunNotes::new(&store),
+                nodes: &[],
+                dockerfile: None,
+                started: None,
+                wrote: false,
+                lines: false,
+            };
+            attempt
+                .events(|log| {
+                    log.announce("FROM", "python:3.13-slim");
+                    log.tail(slipfork_world::snapshot::TailPhase::Cloning);
+                    log.done(Duration::ZERO);
+                    Ok(())
+                })
+                .expect("a real build never fails here");
+            attempt.finish(
+                ImageSettle::Built(std::num::NonZeroUsize::new(1).expect("one built step")),
+                9,
+                None,
+                1,
+            );
+        }
+        let built = frames.borrow();
+        assert_eq!(
+            built
+                .iter()
+                .map(|frame| frame["event"].as_str().unwrap_or_default())
+                .collect::<Vec<_>>(),
+            ["step", "step", "step", "finished"],
+            "a real build releases every held row, in order: {built:?}"
+        );
+    }
+
     #[test]
     fn emitted_attempt_frames_carry_typed_objects() {
         use std::cell::RefCell;
@@ -644,6 +883,9 @@ mod tests {
         let mut emit = move |frame: Value| sink.borrow_mut().push(frame);
         let mut attempt = ImageAttempt {
             emit: &mut emit,
+            withheld: Vec::new(),
+            live: true,
+            lines: false,
             total: 1,
             step: 1,
             label: "image api".to_owned(),

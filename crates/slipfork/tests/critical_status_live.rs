@@ -1366,9 +1366,11 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
             output.output
         );
         if args == ["up"] {
+            // A step that streams nothing earns only its later verdict, so a cached image and a
+            // silent service never open a `→` row; the plan's `✓ [i/n]` row still ships.
             assert!(
-                output.output.contains("→ ["),
-                "{args:?} must keep the append-only stream header: {:?}",
+                output.output.contains("✓ ["),
+                "{args:?} must keep the append-only plan rows: {:?}",
                 output.output
             );
         }
@@ -2167,8 +2169,10 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     let cached_rows = completed_rows(&cached_up.output);
     let cached_screen = cached_up.screen.text();
     assert!(
-        cached_screen.contains("✓ [1/2] image  web") && cached_screen.contains("  ✓ 11/11"),
-        "the cached verdict and its replayed rows must survive on the screen:\n{cached_screen}"
+        cached_screen.contains("✓ [1/2] image  web")
+            && !cached_screen.contains("✓ 11/11")
+            && !cached_screen.contains("✓  1/11"),
+        "a fully cached image settles as one verdict with zero inner rows:\n{cached_screen}"
     );
     assert!(
         cached_rows.lines().any(|line| {
@@ -2179,17 +2183,9 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         }),
         "a cached image must settle as `✓ [1/2] image  web  cached`:\n{cached_rows}"
     );
-    for index in 1..=11 {
-        let settled = format!("  ✓ {index:>2}/11");
-        assert_eq!(
-            cached_rows.matches(&settled).count(),
-            1,
-            "{settled:?} must print exactly once on a cache replay:\n{cached_rows}"
-        );
-    }
     assert!(
-        !cached_rows.contains("built "),
-        "a cached image never claims a build:\n{cached_rows}"
+        !cached_rows.contains("  ✓ ") && !cached_rows.contains("built "),
+        "a cached image never replays instruction rows or claims a build:\n{cached_rows}"
     );
     let stopped = run(&project, &env, &["down"]);
     assert!(stopped.status.success(), "{stopped:?}");
