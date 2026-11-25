@@ -1,15 +1,156 @@
 //! Pure path/env/resource helpers for the world boot runtime.
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::rootfs::{is_file_in_rootfs, shim_exists};
 use slipfork_forkfile::{FeatureSet, direct_bin};
-use slipfork_world::{Bind, BindSource, PodEnv};
+use slipfork_world::{Bind, BindSource, Identity, PodEnv, SnapshotStore, StoreLayout, WorldEngine};
 
+use super::ImageHead;
 use super::dev::DevMount;
 
 const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+/// One `snapshots/<key>.json` node record, as far as the identity lookup needs it.
+#[derive(serde::Deserialize)]
+struct SealedRecord {
+    kind: String,
+    #[serde(default)]
+    parents: Vec<String>,
+    #[serde(default)]
+    facts: Option<serde_json::Value>,
+}
+
+/// A sealed-image identity failure: one cause line and the one remedy that fixes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct IdentityFailure {
+    cause: String,
+    remedy: String,
+}
+
+impl IdentityFailure {
+    fn new(cause: impl Into<String>, remedy: impl Into<String>) -> Self {
+        Self {
+            cause: cause.into(),
+            remedy: remedy.into(),
+        }
+    }
+
+    /// The one-line cause (never carries a `next:` tail).
+    pub(super) fn cause(&self) -> &str {
+        &self.cause
+    }
+
+    /// The concrete fix, rendered as the failure's single `next:`.
+    pub(super) fn remedy(&self) -> &str {
+        &self.remedy
+    }
+}
+
+impl From<slipfork_world::IdentityError> for IdentityFailure {
+    fn from(error: slipfork_world::IdentityError) -> Self {
+        Self::new(error.cause(), error.remedy())
+    }
+}
+
+/// Resolves the identity a sealed image must run as (default container root).
+///
+/// Two records describe one sealed image: the head key names the last *materialized* step and the
+/// image node that wraps it carries the final-stage `ImageConfig`, whose `user` is the `Dockerfile`
+/// `USER`. A pulled image seals no `user` fact, which is Docker's `0:0` default.
+pub(super) fn sealed_identity(
+    layout: &StoreLayout,
+    engine: &dyn WorldEngine,
+    built: &ImageHead,
+) -> Result<Identity, IdentityFailure> {
+    let store = SnapshotStore::new(layout, engine);
+    let user = sealed_user(&store, built)?;
+    // The one resolver: build `RUN` steps resolve the same `ImageConfig.user` for the same rootfs
+    // through this identical `Identity::resolve` call (`slipfork-image/src/runtime.rs`).
+    Identity::resolve(&built.rootfs, user.as_deref()).map_err(IdentityFailure::from)
+}
+
+/// The `USER` fact of the image node that wraps the sealed head, if the image names one.
+///
+/// A Dockerfile-built head must have that image record; a pulled image has none and keeps Docker's
+/// `0:0` default, so neither case can silently fall back to the host identity.
+fn sealed_user(
+    store: &SnapshotStore<'_>,
+    built: &ImageHead,
+) -> Result<Option<String>, IdentityFailure> {
+    if let Some(record) = read_record(&store.record_path(&built.key))?
+        && record.kind == "image"
+        && let Some(facts) = record.facts.as_ref()
+    {
+        return Ok(field(facts));
+    }
+    // The image node is the head's single child: its key hashes the head's key as parent.
+    let parent = built.key.as_hex();
+    let entries = fs::read_dir(store.snapshots_root()).map_err(|error| {
+        IdentityFailure::new(
+            format!(
+                "cannot list the sealed snapshots in `{}`: {error}",
+                store.snapshots_root().display()
+            ),
+            "run `slipfork up` to rebuild this world",
+        )
+    })?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("json") {
+            continue;
+        }
+        let Some(record) = read_record(&path)? else {
+            continue;
+        };
+        if record.kind == "image"
+            && record.parents.as_slice() == [parent.as_str()]
+            && let Some(facts) = record.facts.as_ref()
+        {
+            return Ok(field(facts));
+        }
+    }
+    if built.state == "pulled" {
+        return Ok(None);
+    }
+    Err(IdentityFailure::new(
+        format!(
+            "the sealed image `{}` has no recorded `USER`",
+            built.key.as_hex()
+        ),
+        "run `slipfork up` to rebuild this world",
+    ))
+}
+
+/// The `facts.user` string of one image config, when it names a `USER`.
+fn field(facts: &serde_json::Value) -> Option<String> {
+    facts.get("user")?.as_str().map(str::to_owned)
+}
+
+/// Reads one node record, mapping every unreadable-or-corrupt case to one remedy line.
+fn read_record(path: &Path) -> Result<Option<SealedRecord>, IdentityFailure> {
+    match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|error| {
+            IdentityFailure::new(
+                format!(
+                    "cannot parse the sealed image record `{}`: {error}",
+                    path.display()
+                ),
+                "run `slipfork up` to rebuild this world",
+            )
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(IdentityFailure::new(
+            format!(
+                "cannot read the sealed image record `{}`: {error}",
+                path.display()
+            ),
+            "run `slipfork up` to rebuild this world",
+        )),
+    }
+}
 
 pub(super) fn project_bind(project: &Path) -> Bind {
     Bind {
@@ -464,6 +605,107 @@ mod tests {
         assert_eq!(
             foreign.argv,
             ["/bin/sh", "-c", "uv run uvicorn app.main:app"]
+        );
+    }
+
+    /// One sealed head in a real snapshot store: the head record plus the image node that wraps it.
+    fn sealed_head(
+        disk: &TempDir,
+        seed: u8,
+        user: Option<&str>,
+        state: &str,
+    ) -> (slipfork_world::StoreLayout, super::ImageHead) {
+        use slipfork_world::{NodeKey, StoreLayout};
+        let layout = StoreLayout::new(disk.path());
+        let snapshots = layout.snapshots_root();
+        fs::create_dir_all(&snapshots).expect("create the snapshots root");
+        let head = NodeKey::from_digest([seed; 32]);
+        fs::write(
+            snapshots.join(format!("{}.json", head.as_hex())),
+            r#"{"v":1,"kind":"step","parents":[],"canon":"WORKDIR /app","line":2,"created_ms":0,"last_used_ms":0,"facts":null}"#,
+        )
+        .expect("write the head record");
+        if let Some(user) = user {
+            fs::write(
+                snapshots.join(format!("{}.json", "a".repeat(64))),
+                format!(
+                    r#"{{"v":1,"kind":"image","parents":["{}"],"canon":"FROM scratch","line":1,"created_ms":0,"last_used_ms":0,"facts":{{"user":{}}}}}"#,
+                    head.as_hex(),
+                    serde_json::to_string(user).expect("encode the USER fact"),
+                ),
+            )
+            .expect("write the image record");
+        }
+        let rootfs = disk.path().join("rootfs");
+        fs::create_dir_all(rootfs.join("etc")).expect("seed the image etc");
+        fs::write(
+            rootfs.join("etc/passwd"),
+            "root:x:0:0:root:/root:/bin/sh\napp:x:1000:1000:App:/home/app:/bin/sh\n",
+        )
+        .expect("write the image passwd");
+        let head = super::ImageHead {
+            key: head,
+            rootfs,
+            inherited_env: Vec::new(),
+            argv: vec!["/bin/true".to_owned()],
+            workdir: "/app".to_owned(),
+            state: state.to_owned(),
+        };
+        (layout, head)
+    }
+
+    /// A sealed image's `USER` resolves through the same `Identity::resolve` the build uses.
+    #[test]
+    fn a_sealed_image_user_resolves_and_an_unresolvable_one_fails_closed() {
+        use slipfork_world::BtrfsEngine;
+        let disk = TempDir::new_in("/var/tmp").expect("real disk store");
+        let engine = BtrfsEngine::new(slipfork_world::StoreLayout::new(disk.path()));
+
+        let (layout, head) = sealed_head(&disk, 1, Some("1000:1000"), "built");
+        assert_eq!(
+            super::sealed_identity(&layout, &engine, &head).expect("a numeric USER resolves"),
+            slipfork_world::Identity {
+                uid: 1000,
+                gid: 1000
+            }
+        );
+
+        let (layout, head) = sealed_head(&disk, 2, Some("ghost"), "built");
+        let error = super::sealed_identity(&layout, &engine, &head)
+            .expect_err("an unresolvable USER must fail closed");
+        assert!(
+            error.cause().contains("`ghost`") && error.cause().contains("/etc/passwd"),
+            "the cause names the account and its file: {}",
+            error.cause()
+        );
+        assert!(
+            error.remedy().contains("useradd"),
+            "the remedy names the fix: {}",
+            error.remedy()
+        );
+        assert!(!error.cause().contains("next:"), "no embedded remedy");
+    }
+
+    /// A Dockerfile-built head with no image record fails closed instead of booting as root.
+    #[test]
+    fn a_built_head_without_its_image_record_is_refused_but_a_pulled_image_is_root() {
+        use slipfork_world::BtrfsEngine;
+        let disk = TempDir::new_in("/var/tmp").expect("real disk store");
+        let engine = BtrfsEngine::new(slipfork_world::StoreLayout::new(disk.path()));
+
+        let (layout, head) = sealed_head(&disk, 3, None, "built");
+        let error = super::sealed_identity(&layout, &engine, &head).expect_err("fail closed");
+        assert!(
+            error.cause().contains("no recorded `USER`"),
+            "{}",
+            error.cause()
+        );
+        assert!(error.remedy().contains("slipfork up"), "{}", error.remedy());
+
+        let (layout, head) = sealed_head(&disk, 4, None, "pulled");
+        assert_eq!(
+            super::sealed_identity(&layout, &engine, &head).expect("a pulled image is 0:0"),
+            slipfork_world::Identity::ROOT
         );
     }
 }

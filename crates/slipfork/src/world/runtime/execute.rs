@@ -153,9 +153,7 @@ impl WorldRuntime {
                     progress: None,
                 })
             }
-            BootKind::Service => self
-                .start_service(step, log)
-                .map_err(|error| StepFailure::plain(BootFailure::new(error))),
+            BootKind::Service => self.start_service(step, log).map_err(StepFailure::plain),
         }
     }
 }

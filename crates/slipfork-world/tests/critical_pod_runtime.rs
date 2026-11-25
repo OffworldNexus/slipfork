@@ -418,6 +418,7 @@ fn client_pod(
         env,
         binds: vec![project_bind(project)],
         files: Vec::new(),
+        identity: None,
     }
 }
 
@@ -609,6 +610,7 @@ fn world_pod_lifecycle() {
         env: Vec::new(),
         binds: Vec::new(),
         files: Vec::new(),
+        identity: None,
     };
     let mut out_lines = Vec::new();
     let mut err_lines = Vec::new();
@@ -643,6 +645,7 @@ fn world_pod_lifecycle() {
         env: Vec::new(),
         binds: vec![project_bind(&world_a.project)],
         files: Vec::new(),
+        identity: None,
     };
     supervisor_a
         .launch(&server)
@@ -697,6 +700,7 @@ fn world_pod_lifecycle() {
         env: Vec::new(),
         binds: vec![project_bind(&world_a.project)],
         files: Vec::new(),
+        identity: None,
     };
     supervisor_a
         .launch(&printer)

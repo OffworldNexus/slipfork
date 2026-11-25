@@ -78,6 +78,7 @@ fn spec(root: &Path) -> PodSpec {
             name: "app.json".to_owned(),
             contents: "{\"name\":\"api\"}".to_owned(),
         }],
+        identity: None,
     }
 }
 
@@ -1053,6 +1054,7 @@ mod pty_lab {
             env: Vec::new(),
             binds: Vec::new(),
             files: Vec::new(),
+            identity: None,
         };
         write_bundle(&spec, &supervisor.pod_host(), &pods_dir.join("api"))
             .expect("write the OCI bundle");
@@ -1241,6 +1243,7 @@ mod pty_lab {
             env: Vec::new(),
             binds: Vec::new(),
             files: Vec::new(),
+            identity: None,
         };
         for id in ["api", "worker", "dup"] {
             write_bundle(&spec(id), &supervisor.pod_host(), &pods_dir.join(id))

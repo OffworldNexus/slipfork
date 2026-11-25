@@ -92,6 +92,7 @@ impl RedisLauncher {
                 read_only: false,
             }],
             files: Vec::new(),
+            identity: None,
         })
     }
 

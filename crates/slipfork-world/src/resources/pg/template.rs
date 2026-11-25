@@ -118,6 +118,7 @@ impl PostgresTemplate {
                 read_only: false,
             }],
             files: Vec::new(),
+            identity: None,
         })
     }
 

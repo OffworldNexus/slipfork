@@ -32,24 +32,6 @@ const DEVICES: [&str; 6] = [
     "/dev/tty",
 ];
 
-/// Docker's default capability set for a step that runs as container root.
-const ROOT_CAPABILITIES: [&str; 14] = [
-    "CAP_CHOWN",
-    "CAP_DAC_OVERRIDE",
-    "CAP_FOWNER",
-    "CAP_FSETID",
-    "CAP_KILL",
-    "CAP_SETGID",
-    "CAP_SETUID",
-    "CAP_SETPCAP",
-    "CAP_NET_BIND_SERVICE",
-    "CAP_NET_RAW",
-    "CAP_SYS_CHROOT",
-    "CAP_MKNOD",
-    "CAP_AUDIT_WRITE",
-    "CAP_SETFCAP",
-];
-
 /// Which child stream one step-log line came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stream {
@@ -149,6 +131,8 @@ impl CrunStepRuntime {
         log: &mut StepLog<'_>,
     ) -> Result<()> {
         self.ensure_crun()?;
+        // The one resolver: the service-boot path resolves the sealer-recorded `ImageConfig.user`
+        // for the same rootfs through this identical `Identity::resolve` call.
         let identity = Identity::resolve(rootfs, config.user.as_deref())?;
         fs::create_dir_all(&self.host.scratch_root)
             .map_err(|source| Error::io("create", &self.host.scratch_root, source))?;
@@ -362,11 +346,7 @@ impl StepBundle<'_> {
         }
 
         let identity = self.identity;
-        let capabilities: Vec<&str> = if identity.uid == 0 {
-            ROOT_CAPABILITIES.to_vec()
-        } else {
-            Vec::new()
-        };
+        let capabilities = identity.capabilities();
         serde_json::json!({
             "ociVersion": "1.0.2",
             "process": {
@@ -376,9 +356,9 @@ impl StepBundle<'_> {
                 "env": env,
                 "cwd": self.config.workdir,
                 "capabilities": {
-                    "bounding": &capabilities,
-                    "effective": &capabilities,
-                    "permitted": &capabilities,
+                    "bounding": capabilities,
+                    "effective": capabilities,
+                    "permitted": capabilities,
                     "inheritable": [],
                     "ambient": []
                 },

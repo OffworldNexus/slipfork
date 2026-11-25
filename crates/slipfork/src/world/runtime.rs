@@ -31,7 +31,9 @@ mod ready;
 mod resources;
 mod rootfs;
 use dev::DevMounts;
-use helpers::{ServiceLaunch, dev_binds, merge_env, merge_path, shell_command, upsert_env};
+use helpers::{
+    ServiceLaunch, dev_binds, merge_env, merge_path, sealed_identity, shell_command, upsert_env,
+};
 
 /// The one line a non-zero pod exit writes into both the capture and the failure message.
 pub(crate) fn exit_line(command: &str, code: i32) -> String {
@@ -361,6 +363,11 @@ impl WorldRuntime {
         let built = self
             .built_for(step.image.as_ref(), log)
             .map_err(BootFailure::new)?;
+        let identity = sealed_identity(&self.layout, &self.engine, &built).map_err(|error| {
+            log.append_stream(Stream::Stderr, error.cause());
+            log.append_stream(Stream::Stderr, error.remedy());
+            BootFailure::with_remedy(error.cause(), error.remedy())
+        })?;
         let dev = match step.image.as_deref() {
             Some(image) => self
                 .dev_mounts
@@ -387,6 +394,7 @@ impl WorldRuntime {
             env: self.pod_env_for(&step.subject, step.image.as_deref(), None),
             binds: dev_binds(&self.features, &self.project, dev.as_ref()),
             files: Vec::new(),
+            identity: Some(identity),
         };
         // Setup and hook pods run to completion over `control.sock` with their pipes attached, so
         // independent nodes never stall behind a long `pre-deploy` seed.
@@ -416,17 +424,32 @@ impl WorldRuntime {
         }
     }
 
-    fn start_service(&self, step: &BootStep, log: &mut BootSink) -> Result<Staged, String> {
+    fn start_service(&self, step: &BootStep, log: &mut BootSink) -> Result<Staged, BootFailure> {
         let sigma = step.subject.clone();
         let image = step.image.as_deref().ok_or_else(|| {
-            format!(
-                "service `{sigma}` has no enclosing image\nnext: declare the service inside its image block"
+            BootFailure::with_remedy(
+                format!("service `{sigma}` has no enclosing image"),
+                "declare the service inside its image block",
             )
         })?;
-        let built = self.built_for(step.image.as_ref(), log)?;
+        let built = self
+            .built_for(step.image.as_ref(), log)
+            .map_err(BootFailure::new)?;
+        let identity = sealed_identity(&self.layout, &self.engine, &built).map_err(|error| {
+            // An unresolvable `USER` must be visible before the pane closes: stream its cause and
+            // concrete fix through the step's own gutter, and keep the fix as the envelope remedy.
+            log.append_stream(Stream::Stderr, error.cause());
+            log.append_stream(Stream::Stderr, error.remedy());
+            BootFailure::with_remedy(error.cause(), error.remedy())
+        })?;
         // Defense in depth: the same derivation that passed preflight refuses the bind here too.
-        let dev = self.dev_mounts.dev_for(image, &built)?;
-        let rootfs = self.clone_rootfs(&built.rootfs, &format!("svc-{sigma}"), true)?;
+        let dev = self
+            .dev_mounts
+            .dev_for(image, &built)
+            .map_err(BootFailure::new)?;
+        let rootfs = self
+            .clone_rootfs(&built.rootfs, &format!("svc-{sigma}"), true)
+            .map_err(BootFailure::new)?;
         let port = self
             .services
             .iter()
@@ -449,9 +472,9 @@ impl WorldRuntime {
             launch_env = launch.env;
             (launch.argv, command.clone())
         } else if built.argv.is_empty() {
-            return Err(format!(
+            return Err(BootFailure::new(format!(
                 "service `{sigma}` declares no `run:` and its image has no `ENTRYPOINT`/`CMD`"
-            ));
+            )));
         } else {
             (built.argv.clone(), built.argv.join(" "))
         };
@@ -466,9 +489,10 @@ impl WorldRuntime {
             env,
             binds: dev_binds(&self.features, &self.project, dev.as_ref()),
             files: Vec::new(),
+            identity: Some(identity),
         };
         upsert_env(&mut spec.env, launch_env);
-        self.launch_pod(&spec)?;
+        self.launch_pod(&spec).map_err(BootFailure::new)?;
         let ready = match port {
             Some(port) => Ready::Service {
                 pods_dir: self.pods_dir.clone(),
