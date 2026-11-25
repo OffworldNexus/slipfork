@@ -24,6 +24,21 @@ pub(crate) const POD_HOME: &str = "/home/slipfork";
 /// Home directory of uid 0.
 pub(crate) const ROOT_HOME: &str = "/root";
 
+/// Colour hints for the programs we run.
+///
+/// A pod's stdout is a pipe, never a terminal, so a program that keys off `isatty` stays plain
+/// (accepted: we never fake a TTY). Tools honouring the de-facto `CLICOLOR_FORCE`/`CLICOLOR`
+/// convention still colourise, and an explicit image/`Forkfile` value always wins.
+///
+/// `FORCE_COLOR` is deliberately absent: it is a Node/`chalk` convention that also makes JS
+/// libraries override `NO_COLOR`, so it would change library behaviour for no non-Node win.
+pub const COLOUR_HINTS: [(&str, &str); 4] = [
+    ("TERM", "xterm-256color"),
+    ("CLICOLOR", "1"),
+    ("CLICOLOR_FORCE", "1"),
+    ("COLORTERM", "truecolor"),
+];
+
 /// The effective identity of one pod plus the account and synthetic-file decision it implies.
 ///
 /// This is the *mapping* layer: the container identity (`uid`/`gid`) is rendered as one `1:1`
@@ -148,7 +163,8 @@ pub(crate) fn needs_home(spec: &PodSpec, pod: &PodIdentityMapping, host_uid: u32
     }
 }
 
-/// Image env first, then the pod's own env, then the resolved identity's `HOME`/`USER`/`LOGNAME`.
+/// Image env first, then the pod's own env, then the resolved identity's `HOME`/`USER`/`LOGNAME`,
+/// then the colour hints the image did not declare.
 ///
 /// The legacy invoking-host identity (a resource pod) keeps its historical env exactly: a custom
 /// non-empty `HOME` wins, an absent/empty/`/root` one becomes the writable in-pod home, and no
@@ -156,6 +172,13 @@ pub(crate) fn needs_home(spec: &PodSpec, pod: &PodIdentityMapping, host_uid: u32
 /// non-empty declared or inherited `HOME` still wins.
 pub(crate) fn merged_env(spec: &PodSpec, pod: &PodIdentityMapping, host_uid: u32) -> Vec<String> {
     let mut ordered: Vec<(String, String)> = Vec::new();
+    // Whether the image or `Forkfile` already declared `key`; taken before defaults are inserted.
+    let declares = |key: &str| {
+        spec.inherited_env
+            .iter()
+            .any(|pair| pair.split_once('=').is_some_and(|(name, _)| name == key))
+            || spec.env.iter().any(|entry| entry.key == key)
+    };
     let mut upsert = |key: &str, value: &str| {
         if let Some(slot) = ordered.iter_mut().find(|(existing, _)| existing == key) {
             slot.1 = value.to_owned();
@@ -198,6 +221,15 @@ pub(crate) fn merged_env(spec: &PodSpec, pod: &PodIdentityMapping, host_uid: u32
             continue;
         }
         upsert(key, value);
+    }
+    // Encourage colour without a TTY: only keys the image/Forkfile did not declare, and a
+    // declared `NO_COLOR` opts the pod out of every hint.
+    if !declares("NO_COLOR") {
+        for (key, value) in COLOUR_HINTS {
+            if !declares(key) {
+                upsert(key, value);
+            }
+        }
     }
     ordered
         .into_iter()
@@ -272,6 +304,54 @@ mod tests {
         let root = fallback(Identity::ROOT);
         assert!(passwd_contents(&root, 0, 0).contains("root:x:0:0:root:/root:/sbin/nologin\n"));
         assert_eq!(group_contents(&root, 0), "root:x:0\n");
+    }
+
+    #[test]
+    fn colour_hints_are_defaulted_while_explicit_values_and_no_color_win() {
+        let probe = TempDir::new_in("/var/tmp").expect("real disk for the rootfs probe");
+        let owner = fs::metadata(probe.path()).expect("stat the probe dir");
+        let host = host(owner.uid(), owner.gid());
+        let env_of = |unset: PodSpec| {
+            let pod = PodIdentityMapping::resolve(&unset, &host);
+            merged_env(&unset, &pod, host.uid)
+        };
+
+        let plain = env_of(spec(probe.path().into(), Vec::new(), Vec::new()));
+        assert_eq!(env_value(&plain, "TERM").as_deref(), Some("xterm-256color"));
+        assert_eq!(env_value(&plain, "CLICOLOR").as_deref(), Some("1"));
+        assert_eq!(env_value(&plain, "CLICOLOR_FORCE").as_deref(), Some("1"));
+        assert_eq!(env_value(&plain, "COLORTERM").as_deref(), Some("truecolor"));
+        assert_eq!(
+            env_value(&plain, "FORCE_COLOR"),
+            None,
+            "FORCE_COLOR is a Node convention, not a general one"
+        );
+
+        // An explicit image/Forkfile value wins over our default.
+        let explicit = env_of(spec(
+            probe.path().into(),
+            vec!["TERM=screen-256color".to_owned()],
+            vec![PodEnv::new("CLICOLOR_FORCE", "0")],
+        ));
+        assert_eq!(
+            env_value(&explicit, "TERM").as_deref(),
+            Some("screen-256color")
+        );
+        assert_eq!(env_value(&explicit, "CLICOLOR_FORCE").as_deref(), Some("0"));
+        assert_eq!(
+            env_value(&explicit, "COLORTERM").as_deref(),
+            Some("truecolor")
+        );
+
+        // A declared `NO_COLOR` opts the pod out of every hint and is never overwritten.
+        let off = env_of(spec(
+            probe.path().into(),
+            Vec::new(),
+            vec![PodEnv::new("NO_COLOR", "1")],
+        ));
+        assert_eq!(env_value(&off, "NO_COLOR").as_deref(), Some("1"));
+        assert_eq!(env_value(&off, "TERM"), None);
+        assert_eq!(env_value(&off, "CLICOLOR_FORCE"), None);
     }
 
     #[test]

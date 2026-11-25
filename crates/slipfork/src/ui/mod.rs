@@ -5,6 +5,7 @@
 //! role API, `paint` stays the raw SGR primitive, and [`boot`] is the only live pane the world
 //! verbs draw.
 
+mod ansi;
 mod elapsed;
 mod failure;
 mod paint;
@@ -13,6 +14,7 @@ pub mod report;
 pub mod table;
 mod terminal;
 
+pub use ansi::{colour_only, segments, strip, visible_width};
 pub use elapsed::elapsed_text;
 pub use failure::{block as failure_block, split_remedy};
 pub use paint::paint;

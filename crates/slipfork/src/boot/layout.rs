@@ -54,6 +54,10 @@ pub(super) fn gutter_line(
 }
 
 /// A scrollback line in full: wrapped at `width`, the gutter glyph repeated on every row.
+///
+/// Escape sequences are zero-width atoms: a coloured line never loses a cell count and a sequence
+/// is never split across rows. A wrapped row that carried SGR closes it before the next row, so
+/// colour never bleeds past its own line.
 pub(super) fn wrap_gutter(
     stream: &str,
     text: &str,
@@ -70,15 +74,23 @@ pub(super) fn wrap_gutter(
     let mut rows = Vec::new();
     let mut current = String::new();
     let mut used = 0usize;
-    for ch in text.chars() {
-        let cell = console::measure_text_width(&ch.to_string());
-        if used > 0 && used + cell > budget {
-            rows.push(format!("{lead}{glyph} {current}"));
-            current.clear();
-            used = 0;
+    for (slice, escape) in crate::ui::segments(text) {
+        if escape {
+            current.push_str(slice);
+            continue;
         }
-        current.push(ch);
-        used += cell;
+        for ch in slice.chars() {
+            let mut buffer = [0_u8; 4];
+            let cell = console::measure_text_width(ch.encode_utf8(&mut buffer));
+            if used > 0 && used + cell > budget {
+                close_sgr(&mut current);
+                rows.push(format!("{lead}{glyph} {current}"));
+                current.clear();
+                used = 0;
+            }
+            current.push(ch);
+            used += cell;
+        }
     }
     if !current.is_empty() {
         rows.push(format!("{lead}{glyph} {current}"));
@@ -291,46 +303,35 @@ pub(super) fn clamp_visible(styled: &str, width: usize) -> String {
     }
     let mut out = String::new();
     let mut used = 0usize;
-    let mut chars = styled.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
-            out.push(ch);
-            out.push(chars.next().unwrap_or('['));
-            for ch in chars.by_ref() {
-                out.push(ch);
-                if ('@'..='~').contains(&ch) {
-                    break;
-                }
-            }
+    'outer: for (slice, escape) in crate::ui::segments(styled) {
+        if escape {
+            out.push_str(slice);
             continue;
         }
-        let cell = console::measure_text_width(&ch.to_string());
-        if used + cell > width.saturating_sub(1) {
-            break;
+        for ch in slice.chars() {
+            let mut buffer = [0_u8; 4];
+            let cell = console::measure_text_width(ch.encode_utf8(&mut buffer));
+            if used + cell > width.saturating_sub(1) {
+                break 'outer;
+            }
+            out.push(ch);
+            used += cell;
         }
-        out.push(ch);
-        used += cell;
     }
+    close_sgr(&mut out);
     out.push('…');
     out
 }
 
 fn visible_width_escaped(styled: &str) -> usize {
-    let mut used = 0usize;
-    let mut chars = styled.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
-            chars.next();
-            for ch in chars.by_ref() {
-                if ('@'..='~').contains(&ch) {
-                    break;
-                }
-            }
-        } else {
-            used += console::measure_text_width(&ch.to_string());
-        }
+    crate::ui::visible_width(styled)
+}
+
+/// Closes an open SGR run (`ESC[0m`) before a row ends, so colour never bleeds past it.
+fn close_sgr(out: &mut String) {
+    if out.contains('\u{1b}') {
+        out.push_str("\u{1b}[0m");
     }
-    used
 }
 
 fn compose_live_unclamped(prefix: String, args: &str, suffix: String, width: usize) -> String {
@@ -387,7 +388,7 @@ fn fit_args(args: &str, available: usize) -> String {
 
 /// Truncates `text` to at most `max` visible characters, ending in `…` when it was cut.
 pub(super) fn truncate_visible(text: &str, max: usize) -> String {
-    if console::measure_text_width(text) <= max {
+    if visible_width_escaped(text) <= max {
         return text.to_owned();
     }
     if max == 0 {
@@ -395,13 +396,21 @@ pub(super) fn truncate_visible(text: &str, max: usize) -> String {
     }
     let mut head = String::new();
     let mut used = 0usize;
-    for ch in text.chars() {
-        let cell = console::measure_text_width(&ch.to_string());
-        if used + cell > max.saturating_sub(1) {
-            break;
+    'outer: for (slice, escape) in crate::ui::segments(text) {
+        if escape {
+            head.push_str(slice);
+            continue;
         }
-        head.push(ch);
-        used += cell;
+        for ch in slice.chars() {
+            let mut buffer = [0_u8; 4];
+            let cell = console::measure_text_width(ch.encode_utf8(&mut buffer));
+            if used + cell > max.saturating_sub(1) {
+                break 'outer;
+            }
+            head.push(ch);
+            used += cell;
+        }
     }
+    close_sgr(&mut head);
     format!("{head}…")
 }

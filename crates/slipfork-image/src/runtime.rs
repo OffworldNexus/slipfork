@@ -16,6 +16,26 @@ use crate::step_log::exit_detail;
 
 const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
+/// The `RUN` child's environment: image `ENV`, then our colour hints, then the `apt` config.
+fn step_env(config: &ImageConfig) -> Vec<String> {
+    let mut env = vec![format!("PATH={DEFAULT_PATH}")];
+    for (key, value) in &config.env {
+        env.push(format!("{key}={value}"));
+    }
+    // glibc's `getenv` returns the first match, so drop any image `ENV APT_CONFIG=...` before
+    // appending the per-step config; the last entry alone would never win.
+    env.retain(|entry| !entry.starts_with("APT_CONFIG="));
+    env.push(format!("APT_CONFIG={APT_CONF_TARGET}"));
+    if !config.env.contains_key("NO_COLOR") {
+        for (key, value) in slipfork_world::COLOUR_HINTS {
+            if !config.env.contains_key(key) {
+                env.push(format!("{key}={value}"));
+            }
+        }
+    }
+    env
+}
+
 /// `apt` refuses to drop privileges it never had inside a single-mapping user namespace.
 const APT_CONF: &str = "APT::Sandbox::User \"root\";\n";
 
@@ -292,14 +312,7 @@ impl StepBundle<'_> {
             }
             StepCommand::Exec(argv) => argv.clone(),
         };
-        let mut env = vec![format!("PATH={DEFAULT_PATH}")];
-        for (key, value) in &self.config.env {
-            env.push(format!("{key}={value}"));
-        }
-        // glibc's `getenv` returns the first match, so drop any image `ENV APT_CONFIG=...` before
-        // appending the per-step config; the last entry alone would never win.
-        env.retain(|entry| !entry.starts_with("APT_CONFIG="));
-        env.push(format!("APT_CONFIG={APT_CONF_TARGET}"));
+        let env = step_env(self.config);
 
         let mut mounts = vec![
             serde_json::json!({"destination": "/proc", "type": "proc", "source": "proc"}),
@@ -446,3 +459,6 @@ pub(crate) fn rooted(rootfs: &Path, destination: &str) -> PathBuf {
     let trimmed = destination.trim_start_matches('/');
     rootfs.join(trimmed)
 }
+
+#[cfg(test)]
+mod tests;

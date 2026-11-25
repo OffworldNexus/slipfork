@@ -542,3 +542,34 @@ fn no_color_journals_emit_zero_escapes_and_zero_carriage_returns() {
         );
     }
 }
+
+#[test]
+fn a_coloured_child_line_wraps_at_visible_width_without_splitting_the_sequence() {
+    let plain = Palette::new(false);
+    let line = "\u{1b}[31mabcdefghij\u{1b}[0m";
+    // width 12 minus the 2-space indent and 2-cell gutter leaves the 8-cell minimum budget.
+    let rows = wrap_gutter("stdout", line, 12, plain, 2);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    let visible: Vec<String> = rows
+        .iter()
+        .map(|row| crate::ui::strip(row).into_owned())
+        .collect();
+    assert_eq!(visible, vec!["  │ abcdefgh", "  │ ij"]);
+    for row in &rows {
+        assert!(
+            crate::ui::visible_width(row) <= 12,
+            "a coloured row must wrap at its visible width: {row:?}"
+        );
+        assert!(
+            !crate::ui::strip(row).contains('\u{1b}'),
+            "no sequence fragment survives the wrap: {row:?}"
+        );
+    }
+    // The reset closes the row, so colour never bleeds onto the next one.
+    assert!(rows[0].ends_with("\u{1b}[0m"), "{:?}", rows[0]);
+
+    let clipped = gutter_line("stdout", line, 8, plain, 2);
+    assert_eq!(crate::ui::strip(&clipped), "  │ abc…");
+    assert!(crate::ui::visible_width(&clipped) <= 8, "{clipped:?}");
+    assert!(!crate::ui::strip(&clipped).contains('\u{1b}'));
+}

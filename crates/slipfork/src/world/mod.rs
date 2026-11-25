@@ -15,7 +15,7 @@ mod target;
 mod up;
 
 pub(crate) use heads::{HEADS_VERSION, ImageHead, WorldHeads};
-pub(crate) use runtime::capture::{RunTarget, strip_ansi};
+pub(crate) use runtime::capture::RunTarget;
 pub(crate) use runtime::frames::{StepPin, log_frame, note_frame, step_frame};
 pub(crate) use runtime::notes::RunNotes;
 pub(crate) use target::{TargetError, Targets};

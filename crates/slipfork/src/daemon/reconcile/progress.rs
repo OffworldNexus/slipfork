@@ -13,7 +13,7 @@ use slipfork_world::run_log::RunNote;
 use slipfork_world::{ImageNode, LogStore, WorldPlan};
 
 use crate::daemon::Failure;
-use crate::world::{RunNotes, RunTarget, StepPin, log_frame, note_frame, step_frame, strip_ansi};
+use crate::world::{RunNotes, RunTarget, StepPin, log_frame, note_frame, step_frame};
 
 /// One image attempt: a `started`/`finished` image row, its inner `step`/`log`/`note` frames, and
 /// the run capture that makes `slipfork logs -r <id>` resolve.
@@ -209,7 +209,7 @@ impl<'a> ImageAttempt<'a> {
                 (self.emit)(step_frame(&self.image, &step));
             }
             BuildEvent::Line { stream, text } => {
-                let text = strip_ansi(text);
+                // Stored and streamed raw: the viewer strips when its output cannot take colour.
                 let text = text.trim_end_matches('\r');
                 if text.trim().is_empty() {
                     return;
@@ -229,7 +229,7 @@ impl<'a> ImageAttempt<'a> {
                 (self.emit)(frame);
             }
             BuildEvent::Note { text } => {
-                let text = strip_ansi(text);
+                let text = crate::ui::strip(text);
                 if text.trim().is_empty() {
                     return;
                 }
@@ -298,7 +298,7 @@ fn step_label(event: &StepEvent<'_>) -> String {
         "{}/{} {} {}",
         event.index, event.total, event.instruction, event.args
     );
-    let raw = strip_ansi(&raw);
+    let raw = crate::ui::strip(&raw);
     let mut label = String::with_capacity(raw.len());
     let mut gap = false;
     for ch in raw.chars() {

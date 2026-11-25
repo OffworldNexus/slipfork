@@ -86,7 +86,13 @@ impl<'sink> EventPrinter<'sink> {
     }
 
     fn line(&mut self, stream: &str, text: &str) {
-        let text = strip_ansi(text).replace('\r', "");
+        // A colour TTY keeps the child's own bytes; a pipe or `--json` gets an escape-free line.
+        let text = if self.palette.color() && !self.json {
+            crate::ui::colour_only(text)
+        } else {
+            crate::ui::strip(text)
+        }
+        .replace('\r', "");
         if text.trim().is_empty() {
             return;
         }
@@ -181,36 +187,6 @@ fn keyword_cell(palette: Palette, step: &StepEvent<'_>) -> String {
         .instruction_width
         .saturating_sub(keyword.chars().count());
     format!("{}{}", palette.substep(&keyword), " ".repeat(pad))
-}
-
-/// Strips CSI escape sequences from child output, keeping the `\r` policy at the call site.
-fn strip_ansi(text: &str) -> std::borrow::Cow<'_, str> {
-    if !text.contains('\u{1b}') {
-        return std::borrow::Cow::Borrowed(text);
-    }
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch != '\u{1b}' {
-            out.push(ch);
-            continue;
-        }
-        match chars.peek() {
-            Some('[') => {
-                chars.next();
-                for ch in chars.by_ref() {
-                    if ('@'..='~').contains(&ch) {
-                        break;
-                    }
-                }
-            }
-            Some(_) => {
-                chars.next();
-            }
-            None => {}
-        }
-    }
-    std::borrow::Cow::Owned(out)
 }
 
 #[cfg(test)]

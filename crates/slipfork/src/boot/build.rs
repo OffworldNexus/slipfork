@@ -266,7 +266,14 @@ impl Narrative {
     /// prints its one `→` header, later lines keep its gutter.
     pub(super) fn log(&mut self, event: &Value, width: usize, palette: Palette) -> Vec<Action> {
         let stream = event["stream"].as_str().unwrap_or("stdout");
-        let text = event["line"].as_str().unwrap_or_default();
+        let stored = event["line"].as_str().unwrap_or_default();
+        // The daemon keeps the child's raw bytes; a pipe or `NO_COLOR` viewer drops the escapes,
+        // a colour terminal keeps SGR colour but never a cursor/alt-screen control.
+        let text = if palette.color() {
+            crate::ui::colour_only(stored)
+        } else {
+            crate::ui::strip(stored)
+        };
         let candidates = keys_for(event);
         let target = event["name"].as_str();
         let matched = self.steps.lock().ok().and_then(|mut steps| {
@@ -276,7 +283,7 @@ impl Narrative {
         });
         let Some((key, phase)) = matched else {
             if candidates.is_empty() && target.is_none() {
-                return vec![Action::Print(gutter_line(stream, text, width, palette, 2))];
+                return vec![Action::Print(gutter_line(stream, &text, width, palette, 2))];
             }
             return Vec::new();
         };
@@ -297,7 +304,7 @@ impl Narrative {
         self.last_printed = Some(key);
         actions.push(Action::Output {
             stream: stream.to_owned(),
-            text: text.to_owned(),
+            text: text.into_owned(),
             indent: phase.gutter_indent(),
         });
         actions

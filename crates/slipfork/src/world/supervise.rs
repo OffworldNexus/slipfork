@@ -15,7 +15,7 @@ use slipfork_world::{
 
 use crate::commands::Session;
 use crate::world::features::WorldFeatures;
-use crate::world::runtime::capture::{RunTarget, strip_ansi};
+use crate::world::runtime::capture::RunTarget;
 use crate::world::runtime::frames::{StepPin, failure_facts, log_frame, note_frame};
 
 use super::{HostEnv, SuperviseArgs, fail, runtime::WorldBoot, runtime::WorldRuntime};
@@ -473,8 +473,7 @@ impl BootSink {
     /// The bytes are stored exactly as the child wrote them (ANSI included): a later colour
     /// terminal can replay them, while a pipe/`NO_COLOR`/`--json` viewer strips at the edge.
     pub(super) fn append_stream(&mut self, stream: slipfork_world::Stream, line: &str) {
-        let text = strip_ansi(line);
-        let text = text.trim_end_matches('\r');
+        let text = line.trim_end_matches('\r');
         if text.trim().is_empty() {
             return;
         }
@@ -512,7 +511,6 @@ impl EventLog {
     }
 
     fn append_stream(&mut self, stream: slipfork_world::Stream, text: &str) {
-        let text = strip_ansi(text);
         self.emit(stream, text.trim_end_matches('\r'));
     }
 
@@ -538,7 +536,7 @@ impl EventLog {
 
     /// Flushes one engine narration frame pinned to this step, without touching any capture.
     fn note(&self, text: &str) {
-        let text = strip_ansi(text);
+        let text = crate::ui::strip(text);
         let text = text.trim_end_matches('\r');
         if text.is_empty() {
             return;

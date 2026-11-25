@@ -94,6 +94,7 @@ pub use namespaces::{NAMESPACE_KINDS, NamespaceIdentity, NamespaceTable};
 pub use pod::{
     Bind, BindSource, PodBundle, PodEnv, PodFile, PodHost, PodSpec, is_reusable_pod, write_bundle,
 };
+pub use pod_env::COLOUR_HINTS;
 pub use pod_log::{CHUNK, DIVIDER_CLOSE, DIVIDER_OPEN, LogKind, LogLine, LogReader, LogSink};
 pub use port::{Dirtiness, ForkPaths, WorldEngine};
 pub use reap::{kill_group, reap_world_tree};

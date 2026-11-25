@@ -1,4 +1,4 @@
-//! Step run captures and ANSI scrubbing: opened before a step runs, finished when it settles.
+//! Step run captures opened before a step runs, finished when it settles.
 
 use std::path::Path;
 
@@ -57,34 +57,4 @@ impl RunTarget {
             capture.discard();
         }
     }
-}
-
-/// Strips CSI escape sequences from a child's raw line, so a `log` frame never carries ANSI.
-pub(crate) fn strip_ansi(text: &str) -> std::borrow::Cow<'_, str> {
-    if !text.contains('\u{1b}') {
-        return std::borrow::Cow::Borrowed(text);
-    }
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch != '\u{1b}' {
-            out.push(ch);
-            continue;
-        }
-        match chars.peek() {
-            Some('[') => {
-                chars.next();
-                for ch in chars.by_ref() {
-                    if ('@'..='~').contains(&ch) {
-                        break;
-                    }
-                }
-            }
-            Some(_) => {
-                chars.next();
-            }
-            None => {}
-        }
-    }
-    std::borrow::Cow::Owned(out)
 }

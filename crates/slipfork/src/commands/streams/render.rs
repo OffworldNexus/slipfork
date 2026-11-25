@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 use crate::commands::LocalClock;
 use crate::commands::emit;
+use crate::ui::strip;
 use crate::ui::table::{Column, Table};
 use crate::ui::{Palette, Verdict};
 
@@ -35,6 +36,18 @@ pub(crate) struct Renderer {
     reason: Option<String>,
     /// Set when a non-EPIPE write failed, so the caller can exit non-zero.
     failed: bool,
+}
+
+/// The stored line as this viewer may render it.
+///
+/// The capture stores the child's raw bytes; only a colour-capable human viewer keeps them. A
+/// pipe, `NO_COLOR`, and `--json` strip every escape before rendering or measuring.
+fn visible(stored: &str, color: bool, json: bool) -> std::borrow::Cow<'_, str> {
+    if color && !json {
+        crate::ui::colour_only(stored)
+    } else {
+        strip(stored)
+    }
 }
 
 /// One v3 replay row: `  HH:MM:SS.mmm │ line`, with the clock resolved once for the invocation.
@@ -109,10 +122,11 @@ impl Renderer {
             .get("stream")
             .and_then(Value::as_str)
             .unwrap_or("stdout");
-        let line = event
+        let stored = event
             .get("line")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        let line = visible(stored, self.palette.color(), self.json);
         let ts_ms = event.get("ts_ms").and_then(Value::as_u64);
         if kind == "roster" {
             // `logs -r --json` mirrors the catalog record before its captured lines.
@@ -157,12 +171,12 @@ impl Renderer {
                 self.write(&format!("{row}\n"));
             }
             "divider" => {
-                self.write(&format!("{}\n", self.palette.meta(line)));
+                self.write(&format!("{}\n", self.palette.meta(&line)));
             }
             _ if self.clocked => {
                 // The v3 replay row: 2-space indent, a dim clock in the gutter, then the glyph.
                 let glyph = self.palette.gutter(stream);
-                let row = replay_row(&self.clock, self.palette, ts_ms, &glyph, line);
+                let row = replay_row(&self.clock, self.palette, ts_ms, &glyph, &line);
                 self.rows += 1;
                 self.write(&format!("{row}\n"));
             }
@@ -193,7 +207,7 @@ impl Renderer {
                 let cells = [
                     self.palette.tint(pod, "1"),
                     self.palette.gutter(stream),
-                    line.to_owned(),
+                    line.to_string(),
                 ];
                 // Measure the real row, line included: the table engine skips a zero-width column,
                 // and measuring an empty body would silently drop every log line.
@@ -294,9 +308,34 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests {
-    use super::replay_row;
+    use super::{replay_row, visible};
     use crate::commands::LocalClock;
     use crate::ui::Palette;
+    use crate::ui::table::{Column, Table};
+
+    const RED: &str = "\u{1b}[31mred\u{1b}[0m";
+
+    #[test]
+    fn a_colour_terminal_keeps_the_child_bytes_and_every_other_viewer_strips_them() {
+        assert_eq!(visible(RED, true, false), RED);
+        assert_eq!(visible(RED, false, false), "red", "a pipe carries no ESC");
+        assert_eq!(visible(RED, true, true), "red", "`--json` is escape-free");
+        assert_eq!(visible(RED, false, true), "red");
+    }
+
+    #[test]
+    fn a_colour_line_measures_by_its_plain_width_so_the_gutter_never_shears() {
+        let columns = [Column::left().at_least(6), Column::left()];
+        let table = Table::new(&columns).gap(" ");
+        let plain = table.widths(&[vec!["api".to_owned(), "red".to_owned()]]);
+        let coloured = table.widths(&[vec!["api".to_owned(), RED.to_owned()]]);
+        assert_eq!(plain, coloured);
+        assert_eq!(
+            crate::ui::strip(&table.line(&coloured, &["api".to_owned(), RED.to_owned()])),
+            table.line(&plain, &["api".to_owned(), "red".to_owned()]),
+            "the visible gutter never shears on a coloured line"
+        );
+    }
 
     #[test]
     fn replay_clock_gutter_uses_the_injected_local_clock() {

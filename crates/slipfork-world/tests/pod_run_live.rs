@@ -329,6 +329,13 @@ fn pod_identity_maps_the_image_user_and_a_live_root_pod_writes_host_owned_files(
     let env = config_env(&json);
     assert_eq!(env_value(&env, "HOME").as_deref(), Some("/root"));
     assert_eq!(env_value(&env, "USER").as_deref(), Some("root"));
+    assert_eq!(
+        env_value(&env, "TERM").as_deref(),
+        Some("xterm-256color"),
+        "a pod advertises a colour terminal without allocating one"
+    );
+    assert_eq!(env_value(&env, "CLICOLOR_FORCE").as_deref(), Some("1"));
+    assert_eq!(env_value(&env, "COLORTERM").as_deref(), Some("truecolor"));
 
     // Live: the pod's container root is the invoking host user, so its file stays host-owned.
     let runtime = tmpfs_dir("rt");
@@ -376,6 +383,16 @@ fn pod_identity_maps_the_image_user_and_a_live_root_pod_writes_host_owned_files(
     assert!(
         status.contains("00000000a80425fb"),
         "container root must hold Docker's 14 default caps (CapEff 0xa80425fb): {status}"
+    );
+    let colour = pod_exec(
+        &pods_dir,
+        "svc-root",
+        &["/bin/sh", "-c", "printf %s \"$CLICOLOR_FORCE/$COLORTERM\""],
+    );
+    assert_eq!(
+        colour.trim(),
+        "1/truecolor",
+        "the live pod must carry the colour hints"
     );
     pod_exec(&pods_dir, "svc-root", &[touch.as_str(), "/project/created"]);
     let created = project.join("created");
