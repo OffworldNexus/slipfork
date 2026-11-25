@@ -6,12 +6,14 @@
 //! verbs draw.
 
 mod elapsed;
+mod failure;
 mod paint;
 mod palette;
 pub mod table;
 mod terminal;
 
 pub use elapsed::elapsed_text;
+pub use failure::{block as failure_block, split_remedy};
 pub use paint::paint;
 pub use palette::{Palette, Verdict};
 pub use terminal::normalize_size;

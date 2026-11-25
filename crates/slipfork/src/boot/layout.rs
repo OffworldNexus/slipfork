@@ -74,7 +74,149 @@ pub(super) fn wrap_gutter(
         .collect()
 }
 
-/// The build-end outer row: `✓ [1/3] image  api      built 6 steps  12.3s`.
+/// One image outcome parsed once from a `finished` frame. Exhaustive, so a new state is explicit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ImageState {
+    Failed,
+    Cached,
+    Built,
+    Pulled,
+    Unknown,
+}
+
+/// One settled image end row, owned by the typed state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ImageEnd {
+    pub(super) state: ImageState,
+    /// Steps that really ran; `None` means an older frame carried no count (print plain `built`).
+    pub(super) executed: Option<usize>,
+    pub(super) millis: u64,
+    pub(super) at: Option<(usize, usize)>,
+}
+
+impl ImageEnd {
+    pub(super) const fn new(
+        state: ImageState,
+        executed: Option<usize>,
+        millis: u64,
+        at: Option<(usize, usize)>,
+    ) -> Self {
+        Self {
+            state,
+            executed,
+            millis,
+            at,
+        }
+    }
+}
+
+/// The one image end row: `✓ … built N steps`, `✓ … cached`, `✓ … pulled`, `✗ … failed at N/M`,
+/// or a neutral `• … finished` when the frame state was missing/unknown.
+pub(super) fn image_end_row(
+    index: usize,
+    image_count: usize,
+    image: &str,
+    end: ImageEnd,
+    widths: &OuterWidths,
+    palette: Palette,
+) -> String {
+    let count = (index > 0 && image_count > 0).then_some((index, image_count));
+    match end.state {
+        ImageState::Cached => outer_row(
+            &palette.icon_ok(),
+            count,
+            "image",
+            image,
+            "cached",
+            None,
+            Some(end.millis),
+            widths,
+            palette,
+        ),
+        ImageState::Built => {
+            let detail = end.executed.map_or_else(
+                || "built".to_owned(),
+                |executed| {
+                    let plural = if executed == 1 { "step" } else { "steps" };
+                    format!("built {executed} {plural}")
+                },
+            );
+            outer_row(
+                &palette.icon_ok(),
+                count,
+                "image",
+                image,
+                &detail,
+                None,
+                Some(end.millis),
+                widths,
+                palette,
+            )
+        }
+        ImageState::Pulled => outer_row(
+            &palette.icon_ok(),
+            count,
+            "image",
+            image,
+            "pulled",
+            None,
+            Some(end.millis),
+            widths,
+            palette,
+        ),
+        ImageState::Failed => {
+            let detail = match end.at {
+                Some((step, total)) if step > 0 && total > 0 => format!("failed at {step}/{total}"),
+                _ => "failed".to_owned(),
+            };
+            outer_row(
+                &palette.tint("✗", "31"),
+                count,
+                "image",
+                image,
+                &detail,
+                None,
+                Some(end.millis),
+                widths,
+                palette,
+            )
+        }
+        ImageState::Unknown => outer_row(
+            &palette.icon_info(),
+            count,
+            "image",
+            image,
+            "finished",
+            None,
+            Some(end.millis),
+            widths,
+            palette,
+        ),
+    }
+}
+
+/// The failed build-end outer row: `✗ [1/3] image  api      failed at 2/6`.
+#[cfg(test)]
+pub(super) fn image_failed_row(
+    index: usize,
+    image_count: usize,
+    image: &str,
+    at: Option<(usize, usize)>,
+    widths: &OuterWidths,
+    palette: Palette,
+) -> String {
+    image_end_row(
+        index,
+        image_count,
+        image,
+        ImageEnd::new(ImageState::Failed, None, 0, at),
+        widths,
+        palette,
+    )
+}
+
+/// The successful build-end outer row: `✓ [1/3] image  api      built 6 steps  12.3s`.
+#[cfg(test)]
 pub(super) fn image_done_row(
     index: usize,
     total: usize,
@@ -84,16 +226,11 @@ pub(super) fn image_done_row(
     widths: &OuterWidths,
     palette: Palette,
 ) -> String {
-    let plural = if steps == 1 { "step" } else { "steps" };
-    let detail = format!("built {steps} {plural}");
-    outer_row(
-        &palette.icon_ok(),
-        (index > 0 && total > 0).then_some((index, total)),
-        "image",
+    image_end_row(
+        index,
+        total,
         image,
-        &detail,
-        None,
-        Some(millis),
+        ImageEnd::new(ImageState::Built, Some(steps), millis, None),
         widths,
         palette,
     )

@@ -6,6 +6,7 @@
 //! [`Action`] to the anchored region (a colour TTY) or straight to stdout/stderr (a pipe /
 //! `NO_COLOR`), so both shapes tell the same story and `--json` never reaches here at all.
 
+mod image;
 mod tally;
 
 use std::sync::{Arc, Mutex};
@@ -18,7 +19,11 @@ use self::tally::ImageTally;
 use super::failure;
 use super::render::{OuterWidths, outer_row, outer_verb};
 
-pub(super) use super::layout::{Columns, gutter_line, image_done_row, wrap_gutter};
+pub(super) use super::layout::{Columns, gutter_line, wrap_gutter};
+#[cfg(test)]
+pub(super) use super::layout::{
+    ImageEnd, ImageState, image_done_row, image_end_row, image_failed_row,
+};
 pub(super) use super::phase::{LiveKey, LiveSteps, Phase};
 
 /// One routing decision from the narrative to the live driver.
@@ -331,53 +336,6 @@ impl Narrative {
         self.streamed.iter().any(|done| done == image)
     }
 
-    /// Releases an image's remaining step rows in index order, then its build-end row.
-    fn settle_image(&mut self, image: &str, palette: Palette) -> Vec<Action> {
-        let Some(position) = self.images.iter().position(|tally| tally.image == image) else {
-            return Vec::new();
-        };
-        let mut tally = self.images.remove(position);
-        if tally.is_unused() {
-            return Vec::new();
-        }
-        self.observe_outer("image", image);
-        let (rows, steps, millis) = tally.settle();
-        let outer = tally.outer;
-        let mut actions: Vec<Action> = rows.into_iter().map(Action::Settle).collect();
-        actions.push(Action::Print(image_done_row(
-            outer.0,
-            outer.1,
-            image,
-            steps,
-            millis,
-            &self.outer,
-            palette,
-        )));
-        self.streamed.push(image.to_owned());
-        actions
-    }
-
-    /// One `finished`/`up-to-date` frame: images settle their buffered rows before `take_boot`'s
-    /// `target == name` fallback can steal an in-flight image step and drop those rows.
-    pub(super) fn finish_node(
-        &mut self,
-        kind: &str,
-        name: &str,
-        event: &Value,
-        palette: Palette,
-    ) -> Option<Vec<Action>> {
-        if kind == "image" {
-            let actions = self.settle_image(name, palette);
-            if !actions.is_empty() {
-                return Some(actions);
-            }
-            if self.streamed_image(name) {
-                return Some(Vec::new());
-            }
-        }
-        self.finished(event, palette).map(|row| vec![row])
-    }
-
     /// The failure block: on an anchored TTY, expands the failing phase row and its FULL output
     /// into scrollback; on an append-only stream, lines already printed live are never repeated.
     pub(super) fn failed(
@@ -403,9 +361,14 @@ impl Narrative {
             },
             |live| live.phase.verb.clone(),
         );
-        if anchored_pane && let Some(live) = &live {
-            for row in live.expansion_rows(width, palette) {
-                actions.push(Action::Hold(row));
+        if let Some(live) = &live {
+            if anchored_pane {
+                for row in live.expansion_rows(width, palette) {
+                    actions.push(Action::Hold(row));
+                }
+            } else {
+                // Append-only already streamed the child lines; still mark the failing step once.
+                actions.push(Action::Print(live.phase.failed_row(palette)));
             }
         }
         for row in failure::envelope(event, &verb, self.verbose, palette, step_less) {

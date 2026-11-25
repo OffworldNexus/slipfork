@@ -38,7 +38,11 @@ impl Session {
             args.no_cache,
         ) {
             Ok(()) => ExitCode::SUCCESS,
-            Err(message) => fail(message, "inspect `.slipfork/supervisor.log`"),
+            Err(message) => fail(
+                message,
+                "inspect `.slipfork/supervisor.log`",
+                crate::ui::Palette::new(self.color()),
+            ),
         }
     }
 }

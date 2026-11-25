@@ -87,6 +87,24 @@ impl<'a> ImageAttempt<'a> {
         })
     }
 
+    /// The capture id a human can replay with `slipfork logs -r <id>`.
+    pub(super) fn run_id(&self) -> Option<&str> {
+        self.run.as_ref().and_then(RunTarget::run_id)
+    }
+
+    /// The last instruction this attempt started (`RUN apt-get update`), or its Dockerfile.
+    pub(super) fn instruction(&self) -> Option<String> {
+        if let Some(note) = &self.started {
+            let phase = note.phase.as_deref().unwrap_or_default().to_uppercase();
+            let command = note.instruction.as_deref().unwrap_or_default();
+            let text = format!("{phase} {command}").trim().to_owned();
+            if !text.is_empty() {
+                return Some(text);
+            }
+        }
+        self.dockerfile.as_deref().map(file_label)
+    }
+
     /// Runs one engine call with a typed bus that re-emits the supervisor frame shapes.
     pub(super) fn events<T>(
         &mut self,
@@ -100,7 +118,13 @@ impl<'a> ImageAttempt<'a> {
     ///
     /// A kept capture names the last instruction this attempt applied (or the `FROM` reference it
     /// pulled), so a replay never has to guess which instruction produced its rows.
-    pub(super) fn finish(&mut self, state: &str, elapsed_ms: u64, last: Option<&StepTrace>) {
+    pub(super) fn finish(
+        &mut self,
+        state: &str,
+        elapsed_ms: u64,
+        last: Option<&StepTrace>,
+        executed: usize,
+    ) {
         let discard = !self.wrote && state == "cached";
         if !discard {
             let note = success_note(self.nodes, &self.image, last);
@@ -124,6 +148,7 @@ impl<'a> ImageAttempt<'a> {
             "name": self.image,
             "state": state,
             "detail": state,
+            "executed": executed,
             "elapsed_ms": elapsed_ms,
             "duration_ms": elapsed_ms,
             "run_id": run_id,
@@ -158,6 +183,7 @@ impl<'a> ImageAttempt<'a> {
             "name": self.image,
             "state": "failed",
             "detail": cause,
+            "executed": 0,
             "elapsed_ms": elapsed_ms,
             "duration_ms": elapsed_ms,
             "run_id": run_id,

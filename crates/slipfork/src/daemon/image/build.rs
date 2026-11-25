@@ -182,7 +182,7 @@ pub(crate) fn build(
         failure(
             "image-build",
             format!("build `{component}` failed: {}", error.cause()),
-            "fix the failing Dockerfile instruction and retry, or run `slipfork logs` after `up`",
+            "fix the failing Dockerfile instruction and retry; run `slipfork logs --runs` to find the run id, then replay it",
         )
     })?;
     let cache_key = report.key.as_hex();

@@ -19,7 +19,6 @@ use crate::commands::{Session, emit};
 use crate::daemon::{DaemonClient, DaemonError};
 
 use super::runs::{RunRow, render_runs};
-pub(crate) use super::timeparse::format_ts;
 
 /// Set by the SIGINT handler so a followed stream exits `0` on Ctrl-C.
 pub(crate) static INTERRUPTED: AtomicBool = AtomicBool::new(false);
@@ -86,7 +85,7 @@ impl Session {
             "since_ms": args.since_ms,
             "until_ms": args.until_ms,
         });
-        let mut renderer = Renderer::new(self.color(), args.json, args.timestamps);
+        let mut renderer = Renderer::new(self.color(), args.json, args.timestamps, self.clock());
         match client.call_streaming("logs", params, &mut |event| renderer.event(event)) {
             Ok(_) => {
                 renderer.finish(0);
@@ -137,7 +136,7 @@ impl Session {
                     if let Some(notice) = empty_runs_notice(records.len(), skipped) {
                         failed |= matches!(emit(&format!("{notice}\n")), ExitCode::FAILURE);
                     } else if !records.is_empty() {
-                        for line in render_runs(&records, self.color()) {
+                        for line in render_runs(&records, self.color(), self.clock()) {
                             failed |= matches!(emit(&format!("{line}\n")), ExitCode::FAILURE);
                         }
                     }
@@ -167,7 +166,7 @@ impl Session {
             "since_ms": args.since_ms,
             "until_ms": args.until_ms,
         });
-        let mut renderer = Renderer::replay(self.color(), args.json, args.timestamps);
+        let mut renderer = Renderer::replay(self.color(), args.json, args.timestamps, self.clock());
         match client.call_streaming("logs", params, &mut |event| renderer.event(event)) {
             Ok(_) => {
                 renderer.finish(0);

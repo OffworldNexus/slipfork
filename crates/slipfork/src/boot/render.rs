@@ -101,12 +101,17 @@ pub fn outer_row(
         widths.target,
     );
     let state = state.trim();
-    let state_width = widths.state.max(state.chars().count());
+    let state_width = widths.state.max(console::measure_text_width(state));
+    let styled_state = if state == "failed" || state.starts_with("failed ") {
+        palette.error(state)
+    } else {
+        palette.status(state)
+    };
     row.push_str("  ");
     push_padded(
         &mut row,
-        &palette.status(state),
-        state.chars().count(),
+        &styled_state,
+        console::measure_text_width(state),
         state_width,
     );
     if let Some(command) = command

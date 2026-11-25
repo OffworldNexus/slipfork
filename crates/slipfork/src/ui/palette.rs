@@ -120,10 +120,10 @@ impl Palette {
         self.tint(text, "1;32")
     }
 
-    /// A failure: bold red.
+    /// A failure: red, in the one weight shared with the `error:` label.
     #[must_use]
     pub fn error(self, text: &str) -> String {
-        self.tint(text, "1;31")
+        self.tint(text, "31")
     }
 
     /// A lifecycle state word, mapped to the shipped status colours.

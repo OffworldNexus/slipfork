@@ -408,7 +408,7 @@ impl Session {
         already_rendered: bool,
     ) -> ExitCode {
         if json_mode {
-            let (message, embedded) = super::split_remedy(&error.message);
+            let (message, embedded) = crate::ui::split_remedy(&error.message);
             println!(
                 "{}",
                 json!({ "error": {
@@ -422,7 +422,7 @@ impl Session {
         if already_rendered {
             return ExitCode::FAILURE;
         }
-        fail(&error.message, next)
+        fail(&error.message, next, crate::ui::Palette::new(self.color()))
     }
 }
 

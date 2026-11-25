@@ -37,6 +37,7 @@ pub use fmtmigrate::{FmtArgs, MigrateArgs};
 pub use open::OpenArgs;
 pub use secret::{SecretArgs, SecretVerb};
 pub use streams::LogsArgs;
+pub(crate) use timeparse::LocalClock;
 pub use timeparse::{parse_since, parse_until};
 
 /// One CLI invocation's environment, injected by the composition root.
@@ -45,6 +46,7 @@ pub struct Session {
     cwd: PathBuf,
     terminal: Terminal,
     host: HostEnv,
+    clock: LocalClock,
 }
 
 impl Session {
@@ -60,15 +62,22 @@ impl Session {
         &self.host
     }
 
-    /// Builds a session from the injected working directory, terminal, and host state. No handler
-    /// below ever re-probes stdio.
+    /// Builds a session from the injected working directory, terminal, host state, and wall clock.
+    /// No handler below ever re-probes stdio or reads the environment.
     #[must_use]
-    pub fn new(cwd: PathBuf, terminal: Terminal, host: HostEnv) -> Self {
+    pub fn new(cwd: PathBuf, terminal: Terminal, host: HostEnv, clock: LocalClock) -> Self {
         Self {
             cwd,
             terminal,
             host,
+            clock,
         }
+    }
+
+    /// The wall clock resolved once by the composition root.
+    #[must_use]
+    pub(crate) fn clock(&self) -> LocalClock {
+        self.clock
     }
 
     /// The output mode resolved once by the composition root.
@@ -219,39 +228,8 @@ impl Session {
     }
 
     fn fail(&self, message: &str, next: &str) -> ExitCode {
-        let palette = Palette::new(self.color());
-        // A daemon message may already carry its own `next:` line; that remedy wins, and the
-        // renderer still prints exactly one. A typed `✗` verdict keeps its glyph instead of
-        // gaining an `error:` prefix; generic failures keep the historical wording.
-        let (body, embedded) = crate::world::split_remedy(message);
-        let typed = body.starts_with('✗');
-        let mut emitted = false;
-        for line in body.lines() {
-            let line = if emitted {
-                line
-            } else {
-                line.strip_prefix("✗ ").unwrap_or(line)
-            };
-            if palette.color() {
-                if emitted {
-                    eprintln!("{}", palette.value(line));
-                } else {
-                    eprintln!("{} {}", palette.icon_bad(), palette.value(line));
-                }
-            } else if emitted {
-                eprintln!("{line}");
-            } else if typed {
-                eprintln!("✗ {line}");
-            } else {
-                eprintln!("error: {line}");
-            }
-            emitted = true;
-        }
-        let next = embedded.as_deref().map_or(next, |remedy| remedy);
-        if palette.color() {
-            eprintln!("{} {}", palette.meta("next:"), palette.kind(next));
-        } else {
-            eprintln!("next: {next}");
+        for line in crate::ui::failure_block(message, next, Palette::new(self.color())) {
+            eprintln!("{line}");
         }
         ExitCode::FAILURE
     }
@@ -312,7 +290,7 @@ impl Session {
 
 /// Splits a daemon message at its trailing `next: …` line; the message's own remedy wins.
 pub(crate) fn message_and_next(message: &str, fallback: &str) -> (String, String) {
-    let (body, embedded) = crate::world::split_remedy(message);
+    let (body, embedded) = crate::ui::split_remedy(message);
     (body, embedded.unwrap_or_else(|| fallback.to_owned()))
 }
 
@@ -329,8 +307,13 @@ pub(crate) fn emit(text: &str) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("error: failed to write output: {error}");
-            eprintln!("next: check that stdout is writable");
+            for line in crate::ui::failure_block(
+                &format!("failed to write output: {error}"),
+                "check that stdout is writable",
+                Palette::new(false),
+            ) {
+                eprintln!("{line}");
+            }
             ExitCode::FAILURE
         }
     }

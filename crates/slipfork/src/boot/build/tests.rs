@@ -2,6 +2,7 @@
 
 use super::{Columns, LiveKey, Phase};
 
+mod failure;
 mod layout;
 mod order;
 mod roles;

@@ -4,6 +4,7 @@
 //! so a failed build never detaches or stops the serving world, and a fork boots parent rootfses
 //! without materializing anything. Run logs and build notes live here, not in the world runtime.
 
+mod diagnosis;
 pub(super) mod progress;
 
 use std::collections::BTreeMap;
@@ -106,9 +107,9 @@ pub(crate) fn build_world_heads(
         );
         let elapsed = millis(started);
         match outcome {
-            Ok((head, state, last)) => {
+            Ok((head, state, last, executed)) => {
                 images.insert(node.id.clone(), head);
-                attempt.finish(&state, elapsed, last.as_ref());
+                attempt.finish(&state, elapsed, last.as_ref(), executed);
             }
             Err(failure) => return Err(attempt.fail(failure, elapsed)),
         }
@@ -164,11 +165,11 @@ fn build_image(
     puller: &slipfork_image::OciPuller,
     builder: &NativeImageBuilder,
     attempt: &mut ImageAttempt<'_>,
-) -> Result<(ImageHead, String, Option<slipfork_image::StepTrace>), AttemptFailure> {
+) -> Result<(ImageHead, String, Option<slipfork_image::StepTrace>, usize), AttemptFailure> {
     if let Some(reference) = &node.from {
         let pulled = pull_row(puller, reference, attempt)?;
         let state = if pulled.cached { "cached" } else { "pulled" }.to_owned();
-        return Ok((pulled_head(pulled, arch), state, None));
+        return Ok((pulled_head(pulled, arch), state, None, 0));
     }
     let paths = node.paths(project);
     let source = fs::read_to_string(&paths.dockerfile).map_err(|error| {
@@ -205,17 +206,37 @@ fn build_image(
             )
         })
         .map_err(|error| {
-            AttemptFailure::engine(
-                format!(
-                    "build `{}` failed: {}\nnext: fix the failing Dockerfile instruction and retry, or run `slipfork logs`",
-                    node.id,
-                    error.cause()
+            let cause = error.cause();
+            let instruction = attempt.instruction();
+            let run_id = attempt.run_id().map(str::to_owned);
+            match diagnosis::classify(&cause, instruction.as_deref(), run_id.as_deref()) {
+                Some(found) => AttemptFailure::engine(
+                    format!(
+                        "build `{}` failed: {}\nnext: {}",
+                        node.id, found.summary, found.next
+                    ),
+                    &error,
+                    None,
                 ),
-                &error,
-                None,
-            )
+                None => {
+                    let next = run_id.as_deref().map_or_else(
+                        || "fix the failing Dockerfile instruction and retry".to_owned(),
+                        |id| {
+                            format!(
+                                "fix the failing Dockerfile instruction and retry, or run `slipfork logs -r {id}`"
+                            )
+                        },
+                    );
+                    AttemptFailure::engine(
+                        format!("build `{}` failed: {}\nnext: {next}", node.id, cause),
+                        &error,
+                        None,
+                    )
+                }
+            }
         })?;
     let last = report.last;
+    let executed = report.cache_misses;
     let state = if report.cache_misses == 0 {
         "cached"
     } else {
@@ -235,7 +256,7 @@ fn build_image(
         workdir: report.config.workdir,
         state: state.clone(),
     };
-    Ok((head, state, last))
+    Ok((head, state, last, executed))
 }
 
 /// Pulls one `FROM`/resource reference with its own live `FROM` row.

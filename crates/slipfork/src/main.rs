@@ -29,26 +29,31 @@ fn main() -> ExitCode {
     let argv: Vec<OsString> = std::env::args_os().collect();
     let args = argv.get(1..).unwrap_or_default();
     let terminal = compose::terminal(args);
+    let color = terminal.mode.color();
     let cwd = match std::env::current_dir() {
         Ok(cwd) => cwd,
         Err(error) => {
-            eprintln!("error: cannot determine the working directory: {error}");
-            eprintln!("next: cd into a readable directory and run `slipfork --help`.");
+            let message = format!("cannot determine the working directory: {error}");
+            for line in ui::failure_block(
+                &message,
+                "cd into a readable directory and run `slipfork --help`.",
+                ui::Palette::new(color),
+            ) {
+                eprintln!("{line}");
+            }
             return ExitCode::from(2);
         }
     };
     let host = match compose::host(args, &cwd, terminal) {
         Ok(host) => host,
         Err(error) => {
-            let (body, next) = world::split_remedy(&error);
-            for line in body.lines() {
-                eprintln!("error: {line}");
+            for line in ui::failure_block(
+                &error,
+                "run `slipfork` from an installed binary.",
+                ui::Palette::new(color),
+            ) {
+                eprintln!("{line}");
             }
-            eprintln!(
-                "next: {}",
-                next.as_deref()
-                    .unwrap_or("run `slipfork` from an installed binary.")
-            );
             return ExitCode::from(2);
         }
     };
@@ -68,10 +73,13 @@ fn main() -> ExitCode {
         let mode = match daemon::IngressMode::parse(&args[1..]) {
             Ok(mode) => mode,
             Err(message) => {
-                eprintln!("error: {message}");
-                eprintln!(
-                    "next: run `slipfork __ingress --listen 127.0.0.1:80`, or let systemd pass the socket on stdin."
-                );
+                for line in ui::failure_block(
+                    &message,
+                    "run `slipfork __ingress --listen 127.0.0.1:80`, or let systemd pass the socket on stdin.",
+                    ui::Palette::new(color),
+                ) {
+                    eprintln!("{line}");
+                }
                 return ExitCode::from(2);
             }
         };
@@ -82,15 +90,14 @@ fn main() -> ExitCode {
                     Some(listener)
                 }
                 Err(error) => {
-                    eprintln!("error: cannot bind {address}: {error}");
-                    if error.kind() == std::io::ErrorKind::PermissionDenied {
-                        eprintln!(
-                            "next: sudo systemctl enable --now slipfork-ingress.socket  # or set net.ipv4.ip_unprivileged_port_start=0"
-                        );
+                    let message = format!("cannot bind {address}: {error}");
+                    let next = if error.kind() == std::io::ErrorKind::PermissionDenied {
+                        "sudo systemctl enable --now slipfork-ingress.socket  # or set net.ipv4.ip_unprivileged_port_start=0"
                     } else {
-                        eprintln!(
-                            "next: choose a free address or stop the process holding {address}"
-                        );
+                        "choose a free address or stop the process holding this port"
+                    };
+                    for line in ui::failure_block(&message, next, ui::Palette::new(color)) {
+                        eprintln!("{line}");
                     }
                     return ExitCode::FAILURE;
                 }
@@ -99,7 +106,8 @@ fn main() -> ExitCode {
         };
         return daemon::run_handoff(&host, mode, listener);
     }
-    cli::run(argv, commands::Session::new(cwd, terminal, host))
+    let clock = commands::LocalClock::resolve();
+    cli::run(argv, commands::Session::new(cwd, terminal, host, clock))
 }
 
 /// Binds the `--listen` ingress and reports the address the kernel actually assigned.

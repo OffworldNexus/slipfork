@@ -13,6 +13,8 @@ pub(super) struct ImageTally {
     pub(super) total: usize,
     pub(super) millis: u64,
     pub(super) buffer: BTreeMap<usize, String>,
+    /// Highest inner instruction index that ever started, so a failed row can say `at N/M`.
+    pub(super) last_index: usize,
     next: usize,
     /// The image's outer `[i/n]` plan slot, latched from the boot plan.
     pub(super) outer: (usize, usize),
@@ -29,6 +31,7 @@ impl ImageTally {
             total: 0,
             millis: 0,
             buffer: BTreeMap::new(),
+            last_index: 0,
             next: 1,
             outer: (0, 0),
             opened: false,
@@ -45,6 +48,7 @@ impl ImageTally {
         instruction_width: usize,
     ) -> (Option<(usize, usize)>, usize) {
         self.total = self.total.max(total);
+        self.last_index = self.last_index.max(index);
         // A real instruction re-announcing a provisional external-pull index wins.
         self.buffer.remove(&index);
         self.verb_width = self.verb_width.max(instruction_width);
@@ -55,6 +59,11 @@ impl ImageTally {
             None
         };
         (open, self.verb_width)
+    }
+
+    /// The instruction count and the last started inner index, when both are known.
+    pub(super) fn failure_at(&self) -> Option<(usize, usize)> {
+        (self.last_index > 0 && self.total > 0).then_some((self.last_index, self.total))
     }
 
     /// Whether zero inner steps were ever recorded, so a cached image falls through to its single

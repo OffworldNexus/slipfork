@@ -30,10 +30,16 @@ fn frame(
 }
 
 fn finished_frame() -> Value {
+    finished_frame_steps(2)
+}
+
+fn finished_frame_steps(executed: usize) -> Value {
     json!({
         "event": "finished",
         "kind": "image",
         "name": "api",
+        "state": "built",
+        "executed": executed,
         "duration_ms": 2500,
     })
 }
@@ -287,7 +293,7 @@ fn a_buffered_hole_still_releases_ascending_with_the_instruction_total() {
         &frame("api", 3, 3, "RUN", "echo last", "done", 20, 3),
         plain,
     );
-    let tail = narrative.finish_node("image", "api", &finished_frame(), plain);
+    let tail = narrative.finish_node("image", "api", &finished_frame_steps(3), plain);
     let tail = tail.expect("the image settles");
     let rows = settled_rows(&tail);
     assert_eq!(rows.len(), 2, "the hole never blocks later rows: {rows:?}");
@@ -322,7 +328,7 @@ fn image_first_finish_releases_buffered_rows_with_an_in_flight_step() {
         plain,
     );
     let actions = narrative
-        .finish_node("image", "api", &finished_frame(), plain)
+        .finish_node("image", "api", &finished_frame_steps(3), plain)
         .expect("the image settles before the boot fallback");
     let rows = settled_rows(&actions);
     assert_eq!(rows.len(), 1, "the buffered row 1 is released: {rows:?}");
@@ -359,22 +365,24 @@ fn cached_image_never_emits_inner_rows_and_service_failure_expands_at_outer_inde
             .is_empty(),
         "cached image start opens nothing until a step frame arrives"
     );
-    assert!(
-        narrative
-            .finish_node(
-                "image",
-                "api",
-                &json!({
-                    "event": "finished",
-                    "kind": "image",
-                    "name": "api",
-                    "state": "cached",
-                    "duration_ms": 8,
-                }),
-                plain,
-            )
-            .is_none(),
-        "cached image falls through to the single outer completed_row with zero inner rows"
+    let cached = narrative
+        .finish_node(
+            "image",
+            "api",
+            &json!({
+                "event": "finished",
+                "kind": "image",
+                "name": "api",
+                "state": "cached",
+                "duration_ms": 8,
+            }),
+            plain,
+        )
+        .expect("a cached image still emits its typed row");
+    assert_eq!(
+        end_row(&cached),
+        Some("✓ [1/3] image  api  cached  8ms"),
+        "a step-less cached image keeps its single typed cached row"
     );
 
     let begun = narrative.started(
@@ -531,7 +539,7 @@ fn every_inner_row_shares_one_instruction_column_from_the_first_step() {
             ));
         }
         let tail = narrative
-            .finish_node("image", "api", &finished_frame(), palette)
+            .finish_node("image", "api", &finished_frame_steps(5), palette)
             .expect("the image settles");
         actions.extend(tail);
         let rows = settled_rows(&actions);

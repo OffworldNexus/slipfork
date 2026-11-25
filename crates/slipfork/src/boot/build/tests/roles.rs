@@ -1,6 +1,8 @@
 //! Byte-exact role pins: the golden SGR/`NO_COLOR` lines the two-level visual contract promises.
 
-use super::super::{Columns, LiveKey, Phase, image_done_row};
+use super::super::{
+    Columns, ImageEnd, ImageState, LiveKey, Phase, image_done_row, image_end_row, image_failed_row,
+};
 use super::phase;
 use crate::boot::render::{Node, OuterWidths, completed_row, outer_widths};
 use crate::ui::{Palette, Verdict};
@@ -41,6 +43,84 @@ fn the_build_end_row_carries_outer_slot_steps_and_time() {
         image_done_row(1, 3, "api", 6, 12_300, &widths, Palette::new(true)),
         "\u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      \u{1b}[32mbuilt\u{1b}[0m 6 steps  \u{1b}[38;5;244m12.3s\u{1b}[0m"
     );
+}
+
+#[test]
+fn a_failed_image_row_names_the_last_started_step_and_never_claims_built() {
+    let widths = OuterWidths {
+        kind: 5,
+        target: 7,
+        state: 0,
+    };
+    let plain = image_failed_row(1, 3, "api", Some((2, 6)), &widths, Palette::new(false));
+    assert_eq!(plain, "✗ [1/3] image  api      failed at 2/6  <1ms");
+    assert!(
+        !plain.contains('✓') && !plain.contains("built"),
+        "{plain:?}"
+    );
+    assert!(!plain.contains('\u{1b}'), "plain rows stay colourless");
+    assert_eq!(
+        image_failed_row(1, 3, "api", Some((2, 6)), &widths, Palette::new(true)),
+        "\u{1b}[31m✗\u{1b}[0m \u{1b}[38;5;244m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      \u{1b}[31mfailed at 2/6\u{1b}[0m  \u{1b}[38;5;244m<1ms\u{1b}[0m"
+    );
+    assert_eq!(
+        image_failed_row(1, 3, "api", None, &widths, Palette::new(false)),
+        "✗ [1/3] image  api      failed  <1ms"
+    );
+}
+
+#[test]
+fn a_built_row_counts_only_executed_steps_and_cached_never_says_built() {
+    let widths = OuterWidths {
+        kind: 5,
+        target: 7,
+        state: 0,
+    };
+    let pale = Palette::new(false);
+    assert_eq!(
+        image_end_row(
+            1,
+            3,
+            "api",
+            ImageEnd::new(ImageState::Built, Some(3), 1200, None),
+            &widths,
+            pale
+        ),
+        "✓ [1/3] image  api      built 3 steps  1.2s"
+    );
+    assert_eq!(
+        image_end_row(
+            1,
+            3,
+            "api",
+            ImageEnd::new(ImageState::Cached, None, 8, None),
+            &widths,
+            pale
+        ),
+        "✓ [1/3] image  api      cached  8ms"
+    );
+    assert_eq!(
+        image_end_row(
+            1,
+            3,
+            "api",
+            ImageEnd::new(ImageState::Built, None, 0, None),
+            &widths,
+            pale
+        ),
+        "✓ [1/3] image  api      built  <1ms",
+        "an older frame without a count never falls back to the plan size"
+    );
+    let unknown = image_end_row(
+        1,
+        3,
+        "api",
+        ImageEnd::new(ImageState::Unknown, None, 0, None),
+        &widths,
+        pale,
+    );
+    assert_eq!(unknown, "• [1/3] image  api      finished  <1ms");
+    assert!(!unknown.contains('✓'), "{unknown:?}");
 }
 
 #[test]

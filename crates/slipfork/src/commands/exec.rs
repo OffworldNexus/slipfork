@@ -62,7 +62,7 @@ impl Session {
             "target": args.target,
             "tty": false,
         });
-        let mut renderer = Renderer::exec(self.color(), args.json);
+        let mut renderer = Renderer::exec(self.color(), args.json, self.clock());
         let stdin = std::io::stdin();
         let input_fd = stdin.as_raw_fd();
         let mut input = stdin.lock();
@@ -160,7 +160,7 @@ impl Session {
         let Some(mut client) = self.existing_daemon(json) else {
             return ExitCode::FAILURE;
         };
-        let mut renderer = Renderer::exec(self.color(), json);
+        let mut renderer = Renderer::exec(self.color(), json, self.clock());
         let stdin = std::io::stdin();
         let input_fd = stdin.as_raw_fd();
         let mut input = stdin.lock();

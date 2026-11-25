@@ -9,12 +9,10 @@ use std::process::ExitCode;
 
 use serde_json::{Value, json};
 
+use crate::commands::LocalClock;
 use crate::commands::emit;
-use crate::commands::timeparse::format_clock;
 use crate::ui::table::{Column, Table};
 use crate::ui::{Palette, Verdict};
-
-use super::format_ts;
 
 /// Renders typed daemon events as gutters, instruction rows, or NDJSON.
 pub(crate) struct Renderer {
@@ -25,7 +23,9 @@ pub(crate) struct Renderer {
     /// Prefix a human timestamp before the pod gutter (`-t`).
     timestamps: bool,
     /// Replay rows carry a `HH:MM:SS.mmm` clock and the v3 stream gutter.
-    clock: bool,
+    clocked: bool,
+    /// The one wall clock resolved by the composition root.
+    clock: LocalClock,
     width: usize,
     /// Human rows emitted in this replay, so an empty capture prints no double blank line.
     rows: usize,
@@ -37,14 +37,36 @@ pub(crate) struct Renderer {
     failed: bool,
 }
 
+/// One v3 replay row: `  HH:MM:SS.mmm │ line`, with the clock resolved once for the invocation.
+fn replay_row(
+    clock: LocalClock,
+    palette: Palette,
+    ts_ms: Option<u64>,
+    glyph: &str,
+    line: &str,
+) -> String {
+    ts_ms.map_or_else(
+        || format!("  {glyph} {line}"),
+        |ts| format!("  {} {glyph} {line}", palette.meta(&clock.clock(ts))),
+    )
+}
+
 impl Renderer {
     /// One renderer with only the mode flags set; every constructor narrows it.
-    fn blank(color: bool, json: bool, gutter: bool, timestamps: bool, clock: bool) -> Self {
+    fn blank(
+        color: bool,
+        json: bool,
+        gutter: bool,
+        timestamps: bool,
+        clocked: bool,
+        clock: LocalClock,
+    ) -> Self {
         Self {
             palette: Palette::new(color),
             json,
             gutter,
             timestamps,
+            clocked,
             clock,
             width: 0,
             rows: 0,
@@ -54,18 +76,18 @@ impl Renderer {
         }
     }
 
-    pub(super) fn new(color: bool, json: bool, timestamps: bool) -> Self {
-        Self::blank(color, json, true, timestamps, false)
+    pub(super) fn new(color: bool, json: bool, timestamps: bool, clock: LocalClock) -> Self {
+        Self::blank(color, json, true, timestamps, false, clock)
     }
 
     /// The `exec`/`shell` renderer: the command's own stdout and stderr, byte for byte.
-    pub(crate) fn exec(color: bool, json: bool) -> Self {
-        Self::blank(color, json, false, false, false)
+    pub(crate) fn exec(color: bool, json: bool, clock: LocalClock) -> Self {
+        Self::blank(color, json, false, false, false, clock)
     }
 
     /// The `logs -r <id>` renderer: one recorded run's clocked stream-gutter rows.
-    pub(super) fn replay(color: bool, json: bool, timestamps: bool) -> Self {
-        Self::blank(color, json, false, timestamps, true)
+    pub(super) fn replay(color: bool, json: bool, timestamps: bool, clock: LocalClock) -> Self {
+        Self::blank(color, json, false, timestamps, true, clock)
     }
 
     /// Writes one rendered chunk, remembering a non-EPIPE failure (`emit` treats EPIPE as clean).
@@ -124,9 +146,9 @@ impl Renderer {
                     || format!("  {line}"),
                     |ts| {
                         let clock = if self.timestamps {
-                            self.palette.meta(&format_ts(ts))
+                            self.palette.meta(&self.clock.timestamp(ts))
                         } else {
-                            self.palette.meta(&format_clock(ts))
+                            self.palette.meta(&self.clock.clock(ts))
                         };
                         format!("  {clock}  {line}")
                     },
@@ -137,27 +159,17 @@ impl Renderer {
             "divider" => {
                 self.write(&format!("{}\n", self.palette.meta(line)));
             }
-            _ if self.clock => {
+            _ if self.clocked => {
                 // The v3 replay row: 2-space indent, a dim clock in the gutter, then the glyph.
                 let glyph = self.palette.gutter(stream);
-                let row = ts_ms.map_or_else(
-                    || format!("  {glyph} {line}"),
-                    |ts| {
-                        let clock = if self.timestamps {
-                            self.palette.meta(&format_ts(ts))
-                        } else {
-                            self.palette.meta(&format_clock(ts))
-                        };
-                        format!("  {clock} {glyph} {line}")
-                    },
-                );
+                let row = replay_row(self.clock, self.palette, ts_ms, &glyph, line);
                 self.rows += 1;
                 self.write(&format!("{row}\n"));
             }
             _ if !self.gutter => {
                 let stamp = if self.timestamps {
                     ts_ms
-                        .map(|ts| format!("{} ", self.palette.meta(&format_ts(ts))))
+                        .map(|ts| format!("{} ", self.palette.meta(&self.clock.timestamp(ts))))
                         .unwrap_or_default()
                 } else {
                     String::new()
@@ -167,7 +179,7 @@ impl Renderer {
             _ => {
                 let stamp = if self.timestamps {
                     ts_ms
-                        .map(|ts| format!("{} ", self.palette.meta(&format_ts(ts))))
+                        .map(|ts| format!("{} ", self.palette.meta(&self.clock.timestamp(ts))))
                         .unwrap_or_default()
                 } else {
                     String::new()
@@ -211,7 +223,7 @@ impl Renderer {
             // A roster carrying a catalog record is a capture replay, so every following row takes
             // the clocked v3 stream-gutter path.
             self.gutter = false;
-            self.clock = true;
+            self.clocked = true;
             self.print_header(run);
         }
     }
@@ -238,7 +250,9 @@ impl Renderer {
                 .unwrap_or_default();
             (verb.clone(), command, verb)
         };
-        let started = run["started_ms"].as_u64().map(format_ts);
+        let started = run["started_ms"]
+            .as_u64()
+            .map(|ts| self.clock.timestamp(ts));
         let header =
             self.palette
                 .header_line(run_id, &header_verb, target, command, started.as_deref());
@@ -275,5 +289,31 @@ impl Renderer {
             let gap = if self.rows > 0 { "\n" } else { "" };
             self.write(&format!("{gap}{line}\n"));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replay_row;
+    use crate::commands::LocalClock;
+    use crate::ui::Palette;
+
+    #[test]
+    fn replay_clock_gutter_uses_the_injected_local_clock() {
+        let clock = LocalClock::fixed(2 * 3600);
+        assert_eq!(
+            replay_row(
+                clock,
+                Palette::new(false),
+                Some(1_782_907_200_000),
+                "│",
+                "line"
+            ),
+            "  14:00:00.000 │ line"
+        );
+        assert_eq!(
+            replay_row(clock, Palette::new(false), None, "┃", "line"),
+            "  ┃ line"
+        );
     }
 }

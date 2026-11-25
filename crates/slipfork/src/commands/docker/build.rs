@@ -62,7 +62,7 @@ impl Session {
             }),
             args,
             FinalVerb::Build,
-            "fix the failing Dockerfile instruction and retry, or run `slipfork logs` after `up`",
+            "fix the failing Dockerfile instruction and retry; run `slipfork logs --runs` to find the run id, then replay it",
         )
     }
 

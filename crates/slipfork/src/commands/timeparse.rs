@@ -1,7 +1,13 @@
-//! `logs --since/--until` value parsing and the UTC `-t` timestamp gutter.
+//! `logs --since/--until` value parsing and the local wall-clock replay gutter.
 //!
-//! Relative (`30s|5m|2h|1d`) and RFC 3339 inputs both resolve to epoch milliseconds here, and the
-//! renderer's gutter is computed without the host timezone so two machines print identical rows.
+//! Relative (`30s|5m|2h|1d`) and RFC 3339 inputs both resolve to epoch milliseconds here. The
+//! entry point snapshots the process timezone once; replay/`--runs` format against that snapshot
+//! with `localtime_r` per instant (DST correct), and no display module reads the environment.
+
+// Refreshes libc's process-timezone cache exactly once, at the composition root.
+unsafe extern "C" {
+    fn tzset();
+}
 
 use slipfork_world::pod_log::now_ms;
 
@@ -177,10 +183,122 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
-/// UTC `HH:MM:SS.mmm` clock gutter for a replayed run step, independent of the host timezone.
-pub(crate) fn format_clock(ts_ms: u64) -> String {
-    let time = (ts_ms / 1000).rem_euclid(86_400);
+/// The wall clock a human surface prints, resolved once by the composition root.
+///
+/// Display modules receive this value and never read `TZ`; [`LocalClock::System`] asks
+/// `localtime_r` per instant (so DST is correct), while [`LocalClock::Fixed`] is a deterministic
+/// offset for tests. The daemon never constructs either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalClock {
+    /// The process timezone, resolved per instant by `localtime_r`.
+    System,
+    /// A fixed UTC offset in seconds, used by pure tests.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Fixed(i32),
+}
+
+impl LocalClock {
+    /// The one clock the composition root resolves for this invocation.
+    ///
+    /// `tzset` snapshots the process timezone once; `localtime_r` then formats each instant against
+    /// that cached zone (DST correct per instant). No renderer reads the environment.
+    pub(crate) fn resolve() -> Self {
+        // SAFETY: `tzset` only refreshes libc's process-timezone cache; called once at the root.
+        unsafe {
+            tzset();
+        }
+        Self::System
+    }
+
+    /// A deterministic offset clock (test-only), so no test mutates the process timezone.
+    #[cfg(test)]
+    pub(crate) const fn fixed(offset_seconds: i32) -> Self {
+        Self::Fixed(offset_seconds)
+    }
+
+    /// Local `HH:MM:SS.mmm` clock gutter for a replayed run step.
+    pub(crate) fn clock(self, ts_ms: u64) -> String {
+        let millis = ts_ms % 1000;
+        match self.parts(ts_ms) {
+            Some(parts) => format!(
+                "{:02}:{:02}:{:02}.{millis:03}",
+                parts.hour, parts.minute, parts.second
+            ),
+            None => utc_clock(ts_ms),
+        }
+    }
+
+    /// Local `YYYY-MM-DD HH:MM:SS` gutter for `-t`, using the same wall clock as [`Self::clock`].
+    pub(crate) fn timestamp(self, ts_ms: u64) -> String {
+        match self.parts(ts_ms) {
+            Some(parts) => format!(
+                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                parts.year, parts.month, parts.day, parts.hour, parts.minute, parts.second
+            ),
+            None => utc_timestamp(ts_ms),
+        }
+    }
+
+    fn parts(self, ts_ms: u64) -> Option<LocalParts> {
+        match self {
+            Self::System => system_parts(ts_ms),
+            Self::Fixed(offset) => fixed_parts(ts_ms, offset),
+        }
+    }
+}
+
+/// One timestamp resolved against the process timezone.
+struct LocalParts {
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+}
+
+/// Resolves `ts_ms` through `localtime_r`; `None` only for an unrepresentable epoch.
+fn system_parts(ts_ms: u64) -> Option<LocalParts> {
+    let seconds = libc::time_t::try_from(ts_ms / 1000).ok()?;
+    let mut tm = std::mem::MaybeUninit::<libc::tm>::uninit();
+    // SAFETY: `localtime_r` writes a fully initialized `tm` through the pointer on success.
+    let result = unsafe { libc::localtime_r(&seconds, tm.as_mut_ptr()) };
+    if result.is_null() {
+        return None;
+    }
+    // SAFETY: the successful call above initialized the whole struct.
+    let tm = unsafe { tm.assume_init() };
+    Some(LocalParts {
+        year: tm.tm_year + 1900,
+        month: u32::try_from(tm.tm_mon + 1).ok()?,
+        day: u32::try_from(tm.tm_mday).ok()?,
+        hour: u32::try_from(tm.tm_hour).ok()?,
+        minute: u32::try_from(tm.tm_min).ok()?,
+        second: u32::try_from(tm.tm_sec).ok()?,
+    })
+}
+
+/// Pure civil conversion at a fixed offset; the test path never touches the environment.
+fn fixed_parts(ts_ms: u64, offset_seconds: i32) -> Option<LocalParts> {
+    let seconds = i64::try_from(ts_ms / 1000)
+        .ok()?
+        .saturating_add(i64::from(offset_seconds));
+    let days = seconds.div_euclid(86_400);
+    let time = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    Some(LocalParts {
+        year: i32::try_from(year).ok()?,
+        month,
+        day,
+        hour: u32::try_from(time / 3600).ok()?,
+        minute: u32::try_from(time % 3600 / 60).ok()?,
+        second: u32::try_from(time % 60).ok()?,
+    })
+}
+
+fn utc_clock(ts_ms: u64) -> String {
     let millis = ts_ms % 1000;
+    let time = (ts_ms / 1000).rem_euclid(86_400);
     format!(
         "{:02}:{:02}:{:02}.{millis:03}",
         time / 3600,
@@ -189,8 +307,7 @@ pub(crate) fn format_clock(ts_ms: u64) -> String {
     )
 }
 
-/// UTC `YYYY-MM-DD HH:MM:SS` gutter for `-t`, independent of the host timezone.
-pub(crate) fn format_ts(ts_ms: u64) -> String {
+fn utc_timestamp(ts_ms: u64) -> String {
     let seconds = (ts_ms / 1000) as i64;
     let days = seconds.div_euclid(86_400);
     let time = seconds.rem_euclid(86_400);
@@ -201,4 +318,20 @@ pub(crate) fn format_ts(ts_ms: u64) -> String {
         time % 3600 / 60,
         time % 60
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LocalClock;
+
+    #[test]
+    fn fixed_offset_wall_clock_respects_the_paris_summer_and_winter_offsets() {
+        // 2026-07-01T12:00:00Z is CEST (UTC+2); 2026-01-15T12:00:00Z is CET (UTC+1).
+        let summer = LocalClock::fixed(2 * 3600);
+        assert_eq!(summer.timestamp(1_782_907_200_000), "2026-07-01 14:00:00");
+        assert_eq!(summer.clock(1_782_907_200_000), "14:00:00.000");
+        let winter = LocalClock::fixed(3600);
+        assert_eq!(winter.timestamp(1_768_478_400_000), "2026-01-15 13:00:00");
+        assert_eq!(winter.clock(1_768_478_400_000), "13:00:00.000");
+    }
 }

@@ -1475,6 +1475,18 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
         !shown.contains("built ") && !shown.contains("✓ image web"),
         "a failed build must never print the build-end success row: {shown}"
     );
+    assert!(
+        shown.contains("✗ [1/2] image  web  failed at 5/5"),
+        "the failed image row names the last started step: {shown}"
+    );
+    assert!(
+        shown.lines().any(|line| line.starts_with("  ✗ 5/5 run")),
+        "the failing step keeps its own row: {shown}"
+    );
+    assert!(
+        !shown.contains("\n\n\n"),
+        "the failure block follows at most one blank line: {shown}"
+    );
     assert!(shown.contains(&format!("    │ out-{pty_stamp}")), "{shown}");
     assert!(shown.contains(&format!("    ┃ err-{pty_stamp}")), "{shown}");
     assert!(
@@ -1581,6 +1593,29 @@ fn live_boots_once_paints_the_panel_reconciles_orphans_and_replays_logs() {
     assert!(
         !piped_all.contains("built ") && !piped_all.contains("✓ image web"),
         "a failed build must never print a build-end row: {piped_all}"
+    );
+    assert!(
+        piped_out.contains("✗ [1/2] image  web  failed at 5/5"),
+        "the piped failed image row names the last started step: {piped_out}"
+    );
+    assert!(
+        piped_out
+            .lines()
+            .any(|line| line.starts_with("  ✗ 5/5 run")),
+        "the piped failing step keeps its own row: {piped_out}"
+    );
+    assert!(
+        !piped_all.contains("\n\n\n"),
+        "the piped failure block follows at most one blank line: {piped_all}"
+    );
+    assert_eq!(
+        piped_err.matches("error: ").count(),
+        1,
+        "one plain failure line: {piped_all}"
+    );
+    assert!(
+        !piped_err.contains("\n\n\nerror:"),
+        "at most one blank line before `error:`: {piped_all}"
     );
     assert_eq!(
         piped_err.matches("✗ RUN web failed (exit 3)").count(),
