@@ -27,6 +27,11 @@ LIVE_SUITES := \
 	slipfork/logs_last_live \
 	slipfork/image_rpc
 
+# Suites that expect a `from:` image pull: a warm `.slipfork-store` settles it `cached`, so
+# `live-test` refuses to start warm unless `LIVE_RESET=1` provisions the cold store.
+LIVE_COLD_SUITES := slipfork/critical_status_live
+LIVE_RESET ?=
+
 .PHONY: fmt clippy test check coverage guard test-tools live-test lsp-assets js-test typecheck packages-check docs-check docs-serve install uninstall
 
 fmt:
@@ -128,32 +133,65 @@ live-test:
 		echo "live-test: SLIPFORK_TEST_ROOT is unset; next: SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test" >&2; exit 2; }
 	@case "$(SLIPFORK_TEST_ROOT)" in /|/home|/home/*|/root|/root/*|/etc|/etc/*|/usr|/usr/*|"$$HOME") \
 		echo "live-test: refusing $(SLIPFORK_TEST_ROOT) as SLIPFORK_TEST_ROOT; next: SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test" >&2; exit 2 ;; esac
-	@test "$$(stat -f -c %t "$(SLIPFORK_TEST_ROOT)" 2>/dev/null)" = 9123683e || { \
-		echo "live-test: $(SLIPFORK_TEST_ROOT) is not on Btrfs" >&2; \
-		echo "next: sudo mkdir -p $(SLIPFORK_TEST_ROOT) && sudo truncate -s 12G $(SLIPFORK_TEST_ROOT).img && sudo mkfs.btrfs -f $(SLIPFORK_TEST_ROOT).img && sudo mount -o loop,user_subvol_rm_allowed,noatime $(SLIPFORK_TEST_ROOT).img $(SLIPFORK_TEST_ROOT)" >&2; exit 2; }
+	@root=$$(readlink -f "$(SLIPFORK_TEST_ROOT)"); \
+	test "$$(stat -f -c %t "$$root" 2>/dev/null)" = 9123683e || { \
+		echo "live-test: $$root is not on Btrfs" >&2; \
+		echo "next: sudo mkdir -p $$root && sudo truncate -s 12G $$root.img && sudo mkfs.btrfs -f $$root.img && sudo mount -o loop,user_subvol_rm_allowed,noatime $$root.img $$root" >&2; exit 2; }; \
+	mnt=$$(findmnt -n -o TARGET -T "$$root" 2>/dev/null); \
+	[ -n "$$mnt" ] || mnt=$$(stat -c %m "$$root" 2>/dev/null); \
+	[ "$$mnt" = "$$root" ] || { \
+		echo "live-test: $$root must be the Btrfs mount root, because a subdirectory shares the parent store; next: SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test" >&2; exit 2; }
 	@test "$$(stat -f -c %t /dev/shm 2>/dev/null)" = 1021994 || { \
 		echo "live-test: /dev/shm is not tmpfs; next: mount a tmpfs to hold XDG_RUNTIME_DIR" >&2; exit 2; }
 	@command -v crun >/dev/null 2>&1 || { \
 		echo "live-test: crun is missing; next: sudo apt-get install crun" >&2; exit 2; }
-	@rm -rf "$(SLIPFORK_TEST_ROOT)/home" "$(SLIPFORK_TEST_ROOT)/tmp" && install -d -m 700 "$(SLIPFORK_TEST_ROOT)" "$(SLIPFORK_TEST_ROOT)/home" "$(SLIPFORK_TEST_ROOT)/tmp" || { echo "live-test: cannot create $(SLIPFORK_TEST_ROOT)/home; next: sudo chown \"$$(id -u):$$(id -g)\" $(SLIPFORK_TEST_ROOT)" >&2; exit 2; } && \
-		chmod 700 "$(SLIPFORK_TEST_ROOT)/home" "$(SLIPFORK_TEST_ROOT)/tmp" && \
-		rm -rf "$(LIVE_RUNTIME_DIR)" && install -d -m 700 "$(LIVE_RUNTIME_DIR)"
+	@root=$$(readlink -f "$(SLIPFORK_TEST_ROOT)"); store="$$root/.slipfork-store"; \
+	cold=""; for suite in $(LIVE_SUITES); do case " $(LIVE_COLD_SUITES) " in *" $$suite "*) cold="$$cold $$suite";; esac; done; \
+	if [ -d "$$store/images" ] && [ -n "$$(ls -A "$$store/images" 2>/dev/null)" ] && [ -n "$$cold" ] && [ "$(LIVE_RESET)" != 1 ]; then \
+		echo "live-test: $$store already holds a warm image cache; next: LIVE_RESET=1 make live-test (cold suites:$$cold)" >&2; exit 2; fi; \
+	if [ "$(LIVE_RESET)" = 1 ]; then \
+		rm -rf "$$store"; \
+		if [ -e "$$store" ]; then btrfs subvolume delete -R "$$store" >/dev/null 2>&1 || true; rm -rf "$$store"; fi; \
+		[ ! -e "$$store" ] || { echo "live-test: cannot delete the warm store $$store; next: sudo btrfs subvolume delete -R $$store && LIVE_RESET=1 make live-test" >&2; exit 2; }; \
+		echo "live-test: cold store $$store"; fi
+	@root=$$(readlink -f "$(SLIPFORK_TEST_ROOT)"); \
+	rm -rf "$$root/.live"; install -d -m 700 "$$root" "$$root/.live" "$$root/.live/home" "$$root/.live/tmp" || { echo "live-test: cannot create $$root/.live/home; next: sudo chown \"$$(id -u):$$(id -g)\" $$root" >&2; exit 2; }; \
+	chmod 700 "$$root/.live/home" "$$root/.live/tmp"; \
+	rm -rf "$(LIVE_RUNTIME_DIR)" && install -d -m 700 "$(LIVE_RUNTIME_DIR)"
 	@case "$(LIVE_PROFILE)" in debug|release) ;; *) \
 		echo "live-test: unknown LIVE_PROFILE=$(LIVE_PROFILE); next: LIVE_PROFILE=debug make live-test" >&2; exit 2 ;; esac
 	@$(CARGO) build $(LIVE_CARGO_PROFILE) --target-dir "$(TARGET_DIR)" -p slipfork-world --bin slipfork-world-init
 	@test -x "$(LIVE_WORLD_INIT)" || { \
 		echo "live-test: $(LIVE_WORLD_INIT) is missing; next: $(CARGO) build $(LIVE_CARGO_PROFILE) --target-dir \"$(TARGET_DIR)\" -p slipfork-world --bin slipfork-world-init" >&2; exit 2; }
-	@set -e; live_cargo_home="$${CARGO_HOME:-$$HOME/.cargo}"; \
-		live_rustup_home="$${RUSTUP_HOME:-$$HOME/.rustup}"; \
-		for suite in $(LIVE_SUITES); do \
-		pkg=$${suite%%/*}; test=$${suite##*/}; \
-		printf '[live] %s %s\n' "$$pkg" "$$test"; \
-		HOME="$(SLIPFORK_TEST_ROOT)/home" TMPDIR="$(SLIPFORK_TEST_ROOT)/tmp" \
+	@root=$$(readlink -f "$(SLIPFORK_TEST_ROOT)"); \
+	live_cargo_home="$${CARGO_HOME:-$$HOME/.cargo}"; \
+	live_rustup_home="$${RUSTUP_HOME:-$$HOME/.rustup}"; \
+	passed=0; failed=0; total=0; \
+	store="$$root/.slipfork-store"; \
+	purge_store() { \
+		rm -rf "$$store"; \
+		if [ -e "$$store" ]; then command -v btrfs >/dev/null 2>&1 && btrfs subvolume delete -R "$$store" >/dev/null 2>&1; rm -rf "$$store"; fi; \
+		[ ! -e "$$store" ] || { echo "live-test: cannot purge the warm store $$store before $$suite; next: sudo btrfs subvolume delete -R $$store" >&2; exit 2; }; \
+		echo "live-test: cold store $$store (before $$suite)"; \
+	}; \
+	for suite in $(LIVE_SUITES); do \
+		pkg=$${suite%%/*}; test=$${suite##*/}; total=$$((total + 1)); \
+		case " $(LIVE_COLD_SUITES) " in *" $$suite "*) purge_store;; esac; \
+		printf '[live] RUN %s %s\n' "$$pkg" "$$test"; \
+		HOME="$$root/.live/home" TMPDIR="$$root/.live/tmp" \
 			CARGO_HOME="$$live_cargo_home" RUSTUP_HOME="$$live_rustup_home" \
-			XDG_RUNTIME_DIR="$(LIVE_RUNTIME_DIR)" SLIPFORK_TEST_ROOT="$(SLIPFORK_TEST_ROOT)" \
+			XDG_RUNTIME_DIR="$(LIVE_RUNTIME_DIR)" SLIPFORK_TEST_ROOT="$$root" \
 			SLIPFORK_WORLD_INIT="$(abspath $(LIVE_WORLD_INIT))" \
 			$(CARGO) test $(LIVE_CARGO_PROFILE) --target-dir "$(TARGET_DIR)" -p "$$pkg" --features "$$pkg/live" --test "$$test" -- --test-threads=1; \
-	done
+		rc=$$?; \
+		if [ "$$rc" -eq 0 ]; then \
+			passed=$$((passed + 1)); printf '[live] PASS %s %s\n' "$$pkg" "$$test"; \
+		else \
+			failed=$$((failed + 1)); printf '[live] FAIL %s %s (exit %s)\n' "$$pkg" "$$test" "$$rc"; \
+		fi; \
+	done; \
+	if [ "$$failed" -ne 0 ]; then echo "live-test: FAILED $$passed/$$total — see the FAIL lines above" >&2; exit 1; fi; \
+	echo "live-test: $$passed/$$total suites passed"
 
 # ---------------------------------------------------------------------------
 # Development installs: a branch build into your own prefix, never /usr.

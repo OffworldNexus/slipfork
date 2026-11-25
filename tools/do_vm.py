@@ -121,7 +121,9 @@ LOGIN_BANNER = "/etc/profile.d/slipfork-demo.sh"
 SUITE_HOME = f"{STATE_DIR}/home"
 # One short disk-backed test root on the Btrfs volume: `<state>/ctl/<world>/netns.sock` must fit
 # the 107-byte `AF_UNIX` limit, so the suites never build it under the deeper suite `HOME`.
-SUITE_TEST_ROOT = f"{STATE_DIR}/t"
+# The test root must BE the Btrfs mount root: suites resolve the store from the mount and
+# hardcode `<root>/.slipfork-store`, so a subdirectory silently shares the parent store.
+SUITE_TEST_ROOT = STATE_DIR
 # A real tmpfs `XDG_RUNTIME_DIR` for suite session sockets: never `/tmp` and never disk.
 SUITE_RUNTIME_DIR = "/dev/shm/slipfork-runtime"
 OWNER_HOME = f"{STATE_DIR}/root-home"
@@ -619,6 +621,47 @@ if {exe} daemon install --help >/dev/null 2>&1; then
 else
   echo 'product install: this build has no `daemon` mode yet; skipping :80 socket activation (M3.40)' >&2
 fi
+"""
+
+
+def render_store_reset(config: ProvisionConfig = PROVISION) -> str:
+    """Delete the suite store so every run starts from a cold image cache.
+
+    The suites' `SLIPFORK_TEST_ROOT` is the Btrfs mount root, so the store is
+    `<mount>/.slipfork-store`; a warm one turns an expected `from:` pull into `cached` and
+    silently changes what `critical_status_live` asserts. `product install` leaves a per-user
+    `slipfork` unit running that shares the store, so that unit is stopped first; suites boot
+    their own isolated daemons. Deletion always finishes with `rm -rf` because `btrfs
+    subvolume delete -R` leaves the parent directory shell behind. The legacy `<mount>/t` run
+    dir goes too, and the path failing to disappear fails closed.
+    """
+    store = _q(f"{config.test_root}/.slipfork-store")
+    legacy = _q(f"{config.test_root}/t")
+    user = _q(config.remote_user)
+    home = _q(config.remote_home)
+    return f"""\
+set -eu
+store={store}
+legacy={legacy}
+user={user}
+home={home}
+if [ -e "$store" ]; then
+  _uid=$(id -u "$user" 2>/dev/null || true)
+  runuser -u "$user" -- env HOME="$home" XDG_RUNTIME_DIR="/run/user/$_uid" \\
+    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$_uid/bus" \\
+    systemctl --user stop slipfork >/dev/null 2>&1 || true
+  rm -rf "$store"
+  if [ -e "$store" ]; then
+    btrfs subvolume delete -R "$store" >/dev/null 2>&1 || true
+    rm -rf "$store"
+  fi
+fi
+if [ -e "$store" ]; then
+  echo "slipfork: could not delete the warm store $store; next: sudo btrfs subvolume delete -R $store" >&2
+  exit 1
+fi
+rm -rf "$legacy"
+echo "cold store $store"
 """
 
 
@@ -2301,6 +2344,14 @@ def cmd_test(args: argparse.Namespace) -> int:
 
     _build_product(droplet, known_hosts, identity)
     _install_product(droplet, known_hosts, identity)
+    _step_failed(
+        "cold store reset",
+        _run_remote_script(
+            droplet, known_hosts, identity, "store-reset", render_store_reset()
+        ),
+        droplet,
+        known_hosts,
+    )
 
     for package, test, _, _ in SUITES:
         command = (
