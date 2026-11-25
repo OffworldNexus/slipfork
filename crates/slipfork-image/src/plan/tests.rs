@@ -189,6 +189,28 @@ fn arg_scope_is_the_declared_prefix_of_one_stage() {
 }
 
 #[test]
+fn metadata_rows_show_resolved_arg_and_env_values() {
+    let root = lab("resolved");
+    let source =
+        "FROM scratch\nARG port=8080\nENV PORT=$port\nENV BASE=/srv\nENV URL=$BASE:$PORT\n";
+    let build = plan(&root, source, BuildArgs::new());
+    let rows = &build.stages[0].rows;
+    let args: Vec<&str> = rows.iter().map(|row| row.args.as_str()).collect();
+    assert_eq!(
+        args,
+        [
+            "scratch",
+            "port=8080",
+            "PORT=8080",
+            "BASE=/srv",
+            "URL=/srv:8080"
+        ],
+        "ARG/ENV rows show the values the build resolved, not `$` placeholders"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn metadata_rows_keep_their_place_without_a_node_key() {
     let root = lab("metadata");
     let source =

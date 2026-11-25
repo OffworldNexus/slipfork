@@ -220,6 +220,11 @@ impl BootProgress {
 
     /// Applies one `step` frame to the inner level: `started` opens it, `done` advances it.
     pub(super) fn observe_step(&mut self, event: &Value) {
+        // A pre-build external-pull row is not a planned instruction: it never enters the inner
+        // fraction or the `step i/n` label, so a pull can never read as a built step.
+        if event["provisional"].as_bool().unwrap_or(false) {
+            return;
+        }
         let image = event["image"].as_str().unwrap_or("image");
         // The image's outer slot already carries its work; a late or duplicate step frame must not
         // recreate a `Building` and add an inner fraction on top of a fully counted outer level.

@@ -173,6 +173,38 @@ fn a_late_step_after_the_image_finished_never_overfills_the_bar() {
 }
 
 #[test]
+fn provisional_pre_pull_frames_never_count_as_built_instructions() {
+    let mut progress = BootProgress::new("Booting api");
+    let plan = vec![("image".to_owned(), "api".to_owned())];
+    progress.announce(&plan, 1);
+    for state in ["started", "done"] {
+        progress.observe_step(&serde_json::json!({
+            "state": state, "image": "api", "index": 2, "total": 13,
+            "instruction": "COPY", "provisional": true,
+        }));
+    }
+    let bar = progress.bar();
+    assert_eq!(
+        (bar.num, bar.den),
+        (0, 1),
+        "a provisional pre-pull is not a built instruction"
+    );
+
+    progress.observe_step(&serde_json::json!({
+        "state": "started", "image": "api", "index": 1, "total": 13, "instruction": "FROM",
+    }));
+    progress.observe_step(&serde_json::json!({
+        "state": "done", "image": "api", "index": 1, "total": 13,
+    }));
+    let bar = progress.bar();
+    assert_eq!(
+        (bar.num, bar.den),
+        (1, 13),
+        "the real instruction drives the inner fraction"
+    );
+}
+
+#[test]
 fn the_label_switches_between_the_build_step_and_the_outer_step() {
     let mut progress = BootProgress::new("Booting demo");
     progress.announce(

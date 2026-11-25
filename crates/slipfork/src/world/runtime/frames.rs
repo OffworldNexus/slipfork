@@ -133,6 +133,11 @@ pub(crate) fn step_frame(image: &str, event: &StepEvent<'_>) -> Value {
     if let Some(phase) = event.phase {
         frame["phase"] = json!(tail_wire_label(phase));
     }
+    // A pre-build external-pull row is announced to keep the build from looking frozen; it is
+    // never a real planned instruction, so renderers must be able to tell the two apart.
+    if event.provisional {
+        frame["provisional"] = json!(true);
+    }
     frame
 }
 

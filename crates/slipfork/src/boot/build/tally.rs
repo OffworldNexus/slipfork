@@ -2,9 +2,10 @@
 //!
 //! Finished inner rows are buffered by 1-based instruction index and released strictly from `next`
 //! upward so rows print once, in declaration order. A row releases the moment its predecessors are
-//! printed (on any frame, including `done`); an index that never announced a real `started` frame is
-//! a provisional external-pull row, so it waits for the real instruction (which supersedes it) or
-//! for the image's final settle, and can never print twice.
+//! printed (on any frame, including `done`); an index that only announced a provisional external
+//! pull (`provisional`) is not a real instruction, so it never enters `started` and can only be
+//! superseded by the real instruction at its index (which replaces its buffered row), never
+//! released on its own.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -15,7 +16,8 @@ pub(super) struct ImageTally {
     pub(super) total: usize,
     pub(super) millis: u64,
     pub(super) buffer: BTreeMap<usize, String>,
-    /// Highest inner instruction index that ever started, so a failed row can say `at N/M`.
+    /// Highest inner index ever announced, provisional pulls included: only latches the image
+    /// opener, never the `at N/M` failure position.
     pub(super) last_index: usize,
     next: usize,
     /// The image's outer `[i/n]` plan slot, latched from the boot plan.
@@ -42,26 +44,34 @@ impl ImageTally {
     }
 
     /// Records an inner `started` instruction and returns the image-wide verb column width.
+    ///
+    /// A provisional external-pull row is never counted as started: it may only ever be replaced
+    /// by the real instruction at the same index, so it can never release on its own.
     pub(super) fn begin_step(
         &mut self,
         index: usize,
         total: usize,
         instruction_width: usize,
+        provisional: bool,
     ) -> usize {
         self.total = self.total.max(total);
         self.last_index = self.last_index.max(index);
-        // A real instruction re-announcing a provisional external-pull index wins.
+        // A real (or provisional) announcement supersedes any buffered provisional row.
         self.buffer.remove(&index);
-        if index > 0 {
+        if index > 0 && !provisional {
             self.started.insert(index);
         }
         self.verb_width = self.verb_width.max(instruction_width);
         self.verb_width
     }
 
-    /// The instruction count and the last started inner index, when both are known.
+    /// The instruction count and the highest *real* started inner index, when both are known.
+    ///
+    /// `last_index` is only a header latch: a provisional external-pull announcement raises it
+    /// without being an instruction, so the failure position comes from `started` alone.
     pub(super) fn failure_at(&self) -> Option<(usize, usize)> {
-        (self.last_index > 0 && self.total > 0).then_some((self.last_index, self.total))
+        let last = self.started.iter().next_back().copied()?;
+        (self.total > 0).then_some((last, self.total))
     }
 
     /// Whether zero inner steps were ever recorded, so a cached image falls through to its single

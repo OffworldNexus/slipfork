@@ -93,16 +93,26 @@ impl<'a, 'm> StageFolder<'a, 'm> {
                     .or_else(|| default.clone())
                     .or_else(|| self.args.get(name).cloned())
                     .unwrap_or_default();
+                // The row repeats the value this ARG resolved to, never the raw `$` text.
+                let row = Instruction::Arg {
+                    name: name.clone(),
+                    default: (!value.is_empty()).then(|| value.clone()),
+                };
                 self.args.insert(name.clone(), value);
-                self.push_row(instruction, None, place);
+                self.push_row(&row, None, place);
             }
             Instruction::Env(pairs) => {
+                // Docker expands every pair against the pre-instruction snapshot, so the row
+                // shows the resolved values even when a later pair references an earlier one.
                 let variables = Variables::from_scope(&self.args, &self.config.env);
-                for (key, value) in pairs {
-                    let expanded = variables.expand(value);
-                    self.config.env.insert(key.clone(), expanded);
+                let resolved: Vec<(String, String)> = pairs
+                    .iter()
+                    .map(|(key, value)| (key.clone(), variables.expand(value)))
+                    .collect();
+                for (key, value) in &resolved {
+                    self.config.env.insert(key.clone(), value.clone());
                 }
-                self.push_row(instruction, None, place);
+                self.push_row(&Instruction::Env(resolved), None, place);
             }
             Instruction::User(_)
             | Instruction::Expose(_)

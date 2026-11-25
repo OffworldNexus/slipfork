@@ -163,8 +163,13 @@ impl Narrative {
         };
         match event["state"].as_str().unwrap_or_default() {
             "started" => {
+                // A pre-build external-pull announcement opens its live row early but is not a
+                // planned instruction: its buffered row must never release on its own.
+                let provisional = event["provisional"].as_bool().unwrap_or(false);
                 self.observe_outer("image", image);
-                let verb_width = self.tally(image).begin_step(index, total, width);
+                let verb_width = self
+                    .tally(image)
+                    .begin_step(index, total, width, provisional);
                 let mut actions = Vec::new();
                 // A cold image opens `→ [i/n] image … running` at its first real instruction,
                 // never at `started` frame time (a cached image must print only its verdict).

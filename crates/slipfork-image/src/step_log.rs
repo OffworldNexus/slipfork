@@ -84,6 +84,9 @@ pub struct StepEvent<'a> {
     pub phase: Option<TailPhase>,
     /// Widest instruction keyword in the image's whole walked plan, so every args cell aligns.
     pub instruction_width: usize,
+    /// A pre-build external-pull announcement, not a real planned instruction: renderers buffer
+    /// but never release it, because the real instruction at the same index supersedes it.
+    pub provisional: bool,
 }
 
 impl<'a> StepEvent<'a> {
@@ -111,6 +114,7 @@ impl<'a> StepEvent<'a> {
             exit_code,
             phase: None,
             instruction_width: instruction.chars().count(),
+            provisional: false,
         }
     }
 }
@@ -139,6 +143,8 @@ struct StepIdentity {
     place: StepPlace,
     instruction: String,
     args: String,
+    /// A pre-build pull announcement: its rows never count as a real instruction.
+    provisional: bool,
 }
 
 /// Typed sink for one build or pull: child lines, engine notes, and instruction lifecycle rows
@@ -192,21 +198,7 @@ impl<'a> StepLog<'a> {
     /// `place` carries the instruction's index and `Dockerfile` line, so the caller can publish the
     /// step's record the moment it starts and a crash still leaves the right header behind.
     pub(crate) fn started(&mut self, place: StepPlace, instruction: &str, args: &str) {
-        let mut event = StepEvent::new(
-            place,
-            instruction,
-            args,
-            StepState::Started,
-            Duration::ZERO,
-            None,
-        );
-        event.instruction_width = event.instruction_width.max(self.planned_width);
-        self.emit(BuildEvent::Step(event));
-        self.current = Some(StepIdentity {
-            place,
-            instruction: instruction.to_owned(),
-            args: args.to_owned(),
-        });
+        self.start(place, instruction, args, false);
     }
 
     /// Announces one standalone step (a `from:` pull) whose total is itself, before it is tried.
@@ -216,8 +208,31 @@ impl<'a> StepLog<'a> {
 
     /// Announces a pre-build row at `place`, so an external `COPY --from` pull still carries the
     /// `Dockerfile` line it serves.
+    ///
+    /// The row is provisional: it opens the live row early but never counts as a built
+    /// instruction, and the real instruction at `place` later supersedes it.
     pub fn announce_at(&mut self, place: StepPlace, instruction: &str, args: &str) {
-        self.started(place, instruction, args);
+        self.start(place, instruction, args, true);
+    }
+
+    fn start(&mut self, place: StepPlace, instruction: &str, args: &str, provisional: bool) {
+        let mut event = StepEvent::new(
+            place,
+            instruction,
+            args,
+            StepState::Started,
+            Duration::ZERO,
+            None,
+        );
+        event.provisional = provisional;
+        event.instruction_width = event.instruction_width.max(self.planned_width);
+        self.emit(BuildEvent::Step(event));
+        self.current = Some(StepIdentity {
+            place,
+            instruction: instruction.to_owned(),
+            args: args.to_owned(),
+            provisional,
+        });
     }
 
     /// Announces one post-execution tail phase without settling or restarting the running row.
@@ -237,6 +252,7 @@ impl<'a> StepLog<'a> {
             None,
         );
         event.phase = Some(phase);
+        event.provisional = identity.provisional;
         event.instruction_width = event.instruction_width.max(self.planned_width);
         self.emit(BuildEvent::Step(event));
         self.current = Some(identity);
@@ -268,6 +284,7 @@ impl<'a> StepLog<'a> {
             elapsed,
             exit_code,
         );
+        event.provisional = identity.provisional;
         event.instruction_width = event.instruction_width.max(self.planned_width);
         self.emit(BuildEvent::Step(event));
     }

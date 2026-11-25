@@ -202,14 +202,16 @@ fn boot_render_fixture() {
 const INSTRUCTIONS: &[(&str, &str)] = &[
     ("FROM", "python:3.14-trixie"),
     ("COPY", "--from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/"),
+    ("ADD", ". /app"),
     ("RUN", "apt-get update && apt-get install -y curl"),
-    ("COPY", ". /app"),
-    ("RUN", "pip install -r requirements.txt"),
-    ("ENV", "PYTHONUNBUFFERED=1"),
-    ("RUN", "python -m compileall /app"),
-    ("COPY", "templates /app/templates"),
-    ("RUN", "pytest -q"),
     ("WORKDIR", "/app"),
+    ("FROM", "base"),
+    ("COPY", "pyproject.toml uv.lock /app/"),
+    ("RUN", "uv sync --frozen"),
+    ("ARG", "port=8080"),
+    ("ENV", "PORT=8080"),
+    ("FROM", "base"),
+    ("COPY", ". ."),
     ("CMD", "uv run blastit"),
 ];
 
@@ -242,6 +244,22 @@ fn step(image: &str, index: u64, total: u64, instruction: &str, args: &str, stat
         "state": state,
         "elapsed_ms": if state == "done" { 4 } else { 0 },
         "instruction_width": 7,
+    })
+}
+
+/// The provisional pre-build pull row the daemon sends before any planned instruction runs.
+fn pull_step(image: &str, index: u64, total: u64, args: &str, state: &str) -> Value {
+    json!({
+        "event": "step",
+        "image": image,
+        "index": index,
+        "total": total,
+        "instruction": "COPY",
+        "args": args,
+        "state": state,
+        "elapsed_ms": if state == "done" { 6 } else { 0 },
+        "instruction_width": 7,
+        "provisional": true,
     })
 }
 
@@ -294,13 +312,29 @@ fn frames(fixture: &str) -> Vec<Value> {
                     "name": "web",
                     "command": "uv run blastit dev",
                 }),
+                // The daemon pre-pulls the external `COPY --from` rootfs before the build proper,
+                // after the plan and starts: the provisional pair must never print or count a step.
+                pull_step(
+                    "api",
+                    2,
+                    total,
+                    "--from=ghcr.io/astral-sh/uv:latest",
+                    "started",
+                ),
+                pull_step(
+                    "api",
+                    2,
+                    total,
+                    "--from=ghcr.io/astral-sh/uv:latest",
+                    "done",
+                ),
             ];
-            // The parallel `COPY --from` (2) announces before `FROM` (1); every step is announced
-            // before the completions, which arrive out of order (2 before 1, 6 before 5).
-            for index in [2u64, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11] {
+            // Every step is announced before the completions, which arrive out of order (2 before
+            // 1, 6 before 5); the real COPY at index 2 follows its provisional pre-pull row.
+            for index in [2u64, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] {
                 let (instruction, args) = INSTRUCTIONS[usize::try_from(index - 1).expect("tiny")];
                 frames.push(step("api", index, total, instruction, args, "started"));
-                if index == 5 {
+                if index == 8 {
                     // Only this step and the outer service stream child output, and their lines
                     // interleave: each key still earns its one `→` header.
                     for (event, stream, line) in [
@@ -343,7 +377,7 @@ fn frames(fixture: &str) -> Vec<Value> {
                     }));
                 }
             }
-            for index in [2u64, 1, 3, 4, 6, 5, 7, 8, 9, 10, 11] {
+            for index in [2u64, 1, 3, 4, 6, 5, 7, 8, 9, 10, 11, 12, 13] {
                 let (instruction, args) = INSTRUCTIONS[usize::try_from(index - 1).expect("tiny")];
                 frames.push(step("api", index, total, instruction, args, "done"));
             }
@@ -453,19 +487,19 @@ fn assert_fixture(fixture: &str, rows: u16, cols: u16, expected: &[&str]) -> Pty
     run
 }
 
-/// Exactly one verdict per instruction (`n/11`), printed in plan index order with no repeats.
+/// Exactly one verdict per instruction (`n/13`), printed in plan index order with no repeats.
 fn assert_verdict_order(output: &str) {
     let text = completed_transcript(output);
     let verdicts: Vec<&str> = text
         .lines()
         .filter(|line| {
             let line = line.trim_start();
-            (line.starts_with("✓ ") || line.starts_with("✗ ")) && line.contains("/11")
+            (line.starts_with("✓ ") || line.starts_with("✗ ")) && line.contains("/13")
         })
         .collect();
-    assert_eq!(verdicts.len(), 11, "one verdict per instruction:\n{text}");
+    assert_eq!(verdicts.len(), 13, "one verdict per instruction:\n{text}");
     for (position, row) in verdicts.iter().enumerate() {
-        let counter = format!("{:>2}/11", position + 1);
+        let counter = format!("{:>2}/13", position + 1);
         assert!(
             row.contains(&counter),
             "row {position} must be {counter}: {row:?}\n{text}"
@@ -503,11 +537,11 @@ fn assert_stream_headers(output: &str, expected: &[&str]) {
     }
 }
 
-/// Every one of the eleven inner rows appears exactly once with its padded `i/11` counter.
+/// Every one of the thirteen inner rows appears exactly once with its padded `i/13` counter.
 fn assert_all_inner_rows(output: &str) {
     let text = completed_transcript(output);
-    for index in 1..=11 {
-        let needle = format!("  ✓ {index:>2}/11");
+    for index in 1..=13 {
+        let needle = format!("  ✓ {index:>2}/13");
         assert_eq!(
             text.matches(&needle).count(),
             1,
@@ -529,7 +563,7 @@ fn cached_up_at_110x30_and_80x24_is_append_only() {
 }
 
 #[test]
-fn fresh_eleven_instruction_build_at_110x30_and_80x24_is_append_only() {
+fn fresh_thirteen_instruction_build_at_110x30_and_80x24_is_append_only() {
     for (rows, cols) in [(30, 110), (24, 80)] {
         let run = assert_fixture(
             "fresh",
@@ -537,11 +571,12 @@ fn fresh_eleven_instruction_build_at_110x30_and_80x24_is_append_only() {
             cols,
             &[
                 "→ [1/2] image  api  running",
-                "→  5/11 run      pip install -r requirements.txt",
+                "→  8/13 run      uv sync --frozen",
                 "→ [2/2] start  web  running  uv run blastit dev",
-                "  ✓  1/11 from",
-                "  ✓ 10/11",
-                "built 11 steps",
+                "  ✓  1/13 from",
+                "  ✓  9/13 arg      port=8080",
+                "  ✓ 10/13 env      PORT=8080",
+                "built 13 steps",
                 "✓ [2/2] start  web  running  uv run blastit dev  1.2s",
             ],
         );
@@ -550,11 +585,33 @@ fn fresh_eleven_instruction_build_at_110x30_and_80x24_is_append_only() {
             &run.output,
             &[
                 "→ [1/2] image  api  running",
-                "→  5/11 run      pip install -r requirements.txt",
+                "→  8/13 run      uv sync --frozen",
                 "→ [2/2] start  web  running  uv run blastit dev",
             ],
         );
         let text = completed_transcript(&run.output);
+        let full_copy = "  ✓  2/13 copy     --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/";
+        assert_eq!(
+            text.matches(full_copy).count(),
+            1,
+            "the real COPY row prints exactly once, with its full arguments:\n{text}"
+        );
+        assert!(
+            !text
+                .lines()
+                .any(|line| line.contains("ghcr.io/astral-sh/uv:latest") && !line.contains("uvx")),
+            "the truncated provisional pre-pull row never prints:\n{text}"
+        );
+        assert_eq!(
+            text.matches("  ✓  9/13 arg      port=8080").count(),
+            1,
+            "the ARG row shows its resolved value:\n{text}"
+        );
+        assert_eq!(
+            text.matches("  ✓ 10/13 env      PORT=8080").count(),
+            1,
+            "the ENV row shows its resolved value:\n{text}"
+        );
         assert_eq!(
             text.matches("✓ [2/2] start  web  running").count(),
             1,
@@ -577,24 +634,24 @@ fn failing_build_streams_gutter_lines_and_one_verdict_at_110x30_and_80x24() {
             cols,
             &[
                 "→ [1/2] image  api  running",
-                "→  4/11 run      apt-get install -y blastit",
+                "→  4/13 run      apt-get install -y blastit",
                 "    │ installing blastit",
                 "    ┃ E: Unable to locate package blastit",
-                "  ✗  4/11 run      apt-get install -y blastit",
+                "  ✗  4/13 run      apt-get install -y blastit",
                 "✗ RUN api failed (exit 1)",
                 "  next: slipfork logs -r 5be421",
             ],
         );
         let text = completed_transcript(&run.output);
         assert_eq!(
-            text.matches("  ✗  4/11").count(),
+            text.matches("  ✗  4/13").count(),
             1,
             "the failing step prints one `✗` row:\n{text}"
         );
         let lines: Vec<&str> = text.lines().collect();
         let verdict = lines
             .iter()
-            .position(|line| line.trim_start().starts_with("✗ ") && line.contains("/11"))
+            .position(|line| line.trim_start().starts_with("✗ ") && line.contains("/13"))
             .expect("the failing instruction row");
         let above = &lines[verdict.saturating_sub(2)..verdict];
         assert!(
@@ -622,7 +679,11 @@ fn a_resize_from_110x30_to_80x24_mid_run_keeps_every_row_and_narrows_the_status_
     assert_prompt(&run.output, 80);
     assert_expected(
         &run.output,
-        &["  ✓  1/11 from", "  ✓ 10/11", "built 11 steps"],
+        &[
+            "  ✓  1/13 from",
+            "  ✓ 10/13 env      PORT=8080",
+            "built 13 steps",
+        ],
     );
     assert_all_inner_rows(&run.output);
     assert_verdict_order(&run.output);
@@ -630,7 +691,7 @@ fn a_resize_from_110x30_to_80x24_mid_run_keeps_every_row_and_narrows_the_status_
         &run.output,
         &[
             "→ [1/2] image  api  running",
-            "→  5/11 run      pip install -r requirements.txt",
+            "→  8/13 run      uv sync --frozen",
             "→ [2/2] start  web  running  uv run blastit dev",
         ],
     );

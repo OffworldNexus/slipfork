@@ -16,7 +16,58 @@ fn frame(
     elapsed_ms: u64,
     instruction_width: u64,
 ) -> Value {
-    json!({
+    frame_with(
+        image,
+        index,
+        total,
+        instruction,
+        args,
+        state,
+        elapsed_ms,
+        instruction_width,
+        false,
+    )
+}
+
+/// The frame a pre-build external pull really sends: identical to a planned instruction's frame
+/// plus `provisional: true`.
+#[allow(clippy::too_many_arguments)]
+fn provisional_frame(
+    image: &str,
+    index: u64,
+    total: u64,
+    instruction: &str,
+    args: &str,
+    state: &str,
+    elapsed_ms: u64,
+    instruction_width: u64,
+) -> Value {
+    frame_with(
+        image,
+        index,
+        total,
+        instruction,
+        args,
+        state,
+        elapsed_ms,
+        instruction_width,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn frame_with(
+    image: &str,
+    index: u64,
+    total: u64,
+    instruction: &str,
+    args: &str,
+    state: &str,
+    elapsed_ms: u64,
+    instruction_width: u64,
+    provisional: bool,
+) -> Value {
+    let mut frame = json!({
         "event": "step",
         "image": image,
         "index": index,
@@ -26,7 +77,11 @@ fn frame(
         "state": state,
         "elapsed_ms": elapsed_ms,
         "instruction_width": instruction_width,
-    })
+    });
+    if provisional {
+        frame["provisional"] = json!(true);
+    }
+    frame
 }
 
 fn finished_frame() -> Value {
@@ -147,23 +202,38 @@ fn a_provisional_external_pull_row_is_superseded_by_the_real_instruction() {
     let plain = Palette::new(false);
     let mut narrative = Narrative::new(false);
     let from = "python:3.14-trixie AS base";
-    let pre_pull = "--from=ghcr.io/astral-sh/uv:latest /uv /bin/";
+    let truncated = "--from=ghcr.io/astral-sh/uv:latest";
     let real = "--from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/";
     let mut actions = Vec::new();
 
-    // The external image pre-pull settles before instruction 1 is even announced.
-    actions.extend(narrative.step(&frame("api", 2, 2, "COPY", pre_pull, "done", 1, 4), plain));
+    // Exactly what the daemon sends: the pre-pull opens and settles a provisional `started` and
+    // `done` before instruction 1 is ever announced.
+    actions.extend(narrative.step(
+        &provisional_frame("api", 2, 2, "COPY", truncated, "started", 0, 4),
+        plain,
+    ));
+    actions.extend(narrative.step(
+        &provisional_frame("api", 2, 2, "COPY", truncated, "done", 6, 4),
+        plain,
+    ));
+    assert!(
+        settled_rows(&actions).is_empty(),
+        "a provisional pre-pull never releases, even as the next index: {actions:?}"
+    );
+
     actions.extend(narrative.step(&frame("api", 1, 2, "FROM", from, "started", 0, 4), plain));
     actions.extend(narrative.step(&frame("api", 1, 2, "FROM", from, "done", 2, 4), plain));
-    // The provisional row waits for its own real instruction, which supersedes it.
     let between = settled_rows(&actions);
     assert_eq!(
         between.len(),
         1,
-        "only index 1 released so far: {between:?}"
+        "only index 1 released; the provisional row still waits: {between:?}"
     );
+    assert!(between[0].starts_with("  ✓ 1/2 from"), "{between:?}");
+
+    // The real instruction at the same index supersedes the buffered provisional row.
     actions.extend(narrative.step(&frame("api", 2, 2, "COPY", real, "started", 0, 4), plain));
-    actions.extend(narrative.step(&frame("api", 2, 2, "COPY", real, "done", 26, 4), plain));
+    actions.extend(narrative.step(&frame("api", 2, 2, "COPY", real, "done", 43, 4), plain));
     let tail = narrative.finish_node("image", "api", &finished_frame(), plain);
     let tail = tail.expect("the image settles");
     let mut rows = settled_rows(&actions);
@@ -171,23 +241,131 @@ fn a_provisional_external_pull_row_is_superseded_by_the_real_instruction() {
 
     assert_eq!(rows.len(), 2, "rows 1 and 2, once each: {rows:?}");
     assert!(rows[0].starts_with("  ✓ 1/2 from"), "{rows:?}");
-    let uri_rows: Vec<&String> = rows.iter().filter(|row| row.contains("2/2")).collect();
-    assert_eq!(uri_rows.len(), 1, "one row for index 2: {rows:?}");
-    assert!(uri_rows[0].contains(real), "{uri_rows:?}");
+    let copy_rows: Vec<&String> = rows.iter().filter(|row| row.contains("2/2")).collect();
+    assert_eq!(copy_rows.len(), 1, "one row for index 2: {rows:?}");
+    assert!(copy_rows[0].contains(real), "{copy_rows:?}");
     assert!(
         !rows
             .iter()
             .any(|row| row.contains("ghcr.io") && !row.contains("uvx")),
-        "the provisional pre-pull row never prints: {rows:?}"
+        "the truncated provisional pre-pull row never prints: {rows:?}"
     );
     assert!(
         rows.iter().all(|row| !row.contains('\u{1b}')),
         "plain output has no escapes"
     );
     let end = end_row(&tail).expect("the image end row");
+    assert_eq!(
+        tail.iter()
+            .filter(|action| matches!(action, Action::Print(_)))
+            .count(),
+        1,
+        "the image end row prints exactly once: {tail:?}"
+    );
     assert!(
         end.starts_with("✓ image  api  built 2 steps"),
         "the build-end row counts the settled instructions: {end}"
+    );
+}
+
+/// A provisional row at the very next index still never releases on its own: only the real
+/// instruction at that index may print.
+#[test]
+fn a_provisional_row_never_releases_even_when_its_index_is_next() {
+    let plain = Palette::new(false);
+    let mut narrative = Narrative::new(false);
+    let truncated = "--from=ghcr.io/astral-sh/uv:latest";
+    let real = "--from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/";
+    let mut actions = Vec::new();
+    for state in ["started", "done"] {
+        actions.extend(narrative.step(
+            &provisional_frame(
+                "api",
+                1,
+                1,
+                "COPY",
+                truncated,
+                state,
+                if state == "done" { 6 } else { 0 },
+                4,
+            ),
+            plain,
+        ));
+    }
+    assert!(
+        settled_rows(&actions).is_empty(),
+        "index 1 is next, yet the provisional row must not release: {actions:?}"
+    );
+
+    actions.extend(narrative.step(&frame("api", 1, 1, "COPY", real, "started", 0, 4), plain));
+    actions.extend(narrative.step(&frame("api", 1, 1, "COPY", real, "done", 43, 4), plain));
+    let rows = settled_rows(&actions);
+    assert_eq!(rows.len(), 1, "exactly the real instruction: {rows:?}");
+    assert!(rows[0].contains(real), "{rows:?}");
+    assert!(!rows[0].contains("uv:latest  "), "{rows:?}");
+}
+
+/// A FROM failure after a provisional pre-pull at index 2 still names the last *instruction* that
+/// started: the provisional announcement latches the opener but never the `at N/M` position.
+#[test]
+fn a_from_failure_after_a_provisional_pre_pull_reports_the_last_started_index() {
+    let plain = Palette::new(false);
+    let mut narrative = Narrative::new(false);
+    let truncated = "--from=ghcr.io/astral-sh/uv:latest";
+    for state in ["started", "done"] {
+        narrative.step(
+            &provisional_frame(
+                "api",
+                2,
+                2,
+                "COPY",
+                truncated,
+                state,
+                if state == "done" { 6 } else { 0 },
+                4,
+            ),
+            plain,
+        );
+    }
+    for state in ["started", "done"] {
+        narrative.step(
+            &frame(
+                "api",
+                1,
+                2,
+                "FROM",
+                "python:3.14-trixie",
+                state,
+                if state == "done" { 5 } else { 0 },
+                4,
+            ),
+            plain,
+        );
+    }
+    let tail = narrative
+        .finish_node(
+            "image",
+            "api",
+            &json!({
+                "event": "finished",
+                "kind": "image",
+                "name": "api",
+                "state": "failed",
+                "executed": 0,
+                "duration_ms": 9,
+                "elapsed_ms": 9,
+            }),
+            plain,
+        )
+        .expect("the image settles");
+    let end = end_row(&tail).expect("the image end row");
+    assert!(
+        end.contains("failed at 1/2"),
+        "the FROM failure is at 1/2: {end}"
+    );
+    assert!(
+        !end.contains("at 2/2"),
+        "the provisional index never leaks: {end}"
     );
 }
 
