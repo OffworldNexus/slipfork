@@ -2,7 +2,7 @@
 
 use std::path::Path;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use slipfork_world::control::{PROTOCOL_VERSION, Request, StreamClient, StreamFrame};
@@ -11,6 +11,13 @@ use slipfork_world::run_log::RunRecord;
 
 use super::super::super::Failure;
 use super::LogStream;
+
+/// History is drained only after a quiet window that outlives the world's own reorder delay
+/// (`REORDER_MS`, 250 ms) plus its 80 ms idle tick and our 40 ms poll.
+const HISTORY_QUIET_MS: u64 = 400;
+/// No frame at all yet: a loaded host can take longer to spawn the world's `serve_logs` thread,
+/// so an empty history still announces — just later.
+const HISTORY_FIRST_FRAME_GRACE_MS: u64 = 900;
 
 impl LogStream {
     /// Emits one `runs` frame carrying every catalog entry, newest last.
@@ -140,6 +147,12 @@ impl LogStream {
             client.close();
             return Ok(json!({ "closed": true }));
         }
+        let mut announced = !(self.tail && self.follow);
+        // The world serves history from a freshly spawned thread, so the first idle poll often
+        // precedes the backlog frames. Only a quiet window proves the history is exhausted.
+        let started = Instant::now();
+        let mut quiet_since = started;
+        let mut seen = false;
         loop {
             if !alive() {
                 client.close();
@@ -147,6 +160,8 @@ impl LogStream {
             }
             match client.poll() {
                 Ok(Some(StreamFrame::Output(event))) => {
+                    seen = true;
+                    quiet_since = Instant::now();
                     if !emit(line_event(
                         &event.pod,
                         event.kind.as_str(),
@@ -161,7 +176,26 @@ impl LogStream {
                 Ok(Some(StreamFrame::Reply { ok, error })) => {
                     return super::super::stream::finish(ok, error);
                 }
-                Ok(None) => thread::sleep(Duration::from_millis(40)),
+                Ok(None) => {
+                    // A sustained quiet window means every historical line has been drained; a
+                    // `--last` viewer can now flush its held backlog and write through. Once a
+                    // frame arrived the window must clear the world's reorder delay, and a stream
+                    // that never received one still announces after a wider grace, so an empty
+                    // history never starves.
+                    let drained = if seen {
+                        quiet_since.elapsed() >= Duration::from_millis(HISTORY_QUIET_MS)
+                    } else {
+                        started.elapsed() >= Duration::from_millis(HISTORY_FIRST_FRAME_GRACE_MS)
+                    };
+                    if !announced && drained {
+                        announced = true;
+                        if !emit(json!({ "kind": "history_end" })) {
+                            client.close();
+                            return Ok(json!({ "closed": true }));
+                        }
+                    }
+                    thread::sleep(Duration::from_millis(40));
+                }
                 Err(error) => return Err(Failure::new("world-stream", error.to_string())),
             }
         }
@@ -271,6 +305,7 @@ impl LogStream {
             return Ok(json!({ "closed": true }));
         }
         let mut merge = LogMerge::default();
+        let mut announced = !(self.tail && self.follow);
         loop {
             let mut read_any = false;
             for (id, reader) in &mut readers {
@@ -315,6 +350,23 @@ impl LogStream {
                 return Ok(json!({ "closed": true }));
             }
             if !read_any {
+                // Caught up on every capture: flush the merge window once, then tell a `--last`
+                // viewer that history ended so it can drop the lines beyond its window.
+                if !announced {
+                    announced = true;
+                    for (pod, line) in merge.flush() {
+                        emit(line_event(
+                            &pod,
+                            kind_name(line.kind),
+                            line.stream.as_str(),
+                            &line.text,
+                            Some(line.ts_ms),
+                        ));
+                    }
+                    if !emit(json!({ "kind": "history_end" })) {
+                        return Ok(json!({ "closed": true }));
+                    }
+                }
                 thread::sleep(Duration::from_millis(40));
             }
         }

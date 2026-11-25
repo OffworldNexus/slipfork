@@ -98,6 +98,7 @@ fn dispatch(cli: Cli, session: Session) -> ExitCode {
             until,
             timestamps,
             run,
+            last,
             runs,
         } => session.logs(&LogsArgs {
             follow,
@@ -107,6 +108,7 @@ fn dispatch(cli: Cli, session: Session) -> ExitCode {
             until_ms: until,
             timestamps,
             run,
+            last,
             runs,
             json,
         }),

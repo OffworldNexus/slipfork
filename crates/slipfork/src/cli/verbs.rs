@@ -180,6 +180,9 @@ pub enum Command {
             conflicts_with = "runs"
         )]
         run: Option<String>,
+        /// Tail the last N rendered lines (with -f defaults to 20).
+        #[arg(long, value_name = "N", conflicts_with = "runs")]
+        last: Option<String>,
         /// List every recorded step run for this world.
         #[arg(long, conflicts_with_all = ["targets", "run", "follow"])]
         runs: bool,

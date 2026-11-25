@@ -5,6 +5,7 @@
 //! discarding it: a reader that stops early is a clean stream end, any other write failure is the
 //! command's.
 
+use std::collections::VecDeque;
 use std::process::ExitCode;
 
 use serde_json::{Value, json};
@@ -36,6 +37,38 @@ pub(crate) struct Renderer {
     reason: Option<String>,
     /// Set when a non-EPIPE write failed, so the caller can exit non-zero.
     failed: bool,
+    /// `logs --last N` holds rendered lines here until the daemon marks history caught up.
+    ring: TailRing,
+}
+
+/// The bounded ring behind `logs --last`: it keeps the last N rendered lines, terminators and all.
+#[derive(Debug, Default)]
+struct TailRing {
+    capacity: usize,
+    lines: VecDeque<String>,
+}
+
+impl TailRing {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            lines: VecDeque::with_capacity(capacity),
+        }
+    }
+
+    /// Buffers one rendered chunk, splitting multi-line chunks (a replay header plus its blank).
+    fn push(&mut self, chunk: &str) {
+        for line in chunk.split_inclusive('\n') {
+            if self.lines.len() == self.capacity {
+                self.lines.pop_front();
+            }
+            self.lines.push_back(line.to_owned());
+        }
+    }
+
+    fn drain(&mut self) -> Vec<String> {
+        self.lines.drain(..).collect()
+    }
 }
 
 /// The stored line as this viewer may render it.
@@ -86,7 +119,16 @@ impl Renderer {
             verdict: None,
             reason: None,
             failed: false,
+            ring: TailRing::default(),
         }
+    }
+
+    /// `logs --last N`: hold the last N rendered lines back until history is caught up.
+    pub(super) fn tail(mut self, lines: Option<usize>) -> Self {
+        if let Some(capacity) = lines.filter(|count| *count > 0) {
+            self.ring = TailRing::new(capacity);
+        }
+        self
     }
 
     pub(super) fn new(color: bool, json: bool, timestamps: bool, clock: &LocalClock) -> Self {
@@ -103,10 +145,31 @@ impl Renderer {
         Self::blank(color, json, false, timestamps, true, clock)
     }
 
-    /// Writes one rendered chunk, remembering a non-EPIPE failure (`emit` treats EPIPE as clean).
+    /// Writes one rendered chunk, holding it in the `--last` ring while history is still buffered.
     fn write(&mut self, text: &str) {
+        if self.ring.capacity > 0 {
+            self.ring.push(text);
+            return;
+        }
+        self.write_direct(text);
+    }
+
+    /// Writes one rendered chunk now, remembering a non-EPIPE failure (`emit` treats EPIPE as clean).
+    fn write_direct(&mut self, text: &str) {
         if matches!(emit(text), ExitCode::FAILURE) {
             self.failed = true;
+        }
+    }
+
+    /// Flushes the `--last` ring once and switches every later line to write-through.
+    fn flush_tail(&mut self) {
+        if self.ring.capacity == 0 {
+            return;
+        }
+        let lines = self.ring.drain();
+        self.ring = TailRing::default();
+        for line in lines {
+            self.write_direct(&line);
         }
     }
 
@@ -128,6 +191,15 @@ impl Renderer {
             .unwrap_or_default();
         let line = visible(stored, self.palette.color(), self.json);
         let ts_ms = event.get("ts_ms").and_then(Value::as_u64);
+        if kind == "history_end" {
+            // The daemon's one marker: everything before it is history, everything after is live.
+            self.flush_tail();
+            return;
+        }
+        if kind == "eof" && self.ring.capacity > 0 {
+            // `--last N` promises N line records; the world's end marker is not one of them.
+            return;
+        }
         if kind == "roster" {
             // `logs -r --json` mirrors the catalog record before its captured lines.
             if self.json
@@ -288,7 +360,9 @@ impl Renderer {
 
     pub(crate) fn finish(&mut self, code: i64) {
         if self.json {
-            self.write(&format!("{}\n", json!({ "exit": code })));
+            // History-first: exactly N held records, then the one exit trailer, never N-1.
+            self.flush_tail();
+            self.write_direct(&format!("{}\n", json!({ "exit": code })));
             return;
         }
         if let Some(verdict) = &self.verdict {
@@ -303,12 +377,13 @@ impl Renderer {
             let gap = if self.rows > 0 { "\n" } else { "" };
             self.write(&format!("{gap}{line}\n"));
         }
+        self.flush_tail();
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{replay_row, visible};
+    use super::{TailRing, replay_row, visible};
     use crate::commands::LocalClock;
     use crate::ui::Palette;
     use crate::ui::table::{Column, Table};
@@ -334,6 +409,25 @@ mod tests {
             crate::ui::strip(&table.line(&coloured, &["api".to_owned(), RED.to_owned()])),
             table.line(&plain, &["api".to_owned(), "red".to_owned()]),
             "the visible gutter never shears on a coloured line"
+        );
+    }
+
+    #[test]
+    fn tail_ring_keeps_the_last_n_lines_and_splits_multi_line_chunks() {
+        let mut ring = TailRing::new(3);
+        ring.push("one\n");
+        ring.push("header\n\n");
+        assert_eq!(
+            ring.drain(),
+            vec!["one\n".to_owned(), "header\n".to_owned(), "\n".to_owned()],
+            "a header chunk contributes its row and its blank line separately"
+        );
+        ring.push("a\nb\nc\n");
+        ring.push("d\n");
+        assert_eq!(
+            ring.drain(),
+            vec!["b\n", "c\n", "d\n"],
+            "the ring evicts oldest first"
         );
     }
 

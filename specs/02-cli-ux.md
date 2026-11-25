@@ -186,7 +186,7 @@ A failed `fork` rolls back atomically: it stops its supervisor and pods and drop
 
 `slipfork shell <target>` is the only interactive entry point for every pod (`<target>` required; `clap` exits `2` when omitted). Services and images attach a real PTY `/bin/bash` (`(<world>:<target>) \w$ `) or `/bin/sh`, postgres runs `psql`, redis runs `redis-cli`, and `s3` buckets fail closed on stderr with exit `1`.
 
-`slipfork logs [-f] [-a] [target]` merges application `service`s by default, `-a` adds images and resources, and naming one target reads `<store>/logs/<world>/<id>.log` even after a failed `up` or `down`. `slipfork doctor` leads with `✓ Ready` or `✗ N issue(s) found` across its four rows `Storage`, `Containers`, `Daemon` and `Domains`.
+`slipfork logs [-f] [-a] [target] [--last N]` merges application `service`s by default, `-a` adds images and resources, and naming one target reads `<store>/logs/<world>/<id>.log` even after a failed `up` or `down`. `--last N` tails the last N rendered lines (a followed `-f` implies `--last 20` unless you pass one), and `slipfork doctor` leads with `✓ Ready` or `✗ N issue(s) found` across its four rows `Storage`, `Containers`, `Daemon` and `Domains`.
 
 ### Per-step run ids
 
@@ -230,7 +230,7 @@ Setup and hook runs keep `#<id>  setup  <target>  <command>  <started>` and sett
 | `slipfork up [TARGET] [--no-cache]` | Boot this directory, `.forks/<name>`, or a registered world/fork; preflight `Forkfile` first; `--no-cache` rebuilds every image step |
 | `slipfork down [TARGET]` | Stop this directory's world or the named world/fork; remove run subvolumes, keep data and logs |
 | `slipfork restart [TARGET] [-s SERVICE]` | Restart one service, a world/fork, or every service here through the bottom-bar TUI |
-| `slipfork logs [-f] [-a] [-t] [--since <ms>] [--until <ms>] [targets]...` | Services by default; `-a` adds images and resources; several targets merge in timestamp order |
+| `slipfork logs [-f] [-a] [-t] [--since <ms>] [--until <ms>] [--last <N>] [targets]...` | Services by default; `-a` adds images and resources; several targets merge in timestamp order; `--last N` tails rendered lines and `-f` implies 20 unless explicit |
 | `slipfork logs -r [<id>\|last\|failed]` | Replay one catalog run (`#<id>` accepted) with local wall-clock rows, `│`/`┃` gutters, and one verdict; bare `-r` means `failed` |
 | `slipfork logs --runs` | Borderless `#run_id`, kind, step, status, duration, recorded table of every executed step |
 | `slipfork shell <target>` | Required target: PTY bash/sh, `psql`, `redis-cli`; refuses `s3` and unknowns |

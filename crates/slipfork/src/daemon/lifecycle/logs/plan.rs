@@ -100,6 +100,7 @@ impl Core {
             .unwrap_or(false);
         let since_ms = params.get("since_ms").and_then(Value::as_u64);
         let until_ms = params.get("until_ms").and_then(Value::as_u64);
+        let tail = params.get("tail").and_then(Value::as_bool).unwrap_or(false);
         if params.get("runs").and_then(Value::as_bool).unwrap_or(false) {
             return Ok(LogStream::run_catalog(log_store_of(self, &project)?));
         }
@@ -135,7 +136,7 @@ impl Core {
             ));
         }
         let document = load_document(&project);
-        self.plan_logs(
+        let stream = self.plan_logs(
             &project,
             document.as_ref(),
             targets,
@@ -143,7 +144,8 @@ impl Core {
             all,
             since_ms,
             until_ms,
-        )
+        )?;
+        Ok(if tail { stream.with_tail() } else { stream })
     }
 
     #[allow(clippy::too_many_arguments)]

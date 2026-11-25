@@ -44,6 +44,8 @@ pub(crate) struct LogStream {
     explicit: bool,
     /// A recorded-run catalog listing or one run replay, instead of pod captures.
     runs: Option<RunQuery>,
+    /// The client asked for the last N rendered lines (`--last`, or `-f`'s default 20).
+    tail: bool,
     /// The one catalog snapshot this request resolves every target from; `None` when no target
     /// asked for it (bare `logs`, a live stream, or a catalog listing).
     catalog: Option<RunIndex>,
@@ -111,6 +113,7 @@ impl LogStream {
             until_ms,
             explicit: false,
             runs: None,
+            tail: false,
             catalog: None,
         }
     }
@@ -135,8 +138,15 @@ impl LogStream {
             until_ms,
             explicit,
             runs: None,
+            tail: false,
             catalog: None,
         }
+    }
+
+    /// Marks this plan as a `--last` request, so a followed stream announces caught-up history.
+    fn with_tail(mut self) -> Self {
+        self.tail = true;
+        self
     }
 
     /// Attaches the one catalog snapshot this request resolved its targets from.

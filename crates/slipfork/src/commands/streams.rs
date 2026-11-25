@@ -40,6 +40,8 @@ pub struct LogsArgs {
     pub timestamps: bool,
     /// Replay one recorded step run (`<id>`, `#<id>`, `last`, `failed`).
     pub run: Option<String>,
+    /// Tail only the last N rendered lines (`--last`); `-f` implies 20 unless explicit.
+    pub last: Option<String>,
     /// List every recorded step run for this world.
     pub runs: bool,
     /// Emit one JSON object per line plus a final `{"exit":0}`.
@@ -68,11 +70,26 @@ impl Session {
     /// `slipfork logs [-f] [-a] [service]`.
     pub fn logs(&self, args: &LogsArgs) -> ExitCode {
         install_sigint();
+        let last = match args.last.as_deref() {
+            Some(raw) => match parse_last(raw) {
+                Some(count) => Some(count),
+                None => {
+                    return self.report(
+                        "bad-last",
+                        "✗ --last needs a positive line count",
+                        "use `--last 1` or omit it",
+                        args.json,
+                    );
+                }
+            },
+            None if args.follow => Some(20),
+            None => None,
+        };
         if args.runs {
             return self.logs_runs(args);
         }
         if let Some(run) = &args.run {
-            return self.logs_run(args, run);
+            return self.logs_run(args, run, last);
         }
         let Some(mut client) = self.existing_daemon(args.json) else {
             return ExitCode::FAILURE;
@@ -84,8 +101,10 @@ impl Session {
             "targets": args.targets,
             "since_ms": args.since_ms,
             "until_ms": args.until_ms,
+            "tail": last.is_some(),
         });
-        let mut renderer = Renderer::new(self.color(), args.json, args.timestamps, self.clock());
+        let mut renderer =
+            Renderer::new(self.color(), args.json, args.timestamps, self.clock()).tail(last);
         match client.call_streaming("logs", params, &mut |event| renderer.event(event)) {
             Ok(_) => {
                 renderer.finish(0);
@@ -155,7 +174,7 @@ impl Session {
     }
 
     /// `slipfork logs -r <id>`: replay one recorded step run through the indexed reader.
-    fn logs_run(&self, args: &LogsArgs, run: &str) -> ExitCode {
+    fn logs_run(&self, args: &LogsArgs, run: &str, last: Option<usize>) -> ExitCode {
         let Some(mut client) = self.existing_daemon(args.json) else {
             return ExitCode::FAILURE;
         };
@@ -166,7 +185,8 @@ impl Session {
             "since_ms": args.since_ms,
             "until_ms": args.until_ms,
         });
-        let mut renderer = Renderer::replay(self.color(), args.json, args.timestamps, self.clock());
+        let mut renderer =
+            Renderer::replay(self.color(), args.json, args.timestamps, self.clock()).tail(last);
         match client.call_streaming("logs", params, &mut |event| renderer.event(event)) {
             Ok(_) => {
                 renderer.finish(0);
@@ -219,6 +239,15 @@ fn write_status(renderer: &Renderer) -> ExitCode {
     }
 }
 
+/// `--last` accepts digits only and at least one line; every other spelling is our own refusal.
+fn parse_last(raw: &str) -> Option<usize> {
+    let digits = !raw.is_empty() && raw.bytes().all(|byte| byte.is_ascii_digit());
+    digits
+        .then(|| raw.parse::<usize>().ok())
+        .flatten()
+        .filter(|count| *count > 0)
+}
+
 /// The bare-catalog hint; a record-bearing or skipped-line-bearing catalog never prints it.
 fn empty_runs_notice(records: usize, skipped: usize) -> Option<&'static str> {
     (records == 0 && skipped == 0)
@@ -255,7 +284,20 @@ pub(crate) fn refusal_next(error: &DaemonError, verb: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{empty_runs_notice, skipped_notice};
+    use super::{empty_runs_notice, parse_last, skipped_notice};
+
+    /// `--last` is digits only and at least one; `+5`, ` 5`, and `0` are our refusal.
+    #[test]
+    fn last_accepts_only_positive_digit_counts() {
+        assert_eq!(parse_last("1"), Some(1));
+        assert_eq!(parse_last("25"), Some(25));
+        assert_eq!(parse_last("0"), None);
+        assert_eq!(parse_last(""), None);
+        assert_eq!(parse_last("+5"), None);
+        assert_eq!(parse_last(" 5"), None);
+        assert_eq!(parse_last("5 "), None);
+        assert_eq!(parse_last("five"), None);
+    }
 
     /// An older-schema line is reported in words, and singular/plural read correctly.
     #[test]
