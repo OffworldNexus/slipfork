@@ -435,6 +435,43 @@ fn vt_grid_prompt_survives_up_restart_down_and_fork() {
     }
 }
 
+/// M3.149: the real `up` boot pane must reach a typed failure, never `capacity overflow` from a
+/// full `[3/3]` bar. Reuses the seeded prompt PTY harness so the `DECSTBM` pane really runs.
+#[test]
+fn up_never_panics_the_progress_bar_and_ends_with_a_typed_failure() {
+    let lab = Lab::new();
+    let root = lab.root.as_path();
+    std::fs::write(
+        root.join("Forkfile"),
+        "# forkfile: 0.1\nimage box from python:3.13-slim {\n  service api {\n    run: sleep 3600\n  }\n}\n",
+    )
+    .expect("write the progress Forkfile");
+
+    let mut command = tty_command(root);
+    command.args(["up"]);
+    let run = pty::run(command, Some((39, SEED)), None);
+    assert!(
+        !run.output.contains("panicked at"),
+        "`slipfork up` panicked instead of failing typed: {:?}",
+        run.output
+    );
+    assert!(
+        !run.status.success(),
+        "`slipfork up` must fail typed off-Btrfs:\n{}\nbytes: {:?}",
+        run.screen.text(),
+        run.output
+    );
+    let text = run.output.replace('\r', "");
+    assert!(
+        text.contains("error:"),
+        "the run ends with a typed error line: {text:?}"
+    );
+    assert!(
+        text.contains("next:"),
+        "the typed error carries its next: remedy: {text:?}"
+    );
+}
+
 /// `__ingress --listen` on an already-bound port emits one plain `error:` + `next:` pair whose
 /// strings are exactly the `--json` `{"error":{code,message,next}}` projection.
 #[test]

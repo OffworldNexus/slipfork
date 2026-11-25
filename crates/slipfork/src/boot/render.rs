@@ -187,6 +187,33 @@ impl BarProgress {
             den: total as u64,
         }
     }
+
+    /// The one structural invariant: `done <= total` and `num <= den`.
+    ///
+    /// A daemon can settle an outer row after its inner steps were already counted (or echo a
+    /// late `step` frame), which would otherwise push `num` past `den`. Clamping here keeps the
+    /// counter cell consistent and makes every downstream `filled`/`percent` read total.
+    #[must_use]
+    pub const fn clamped(self) -> Self {
+        let total = if self.total >= self.done {
+            self.total
+        } else {
+            self.done
+        };
+        let (num, den) = if self.den == 0 {
+            (0, 0)
+        } else if self.num > self.den {
+            (self.den, self.den)
+        } else {
+            (self.num, self.den)
+        };
+        Self {
+            done: self.done,
+            total,
+            num,
+            den,
+        }
+    }
 }
 
 /// One finished boot node, already parsed out of a typed daemon `event` frame.
@@ -248,7 +275,9 @@ pub fn pane_geometry(width: usize) -> Option<usize> {
 /// `round(num / den * 100)`, clamped to `100`; zero when no plan total is known yet.
 #[must_use]
 pub fn percent_of(num: u64, den: u64) -> usize {
-    usize::try_from(filled(num, den, 100)).unwrap_or(100)
+    usize::try_from(filled(num, den, 100))
+        .unwrap_or(100)
+        .min(100)
 }
 
 /// The fully styled live panel for one colour TTY: spinner, 24-cell bar, outer `done/total`
@@ -291,6 +320,7 @@ fn assemble(
     width: usize,
     palette: Palette,
 ) -> String {
+    let progress = progress.clamped();
     let colour = palette.color();
     let counter = format!("{}/{}", progress.done, progress.total);
     let pct = format!("{}%", percent_of(progress.num, progress.den));
@@ -299,14 +329,15 @@ fn assemble(
     let spin = spinner.to_string();
     let bar = |cells: usize| -> String {
         let filled = filled(progress.num, progress.den, cells as u64) as usize;
+        let empty = cells.saturating_sub(filled);
         if !colour {
-            return format!("[{}{}]", "#".repeat(filled), ".".repeat(cells - filled));
+            return format!("[{}{}]", "#".repeat(filled), ".".repeat(empty));
         }
         // The bar fill is content: neutral, never a hue. Only the empty cells recede to dim.
         format!(
             "[{}{}]",
             "█".repeat(filled),
-            palette.meta(&"░".repeat(cells - filled)),
+            palette.meta(&"░".repeat(empty)),
         )
     };
     let counter = palette.meta(&counter);
@@ -334,11 +365,12 @@ fn assemble(
     format!("{spin} {counter}  {pct} · {seconds}")
 }
 
+/// Rounded `num / den` of `cells`, never wider than the bar itself.
 fn filled(num: u64, den: u64, cells: u64) -> u64 {
-    if den == 0 {
+    if den == 0 || cells == 0 {
         return 0;
     }
-    (num.saturating_mul(cells) + den / 2) / den
+    (num.saturating_mul(cells).saturating_add(den / 2) / den).min(cells)
 }
 
 /// The pipe header for a node that just started: `→ [4/12] resource pg`.

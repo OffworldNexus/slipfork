@@ -1,6 +1,42 @@
+use std::time::Duration;
+
 use serde_json::json;
 
-use super::{Node, OuterWidths, completed_row, dropped_row, header_row, outer_widths};
+use super::{
+    BarProgress, Node, OuterWidths, completed_row, dropped_row, header_row, outer_widths,
+    panel_line, percent_of, status_line,
+};
+
+/// M3.149: an overfull fraction (`4/3`, the shape a late `step` frame produces) must render a
+/// full 24-cell bar and `100%`, never `capacity overflow` from `cells - filled`.
+#[test]
+fn an_overfull_fraction_clamps_to_a_full_bar_and_one_hundred_percent() {
+    assert_eq!(percent_of(4, 3), 100);
+    assert_eq!(percent_of(u64::MAX, 1), 100);
+    assert_eq!(percent_of(0, 1), 0);
+
+    let progress = BarProgress {
+        done: 3,
+        total: 3,
+        num: 4,
+        den: 3,
+    };
+    let plain = status_line('⠋', progress, "start web", Duration::from_secs(1), 120);
+    assert!(plain.contains("3/3"), "{plain:?}");
+    assert!(plain.contains("100%"), "{plain:?}");
+    assert!(
+        plain.contains(&format!("[{}]", "#".repeat(24))),
+        "a full 24-cell bar: {plain:?}"
+    );
+    assert!(!plain.contains("panicked"), "{plain:?}");
+
+    let styled = panel_line('⠋', progress, "start web", Duration::from_secs(1), 120);
+    assert!(styled.contains(&"█".repeat(24)), "{styled:?}");
+    assert!(
+        !styled.contains('░'),
+        "no empty cells when full: {styled:?}"
+    );
+}
 
 /// A prep frame has no lifecycle state: its `detail` is the command cell and state reads `done`.
 #[test]

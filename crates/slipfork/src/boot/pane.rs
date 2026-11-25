@@ -54,6 +54,11 @@ fn exit_sequence(region_bottom: usize, block_rows: usize, rows: usize, park: usi
     stream
 }
 
+/// Spaces that erase the tail of a shorter `\r`-rewritten line; never underflows.
+fn clear_padding(previous: usize, visible: usize) -> String {
+    " ".repeat(previous.saturating_sub(visible))
+}
+
 /// The one shared live region: task rows, the injected [`LiveSteps`], the panel, and its guard.
 pub(super) struct Pane {
     cols: usize,
@@ -266,7 +271,7 @@ impl Pane {
         if self.rows < 3 {
             return flow;
         }
-        let bottom = self.rows - 1;
+        let bottom = self.rows.saturating_sub(1);
         let mut scrolled = false;
         match prompt_row {
             // The prompt shares the region's bottom margin (or sat on the panel row, already
@@ -316,7 +321,7 @@ impl Pane {
             .unwrap_or_default();
         let max_block = self.region_bottom.saturating_sub(1);
         if max_block > 0 && block.len() > max_block {
-            block.drain(..block.len() - max_block);
+            block.drain(..block.len().saturating_sub(max_block));
         }
         // The narrative block owns the region's last rows; settled rows above it scroll up before
         // `block` paints so a newly opened phase row never overwrites a settled row on row `rows-1`.
@@ -384,11 +389,7 @@ impl Pane {
             // colourless shape that never assumes cursor addressing.
             let line = status_line(spinner, bar, &label, self.started.elapsed(), self.cols);
             let visible = console::measure_text_width(&line);
-            if visible < self.line_len {
-                let _ = write!(stdout, "\r{line}{}", " ".repeat(self.line_len - visible));
-            } else {
-                let _ = write!(stdout, "\r{line}");
-            }
+            let _ = write!(stdout, "\r{line}{}", clear_padding(self.line_len, visible));
             self.line_len = visible;
         }
         let _ = stdout.flush();

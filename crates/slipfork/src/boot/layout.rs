@@ -266,7 +266,7 @@ pub(super) fn truncate_ansi(row: &str, width: usize) -> String {
             }
             continue;
         }
-        if visible == width - 1 {
+        if visible == width.saturating_sub(1) {
             break;
         }
         out.push(ch);
@@ -288,6 +288,6 @@ pub(super) fn truncate_visible(text: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
     }
-    let head: String = text.chars().take(max - 1).collect();
+    let head: String = text.chars().take(max.saturating_sub(1)).collect();
     format!("{head}…")
 }

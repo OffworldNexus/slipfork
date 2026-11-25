@@ -409,7 +409,7 @@ impl BootTui {
         let Some(node) = Node::from_event(event) else {
             return;
         };
-        self.progress.advance();
+        self.progress.advance(node.kind, node.name);
         if node.kind == "image" {
             self.progress.finish_build();
         } else {

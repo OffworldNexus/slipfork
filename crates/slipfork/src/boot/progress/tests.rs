@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use super::BootProgress;
-use crate::boot::render::{panel_line, percent_of, status_line};
+use crate::boot::render::{BarProgress, panel_line, percent_of, status_line};
 
 fn plan() -> Vec<(String, String)> {
     vec![
@@ -118,7 +118,7 @@ fn a_fork_plan_keeps_one_denominator_and_the_magenta_keyword() {
 fn a_building_image_contributes_its_inner_fraction_once() {
     let mut progress = BootProgress::new("Booting demo");
     progress.announce(&plan(), 3);
-    progress.advance();
+    progress.advance("resource", "pg");
 
     for step in 1..=3 {
         progress.begin_inner(2, 3, "api", step, 6, "RUN");
@@ -136,12 +136,40 @@ fn a_building_image_contributes_its_inner_fraction_once() {
     );
 
     progress.finish_build();
-    progress.advance();
+    progress.advance("image", "api");
     assert_eq!(
         progress.fraction(),
         (2, 3),
         "the finished image counts once as an outer slot"
     );
+}
+
+/// M3.149: an image that already settled its outer slot must ignore late `step` frames, keeping the
+/// bar at 100% instead of adding a stale inner fraction on top of a fully counted outer level.
+#[test]
+fn a_late_step_after_the_image_finished_never_overfills_the_bar() {
+    let mut progress = BootProgress::new("Booting demo");
+    let plan = vec![("image".to_owned(), "api".to_owned())];
+    progress.announce(&plan, 1);
+    for step in 1..=2 {
+        progress.begin_inner(1, 1, "api", step, 2, "RUN");
+        progress.inner_done("api", step, 2);
+    }
+    progress.advance("image", "api");
+    progress.finish_build();
+    assert_eq!(progress.bar(), BarProgress::outer(1, 1));
+
+    // Late duplicate frames for the same image: `started` would recreate a `Building`.
+    progress.observe_step(&serde_json::json!({
+        "state": "started", "image": "api", "index": 1, "total": 2, "instruction": "RUN",
+    }));
+    progress.observe_step(&serde_json::json!({
+        "state": "done", "image": "api", "index": 1, "total": 2,
+    }));
+    let bar = progress.bar();
+    assert_eq!((bar.num, bar.den), (1, 1), "the settled outer level wins");
+    assert!(bar.num <= bar.den);
+    assert_eq!(percent_of(bar.num, bar.den), 100);
 }
 
 #[test]

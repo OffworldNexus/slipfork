@@ -26,7 +26,7 @@ fn install_sequence(rows: usize) -> String {
     if rows < 3 {
         return String::new();
     }
-    format!("\x1b[1;{}r", rows - 1)
+    format!("\x1b[1;{}r", rows.saturating_sub(1))
 }
 
 /// Whether a `SIGWINCH` arrived since the last ticker check.

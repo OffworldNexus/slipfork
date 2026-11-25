@@ -44,6 +44,8 @@ pub(super) struct BootProgress {
     plan: Vec<(String, String)>,
     active: Option<Active>,
     building: Option<Building>,
+    /// Outer rows already settled, so a late `step` frame cannot recreate a finished build.
+    finished: BTreeSet<(String, String)>,
 }
 
 impl BootProgress {
@@ -56,6 +58,7 @@ impl BootProgress {
             plan: Vec::new(),
             active: None,
             building: None,
+            finished: BTreeSet::new(),
         }
     }
 
@@ -130,9 +133,16 @@ impl BootProgress {
         }
     }
 
-    /// Counts one settled outer slot (image, setup, service, hook).
-    pub(super) fn advance(&mut self) {
-        self.outer_done = self.outer_done.saturating_add(1);
+    /// Counts one settled outer slot and remembers the row, clamped to a known plan total so a
+    /// duplicate `finished` frame can never push `done` past `total`.
+    pub(super) fn advance(&mut self, kind: &str, name: &str) {
+        self.finished.insert((kind.to_owned(), name.to_owned()));
+        let next = self.outer_done.saturating_add(1);
+        self.outer_done = if self.outer_total > 0 {
+            next.min(self.outer_total)
+        } else {
+            next
+        };
     }
 
     /// Names the outer step that currently owns the bar.
@@ -206,6 +216,15 @@ impl BootProgress {
     /// Applies one `step` frame to the inner level: `started` opens it, `done` advances it.
     pub(super) fn observe_step(&mut self, event: &Value) {
         let image = event["image"].as_str().unwrap_or("image");
+        // The image's outer slot already carries its work; a late or duplicate step frame must not
+        // recreate a `Building` and add an inner fraction on top of a fully counted outer level.
+        if self
+            .finished
+            .iter()
+            .any(|(kind, name)| kind == "image" && name == image)
+        {
+            return;
+        }
         let index = usize_of(event["index"].as_u64());
         let total = usize_of(event["total"].as_u64());
         let instruction = event["instruction"].as_str().unwrap_or("RUN");
@@ -251,6 +270,7 @@ impl BootProgress {
             num,
             den,
         }
+        .clamped()
     }
 
     /// The bar's active label: `[1/3] image api · step 3/6 RUN`, then `[2/3] setup uv sync`.

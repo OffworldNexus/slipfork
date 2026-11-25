@@ -70,6 +70,15 @@ fn exit_sequence_clears_pane_rows_then_homes_and_parks_last() {
     }
 }
 
+/// M3.149: a shorter status line must only pad the difference; the clear padding never underflows.
+#[test]
+fn a_shorter_status_line_never_underflows_its_clear_padding() {
+    assert_eq!(super::clear_padding(10, 4), "      ");
+    assert_eq!(super::clear_padding(4, 4), "");
+    assert_eq!(super::clear_padding(0, 9), "");
+    assert_eq!(super::clear_padding(usize::MAX, usize::MAX), "");
+}
+
 /// A three-line block places its phase row on top and its two output lines below it, in order.
 #[test]
 fn a_block_places_the_phase_row_on_top_and_output_oldest_first_downward() {
