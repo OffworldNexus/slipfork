@@ -152,9 +152,10 @@ fn supervisor_main(
     let failed_frame: Arc<Mutex<Option<(usize, Value)>>> = Arc::new(Mutex::new(None));
     let sink_emitter = Arc::clone(&emitter);
     let sink_failed = Arc::clone(&failed_frame);
+    let sink_total = plan.steps.len();
     let sink_commands = Arc::clone(&step_commands);
     let sink: Arc<slipfork_world::EventSink> = Arc::new(move |event: BootEvent| {
-        let mut frame = boot_event_json(&event);
+        let mut frame = boot_event_json(&event, sink_total);
         // The plan owns every step's command; the typed event only names the step index.
         if let Some(command) = step_index(&event)
             .and_then(|index| sink_commands.get(index))
@@ -265,13 +266,8 @@ fn supervisor_main(
             {
                 frame["exit_code"] = json!(code);
             }
-            let at = failed_step
-                .filter(|_| !plan.steps.is_empty())
-                .map(|step| Counter {
-                    index: step + 1,
-                    total: plan.steps.len(),
-                });
-            failure_facts(&mut frame, record.as_ref(), None, at);
+            let plumbing = frame["command"].as_str().map(str::to_owned);
+            failure_facts(&mut frame, record.as_ref(), plumbing.as_deref(), None);
             if !runtime.has_live_world() {
                 // Zero resources or services entered the world (a cold image `RUN` or pre-pod
                 // setup/hook failed): reap `unshare`/`slipfork-world-init`/`slirp4netns` before
@@ -304,7 +300,7 @@ fn stamps_for(project: &Path, store: &WorldStampStore, trusted: bool) -> StampSt
     }
 }
 
-fn boot_event_json(event: &BootEvent) -> Value {
+fn boot_event_json(event: &BootEvent, total: usize) -> Value {
     match event {
         BootEvent::Plan { rows } => json!({
             "event": "plan",
@@ -363,6 +359,7 @@ fn boot_event_json(event: &BootEvent) -> Value {
             "duration_ms": elapsed.as_millis(),
         }),
         BootEvent::Failed {
+            step,
             kind,
             name,
             line,
@@ -388,6 +385,13 @@ fn boot_event_json(event: &BootEvent) -> Value {
             if let Some(remedy) = remedy {
                 event["remedy"] = json!(remedy);
             }
+            // The producing path owns the typed envelope: the outer catch only merges the
+            // store-derived phase, reason, and exit code, never a second projection.
+            let at = (total > 0 && *step < total).then(|| Counter {
+                index: *step + 1,
+                total,
+            });
+            failure_facts(&mut event, None, command.as_deref(), at);
             event
         }
     }
@@ -796,25 +800,31 @@ mod tests {
     #[test]
     fn the_plan_frame_comes_first_and_stays_ansi_free() {
         let frames = [
-            boot_event_json(&BootEvent::Plan {
-                rows: vec![
-                    PlanRow {
-                        kind: BootKind::Image,
-                        name: "base".to_owned(),
-                    },
-                    PlanRow {
-                        kind: BootKind::Service,
-                        name: "api".to_owned(),
-                    },
-                ],
-            }),
-            boot_event_json(&BootEvent::Started {
-                step: 0,
-                total: 2,
-                kind: BootKind::Image,
-                name: "base".to_owned(),
-                run_id: None,
-            }),
+            boot_event_json(
+                &BootEvent::Plan {
+                    rows: vec![
+                        PlanRow {
+                            kind: BootKind::Image,
+                            name: "base".to_owned(),
+                        },
+                        PlanRow {
+                            kind: BootKind::Service,
+                            name: "api".to_owned(),
+                        },
+                    ],
+                },
+                2,
+            ),
+            boot_event_json(
+                &BootEvent::Started {
+                    step: 0,
+                    total: 2,
+                    kind: BootKind::Image,
+                    name: "base".to_owned(),
+                    run_id: None,
+                },
+                2,
+            ),
         ];
         let lines: Vec<String> = frames.iter().map(serde_json::Value::to_string).collect();
         assert!(lines[0].starts_with("{\"event\":\"plan\""), "{}", lines[0]);

@@ -17,9 +17,9 @@ use slipfork_world::snapshot::TailPhase;
 
 use crate::ui::Palette;
 use crate::ui::elapsed_text;
+use crate::ui::report::FailureFacts;
 
 use self::tally::ImageTally;
-use super::failure;
 use super::phase::{tail_label, tail_phase};
 use super::render::{OuterWidths, outer_row, outer_verb};
 
@@ -378,7 +378,14 @@ impl Narrative {
         if let Some(live) = &live {
             actions.push(Action::Print(live.phase.failed_row(palette)));
         }
-        for row in failure::envelope(event, &verb, self.verbose, palette, step_less) {
+        let facts = FailureFacts::from_event(event, None);
+        for row in facts.boot_lines(
+            &verb,
+            event["runtime"].as_str(),
+            step_less,
+            self.verbose,
+            palette,
+        ) {
             actions.push(Action::Diagnose(row));
         }
         self.active = None;

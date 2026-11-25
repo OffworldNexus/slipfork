@@ -2,8 +2,8 @@
 //!
 //! The append-only driver owns the one status line and the ticker thread; this module owns every
 //! byte those drivers print. Every colour role comes from the shipped [`Palette`], so a `NO_COLOR`,
-//! `TERM=dumb`, piped, or `--json` invocation emits zero `ESC[` bytes. Failure copy lives in the
-//! binary's `boot::failure`, and the live build narrative in `boot::build`.
+//! `TERM=dumb`, piped, or `--json` invocation emits zero `ESC[` bytes. Failure copy is projected
+//! from `ui::report::FailureFacts`, and the live build narrative lives in `boot::build`.
 
 use std::time::Duration;
 

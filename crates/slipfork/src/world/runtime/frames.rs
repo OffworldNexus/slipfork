@@ -145,17 +145,17 @@ pub(crate) fn step_frame(image: &str, event: &StepEvent<'_>) -> Value {
 
 /// Adds the typed facts a failure envelope needs: the instruction that ran, its source line, the
 /// child exit code, exactly one `next:`, and the `-v`-only plumbing kept out of `message`.
+///
+/// [`FailureFacts::from_event`] derives `target`, `at`, the run id, and the runtime from this same
+/// frame once; this function only merges the store-derived phase, reason, and exit code, then
+/// writes the envelope back.
 pub(crate) fn failure_facts(
     frame: &mut Value,
     record: Option<&RunRecord>,
     plumbing: Option<&str>,
     at: Option<Counter>,
 ) {
-    if frame.get("target").is_none()
-        && let Some(name) = frame["name"].as_str()
-    {
-        frame["target"] = json!(name);
-    }
+    let mut facts = FailureFacts::from_event(frame, at);
     if let Some(record) = record {
         for (key, value) in [
             ("phase", &record.phase),
@@ -166,19 +166,24 @@ pub(crate) fn failure_facts(
                 frame[key] = json!(value);
             }
         }
-        if frame.get("exit_code").is_none()
-            && let Some(code) = record.exit_code
+        if facts.phase.is_none() && !record.phase.is_empty() {
+            facts.phase = Some(record.phase.clone());
+        }
+        if facts.reason.is_empty()
+            && let Some(reason) = record.reason.as_deref().filter(|reason| !reason.is_empty())
         {
-            frame["exit_code"] = json!(code);
+            facts.reason = reason.to_owned();
+        }
+        if facts.exit_code.is_none() {
+            facts.exit_code = record.exit_code;
         }
     }
-    // Exactly one remedy on the wire: the replay command when a capture exists, else the typed one;
-    // the message never repeats a `next:` tail.
-    let next = frame["run_id"]
-        .as_str()
-        .map(|id| format!("slipfork logs -r {id}"))
-        .or_else(|| frame["remedy"].as_str().map(str::to_owned))
-        .unwrap_or_else(|| "run `slipfork logs` for the failing step".to_owned());
+    if frame.get("exit_code").is_some() {
+        facts.exit_code = frame["exit_code"]
+            .as_i64()
+            .and_then(|code| i32::try_from(code).ok());
+    }
+    // Exactly one remedy on the wire: the message never repeats a `next:` tail.
     let message = frame["message"].as_str().map(|message| {
         message
             .lines()
@@ -186,34 +191,20 @@ pub(crate) fn failure_facts(
             .collect::<Vec<_>>()
             .join("\n")
     });
-    let reason = record
-        .and_then(|record| record.reason.as_deref())
-        .filter(|reason| !reason.is_empty())
-        .unwrap_or_default()
-        .to_owned();
-    let facts = FailureFacts {
-        code: frame["code"].as_str().unwrap_or("boot-failed").to_owned(),
-        kind: frame["kind"].as_str().unwrap_or("boot").to_owned(),
-        phase: frame["phase"].as_str().map(str::to_owned),
-        target: frame["target"].as_str().map(str::to_owned),
-        at,
-        exit_code: frame["exit_code"]
-            .as_i64()
-            .and_then(|code| i32::try_from(code).ok()),
-        run_id: frame["run_id"].as_str().map(str::to_owned),
-        reason: reason.clone(),
-        runtime_ms: frame["elapsed_ms"].as_u64(),
-        next: next.clone(),
-    };
-    frame["next"] = json!(next);
+    if frame.get("target").is_none()
+        && let Some(target) = &facts.target
+    {
+        frame["target"] = json!(target);
+    }
+    frame["next"] = json!(facts.next);
     if let Some(message) = message {
         frame["message"] = json!(message);
     }
     if let Some(plumbing) = plumbing {
         frame["runtime"] = json!(plumbing);
     }
-    if !reason.is_empty() {
-        frame["reason"] = json!(reason);
+    if !facts.reason.is_empty() {
+        frame["reason"] = json!(facts.reason);
     }
     frame["failure"] = json!(facts);
 }
@@ -310,6 +301,23 @@ mod tests {
         );
         assert_eq!(frame["message"], "boom");
         assert_eq!(frame["next"], "slipfork logs -r abc123");
+
+        let mut plumbed = serde_json::json!({
+            "event": "failed",
+            "kind": "run",
+            "name": "api",
+            "run_id": "abc123",
+        });
+        failure_facts(&mut plumbed, None, Some("uv run seed --fresh"), None);
+        assert_eq!(plumbed["runtime"], "uv run seed --fresh");
+        let mut bare = serde_json::json!({
+            "event": "failed",
+            "kind": "run",
+            "name": "api",
+            "run_id": "abc123",
+        });
+        failure_facts(&mut bare, None, None, None);
+        assert!(bare.get("runtime").is_none());
 
         let mut positioned = serde_json::json!({
             "event": "failed",

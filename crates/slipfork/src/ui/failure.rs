@@ -1,7 +1,7 @@
 //! The one human failure block: `error:` lines plus exactly one `next:` remedy.
 //!
 //! Daemon messages arrive already colour-free. This renderer owns the only `error:` / `next:`
-//! roles, so `main`, `world::fail`, and `Session::fail` cannot drift: a typed `✗` verdict keeps
+//! roles, so `main` and the boot pane cannot drift: a typed `✗` verdict keeps
 //! its glyph, and empty lines inside a daemon message are dropped so the block starts immediately
 //! after the last live row (at most one blank line in scrollback).
 

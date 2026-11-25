@@ -6,7 +6,7 @@
 
 use serde::Serialize;
 
-use crate::ui::{Palette, elapsed_text};
+use crate::ui::{Palette, Verdict, elapsed_text};
 
 use super::row::FailureFacts;
 
@@ -44,6 +44,20 @@ impl Failure {
         }
     }
 
+    /// Builds a lifecycle failure whose message may already carry its own `next:` tail.
+    ///
+    /// The embedded remedy wins so a daemon message and its projection never disagree; `next` is
+    /// only the fallback when the message carries none.
+    #[must_use]
+    pub fn remedied(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        next: impl Into<String>,
+    ) -> Self {
+        let (message, embedded) = crate::ui::split_remedy(&message.into());
+        Self::new(code, message, embedded.unwrap_or_else(|| next.into()))
+    }
+
     /// Builds the one failure a settled step reports, keeping its typed facts.
     #[must_use]
     pub fn from_facts(facts: FailureFacts) -> Self {
@@ -71,15 +85,16 @@ impl Failure {
     /// The exact `{"error":{"code","message","next"}}` object `--json` emits.
     #[must_use]
     pub fn json(&self) -> serde_json::Value {
-        let message = self
-            .message
-            .lines()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or("the command failed");
-        let message = message
+        let mut lines = self.message.lines().filter(|line| !line.trim().is_empty());
+        let first = lines.next().unwrap_or("the command failed");
+        let first = first
             .strip_prefix("error: ")
-            .or(message.strip_prefix("✗ "))
-            .unwrap_or(message);
+            .or(first.strip_prefix("✗ "))
+            .unwrap_or(first);
+        let message = std::iter::once(first)
+            .chain(lines)
+            .collect::<Vec<_>>()
+            .join("\n");
         serde_json::json!({
             "error": {
                 "code": self.code,
@@ -123,6 +138,57 @@ impl Failure {
                 "{} {}",
                 palette.meta("next:"),
                 palette.tint(next, "36")
+            ));
+        }
+        rows
+    }
+}
+
+impl FailureFacts {
+    /// The boot pane's only projection of typed facts: one red `✗` verdict, the `-v`-only
+    /// plumbing row, and exactly one indented `next:` remedy.
+    ///
+    /// `verb` is the token the phase row printed (`RUN`, `start`, `hook`). A failure with no
+    /// phase row (`step_less`) carries an exit-less reason on the verdict line itself; every
+    /// other failure leaves the reason to the streamed gutter line.
+    #[must_use]
+    pub fn boot_lines(
+        &self,
+        verb: &str,
+        plumbing: Option<&str>,
+        step_less: bool,
+        verbose: bool,
+        palette: Palette,
+    ) -> Vec<String> {
+        let verdict = Verdict {
+            verb: verb.to_owned(),
+            target: self
+                .target
+                .as_deref()
+                .filter(|target| !target.is_empty())
+                .unwrap_or("step")
+                .to_owned(),
+            state: "failed".to_owned(),
+            exit_code: self.exit_code,
+            duration_ms: None,
+        };
+        let mut rows = vec![match self.reason.as_str() {
+            reason if step_less && self.exit_code.is_none() && !reason.is_empty() => {
+                palette.verdict_detail(&verdict, reason)
+            }
+            _ => palette.verdict(&verdict),
+        }];
+        if verbose && let Some(plumbing) = plumbing.filter(|text| !text.is_empty()) {
+            rows.push(format!(
+                "  {}",
+                palette.meta(&format!("runtime: {plumbing}"))
+            ));
+        }
+        if !self.next.is_empty() {
+            rows.push(format!(
+                "  {} {}",
+                palette.meta("next:"),
+                palette.tint(&self.next, "36")
             ));
         }
         rows
@@ -187,6 +253,37 @@ mod tests {
     }
 
     #[test]
+    fn an_embedded_next_wins_over_the_fallback_remedy() {
+        let failure = Failure::remedied(
+            "supervisor-exited",
+            "the supervisor exited\nnext: inspect `.slipfork/supervisor.log`",
+            "retry `slipfork up`",
+        );
+        assert_eq!(failure.next, "inspect `.slipfork/supervisor.log`");
+        assert_eq!(
+            failure.human(Palette::new(false), false),
+            vec![
+                "error: the supervisor exited".to_owned(),
+                "next: inspect `.slipfork/supervisor.log`".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_json_projection_keeps_every_message_line() {
+        let value = Failure::new(
+            "boot-failed",
+            "the supervisor exited\n\ninspect `.slipfork/supervisor.log`",
+            "run `slipfork up`",
+        )
+        .json();
+        assert_eq!(
+            value["error"]["message"],
+            "the supervisor exited\ninspect `.slipfork/supervisor.log`"
+        );
+    }
+
+    #[test]
     fn the_json_projection_carries_the_same_three_strings() {
         let value = Failure::new(
             "usage",
@@ -234,8 +331,8 @@ mod tests {
         );
         assert_eq!(
             failure.json()["error"]["message"],
-            "RUN api failed (exit 3)",
-            "the json projection drops the typed glyph"
+            "RUN api failed (exit 3)\nno such file",
+            "the json projection drops the typed glyph and keeps the body"
         );
         assert_eq!(failure.json()["error"]["code"], "build");
         assert_eq!(failure.json()["error"]["next"], "slipfork logs -r abc123");
@@ -253,5 +350,105 @@ mod tests {
             .expect("the verbose detail line");
         assert_eq!(runtime, verbose.len() - 2, "runtime sits before next:");
         assert_eq!(verbose.last(), plain.last(), "same one remedy line");
+    }
+
+    #[test]
+    fn boot_lines_project_one_verdict_and_one_indented_next() {
+        let rows = facts(None).boot_lines("RUN", None, false, false, Palette::new(false));
+        assert_eq!(
+            rows,
+            vec![
+                "✗ RUN api failed (exit 3)".to_owned(),
+                "  next: slipfork logs -r abc123".to_owned(),
+            ]
+        );
+        let block = rows.join("\n");
+        assert_eq!(block.matches("next:").count(), 1, "{block}");
+        assert!(
+            !block.contains("no such file"),
+            "the gutter owns the reason"
+        );
+        assert!(!block.contains('\u{1b}'), "{block}");
+    }
+
+    #[test]
+    fn boot_lines_add_the_dim_runtime_row_before_the_remedy_only_under_verbose() {
+        let rows = facts(None).boot_lines(
+            "RUN",
+            Some("apt-get install -y blastit"),
+            false,
+            true,
+            Palette::new(false),
+        );
+        assert_eq!(
+            rows,
+            vec![
+                "✗ RUN api failed (exit 3)".to_owned(),
+                "  runtime: apt-get install -y blastit".to_owned(),
+                "  next: slipfork logs -r abc123".to_owned(),
+            ]
+        );
+        let plain = facts(None).boot_lines(
+            "RUN",
+            Some("apt-get install -y blastit"),
+            false,
+            false,
+            Palette::new(false),
+        );
+        assert!(
+            plain.iter().all(|row| !row.contains("apt-get")),
+            "{plain:?}"
+        );
+    }
+
+    #[test]
+    fn boot_lines_color_the_verdict_red_and_the_remedy_cyan() {
+        let rows = facts(None).boot_lines("RUN", None, false, false, Palette::new(true));
+        assert!(rows[0].contains("\u{1b}[31m✗"), "{rows:?}");
+        assert!(rows[0].contains("\u{1b}[31mfailed"), "{rows:?}");
+        assert!(
+            rows[1].contains("\u{1b}[36mslipfork logs -r abc123"),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter().all(|row| !row.contains("\u{1b}[9")),
+            "no bright codes: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn boot_lines_a_step_less_failure_carries_its_reason_on_the_verdict() {
+        let mut facts = facts(None);
+        facts.exit_code = None;
+        facts.reason = "Dockerfile:2: instruction appears before any `FROM`".to_owned();
+        let rows = facts.boot_lines("image", None, true, false, Palette::new(false));
+        assert_eq!(
+            rows,
+            vec![
+                "✗ image api failed: Dockerfile:2: instruction appears before any `FROM`"
+                    .to_owned(),
+                "  next: slipfork logs -r abc123".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn boot_lines_a_missing_exit_code_and_remedy_never_print_empty_fields() {
+        let facts = FailureFacts {
+            code: "boot-failed".to_owned(),
+            kind: "boot".to_owned(),
+            phase: None,
+            target: Some("web".to_owned()),
+            at: None,
+            exit_code: None,
+            run_id: None,
+            reason: String::new(),
+            runtime_ms: None,
+            next: String::new(),
+        };
+        assert_eq!(
+            facts.boot_lines("start", None, false, false, Palette::new(false)),
+            vec!["✗ start web failed".to_owned()]
+        );
     }
 }

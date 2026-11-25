@@ -282,5 +282,54 @@ pub struct FailureFacts {
     pub next: String,
 }
 
+impl FailureFacts {
+    /// The typed facts a failed frame carries: its `failure` envelope when present, else the
+    /// frame's flat fields, so one `failed` frame always projects the same lines.
+    #[must_use]
+    pub fn from_event(event: &serde_json::Value, at: Option<Counter>) -> Self {
+        if let Some(facts) = event
+            .get("failure")
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+        {
+            return facts;
+        }
+        Self {
+            code: event["code"].as_str().unwrap_or("boot-failed").to_owned(),
+            kind: event["kind"].as_str().unwrap_or("boot").to_owned(),
+            phase: event["phase"]
+                .as_str()
+                .filter(|text| !text.is_empty())
+                .map(str::to_owned),
+            target: event["target"]
+                .as_str()
+                .or_else(|| event["name"].as_str())
+                .map(str::to_owned),
+            at,
+            exit_code: event["exit_code"]
+                .as_i64()
+                .and_then(|code| i32::try_from(code).ok()),
+            run_id: event["run_id"].as_str().map(str::to_owned),
+            reason: event["reason"]
+                .as_str()
+                .filter(|text| !text.is_empty())
+                .unwrap_or_default()
+                .to_owned(),
+            runtime_ms: event["runtime_ms"]
+                .as_u64()
+                .or_else(|| event["elapsed_ms"].as_u64()),
+            next: event["next"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    event["run_id"]
+                        .as_str()
+                        .map(|id| format!("slipfork logs -r {id}"))
+                        .or_else(|| event["remedy"].as_str().map(str::to_owned))
+                        .unwrap_or_else(|| "run `slipfork logs` for the failing step".to_owned())
+                }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

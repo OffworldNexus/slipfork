@@ -10,6 +10,7 @@ use serde_json::json;
 
 use crate::boot::{BootTui, dropped_row};
 use crate::commands::Session;
+use crate::ui::report::Failure;
 
 use super::features::WorldFeatures;
 use super::up::{emit_json, emit_stream};
@@ -37,7 +38,15 @@ impl Session {
         let mut client = match self.connect() {
             Ok(client) => client,
             Err(error) => {
-                return self.lifecycle_failure(&error, "run `slipfork up` first", args.json, false);
+                return self.lifecycle_failure(
+                    Failure::remedied(
+                        error.code.clone(),
+                        error.message.clone(),
+                        "run `slipfork up` first",
+                    ),
+                    args.json,
+                    false,
+                );
             }
         };
         let mut tui = BootTui::boot(
@@ -101,7 +110,11 @@ impl Session {
                     }
                     _ => "run `slipfork status` to inspect the world".to_owned(),
                 };
-                self.lifecycle_failure(&error, &next, args.json, tui.failed())
+                self.lifecycle_failure(
+                    Failure::remedied(error.code.clone(), error.message.clone(), next),
+                    args.json,
+                    tui.failed(),
+                )
             }
         }
     }
@@ -112,8 +125,11 @@ impl Session {
             Ok(client) => client,
             Err(error) => {
                 return self.lifecycle_failure(
-                    &error,
-                    "run `slipfork status` to inspect the world",
+                    Failure::remedied(
+                        error.code.clone(),
+                        error.message.clone(),
+                        "run `slipfork status` to inspect the world",
+                    ),
                     args.json,
                     false,
                 );
@@ -155,7 +171,11 @@ impl Session {
                     "no-fork" => "run `slipfork ps` to list this world's forks".to_owned(),
                     _ => "run `slipfork status` to inspect the world".to_owned(),
                 };
-                self.lifecycle_failure(&error, &next, args.json, tui.failed())
+                self.lifecycle_failure(
+                    Failure::remedied(error.code.clone(), error.message.clone(), next),
+                    args.json,
+                    tui.failed(),
+                )
             }
         }
     }

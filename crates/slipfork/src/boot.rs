@@ -9,7 +9,6 @@
 //! The daemon's `plan` frame latches the plan positions before row 1; `--json` passes through.
 
 mod build;
-mod failure;
 mod layout;
 mod phase;
 mod progress;

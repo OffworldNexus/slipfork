@@ -86,8 +86,11 @@ impl Session {
                     Ok(client) => client,
                     Err(error) => {
                         return self.lifecycle_failure(
-                            &error,
-                            "retry `slipfork up`",
+                            Failure::remedied(
+                                error.code.clone(),
+                                error.message.clone(),
+                                "retry `slipfork up`",
+                            ),
                             args.json,
                             false,
                         );
@@ -97,8 +100,11 @@ impl Session {
                     Ok(reply) => reply,
                     Err(error) => {
                         return self.lifecycle_failure(
-                            &error,
-                            "retry `slipfork up`",
+                            Failure::remedied(
+                                error.code.clone(),
+                                error.message.clone(),
+                                "retry `slipfork up`",
+                            ),
                             args.json,
                             false,
                         );
@@ -139,7 +145,15 @@ impl Session {
             None => match self.connect() {
                 Ok(client) => client,
                 Err(error) => {
-                    return self.lifecycle_failure(&error, "retry `slipfork up`", args.json, false);
+                    return self.lifecycle_failure(
+                        Failure::remedied(
+                            error.code.clone(),
+                            error.message.clone(),
+                            "retry `slipfork up`",
+                        ),
+                        args.json,
+                        false,
+                    );
                 }
             },
         };
@@ -210,7 +224,11 @@ impl Session {
                             .to_owned()
                     }
                 });
-                self.lifecycle_failure(&error, &next, args.json, tui.failed())
+                self.lifecycle_failure(
+                    Failure::remedied(error.code.clone(), error.message.clone(), next),
+                    args.json,
+                    tui.failed(),
+                )
             }
         }
     }
@@ -233,8 +251,11 @@ impl Session {
             Ok(client) => client,
             Err(error) => {
                 return self.lifecycle_failure(
-                    &error,
-                    "run `slipfork up` to start a world",
+                    Failure::remedied(
+                        error.code.clone(),
+                        error.message.clone(),
+                        "run `slipfork up` to start a world",
+                    ),
                     json_mode,
                     false,
                 );
@@ -247,8 +268,11 @@ impl Session {
                 Ok(reply) => reply,
                 Err(error) => {
                     return self.lifecycle_failure(
-                        &error,
-                        "run `slipfork up` to start a world",
+                        Failure::remedied(
+                            error.code.clone(),
+                            error.message.clone(),
+                            "run `slipfork up` to start a world",
+                        ),
                         json_mode,
                         false,
                     );
@@ -293,8 +317,11 @@ impl Session {
                 ExitCode::SUCCESS
             }
             Err(error) => self.lifecycle_failure(
-                &error,
-                "run `slipfork up` to start a world",
+                Failure::remedied(
+                    error.code.clone(),
+                    error.message.clone(),
+                    "run `slipfork up` to start a world",
+                ),
                 json_mode,
                 tui.failed(),
             ),
@@ -319,8 +346,11 @@ impl Session {
             Ok(client) => client,
             Err(error) => {
                 return self.lifecycle_failure(
-                    &error,
-                    "run `slipfork up` if the world is no longer running",
+                    Failure::remedied(
+                        error.code.clone(),
+                        error.message.clone(),
+                        "run `slipfork up` if the world is no longer running",
+                    ),
                     json_mode,
                     false,
                 );
@@ -333,8 +363,11 @@ impl Session {
                 Ok(reply) => reply,
                 Err(error) => {
                     return self.lifecycle_failure(
-                        &error,
-                        "run `slipfork up` if the world is no longer running",
+                        Failure::remedied(
+                            error.code.clone(),
+                            error.message.clone(),
+                            "run `slipfork up` if the world is no longer running",
+                        ),
                         json_mode,
                         false,
                     );
@@ -403,8 +436,11 @@ impl Session {
                 ExitCode::SUCCESS
             }
             Err(error) => self.lifecycle_failure(
-                &error,
-                "run `slipfork up` if the world is no longer running",
+                Failure::remedied(
+                    error.code.clone(),
+                    error.message.clone(),
+                    "run `slipfork up` if the world is no longer running",
+                ),
                 json_mode,
                 tui.failed(),
             ),
@@ -414,11 +450,7 @@ impl Session {
     /// The one refusal for an unresolvable positional target.
     fn target_failure(&self, error: &super::TargetError, json_mode: bool) -> ExitCode {
         self.lifecycle_failure(
-            &DaemonError {
-                code: "no-target".to_owned(),
-                message: error.message.clone(),
-            },
-            error.next,
+            Failure::remedied("no-target", error.message.clone(), error.next),
             json_mode,
             false,
         )
@@ -439,12 +471,9 @@ impl Session {
             },
         );
         let next = first.map_or("fix the Forkfile", |item| item.next.as_str());
+
         self.lifecycle_failure(
-            &DaemonError {
-                code: "forkfile".to_owned(),
-                message,
-            },
-            next,
+            Failure::remedied("forkfile", message, next),
             json_mode,
             false,
         )
@@ -453,33 +482,18 @@ impl Session {
     /// Prints exactly one `next:` remedy, or one JSON error object under `--json`.
     pub(super) fn lifecycle_failure(
         &self,
-        error: &DaemonError,
-        next: &str,
+        failure: Failure,
         json_mode: bool,
         already_rendered: bool,
     ) -> ExitCode {
         if json_mode {
-            let (message, embedded) = crate::ui::split_remedy(&error.message);
-            println!(
-                "{}",
-                json!({ "error": {
-                    "code": error.code,
-                    "message": message,
-                    "next": embedded.as_deref().unwrap_or(next),
-                }})
-            );
+            println!("{}", failure.json());
             return ExitCode::FAILURE;
         }
         if already_rendered {
             return ExitCode::FAILURE;
         }
-        let (message, embedded) = crate::ui::split_remedy(&error.message);
-        let next = embedded.as_deref().unwrap_or(next);
-        let _ = self.renderer().emit(&Report::failure(Failure::new(
-            error.code.clone(),
-            message,
-            next,
-        )));
+        let _ = self.renderer().emit(&Report::failure(failure));
         ExitCode::FAILURE
     }
 }
