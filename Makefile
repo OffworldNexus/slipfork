@@ -2,6 +2,12 @@ CARGO ?= cargo
 UV ?= uv
 UVX ?= uvx
 
+# One canonical build dir, honouring a redirected CARGO_TARGET_DIR (CI caches, agent builds).
+# The binary always comes from this checkout; only a `make SLIPFORK_BIN=...` command-line
+# override wins, never an inherited environment value.
+TARGET_DIR ?= $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR),target)
+SLIPFORK_BIN := $(abspath $(TARGET_DIR))/debug/slipfork
+
 # Point this at a directory on a real Btrfs mount (a loop file is fine); never `/tmp`.
 SLIPFORK_TEST_ROOT ?=
 LIVE_RUNTIME_DIR ?= /dev/shm/sf-live-runtime
@@ -63,9 +69,9 @@ check:
 
 # The plugin's tests spawn the real binary from this workspace, never a stand-in.
 js-test:
-	$(CARGO) build -p slipfork
+	$(CARGO) build --target-dir "$(TARGET_DIR)" -p slipfork
 	cd packages/opencode-slipfork && test -d node_modules || bun install --silent
-	cd packages/opencode-slipfork && SLIPFORK_BIN=$(CURDIR)/target/debug/slipfork bun test
+	cd packages/opencode-slipfork && SLIPFORK_BIN="$(SLIPFORK_BIN)" bun test
 
 typecheck:
 	cd packages/opencode-slipfork && test -d node_modules || bun install --silent
@@ -198,7 +204,6 @@ live-test:
 # ---------------------------------------------------------------------------
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
-TARGET_DIR ?= $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR),target)
 DEV_BINS := slipfork slipfork-lsp slipfork-world-init
 
 # The package and `install.sh --user` own the well-known bins: refuse /usr, /bin and /sbin,
