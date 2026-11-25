@@ -1,33 +1,37 @@
-//! The typed-event renderer shared by `logs`, `logs -r`, `shell`, and `exec`.
+//! The one live-stream renderer shared by `logs`, `exec`, `shell`, and `docker`.
 //!
-//! Kept beside the verbs instead of inside them so the parent module stays a thin command surface.
-//! Every write goes through [`Renderer::write`], which remembers a non-EPIPE failure instead of
-//! discarding it: a reader that stops early is a clean stream end, any other write failure is the
-//! command's.
+//! Daemon frames stay typed values; this module owns every byte a human reads: the pod/stream
+//! gutter, replay `HH:MM:SS.mmm` clock, `--last` ring, NDJSON frames, and the final verdict.
+//! [`ReportRenderer`] owns the palette, mode, and wall clock, so a command never formats SGR.
 
 use std::collections::VecDeque;
-use std::process::ExitCode;
+use std::io;
 
 use serde_json::{Value, json};
 
-use crate::commands::LocalClock;
-use crate::commands::emit;
-use crate::ui::strip;
+use crate::ui::Verdict;
 use crate::ui::table::{Column, Table};
-use crate::ui::{Palette, Verdict};
+
+use super::{Entry, ReportRenderer, StreamKind};
+
+/// How one stream lays out its lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Layout {
+    /// `logs`: aligned pod gutter (`api │ line`).
+    Logs,
+    /// `logs -r`: indented clocked rows (`  12:00:00.000 │ line`).
+    Replay,
+    /// `exec`/`shell`: the child's own bytes, no gutter.
+    Verbatim,
+}
 
 /// Renders typed daemon events as gutters, instruction rows, or NDJSON.
-pub(crate) struct Renderer {
-    palette: Palette,
-    json: bool,
-    /// `logs` prefixes every line with its pod gutter; `exec` stays verbatim like `docker exec`.
-    gutter: bool,
+pub struct StreamRenderer {
+    renderer: ReportRenderer,
+    layout: Layout,
     /// Prefix a human timestamp before the pod gutter (`-t`).
     timestamps: bool,
-    /// Replay rows carry a `HH:MM:SS.mmm` clock and the v3 stream gutter.
-    clocked: bool,
-    /// The one wall clock resolved by the composition root.
-    clock: LocalClock,
+    /// The roster's widest pod id; latched once and never grown mid-stream.
     width: usize,
     /// Human rows emitted in this replay, so an empty capture prints no double blank line.
     rows: usize,
@@ -37,7 +41,7 @@ pub(crate) struct Renderer {
     reason: Option<String>,
     /// Set when a non-EPIPE write failed, so the caller can exit non-zero.
     failed: bool,
-    /// `logs --last N` holds rendered lines here until the daemon marks history caught up.
+    /// `logs --last N` holds rendered chunks here until the daemon marks history caught up.
     ring: TailRing,
 }
 
@@ -71,49 +75,36 @@ impl TailRing {
     }
 }
 
+/// The stored line as this viewer may render it: ANSI and `\r` are stripped for a pipe,
+/// `NO_COLOR`, or `--json`; a colour terminal keeps only safe SGR.
+pub fn visible_line(stored: &str, color: bool, json: bool) -> std::borrow::Cow<'_, str> {
+    let visible = if color && !json {
+        crate::ui::colour_only(stored)
+    } else {
+        crate::ui::strip(stored)
+    };
+    match visible {
+        std::borrow::Cow::Borrowed(text) if !text.contains('\r') => {
+            std::borrow::Cow::Borrowed(text)
+        }
+        text => std::borrow::Cow::Owned(text.replace('\r', "")),
+    }
+}
+
 /// The stored line as this viewer may render it.
 ///
 /// The capture stores the child's raw bytes; only a colour-capable human viewer keeps them. A
 /// pipe, `NO_COLOR`, and `--json` strip every escape before rendering or measuring.
 fn visible(stored: &str, color: bool, json: bool) -> std::borrow::Cow<'_, str> {
-    if color && !json {
-        crate::ui::colour_only(stored)
-    } else {
-        strip(stored)
-    }
+    visible_line(stored, color, json)
 }
 
-/// One v3 replay row: `  HH:MM:SS.mmm │ line`, with the clock resolved once for the invocation.
-fn replay_row(
-    clock: &LocalClock,
-    palette: Palette,
-    ts_ms: Option<u64>,
-    glyph: &str,
-    line: &str,
-) -> String {
-    ts_ms.map_or_else(
-        || format!("  {glyph} {line}"),
-        |ts| format!("  {} {glyph} {line}", palette.meta(&clock.clock(ts))),
-    )
-}
-
-impl Renderer {
-    /// One renderer with only the mode flags set; every constructor narrows it.
-    fn blank(
-        color: bool,
-        json: bool,
-        gutter: bool,
-        timestamps: bool,
-        clocked: bool,
-        clock: &LocalClock,
-    ) -> Self {
+impl StreamRenderer {
+    fn blank(renderer: ReportRenderer, layout: Layout, timestamps: bool) -> Self {
         Self {
-            palette: Palette::new(color),
-            json,
-            gutter,
+            renderer,
+            layout,
             timestamps,
-            clocked,
-            clock: clock.clone(),
             width: 0,
             rows: 0,
             verdict: None,
@@ -123,29 +114,45 @@ impl Renderer {
         }
     }
 
+    /// `logs`: aligned pod gutters, optional `-t` timestamp prefix.
+    #[must_use]
+    pub fn logs(renderer: ReportRenderer, timestamps: bool) -> Self {
+        Self::blank(renderer, Layout::Logs, timestamps)
+    }
+
+    /// `logs -r <id>`: one recorded run's clocked stream-gutter rows.
+    #[must_use]
+    pub fn replay(renderer: ReportRenderer, timestamps: bool) -> Self {
+        Self::blank(renderer, Layout::Replay, timestamps)
+    }
+
+    /// `exec`/`shell`: the command's own stdout and stderr, byte for byte.
+    #[must_use]
+    pub fn verbatim(renderer: ReportRenderer) -> Self {
+        Self::blank(renderer, Layout::Verbatim, false)
+    }
+
     /// `logs --last N`: hold the last N rendered lines back until history is caught up.
-    pub(super) fn tail(mut self, lines: Option<usize>) -> Self {
+    #[must_use]
+    pub fn tail(mut self, lines: Option<usize>) -> Self {
         if let Some(capacity) = lines.filter(|count| *count > 0) {
             self.ring = TailRing::new(capacity);
         }
         self
     }
 
-    pub(super) fn new(color: bool, json: bool, timestamps: bool, clock: &LocalClock) -> Self {
-        Self::blank(color, json, true, timestamps, false, clock)
+    /// Whether any write failed for a reason other than the reader closing the pipe.
+    #[must_use]
+    pub const fn failed(&self) -> bool {
+        self.failed
     }
 
-    /// The `exec`/`shell` renderer: the command's own stdout and stderr, byte for byte.
-    pub(crate) fn exec(color: bool, json: bool, clock: &LocalClock) -> Self {
-        Self::blank(color, json, false, false, false, clock)
+    /// Whether this invocation renders NDJSON frames.
+    fn json(&self) -> bool {
+        self.renderer.mode().json()
     }
 
-    /// The `logs -r <id>` renderer: one recorded run's clocked stream-gutter rows.
-    pub(super) fn replay(color: bool, json: bool, timestamps: bool, clock: &LocalClock) -> Self {
-        Self::blank(color, json, false, timestamps, true, clock)
-    }
-
-    /// Writes one rendered chunk, holding it in the `--last` ring while history is still buffered.
+    /// Writes one already-rendered chunk, holding it in the `--last` ring while history is buffered.
     fn write(&mut self, text: &str) {
         if self.ring.capacity > 0 {
             self.ring.push(text);
@@ -154,14 +161,41 @@ impl Renderer {
         self.write_direct(text);
     }
 
-    /// Writes one rendered chunk now, remembering a non-EPIPE failure (`emit` treats EPIPE as clean).
+    /// Writes one rendered chunk now, remembering a non-EPIPE failure (`BrokenPipe` is a clean end).
     fn write_direct(&mut self, text: &str) {
-        if matches!(emit(text), ExitCode::FAILURE) {
+        if let Err(error) = self.renderer.emit_text(StreamKind::Stdout, text)
+            && error.kind() != io::ErrorKind::BrokenPipe
+        {
             self.failed = true;
         }
     }
 
-    /// Flushes the `--last` ring once and switches every later line to write-through.
+    /// Writes one typed entry through the shared report renderer, keeping the tail ring intact.
+    fn emit_entry(&mut self, entry: &Entry) {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let _ = self.renderer.emit_entry_to(entry, &mut out, &mut err);
+        if !out.is_empty() {
+            let text = String::from_utf8_lossy(&out).into_owned();
+            self.write(&text);
+        }
+        if !err.is_empty()
+            && let Err(error) = self
+                .renderer
+                .emit_text(StreamKind::Stderr, &String::from_utf8_lossy(&err))
+            && error.kind() != io::ErrorKind::BrokenPipe
+        {
+            self.failed = true;
+        }
+    }
+
+    /// Writes one JSON value as a single line, through the same ring as human rows.
+    fn write_json(&mut self, value: &Value) {
+        let text = serde_json::to_string(value).unwrap_or_default();
+        self.write(&format!("{text}\n"));
+    }
+
+    /// Flushes the `--last` ring once and switches every later chunk to write-through.
     fn flush_tail(&mut self) {
         if self.ring.capacity == 0 {
             return;
@@ -173,12 +207,8 @@ impl Renderer {
         }
     }
 
-    /// Whether any write failed for a reason other than the reader closing the pipe.
-    pub(crate) fn failed(&self) -> bool {
-        self.failed
-    }
-
-    pub(crate) fn event(&mut self, event: &Value) {
+    /// Renders one daemon frame.
+    pub fn event(&mut self, event: &Value) {
         let pod = event.get("pod").and_then(Value::as_str).unwrap_or_default();
         let kind = event.get("kind").and_then(Value::as_str).unwrap_or("line");
         let stream = event
@@ -189,7 +219,7 @@ impl Renderer {
             .get("line")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let line = visible(stored, self.palette.color(), self.json);
+        let line = visible(stored, self.renderer.color(), self.json());
         let ts_ms = event.get("ts_ms").and_then(Value::as_u64);
         if kind == "history_end" {
             // The daemon's one marker: everything before it is history, everything after is live.
@@ -202,15 +232,15 @@ impl Renderer {
         }
         if kind == "roster" {
             // `logs -r --json` mirrors the catalog record before its captured lines.
-            if self.json
+            if self.json()
                 && let Some(run) = event.get("run")
             {
-                self.write(&format!("{run}\n"));
+                self.write_json(run);
             }
             self.roster(event);
             return;
         }
-        if self.json {
+        if self.json() {
             let mut payload = json!({
                 "pod": pod,
                 "stream": stream,
@@ -220,7 +250,7 @@ impl Renderer {
             if let Some(ts_ms) = ts_ms {
                 payload["ts_ms"] = json!(ts_ms);
             }
-            self.write(&format!("{payload}\n"));
+            self.write_json(&payload);
             return;
         }
         match kind {
@@ -232,30 +262,44 @@ impl Renderer {
                     || format!("  {line}"),
                     |ts| {
                         let clock = if self.timestamps {
-                            self.palette.meta(&self.clock.timestamp(ts))
+                            self.renderer.wall().timestamp(ts)
                         } else {
-                            self.palette.meta(&self.clock.clock(ts))
+                            self.renderer.wall().clock(ts)
                         };
-                        format!("  {clock}  {line}")
+                        format!("  {}  {line}", self.renderer.palette().meta(&clock))
                     },
                 );
                 self.rows += 1;
                 self.write(&format!("{row}\n"));
             }
             "divider" => {
-                self.write(&format!("{}\n", self.palette.meta(&line)));
+                self.write(&format!("{}\n", self.renderer.palette().meta(&line)));
             }
-            _ if self.clocked => {
+            _ if self.layout == Layout::Replay => {
                 // The v3 replay row: 2-space indent, a dim clock in the gutter, then the glyph.
-                let glyph = self.palette.gutter(stream);
-                let row = replay_row(&self.clock, self.palette, ts_ms, &glyph, &line);
+                let kind = match stream {
+                    "stderr" => StreamKind::Stderr,
+                    _ => StreamKind::Stdout,
+                };
+                self.emit_entry(&Entry::Stream {
+                    indent: 2,
+                    stream: kind,
+                    line: line.into_owned(),
+                    ts_ms: ts_ms.unwrap_or(0),
+                });
                 self.rows += 1;
-                self.write(&format!("{row}\n"));
             }
-            _ if !self.gutter => {
+            _ if self.layout == Layout::Verbatim => {
                 let stamp = if self.timestamps {
                     ts_ms
-                        .map(|ts| format!("{} ", self.palette.meta(&self.clock.timestamp(ts))))
+                        .map(|ts| {
+                            format!(
+                                "{} ",
+                                self.renderer
+                                    .palette()
+                                    .meta(&self.renderer.wall().timestamp(ts))
+                            )
+                        })
                         .unwrap_or_default()
                 } else {
                     String::new()
@@ -265,7 +309,14 @@ impl Renderer {
             _ => {
                 let stamp = if self.timestamps {
                     ts_ms
-                        .map(|ts| format!("{} ", self.palette.meta(&self.clock.timestamp(ts))))
+                        .map(|ts| {
+                            format!(
+                                "{} ",
+                                self.renderer
+                                    .palette()
+                                    .meta(&self.renderer.wall().timestamp(ts))
+                            )
+                        })
                         .unwrap_or_default()
                 } else {
                     String::new()
@@ -276,9 +327,10 @@ impl Renderer {
                     Column::left(),
                 ];
                 let gutter = Table::new(&columns).gap(" ").indent(&stamp);
+                let palette = self.renderer.palette();
                 let cells = [
-                    self.palette.tint(pod, "1"),
-                    self.palette.gutter(stream),
+                    palette.tint(pod, "1"),
+                    palette.gutter(stream),
                     line.to_string(),
                 ];
                 // Measure the real row, line included: the table engine skips a zero-width column,
@@ -292,7 +344,12 @@ impl Renderer {
 
     /// Fixes the gutter width from the daemon's pod roster; it never grows mid-stream.
     fn roster(&mut self, event: &Value) {
-        if self.json {
+        if self.json() {
+            // Even `--json` must not silently drop a replay record, but the record was written
+            // above; a roster only fixes human alignment.
+            if event.get("run").is_some() {
+                self.layout = Layout::Replay;
+            }
             return;
         }
         let pods: Vec<&str> = event
@@ -308,8 +365,7 @@ impl Renderer {
         if let Some(run) = event.get("run") {
             // A roster carrying a catalog record is a capture replay, so every following row takes
             // the clocked v3 stream-gutter path.
-            self.gutter = false;
-            self.clocked = true;
+            self.layout = Layout::Replay;
             self.print_header(run);
         }
     }
@@ -338,10 +394,14 @@ impl Renderer {
         };
         let started = run["started_ms"]
             .as_u64()
-            .map(|ts| self.clock.timestamp(ts));
-        let header =
-            self.palette
-                .header_line(run_id, &header_verb, target, command, started.as_deref());
+            .map(|ts| self.renderer.wall().timestamp(ts));
+        let header = self.renderer.palette().header_line(
+            run_id,
+            &header_verb,
+            target,
+            command,
+            started.as_deref(),
+        );
         self.write(&format!("{header}\n\n"));
         self.verdict = Some(Verdict {
             verb: verdict_verb,
@@ -358,20 +418,22 @@ impl Renderer {
             .map(str::to_owned);
     }
 
-    pub(crate) fn finish(&mut self, code: i64) {
-        if self.json {
+    /// Closes the stream: the `--json` exit trailer or the one human verdict line.
+    pub fn finish(&mut self, code: i64) {
+        if self.json() {
             // History-first: exactly N held records, then the one exit trailer, never N-1.
             self.flush_tail();
-            self.write_direct(&format!("{}\n", json!({ "exit": code })));
+            self.write_json(&json!({ "exit": code }));
             return;
         }
         if let Some(verdict) = &self.verdict {
+            let palette = self.renderer.palette();
             // A failure with no replayable row at all explains itself in the verdict itself.
             let line = match &self.reason {
                 Some(reason) if self.rows == 0 && verdict.exit_code.is_none() => {
-                    self.palette.verdict_detail(verdict, reason)
+                    palette.verdict_detail(verdict, reason)
                 }
-                _ => self.palette.verdict(verdict),
+                _ => palette.verdict(verdict),
             };
             // Exactly one blank line separates rows from the verdict; an empty capture has none.
             let gap = if self.rows > 0 { "\n" } else { "" };
@@ -383,12 +445,26 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests {
-    use super::{TailRing, replay_row, visible};
-    use crate::commands::LocalClock;
-    use crate::ui::Palette;
-    use crate::ui::table::{Column, Table};
+    use super::{TailRing, visible};
+    use crate::ui::report::{Entry, ReportRenderer, StreamKind, WallZone};
+    use crate::ui::{
+        Terminal, UiMode,
+        table::{Column, Table},
+    };
 
     const RED: &str = "\u{1b}[31mred\u{1b}[0m";
+
+    fn renderer(mode: UiMode) -> ReportRenderer {
+        ReportRenderer::new(
+            Terminal {
+                cols: 100,
+                rows: 30,
+                mode,
+                stdin_tty: false,
+            },
+            WallZone::fixed(2 * 3600).expect("paris"),
+        )
+    }
 
     #[test]
     fn a_colour_terminal_keeps_the_child_bytes_and_every_other_viewer_strips_them() {
@@ -432,21 +508,59 @@ mod tests {
     }
 
     #[test]
-    fn replay_clock_gutter_uses_the_injected_local_clock() {
-        let clock = LocalClock::fixed(2 * 3600);
+    fn a_replay_entry_carries_the_fixed_paris_clock() {
+        let renderer = renderer(UiMode::Plain);
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        renderer
+            .emit_entry_to(
+                &Entry::Stream {
+                    indent: 2,
+                    stream: StreamKind::Stdout,
+                    line: "compiled".to_owned(),
+                    ts_ms: 1_782_907_200_000,
+                },
+                &mut out,
+                &mut err,
+            )
+            .expect("render one replay row");
         assert_eq!(
-            replay_row(
-                &clock,
-                Palette::new(false),
-                Some(1_782_907_200_000),
-                "│",
-                "line"
-            ),
-            "  14:00:00.000 │ line"
+            String::from_utf8(out).expect("utf8"),
+            "  14:00:00.000 │ compiled\n"
         );
+        assert!(err.is_empty());
+    }
+
+    #[test]
+    fn a_replay_entry_uses_the_named_paris_zone() {
+        let renderer = ReportRenderer::new(
+            Terminal {
+                cols: 100,
+                rows: 30,
+                mode: UiMode::Plain,
+                stdin_tty: false,
+            },
+            WallZone::named("Europe/Paris").expect("the host carries the IANA zone database"),
+        );
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        renderer
+            .emit_entry_to(
+                &Entry::Stream {
+                    indent: 2,
+                    stream: StreamKind::Stderr,
+                    line: "warn".to_owned(),
+                    ts_ms: 1_782_907_200_000,
+                },
+                &mut out,
+                &mut err,
+            )
+            .expect("render one replay row");
         assert_eq!(
-            replay_row(&clock, Palette::new(false), None, "┃", "line"),
-            "  ┃ line"
+            String::from_utf8(out).expect("utf8"),
+            "  14:00:00.000 ┃ warn\n",
+            "2026-07-01T12:00:00Z is 14:00 Paris"
         );
+        assert!(err.is_empty());
     }
 }

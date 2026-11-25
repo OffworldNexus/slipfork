@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -16,6 +16,7 @@ use slipfork_world::StoreLayout;
 use crate::commands::secret::EchoGuard;
 use crate::commands::{Session, emit};
 use crate::ui::Palette;
+use crate::ui::report::{StreamKind, digest_cell};
 use crate::ui::table::{Column, Table};
 
 use super::{DockerArgs, DockerVerb};
@@ -278,7 +279,7 @@ impl Session {
             vec![
                 palette.meta(&row[0]),
                 palette.value(&row[1]),
-                palette.meta(&row[2]),
+                palette.meta(&digest_cell(&row[2])),
             ]
         }));
         let widths = table.widths(&measured);
@@ -298,12 +299,12 @@ impl Session {
         if !self.stdin_is_terminal() {
             return Err(format!("no password supplied for `{host}`"));
         }
-        eprint!("password for {host}: ");
-        let _ = io::stderr().flush();
+        let prompt = format!("password for {host}: ");
+        let _ = self.renderer().emit_text(StreamKind::Stderr, &prompt);
         let _echo = EchoGuard::disable();
         let secret =
             read_one_line().map_err(|error| format!("cannot read the password: {error}"))?;
-        eprintln!();
+        let _ = self.renderer().emit_text(StreamKind::Stderr, "\n");
         Ok(secret)
     }
 

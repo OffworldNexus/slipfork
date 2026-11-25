@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::boot::elapsed_text;
 use crate::commands::LocalClock;
-use crate::ui::paint;
+use crate::ui::Palette;
 use crate::ui::table::{Column, Table};
 
 /// One recorded run, projected from the daemon's `runs` frame.
@@ -66,25 +66,26 @@ const COLUMNS: [Column; 6] = [
 
 /// Renders the whole catalog: one dim header row and one row per recorded run.
 pub(crate) fn render_runs(rows: &[RunRow], color: bool, clock: &LocalClock) -> Vec<String> {
+    let palette = Palette::new(color);
     let table = Table::new(&COLUMNS);
     let header = [
-        paint("#run_id", "2", color),
-        paint("kind", "2", color),
-        paint("step", "2", color),
-        paint("status", "2", color),
-        paint("duration", "2", color),
-        paint("recorded", "2", color),
+        palette.meta("#run_id"),
+        palette.meta("kind"),
+        palette.meta("step"),
+        palette.meta("status"),
+        palette.meta("duration"),
+        palette.meta("recorded"),
     ];
     let body: Vec<[String; 6]> = rows
         .iter()
         .map(|row| {
             let status = match row.state.as_str() {
-                "failed" => paint(&row.state, "31", color),
-                "built" | "pulled" | "ready" => paint(&row.state, "32", color),
+                "failed" => palette.error(&row.state),
+                "built" | "pulled" | "ready" => palette.status(&row.state),
                 _ => row.state.clone(),
             };
             [
-                paint(&format!("#{}", row.run_id), "2", color),
+                palette.meta(&format!("#{}", row.run_id)),
                 row.kind.clone(),
                 row.step(),
                 status,

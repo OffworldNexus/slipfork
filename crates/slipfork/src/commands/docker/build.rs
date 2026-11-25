@@ -1,22 +1,22 @@
 //! `docker pull` and `docker build`: thin clients of the daemon's typed image streams.
 //!
 //! The daemon owns the one OCI puller and native builder, the step cache, and the credentials;
-//! this module connects, sends `image.pull`/`image.build`, decodes each typed frame, and renders
-//! it through the CLI's [`EventPrinter`]. A reader that closes stdout (`| head`) ends quietly.
+//! this module connects, sends `image.pull`/`image.build`, decodes each typed frame, and streams
+//! it through [`ReportRenderer`] rows. A reader that closes stdout (`| head`) ends quietly.
 
-use std::cell::Cell;
-use std::io::Write;
+use std::io::{self, Write};
 use std::os::fd::RawFd;
 use std::process::ExitCode;
-use std::rc::Rc;
 
 use serde_json::{Value, json};
 
 use crate::commands::Session;
 use crate::daemon::image::ImageFrame;
-use crate::ui::Palette;
+use crate::ui::report::{
+    Counter, Done, Entry, Outcome, ReportRenderer, Row, RowLevel, StreamKind, digest_cell,
+    visible_line,
+};
 
-use super::printer::EventPrinter;
 use super::{DockerArgs, DockerVerb};
 
 /// Which final row a streamed image call prints after its last frame.
@@ -24,6 +24,220 @@ use super::{DockerArgs, DockerVerb};
 enum FinalVerb {
     Build,
     Pull,
+}
+
+/// One image stream: typed frames in, report rows or NDJSON out, broken-pipe state in between.
+struct ImageStream<'a> {
+    renderer: ReportRenderer,
+    json: bool,
+    verbose: bool,
+    notes: bool,
+    verb: FinalVerb,
+    out: &'a mut dyn Write,
+    broken: bool,
+    failed: bool,
+    /// The live socket, shut down once the reader stops; `None` in buffer tests.
+    descriptor: Option<RawFd>,
+}
+
+impl<'a> ImageStream<'a> {
+    fn new(
+        renderer: ReportRenderer,
+        json: bool,
+        verbose: bool,
+        verb: FinalVerb,
+        out: &'a mut dyn Write,
+        descriptor: Option<RawFd>,
+    ) -> Self {
+        Self {
+            renderer,
+            json,
+            verbose,
+            notes: matches!(verb, FinalVerb::Pull),
+            verb,
+            out,
+            broken: false,
+            failed: false,
+            descriptor,
+        }
+    }
+
+    fn should_stop(&self) -> bool {
+        self.broken || self.failed
+    }
+
+    const fn broken(&self) -> bool {
+        self.broken
+    }
+
+    const fn failed(&self) -> bool {
+        self.failed
+    }
+
+    /// Renders one typed image frame.
+    fn frame(&mut self, frame: &ImageFrame) {
+        match frame {
+            ImageFrame::Step {
+                index,
+                total,
+                instruction,
+                args,
+                state,
+                elapsed_ms,
+                exit_code,
+                phase: _,
+                width,
+            } => {
+                // `--json` forwards every transition, including `started`.
+                if self.json {
+                    let mut value = json!({
+                        "event": "step",
+                        "index": index,
+                        "total": total,
+                        "instruction": instruction,
+                        "args": args,
+                        "state": state,
+                        "elapsed_ms": elapsed_ms,
+                    });
+                    if let Some(code) = exit_code {
+                        value["exit_code"] = json!(code);
+                    }
+                    self.write_json(&value);
+                    return;
+                }
+                if state == "tail" {
+                    return;
+                }
+                if state == "started" && !self.renderer.mode().interactive() {
+                    return;
+                }
+                let row = step_row(StepFacts {
+                    index: *index,
+                    total: *total,
+                    instruction,
+                    args,
+                    state,
+                    elapsed_ms: *elapsed_ms,
+                    exit_code: *exit_code,
+                    width: *width,
+                });
+                self.write_entry(&Entry::Row(row));
+            }
+            ImageFrame::Log { stream, line } => {
+                let text = visible_line(line, self.renderer.color(), self.json);
+                if text.trim().is_empty() {
+                    return;
+                }
+                if self.json {
+                    self.write_json(
+                        &json!({ "event": "log", "stream": stream, "line": text.as_ref() }),
+                    );
+                } else {
+                    let stream = match stream.as_str() {
+                        "stderr" => StreamKind::Stderr,
+                        _ => StreamKind::Stdout,
+                    };
+                    self.write_entry(&Entry::Stream {
+                        indent: 2,
+                        stream,
+                        line: text.into_owned(),
+                        ts_ms: 0,
+                    });
+                }
+            }
+            ImageFrame::Note { text } => {
+                if self.json {
+                    self.write_json(&json!({ "event": "note", "text": text }));
+                } else if self.notes || self.verbose {
+                    self.write_note(2, text);
+                }
+            }
+        }
+    }
+
+    /// Renders the daemon's final summary object, unchanged from the pre-daemon CLI bytes.
+    fn final_row(&mut self, reply: &Value) {
+        if self.json {
+            let mut value = reply.clone();
+            if let Some(object) = value.as_object_mut() {
+                object.remove("exit");
+            }
+            self.write_json(&value);
+            return;
+        }
+        let palette = self.renderer.palette();
+        let line = match self.verb {
+            FinalVerb::Pull => {
+                let reference = reply["reference"].as_str().unwrap_or_default();
+                let digest = reply["digest"].as_str().unwrap_or_default();
+                let state = if reply["cached"].as_bool() == Some(true) {
+                    "cached"
+                } else {
+                    "sealed"
+                };
+                format!(
+                    "{} Pulled {} {} {}\n",
+                    palette.icon_ok(),
+                    palette.value(reference),
+                    palette.meta(&digest_cell(digest)),
+                    palette.meta(state)
+                )
+            }
+            FinalVerb::Build => {
+                let component = reply["component"].as_str().unwrap_or_default();
+                let image_id = reply["image_id"].as_str().unwrap_or_default();
+                let hits = reply["cache_hits"].as_u64().unwrap_or(0);
+                let misses = reply["cache_misses"].as_u64().unwrap_or(0);
+                format!(
+                    "{} Built {} {} {}\n",
+                    palette.icon_ok(),
+                    palette.value(component),
+                    palette.meta(&digest_cell(image_id)),
+                    palette.meta(&format!("({hits} hits, {misses} misses)"))
+                )
+            }
+        };
+        self.write_text(&line);
+    }
+
+    fn write_entry(&mut self, entry: &Entry) {
+        let mut err = io::sink();
+        let result = self.renderer.emit_entry_to(entry, self.out, &mut err);
+        self.write_result(result);
+    }
+
+    fn write_note(&mut self, indent: usize, text: &str) {
+        let result = self.renderer.write_note(indent, text, self.out);
+        self.write_result(result);
+    }
+
+    fn write_json(&mut self, value: &impl serde::Serialize) {
+        let result = serde_json::to_writer(&mut *self.out, value)
+            .map_err(io::Error::other)
+            .and_then(|()| self.out.write_all(b"\n"));
+        self.write_result(result);
+    }
+
+    fn write_text(&mut self, text: &str) {
+        let result = self.out.write_all(text.as_bytes());
+        self.write_result(result);
+    }
+
+    /// Remembers one write failure and drops the live socket, so the daemon stops too.
+    fn write_result(&mut self, result: io::Result<()>) {
+        if let Err(error) = result {
+            if error.kind() != io::ErrorKind::BrokenPipe {
+                self.failed = true;
+            }
+            self.broken = true;
+            if let Some(descriptor) = self.descriptor {
+                // SAFETY: the descriptor stays open for the whole call.
+                unsafe {
+                    libc::shutdown(descriptor, libc::SHUT_RDWR);
+                }
+            }
+        }
+    }
 }
 
 impl Session {
@@ -65,7 +279,7 @@ impl Session {
         )
     }
 
-    /// Sends one image request, renders every typed frame, and prints the final summary.
+    /// Sends one image request, streams every typed frame, and prints the final summary.
     fn relay_image(
         &self,
         method: &str,
@@ -86,55 +300,43 @@ impl Session {
             }
         };
         let descriptor: RawFd = client.stream_fd();
-        let palette = Palette::new(self.color() && !args.json);
-        let broken = Rc::new(Cell::new(false));
-        let stdout = std::io::stdout();
-        let mut stdout = stdout.lock();
-        let outcome = {
-            let flag = Rc::clone(&broken);
-            let mut sink = |chunk: &str| {
-                if flag.get() {
-                    return;
-                }
-                if stdout
-                    .write_all(chunk.as_bytes())
-                    .and_then(|()| stdout.flush())
-                    .is_err()
-                {
-                    flag.set(true);
-                    // The reader stopped (`| head`): drop the socket so the daemon stops too.
-                    // SAFETY: `descriptor` stays open for the whole call.
-                    unsafe {
-                        libc::shutdown(descriptor, libc::SHUT_RDWR);
-                    }
-                }
-            };
-            let notes = matches!(verb, FinalVerb::Pull);
-            let mut printer = EventPrinter::new(
-                palette,
-                self.interactive() && !args.json,
-                args.verbose,
+        let renderer = self.renderer().with_verbose(args.verbose);
+        let (outcome, broken, failed) = {
+            let stdout = io::stdout();
+            let mut out = stdout.lock();
+            let mut stream = ImageStream::new(
+                renderer,
                 args.json,
-                notes,
-                &mut sink,
+                args.verbose,
+                verb,
+                &mut out,
+                Some(descriptor),
             );
-            let flag = Rc::clone(&broken);
             let outcome = client.call_streaming(method, params, &mut |event| {
-                if flag.get() {
+                if stream.should_stop() {
                     return;
                 }
-                if let Ok(frame) = serde_json::from_value::<ImageFrame>(event.clone()) {
-                    printer.frame(&frame);
-                }
+                let Ok(frame) = serde_json::from_value::<ImageFrame>(event.clone()) else {
+                    return;
+                };
+                stream.frame(&frame);
             });
             if let Ok(reply) = &outcome
-                && !broken.get()
+                && !stream.should_stop()
             {
-                final_row(reply, &mut printer, palette, args.json, verb);
+                stream.final_row(reply);
             }
-            outcome
+            (outcome, stream.broken(), stream.failed())
         };
-        if broken.get() {
+        if broken {
+            if failed {
+                return self.report(
+                    "stdout",
+                    "cannot write the image stream to stdout",
+                    "check that stdout is writable and retry",
+                    args.json,
+                );
+            }
             return ExitCode::SUCCESS;
         }
         match outcome {
@@ -147,51 +349,249 @@ impl Session {
     }
 }
 
-/// Renders the daemon's final summary object, unchanged from the pre-daemon CLI bytes.
-fn final_row(
-    reply: &Value,
-    printer: &mut EventPrinter<'_>,
-    palette: Palette,
-    json: bool,
-    verb: FinalVerb,
-) {
-    if json {
-        let mut value = reply.clone();
-        if let Some(object) = value.as_object_mut() {
-            object.remove("exit");
-        }
-        printer.chunk(&format!("{value}\n"));
-        return;
+/// One Dockerfile instruction row with its plan width latched once.
+struct StepFacts<'a> {
+    index: usize,
+    total: usize,
+    instruction: &'a str,
+    args: &'a str,
+    state: &'a str,
+    elapsed_ms: u64,
+    exit_code: Option<i32>,
+    width: usize,
+}
+
+/// One Dockerfile instruction row with its plan width latched once.
+fn step_row(facts: StepFacts<'_>) -> Row {
+    let StepFacts {
+        index,
+        total,
+        instruction,
+        args,
+        state,
+        elapsed_ms,
+        exit_code,
+        width,
+    } = facts;
+    let outcome = match state {
+        "started" => Outcome::Running,
+        "failed" => Outcome::Failed { at: None },
+        _ => Outcome::Ok(Done::Step),
+    };
+    Row {
+        level: RowLevel::Step {
+            instruction_width: width,
+        },
+        counter: Some(Counter { index, total }),
+        keyword: Some(instruction.to_owned()),
+        target: (!args.is_empty()).then(|| args.to_owned()),
+        state: outcome,
+        command: exit_code.map(|code| format!("(exit {code})")),
+        timing_ms: (state != "started").then_some(elapsed_ms),
+        id: None,
     }
-    match verb {
-        FinalVerb::Pull => {
-            let reference = reply["reference"].as_str().unwrap_or_default();
-            let digest = reply["digest"].as_str().unwrap_or_default();
-            let state = if reply["cached"].as_bool() == Some(true) {
-                "cached"
-            } else {
-                "sealed"
-            };
-            printer.chunk(&format!(
-                "{} Pulled {} {} {}\n",
-                palette.icon_ok(),
-                palette.value(reference),
-                palette.meta(digest),
-                palette.meta(state)
-            ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FinalVerb, ImageStream, StepFacts, step_row};
+    use crate::daemon::image::ImageFrame;
+    use crate::ui::report::{ReportRenderer, WallZone};
+    use crate::ui::{Terminal, UiMode};
+
+    fn renderer(mode: UiMode) -> ReportRenderer {
+        ReportRenderer::new(
+            Terminal {
+                cols: 100,
+                rows: 30,
+                mode,
+                stdin_tty: false,
+            },
+            WallZone::fixed(0).expect("utc"),
+        )
+    }
+
+    fn step(
+        index: usize,
+        total: usize,
+        instruction: &str,
+        args: &str,
+        state: &str,
+        elapsed_ms: u64,
+        exit_code: Option<i32>,
+    ) -> ImageFrame {
+        ImageFrame::Step {
+            index,
+            total,
+            instruction: instruction.to_owned(),
+            args: args.to_owned(),
+            state: state.to_owned(),
+            elapsed_ms,
+            exit_code,
+            phase: None,
+            width: 7,
         }
-        FinalVerb::Build => {
-            let component = reply["component"].as_str().unwrap_or_default();
-            let image_id = reply["image_id"].as_str().unwrap_or_default();
-            let hits = reply["cache_hits"].as_u64().unwrap_or(0);
-            let misses = reply["cache_misses"].as_u64().unwrap_or(0);
-            printer.chunk(&format!(
-                "{} Built {} {} {}\n",
-                palette.icon_ok(),
-                palette.tint(component, "1"),
-                palette.meta(image_id),
-                palette.meta(&format!("({hits} hits, {misses} misses)"))
-            ));
+    }
+
+    fn rendered(mode: UiMode, json: bool, frames: &[ImageFrame]) -> String {
+        let mut buffer = Vec::new();
+        {
+            let mut stream = ImageStream::new(
+                renderer(mode),
+                json,
+                false,
+                FinalVerb::Build,
+                &mut buffer,
+                None,
+            );
+            for frame in frames {
+                stream.frame(frame);
+            }
         }
+        String::from_utf8(buffer).expect("utf8 image stream")
+    }
+
+    #[test]
+    fn a_plain_stream_renders_cold_warm_and_failing_frames_byte_exactly() {
+        let frames = [
+            step(1, 2, "RUN", "make", "started", 0, None),
+            step(1, 2, "RUN", "make", "done", 41, None),
+            ImageFrame::Log {
+                stream: "stdout".to_owned(),
+                line: "compiled \u{1b}[31mred\u{1b}[0m".to_owned(),
+            },
+            step(2, 2, "COPY", ". /app", "failed", 12, Some(3)),
+        ];
+        let shown = rendered(UiMode::Plain, false, &frames);
+        assert_eq!(
+            shown,
+            "[1/2] run     make ✓ (41ms)\n  │ compiled red\n[2/2] copy    . /app ✗ (12ms) (exit 3)\n"
+        );
+        assert!(!shown.contains('\u{1b}'), "{shown:?}");
+        assert!(!shown.contains('\r'), "{shown:?}");
+    }
+
+    #[test]
+    fn a_json_stream_forwards_every_step_including_started() {
+        let frames = [
+            step(1, 1, "RUN", "make", "started", 0, None),
+            step(1, 1, "RUN", "make", "done", 41, None),
+        ];
+        let shown = rendered(UiMode::Json, true, &frames);
+        assert!(!shown.contains('\u{1b}'), "{shown:?}");
+        let lines: Vec<serde_json::Value> = shown
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("every JSON line parses"))
+            .collect();
+        assert!(
+            lines.iter().any(|line| line["event"] == "step"),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line["event"] == "step" && line["state"] == "started"),
+            "started steps are forwarded under --json: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_colour_tty_keeps_the_substep_role_and_padding() {
+        let frames = [step(1, 1, "RUN", "make", "done", 41, None)];
+        let shown = rendered(UiMode::Interactive { color: true }, false, &frames);
+        assert!(
+            shown.contains("\u{1b}[38;5;132mrun\u{1b}[0m    "),
+            "{shown:?}"
+        );
+        assert!(!shown.contains('\r'), "{shown:?}");
+    }
+
+    #[test]
+    fn a_step_row_uses_the_plan_width_without_growing() {
+        let row = step_row(StepFacts {
+            index: 1,
+            total: 1,
+            instruction: "WORKDIR",
+            args: "/app",
+            state: "done",
+            elapsed_ms: 1,
+            exit_code: None,
+            width: 4,
+        });
+        assert_eq!(
+            row.line(crate::ui::Palette::new(false)),
+            "[1/1] workdir /app ✓ (1ms)"
+        );
+    }
+
+    #[test]
+    fn a_pull_final_row_shows_the_shared_digest_cell() {
+        let mut buffer = Vec::new();
+        {
+            let mut stream = ImageStream::new(
+                renderer(UiMode::Plain),
+                false,
+                false,
+                FinalVerb::Pull,
+                &mut buffer,
+                None,
+            );
+            stream.final_row(&serde_json::json!({
+                "reference": "ghcr.io/acme/app:latest",
+                "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "cached": false,
+            }));
+        }
+        assert_eq!(
+            String::from_utf8(buffer).expect("utf8"),
+            "✓ Pulled ghcr.io/acme/app:latest sha256:111111111111 sealed\n"
+        );
+    }
+
+    #[test]
+    fn a_build_final_row_shortens_the_image_id_and_counts_hits() {
+        let mut buffer = Vec::new();
+        {
+            let mut stream = ImageStream::new(
+                renderer(UiMode::Plain),
+                false,
+                false,
+                FinalVerb::Build,
+                &mut buffer,
+                None,
+            );
+            stream.final_row(&serde_json::json!({
+                "component": "api",
+                "image_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+                "cache_hits": 2,
+                "cache_misses": 3,
+            }));
+        }
+        let shown = String::from_utf8(buffer).expect("utf8");
+        assert_eq!(
+            shown,
+            "✓ Built api sha256:222222222222 (2 hits, 3 misses)\n"
+        );
+        assert!(!shown.contains('\u{1b}'), "{shown:?}");
+        assert!(!shown.contains('\r'), "{shown:?}");
+    }
+
+    #[test]
+    fn a_pull_note_is_dim_only_in_colour_and_never_dropped() {
+        let mut buffer = Vec::new();
+        {
+            let mut stream = ImageStream::new(
+                renderer(UiMode::Plain),
+                false,
+                false,
+                FinalVerb::Pull,
+                &mut buffer,
+                None,
+            );
+            stream.frame(&ImageFrame::Note {
+                text: "pulled layer".to_owned(),
+            });
+        }
+        assert_eq!(String::from_utf8(buffer).expect("utf8"), "  pulled layer\n");
     }
 }

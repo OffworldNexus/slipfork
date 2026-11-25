@@ -164,3 +164,17 @@ impl VerdictKind {
         }
     }
 }
+
+/// The one digest cell: an optional `sha256:` prefix plus at most twelve hex characters.
+///
+/// A short id stays whole, a full digest is shortened once, and a table latches the resulting
+/// width from the complete row set — never a hardcoded field.
+#[must_use]
+pub fn digest_cell(text: &str) -> String {
+    let (prefix, body) = match text.strip_prefix("sha256:") {
+        Some(hex) => ("sha256:", hex),
+        None => ("", text),
+    };
+    let short: String = body.chars().take(12).collect();
+    format!("{prefix}{short}")
+}

@@ -342,6 +342,125 @@ fn a_corrupt_built_index_fails_closed_instead_of_listing_nothing() {
 }
 
 #[test]
+fn docker_images_shortens_digests_to_twelve_dimmed_cells_with_latched_columns() {
+    let lab = Lab::new("digest-cells");
+    let images = lab.root.join("data/slipfork/store/images");
+    fs::create_dir_all(&images).expect("create the image cache");
+    let long_hex = "1".repeat(64);
+    let other_hex = "2".repeat(64);
+    let short = "abc123";
+    let reference = "registry.eu-west-1.example.internal:5000/team/service:latest";
+    assert!(
+        reference.chars().count() > 40,
+        "the long name proves widths latch"
+    );
+    fs::create_dir_all(images.join(format!("oci/sha256-{long_hex}")))
+        .expect("create the pulled image directory");
+    let mut refs = BTreeMap::new();
+    refs.insert(reference.to_owned(), format!("sha256:{long_hex}"));
+    fs::write(
+        images.join("oci/refs.json"),
+        serde_json::to_vec(&refs).expect("encode refs"),
+    )
+    .expect("write refs");
+    fs::write(
+        images.join("built.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "tiny": { "image_id": short },
+            "long": { "image_id": format!("sha256:{other_hex}") },
+        }))
+        .expect("encode built images"),
+    )
+    .expect("write built images");
+
+    let output = lab.run(&["docker", "images"], None);
+    assert!(output.status.success(), "{}", text(&output));
+    let shown = text(&output);
+    assert_no_ansi("docker images", &shown);
+    assert!(!shown.contains('\r'), "a pipe carries zero CR: {shown:?}");
+    let lines: Vec<&str> = shown.lines().collect();
+    assert!(lines[0].starts_with("SOURCE"), "{shown}");
+    let body = &lines[1..];
+    assert_eq!(body.len(), 3, "one pull plus two built rows: {shown}");
+
+    let cells: Vec<&str> = ["sha256:111111111111", "sha256:222222222222", short]
+        .into_iter()
+        .collect();
+    let starts: Vec<usize> = body
+        .iter()
+        .zip(&cells)
+        .map(|(line, cell)| {
+            let at = line
+                .find(cell)
+                .unwrap_or_else(|| panic!("`{cell}` must appear untruncated: {line:?}"));
+            assert!(
+                cell.len() <= 19,
+                "a digest cell is the optional prefix plus twelve characters"
+            );
+            at
+        })
+        .collect();
+    assert!(
+        starts.windows(2).all(|pair| pair[0] == pair[1]),
+        "the IMAGE column starts at one index: {starts:?}\n{shown}"
+    );
+    assert!(
+        !shown.contains(&long_hex) && !shown.contains(&other_hex),
+        "a full digest never reaches the table: {shown}"
+    );
+}
+
+#[test]
+fn docker_build_refusal_is_one_failure_line_and_one_next_with_zero_escapes() {
+    let lab = Lab::new("build-refusal");
+    // A file where the runtime directory should be fails the connect before any daemon starts.
+    let runtime = lab.root.join("run");
+    fs::remove_dir_all(&runtime).expect("remove the empty runtime directory");
+    fs::write(&runtime, b"not a directory").expect("write the runtime file");
+
+    let output = lab.run(&["docker", "build", "app"], None);
+    assert!(!output.status.success(), "{}", text(&output));
+    let shown = text(&output);
+    assert_no_ansi("docker build refusal", &shown);
+    assert_eq!(
+        shown.lines().count(),
+        2,
+        "one line plus one next: {shown:?}"
+    );
+    assert!(
+        shown
+            .lines()
+            .next()
+            .is_some_and(|line| line.starts_with("error:")),
+        "{shown}"
+    );
+    assert_eq!(shown.matches("next:").count(), 1, "{shown}");
+    assert_eq!(shown.matches("error:").count(), 1, "{shown}");
+}
+
+#[test]
+fn exec_without_a_terminal_uses_the_same_one_failure_surface() {
+    let lab = Lab::new("exec-refusal");
+    let output = lab.run(&["exec", "--interactive", "--", "true"], None);
+    assert!(!output.status.success(), "{}", text(&output));
+    let shown = text(&output);
+    assert_no_ansi("exec refusal", &shown);
+    assert_eq!(
+        shown.lines().count(),
+        2,
+        "one line plus one next: {shown:?}"
+    );
+    assert!(
+        shown
+            .lines()
+            .next()
+            .is_some_and(|line| line.starts_with("error:")),
+        "{shown}"
+    );
+    assert_eq!(shown.matches("next:").count(), 1, "{shown}");
+}
+
+#[test]
 fn bearer_login_is_0600_and_a_wrong_password_never_reaches_disk_or_a_stream() {
     let lab = Lab::new("bearer");
     let registry = BearerRegistry::start();
@@ -431,6 +550,10 @@ fn bearer_login_is_0600_and_a_wrong_password_never_reaches_disk_or_a_stream() {
     assert!(list.status.success(), "{}", text(&list));
     let list_text = text(&list);
     assert_no_ansi("docker list", &list_text);
+    assert!(
+        !list_text.contains('\r'),
+        "a pipe carries zero CR: {list_text:?}"
+    );
     transcripts.push(("docker list", list_text.clone()));
 
     let host_width = [

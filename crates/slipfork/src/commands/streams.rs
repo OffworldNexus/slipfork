@@ -1,14 +1,10 @@
 //! `logs`, `shell`, and `exec`: streaming verbs rendered from typed events.
 //!
 //! The daemon sends `{"kind","pod","stream","line"}` events plus one `roster` event that fixes the
-//! gutter width. The renderer in [`render`] owns dividers, instruction rows, `--json`, and the
-//! final `{"exit":n}`. A terminal `shell` receives the world's real `/dev/pts/N` master and relays
+//! gutter width. [`StreamRenderer`] owns dividers, instruction rows, `--json`, and the final
+//! `{"exit":n}`. A terminal `shell` receives the world's real `/dev/pts/N` master and relays
 //! raw bytes untouched; a pipe relays stdin as base64 input frames, so `psql`, `redis-cli`, and
 //! `sh` work over a plain pipe.
-
-mod render;
-
-pub(crate) use render::Renderer;
 
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,6 +13,7 @@ use serde_json::{Value, json};
 
 use crate::commands::{Session, emit};
 use crate::daemon::{DaemonClient, DaemonError};
+use crate::ui::report::{StreamKind, StreamRenderer};
 
 use super::runs::{RunRow, render_runs};
 
@@ -103,8 +100,7 @@ impl Session {
             "until_ms": args.until_ms,
             "tail": last.is_some(),
         });
-        let mut renderer =
-            Renderer::new(self.color(), args.json, args.timestamps, self.clock()).tail(last);
+        let mut renderer = StreamRenderer::logs(self.renderer(), args.timestamps).tail(last);
         match client.call_streaming("logs", params, &mut |event| renderer.event(event)) {
             Ok(_) => {
                 renderer.finish(0);
@@ -160,7 +156,7 @@ impl Session {
                         }
                     }
                     if let Some(notice) = skipped_notice(skipped) {
-                        eprintln!("{notice}");
+                        let _ = self.renderer().emit_notice(StreamKind::Stderr, &notice);
                     }
                 }
                 if failed {
@@ -185,8 +181,7 @@ impl Session {
             "since_ms": args.since_ms,
             "until_ms": args.until_ms,
         });
-        let mut renderer =
-            Renderer::replay(self.color(), args.json, args.timestamps, self.clock()).tail(last);
+        let mut renderer = StreamRenderer::replay(self.renderer(), args.timestamps).tail(last);
         match client.call_streaming("logs", params, &mut |event| renderer.event(event)) {
             Ok(_) => {
                 renderer.finish(0);
@@ -231,7 +226,7 @@ impl Session {
 }
 
 /// A finished render succeeds unless a write failed for a reason other than a closed pipe.
-fn write_status(renderer: &Renderer) -> ExitCode {
+fn write_status(renderer: &StreamRenderer) -> ExitCode {
     if renderer.failed() {
         ExitCode::FAILURE
     } else {

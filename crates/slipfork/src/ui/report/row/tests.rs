@@ -335,3 +335,56 @@ fn settlement_wire_shape_is_stable_and_round_trips() {
         failed
     );
 }
+
+#[test]
+fn a_docker_step_pads_its_lowercase_keyword_once_from_the_plan_width() {
+    let plain = Palette::new(false);
+    let row = Row {
+        level: RowLevel::Step {
+            instruction_width: 7,
+        },
+        counter: counter(2, 3),
+        keyword: Some("RUN".to_owned()),
+        target: Some("make".to_owned()),
+        state: Outcome::Ok(Done::Step),
+        command: None,
+        timing_ms: Some(12),
+        id: None,
+    };
+    assert_eq!(row.line(plain), "[2/3] run     make ✓ (12ms)");
+
+    let long = Row {
+        level: RowLevel::Step {
+            instruction_width: 4,
+        },
+        counter: counter(4, 11),
+        keyword: Some("WORKDIR".to_owned()),
+        target: Some("/app".to_owned()),
+        state: Outcome::Ok(Done::Step),
+        command: None,
+        timing_ms: Some(1_200),
+        id: None,
+    };
+    assert_eq!(long.line(plain), "[4/11] workdir /app ✓ (1.2s)");
+
+    let failed = Row {
+        level: RowLevel::Step {
+            instruction_width: 7,
+        },
+        counter: counter(2, 3),
+        keyword: Some("RUN".to_owned()),
+        target: Some("make".to_owned()),
+        state: Outcome::Failed { at: None },
+        command: Some("(exit 3)".to_owned()),
+        timing_ms: Some(12),
+        id: None,
+    };
+    assert_eq!(failed.line(plain), "[2/3] run     make ✗ (12ms) (exit 3)");
+
+    let colored = failed.line(Palette::new(true));
+    assert!(
+        colored.contains("\u{1b}[38;5;132mrun\u{1b}[0m    "),
+        "padding stays outside the tint: {colored:?}"
+    );
+    assert!(!colored.contains("failed"), "a step repeats no state word");
+}

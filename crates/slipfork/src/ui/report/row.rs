@@ -17,6 +17,14 @@ pub enum RowLevel {
     Outer,
     /// An indented substep: `n/N`, no target.
     Inner,
+    /// A Dockerfile instruction: `[i/n]` with a lowercase padded keyword.
+    ///
+    /// Carries the plan's instruction width so the keyword column latches once from
+    /// `planned_instruction_width` and never grows mid-stream.
+    Step {
+        /// The planned keyword column width in visible characters.
+        instruction_width: usize,
+    },
     /// A status-tree branch.
     Tree,
 }
@@ -255,14 +263,20 @@ impl Row {
     /// Renders one row: indent, counter, keyword, target, `icon state`, command, timing, `#id`.
     #[must_use]
     pub fn line(&self, palette: Palette) -> String {
+        let step_width = match self.level {
+            RowLevel::Step { instruction_width } => Some(instruction_width),
+            _ => None,
+        };
         let indent = match self.level {
-            RowLevel::Outer => 0,
+            RowLevel::Outer | RowLevel::Step { .. } => 0,
             RowLevel::Inner | RowLevel::Tree => 2,
         };
         let mut fields: Vec<String> = Vec::new();
         if let Some(counter) = self.counter {
             fields.push(palette.meta(&match self.level {
-                RowLevel::Outer => format!("[{}/{}]", counter.index, counter.total),
+                RowLevel::Outer | RowLevel::Step { .. } => {
+                    format!("[{}/{}]", counter.index, counter.total)
+                }
                 RowLevel::Inner | RowLevel::Tree => {
                     format!("{}/{}", counter.index, counter.total)
                 }
@@ -273,24 +287,44 @@ impl Row {
         {
             fields.push(match self.level {
                 RowLevel::Outer => keyword.to_ascii_uppercase(),
-                RowLevel::Inner | RowLevel::Tree => keyword.to_ascii_lowercase(),
+                RowLevel::Inner | RowLevel::Tree => palette.substep(&keyword.to_ascii_lowercase()),
+                RowLevel::Step { instruction_width } => {
+                    let keyword = keyword.to_ascii_lowercase();
+                    let pad = instruction_width.saturating_sub(keyword.chars().count());
+                    format!("{}{}", palette.substep(&keyword), " ".repeat(pad))
+                }
             });
         }
         if let Some(target) = &self.target {
             fields.push(palette.value(target));
         }
-        let state = self.state.state(palette);
+        // A Dockerfile step's icon is the whole state cell; its keyword/timing already read as
+        // the instruction, so `done`/`failed` never repeat beside the mark.
+        let state = if step_width.is_some() {
+            String::new()
+        } else {
+            self.state.state(palette)
+        };
         let mark = self.state.icon(palette);
         fields.push(if state.is_empty() {
             mark
         } else {
             format!("{mark} {state}")
         });
-        if let Some(command) = &self.command {
-            fields.push(command.clone());
-        }
-        if let Some(timing) = self.timing_ms {
-            fields.push(palette.meta(&format!("({})", elapsed_text(timing))));
+        if step_width.is_some() {
+            if let Some(timing) = self.timing_ms {
+                fields.push(palette.meta(&format!("({})", elapsed_text(timing))));
+            }
+            if let Some(command) = &self.command {
+                fields.push(palette.meta(command));
+            }
+        } else {
+            if let Some(command) = &self.command {
+                fields.push(command.clone());
+            }
+            if let Some(timing) = self.timing_ms {
+                fields.push(palette.meta(&format!("({})", elapsed_text(timing))));
+            }
         }
         if let Some(id) = &self.id
             && self.state.shows_run_id()

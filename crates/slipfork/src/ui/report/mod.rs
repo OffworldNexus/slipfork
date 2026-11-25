@@ -8,11 +8,14 @@ mod live;
 mod model;
 mod render;
 mod row;
+mod stream;
 mod wall;
 
 pub use failure::Failure;
 pub use live::Pane;
-pub use model::{Entry, Report, Section, StreamKind, Verdict, VerdictKind};
+pub use model::{Entry, Report, Section, StreamKind, Verdict, VerdictKind, digest_cell};
 pub use render::ReportRenderer;
 pub use row::{Counter, Done, FailureFacts, Outcome, Row, RowLevel, StepSettlement};
+pub use stream::StreamRenderer;
+pub use stream::visible_line;
 pub use wall::WallZone;

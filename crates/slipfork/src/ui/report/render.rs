@@ -59,6 +59,91 @@ impl ReportRenderer {
         &self.wall
     }
 
+    /// The one palette every streaming surface shares.
+    #[must_use]
+    pub const fn palette(&self) -> Palette {
+        self.palette
+    }
+
+    /// Renders one entry immediately, so a live stream never waits for a whole report.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first write or flush failure.
+    pub fn emit_entry(&self, entry: &Entry) -> io::Result<()> {
+        let mut out = io::stdout().lock();
+        let mut err = io::stderr().lock();
+        self.write_entry(entry, &mut out, &mut err)?;
+        out.flush()?;
+        err.flush()
+    }
+
+    /// Renders one entry into the given writers, so tests share the exact stream bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first write failure from either writer.
+    pub fn emit_entry_to(
+        &self,
+        entry: &Entry,
+        out: &mut dyn Write,
+        err: &mut dyn Write,
+    ) -> io::Result<()> {
+        self.write_entry(entry, out, err)
+    }
+
+    /// Writes one raw, already-rendered chunk to the named stream and flushes it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the write or flush failure.
+    pub fn emit_text(&self, stream: StreamKind, text: &str) -> io::Result<()> {
+        match stream {
+            StreamKind::Stdout => {
+                let mut out = io::stdout().lock();
+                out.write_all(text.as_bytes())?;
+                out.flush()
+            }
+            StreamKind::Stderr => {
+                let mut err = io::stderr().lock();
+                err.write_all(text.as_bytes())?;
+                err.flush()
+            }
+        }
+    }
+
+    /// Writes one `--json` object as a single newline-terminated line.
+    ///
+    /// # Errors
+    ///
+    /// Returns the serialization, write, or flush failure.
+    pub fn emit_json(&self, value: &impl serde::Serialize) -> io::Result<()> {
+        let mut out = io::stdout().lock();
+        writeln!(out, "{}", serialized(value)?)?;
+        out.flush()
+    }
+
+    /// Writes one typed notice to the named stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns the write or flush failure.
+    pub fn emit_notice(&self, stream: StreamKind, text: &str) -> io::Result<()> {
+        self.emit_entry(&Entry::Notice {
+            stream,
+            text: text.to_owned(),
+        })
+    }
+
+    /// Writes one dim, indented narration line into `out` without flushing.
+    ///
+    /// # Errors
+    ///
+    /// Returns the write failure.
+    pub fn write_note(&self, indent: usize, text: &str, out: &mut dyn Write) -> io::Result<()> {
+        writeln!(out, "{}{}", " ".repeat(indent), self.palette.meta(text))
+    }
+
     /// Renders one report to the real stdout and stderr.
     ///
     /// # Errors
@@ -83,8 +168,8 @@ impl ReportRenderer {
     pub fn emit_to(
         &self,
         report: &Report,
-        out: &mut impl Write,
-        err: &mut impl Write,
+        out: &mut dyn Write,
+        err: &mut dyn Write,
     ) -> io::Result<()> {
         if self.mode.json() {
             let failure = match &report.verdict {
@@ -168,8 +253,8 @@ impl ReportRenderer {
     fn write_entry(
         &self,
         entry: &Entry,
-        out: &mut impl Write,
-        err: &mut impl Write,
+        out: &mut dyn Write,
+        err: &mut dyn Write,
     ) -> io::Result<()> {
         match entry {
             Entry::Row(row) => writeln!(out, "{}", row.line(self.palette))?,

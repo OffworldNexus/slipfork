@@ -180,6 +180,7 @@ impl LocalClock {
     }
 
     /// Local `HH:MM:SS.mmm` clock gutter for a replayed run step.
+    #[cfg(test)]
     pub(crate) fn clock(&self, ts_ms: u64) -> String {
         self.0.clock(ts_ms)
     }
