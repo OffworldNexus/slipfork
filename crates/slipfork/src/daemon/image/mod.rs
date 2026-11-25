@@ -17,7 +17,10 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use slipfork_image::{Architecture, BuildEvent, ImageLayout, OciPuller, StepHost, Stream};
+use slipfork_image::{
+    Architecture, BuildEvent, ExternalImage, ImageLayout, ImageReference, OciPuller, StepHost,
+    StepLog, Stream, external_references,
+};
 use slipfork_world::{BtrfsEngine, StoreLayout, WorldEngine};
 
 use super::frames::write_frame;
@@ -341,6 +344,49 @@ pub(super) fn now_ms() -> u64 {
         .map_or(0, |elapsed| {
             u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
         })
+}
+
+/// Pre-scans `source` and pulls every external `COPY --from=<image>` rootfs.
+///
+/// Each pull is one live `COPY` row at the instruction's own walked position and `Dockerfile`
+/// line; a failure folds back onto that line instead of surfacing a step-less build error.
+pub(crate) fn pull_externals(
+    source: &str,
+    target: Option<&str>,
+    puller: &OciPuller,
+    step_log: &mut StepLog<'_>,
+) -> Result<BTreeMap<String, ExternalImage>, slipfork_image::Error> {
+    let references = external_references(source, target)?;
+    let mut externals = BTreeMap::new();
+    for external in references {
+        step_log.announce_at(
+            external.place,
+            "COPY",
+            &format!("--from={}", external.reference),
+        );
+        let started = std::time::Instant::now();
+        let outcome = match ImageReference::parse(&external.reference) {
+            Ok(parsed) => puller.pull_into(&parsed, step_log),
+            Err(error) => Err(error),
+        };
+        match outcome {
+            Ok(image) => {
+                step_log.done(started.elapsed());
+                externals.insert(
+                    external.reference.clone(),
+                    ExternalImage {
+                        rootfs: image.rootfs,
+                        digest: image.digest,
+                    },
+                );
+            }
+            Err(error) => {
+                step_log.failed(started.elapsed(), error.exit_code());
+                return Err(external.pull_failure(&error));
+            }
+        }
+    }
+    Ok(externals)
 }
 
 /// A per-attempt sibling so two writers never share the fixed `.tmp` name.

@@ -306,6 +306,8 @@ pub enum Command {
         project: PathBuf,
         #[arg(long = "name", value_name = "NAME")]
         world: String,
+        #[arg(long, value_name = "PATH")]
+        heads: PathBuf,
         #[arg(long)]
         no_cache: bool,
     },

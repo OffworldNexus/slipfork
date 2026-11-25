@@ -54,8 +54,8 @@ impl World {
 pub(crate) enum RestartAction {
     /// The live world still matches the recorded head: restart its pods in place.
     Restarted(Value),
-    /// The head changed on disk: stop the live world, then boot the edited plan.
-    Reconcile(Box<super::up::Reconcile>),
+    /// The head changed on disk: pre-plan images, stop the live world, then boot the edited plan.
+    Reconcile,
 }
 
 /// The daemon's mutable world state.
@@ -234,13 +234,8 @@ impl Core {
         // The same staleness check `up` uses: an edited `Forkfile`, `Dockerfile`, or copied
         // context stops the old world and boots the new plan instead of restarting stale pods.
         if self.world_stale(&project, current) {
-            let Some(plan) = self.detach_live(&key) else {
-                return Err(Failure::new(
-                    "no-world",
-                    "no world is running in this directory",
-                ));
-            };
-            return Ok(RestartAction::Reconcile(Box::new(plan)));
+            // The caller detaches only after the daemon sealed the edited images.
+            return Ok(RestartAction::Reconcile);
         }
         let Some(World::Live { entry, .. }) = self.worlds.get(&key) else {
             return Err(Failure::new(

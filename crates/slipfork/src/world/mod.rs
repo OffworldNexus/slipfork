@@ -7,12 +7,16 @@
 
 pub(crate) mod features;
 mod fork;
+mod heads;
 mod runtime;
 mod supervise;
 mod target;
 mod up;
 
-pub(crate) use runtime::pull_externals;
+pub(crate) use heads::{HEADS_VERSION, ImageHead, WorldHeads};
+pub(crate) use runtime::capture::{RunTarget, strip_ansi};
+pub(crate) use runtime::frames::{StepPin, log_frame, note_frame, step_frame};
+pub(crate) use runtime::notes::RunNotes;
 pub(crate) use target::{TargetError, Targets};
 
 use std::collections::BTreeMap;
@@ -237,7 +241,9 @@ pub struct SuperviseArgs {
     pub project: PathBuf,
     /// Validated world name.
     pub world: String,
-    /// Ignore sealed image and step caches for this boot.
+    /// The daemon-sealed `WorldHeads` file this boot reads.
+    pub heads: PathBuf,
+    /// Ignore the trusted world stamp for this boot.
     pub no_cache: bool,
 }
 

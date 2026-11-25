@@ -1,5 +1,5 @@
-//! The sharded runtime that executes boot steps concurrently: `ImageCache`, `ClonePool`,
-//! lock-free `control.sock` `RunOnce`/`Dial`/`ConfigureS3`, and narrow `WorldSupervisor` launches.
+//! The sharded runtime that executes boot steps concurrently from the daemon-sealed image heads,
+//! plus lock-free `control.sock` `RunOnce`/`Dial`/`ConfigureS3` and narrow supervisor launches.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
@@ -9,7 +9,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use slipfork_forkfile::{FeatureSet, ast::Forkfile};
-use slipfork_image::{Architecture, StepHost};
 use slipfork_ospp::FileSecretVault;
 use slipfork_world::{
     BootFailure, BootState, BootStep, BtrfsEngine, Dirtiness, ImageStamp, PodEnv, PodHost, PodSpec,
@@ -19,6 +18,7 @@ use slipfork_world::{
 };
 
 use super::HostEnv;
+use super::heads::{ImageHead, WorldHeads};
 use super::supervise::{BootSink, Emitter};
 
 pub(crate) mod capture;
@@ -26,8 +26,7 @@ mod dev;
 mod execute;
 pub(crate) mod frames;
 mod helpers;
-mod images;
-pub(crate) use images::pull_externals;
+pub(crate) mod notes;
 mod ready;
 mod resources;
 mod rootfs;
@@ -39,7 +38,6 @@ pub(crate) fn exit_line(command: &str, code: i32) -> String {
     format!("`{command}` exited with {code}")
 }
 
-use images::{BuiltImage, ImageCache};
 use ready::{Ready, Staged};
 
 pub(super) struct WorldRuntime {
@@ -53,7 +51,7 @@ pub(super) struct WorldRuntime {
     pods_dir: PathBuf,
     pod_host: PodHost,
     boot_timeout: Duration,
-    images: ImageCache,
+    heads: BTreeMap<String, ImageHead>,
     dev_mounts: DevMounts,
     services: Vec<ServiceNode>,
     resources: Vec<ResourceNode>,
@@ -71,7 +69,7 @@ pub(super) struct WorldBoot<'a> {
     pub(super) doc: &'a Forkfile,
     pub(super) plan: &'a WorldPlan,
     pub(super) features: FeatureSet,
-    pub(super) image_inputs: &'a BTreeMap<String, String>,
+    pub(super) heads: &'a WorldHeads,
     pub(super) no_cache: bool,
     pub(super) env: &'a HostEnv,
     pub(super) emitter: Arc<Mutex<Emitter>>,
@@ -85,7 +83,7 @@ impl WorldRuntime {
             doc,
             plan,
             features,
-            image_inputs,
+            heads,
             no_cache,
             env,
             emitter,
@@ -106,22 +104,10 @@ impl WorldRuntime {
         let engine = BtrfsEngine::new(StoreLayout::at(env.store_root_for(project)));
         let layout = engine.layout().clone();
         engine.ensure_store().map_err(|error| error.to_string())?;
-        let world_engine: Arc<dyn WorldEngine> = Arc::new(engine.clone());
-        let architecture = Architecture::from_oci(env.arch)
-            .ok_or_else(|| format!("unsupported host architecture `{}`", env.arch))?;
-        let agent = format!("slipfork/{}", env!("CARGO_PKG_VERSION"));
         let crun = env.tool("crun")?;
-        let step_host = StepHost::new(
-            crun.clone(),
-            env.resolv_conf.clone(),
-            layout.store_root().join("build"),
-            env.uid,
-            env.gid,
-        );
-        // A world whose `world_epoch` and paired PG stamps match its planned DAG adopts its sealed
-        // image subvolumes directly: no Dockerfile arg re-evaluation (so `arg VITE_CDN_URL =
-        // static-cdn.url` keeps its digest), no context walk, no re-seal. A warm root world after
-        // `down` qualifies exactly like a fork; `ImageCache` still refuses a vanished subvolume.
+        // A world whose `world_epoch` and paired PG stamps match its planned DAG keeps its
+        // pre-snapshotted pod clones. The daemon already proved every head rootfs is sealed; this
+        // supervisor never builds, pulls, or re-seals an image.
         let stamps = WorldStampStore::new(layout.world(&world));
         let pg_clones: Vec<_> = plan
             .resources
@@ -129,36 +115,17 @@ impl WorldRuntime {
             .filter(|resource| resource.resource == ResourceKind::Postgres)
             .map(|resource| layout.world_clone(&world, resource.resource, &resource.id))
             .collect();
-        // `--no-cache` bypasses the recorded head: no image is adopted, so every instruction
-        // executes and re-seals, and a fork rebuilds its pod clones instead of reusing them.
-        let trusted_stamp = if no_cache {
-            None
-        } else {
-            stamps.trusted_stamp(
-                plan,
-                &features,
-                image_inputs,
-                pg_clones.iter().map(PathBuf::as_path),
-            )
-        };
-        let stamp_trusted = trusted_stamp.is_some();
-        let adopted = trusted_stamp.map(|stamp| stamp.images).unwrap_or_default();
-        let images = ImageCache::new(
-            world_engine,
-            &layout,
-            world.clone(),
-            project,
-            doc,
-            plan.images.clone(),
-            adopted,
-            architecture,
-            env.registry_credentials.clone(),
-            &agent,
-            step_host,
-            scheme,
-            features.clone(),
-            no_cache,
-        );
+        // `--no-cache` bypasses the recorded stamp, so a fork rebuilds its pod clones instead of
+        // reusing them. Image heads are already the daemon's cold build; this only gates stamps.
+        let stamp_trusted = !no_cache
+            && stamps
+                .trusted_stamp(
+                    plan,
+                    &features,
+                    &heads.image_inputs,
+                    pg_clones.iter().map(PathBuf::as_path),
+                )
+                .is_some();
         let host = WorldHost::new(
             WorldTools {
                 crun,
@@ -259,7 +226,7 @@ impl WorldRuntime {
             pods_dir,
             pod_host,
             boot_timeout,
-            images,
+            heads: heads.images.clone(),
             dev_mounts,
             services: plan.services.clone(),
             resources: plan.resources.clone(),
@@ -361,12 +328,18 @@ impl WorldRuntime {
         Ok(dest)
     }
 
-    fn built_for(&self, image: Option<&String>, log: &mut BootSink) -> Result<BuiltImage, String> {
+    fn built_for(&self, image: Option<&String>, _log: &mut BootSink) -> Result<ImageHead, String> {
         let image = image.ok_or_else(|| "step has no enclosing image".to_owned())?;
-        self.images
-            .build(image, log)
-            .map(|(built, _)| built)
-            .map_err(|failure| failure.message)
+        self.head_for(image)
+    }
+
+    /// The daemon-sealed head for `image`; a missing head fails closed with no fallback build.
+    pub(super) fn head_for(&self, image: &str) -> Result<ImageHead, String> {
+        self.heads.get(image).cloned().ok_or_else(|| {
+            format!(
+                "no sealed image head for `{image}`\nnext: run `slipfork up` to plan this world again"
+            )
+        })
     }
 
     /// Merges image-level and subject-level runtime `env`, plus the declared `PORT`.
@@ -528,7 +501,20 @@ impl WorldRuntime {
 
     /// Resolved rootfs + runtime facts per image id, recorded in the world stamp.
     pub(super) fn image_stamps(&self) -> BTreeMap<String, ImageStamp> {
-        self.images.stamps()
+        self.heads
+            .iter()
+            .map(|(image, head)| {
+                (
+                    image.clone(),
+                    ImageStamp {
+                        rootfs: head.rootfs.display().to_string(),
+                        env: head.inherited_env.clone(),
+                        argv: head.argv.clone(),
+                        workdir: head.workdir.clone(),
+                    },
+                )
+            })
+            .collect()
     }
 
     /// Stops an empty world immediately and sweeps ephemeral pod rootfs clones.

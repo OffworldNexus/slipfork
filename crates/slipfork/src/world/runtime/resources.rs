@@ -81,11 +81,16 @@ pub(super) fn start_resource(
         .resource
         .image()
         .ok_or_else(|| format!("resource `{id}` has no OCI image"))?;
-    let image = runtime.images.pull(reference, log)?;
-    let rootfs = runtime.clone_rootfs(&image.rootfs, &format!("res-{id}"), true)?;
+    let head = runtime.head_for(reference)?;
+    let rootfs = runtime.clone_rootfs(&head.rootfs, &format!("res-{id}"), true)?;
+    let facts = ImageFacts {
+        env: head.inherited_env.clone(),
+        entrypoint: head.argv.clone(),
+        cmd: Vec::new(),
+    };
     let ready = match node.resource {
-        ResourceKind::Postgres => stage_postgres(runtime, &node, &rootfs, &image.facts, log)?,
-        ResourceKind::Redis => stage_redis(runtime, &node, &rootfs, &image.facts)?,
+        ResourceKind::Postgres => stage_postgres(runtime, &node, &rootfs, &facts, log)?,
+        ResourceKind::Redis => stage_redis(runtime, &node, &rootfs, &facts)?,
         ResourceKind::S3 => unreachable!("the native S3 server has no pod"),
     };
     Ok(Staged {

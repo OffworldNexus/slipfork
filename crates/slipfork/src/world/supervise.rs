@@ -16,7 +16,7 @@ use slipfork_world::{
 use crate::commands::Session;
 use crate::world::features::WorldFeatures;
 use crate::world::runtime::capture::{RunTarget, strip_ansi};
-use crate::world::runtime::frames::{StepPin, failure_facts, log_frame, note_frame, step_frame};
+use crate::world::runtime::frames::{StepPin, failure_facts, log_frame, note_frame};
 
 use super::{
     HostEnv, SuperviseArgs, WorldState, fail, runtime::WorldBoot, runtime::WorldRuntime, state_path,
@@ -30,7 +30,13 @@ impl Session {
         unsafe {
             libc::setsid();
         }
-        match supervisor_main(&args.project, &args.world, self.host(), args.no_cache) {
+        match supervisor_main(
+            &args.project,
+            &args.world,
+            &args.heads,
+            self.host(),
+            args.no_cache,
+        ) {
             Ok(()) => ExitCode::SUCCESS,
             Err(message) => fail(message, "inspect `.slipfork/supervisor.log`"),
         }
@@ -40,6 +46,7 @@ impl Session {
 fn supervisor_main(
     project: &Path,
     world: &str,
+    heads_path: &Path,
     env: &HostEnv,
     no_cache: bool,
 ) -> Result<(), String> {
@@ -61,9 +68,17 @@ fn supervisor_main(
     let features = WorldFeatures::load_resolved(project, &doc)
         .map_err(|error| format!("{error}\nnext: {}", WorldFeatures::REMEDY))?;
     let plan = world_plan_with(&doc, project, &features).map_err(|error| error.to_string())?;
-    // One digest per build image: the `Dockerfile` bytes plus the canonical context hash. Folding
-    // it into the epoch means a Dockerfile/context edit can never adopt a stale image stamp.
-    let image_inputs = crate::world::image_inputs(project, &doc, &plan.images, &features);
+    // The daemon sealed every image before spawning this supervisor; a stale parent, changed
+    // build inputs, or a vanished rootfs fails here instead of silently rebuilding during boot.
+    let heads = crate::world::WorldHeads::load(heads_path)?;
+    heads.validate(
+        project,
+        &doc,
+        &world,
+        &plan,
+        &features,
+        &env.store_root_for(project),
+    )?;
     let emitter = Arc::new(Mutex::new(Emitter { open: true }));
     let runtime = Arc::new(WorldRuntime::new(WorldBoot {
         project,
@@ -71,7 +86,7 @@ fn supervisor_main(
         doc: &doc,
         plan: &plan,
         features: features.clone(),
-        image_inputs: &image_inputs,
+        heads: &heads,
         no_cache,
         env,
         emitter: Arc::clone(&emitter),
@@ -91,16 +106,17 @@ fn supervisor_main(
         .filter(|resource| resource.resource == ResourceKind::Postgres)
         .map(|resource| layout.world_clone(&world, resource.resource, &resource.id))
         .collect();
-    let epoch = plan_epoch(&plan, &features, &image_inputs);
+    let epoch = plan_epoch(&plan, &features, &heads.image_inputs);
     let stamp_store = WorldStampStore::new(&world_dir);
-    let trusted = stamp_store
-        .trusted_stamp(
-            &plan,
-            &features,
-            &image_inputs,
-            pg_clones.iter().map(|clone| clone.as_path()),
-        )
-        .is_some();
+    let trusted = !no_cache
+        && stamp_store
+            .trusted_stamp(
+                &plan,
+                &features,
+                &heads.image_inputs,
+                pg_clones.iter().map(|clone| clone.as_path()),
+            )
+            .is_some();
     // Paired world + PG stamps reuse trusted `@<tool>`/`pre-deploy` digests across warm `up` and `fork`.
     let stamps = stamps_for(project, &stamp_store, trusted);
 
@@ -211,9 +227,6 @@ fn supervisor_main(
                     .into_iter()
                     .find(|record| record.run_id == run_id)
             });
-            let plumbing = frame["name"]
-                .as_str()
-                .and_then(|name| runtime.image_plumbing(name));
             if frame.get("exit_code").is_none()
                 && let Some(code) = typed_exit.lock().ok().and_then(|slot| {
                     (*slot).and_then(|(step, code)| {
@@ -225,7 +238,7 @@ fn supervisor_main(
             {
                 frame["exit_code"] = json!(code);
             }
-            failure_facts(&mut frame, record.as_ref(), plumbing.as_deref());
+            failure_facts(&mut frame, record.as_ref(), None);
             if !runtime.has_live_world() {
                 // Zero resources or services entered the world (a cold image `RUN` or pre-pod
                 // setup/hook failed): reap `unshare`/`slipfork-world-init`/`slirp4netns` and drop
@@ -377,12 +390,6 @@ pub(super) struct Emitter {
 }
 
 impl Emitter {
-    /// A closed emitter, so unit tests never write NDJSON to a terminal.
-    #[cfg(test)]
-    pub(super) fn closed() -> Self {
-        Self { open: false }
-    }
-
     fn send(&mut self, value: Value) {
         if !self.open {
             return;
@@ -463,19 +470,6 @@ impl BootSink {
         }
     }
 
-    /// The minted id of this step's run capture, so its record can be annotated while it runs.
-    pub(super) fn run_id(&self) -> Option<String> {
-        let run = self.log.run.as_ref()?.lock().ok()?;
-        run.run_id().map(str::to_owned)
-    }
-
-    /// Emits one live build row for `image`'s `index`-th instruction, pinning the child identity.
-    pub(super) fn step_event(&mut self, image: &str, event: &slipfork_image::StepEvent<'_>) {
-        self.log.image = Some(image.to_owned());
-        self.log.index = Some(event.index);
-        self.log.send(step_frame(image, event));
-    }
-
     /// Emits one engine narration frame pinned to this step; the renderer shows it only under `-v`.
     pub(super) fn engine_note(&mut self, text: &str) {
         let _ = writeln!(self.mirror, "{text}");
@@ -502,18 +496,6 @@ impl BootSink {
         let _ = writeln!(self.mirror, "{text}");
         self.log.append_stream(stream, text);
     }
-
-    /// Appends one build instruction row through this step's existing run capture.
-    ///
-    /// The run capture already owns the only live sink on `runs/<id>.log`; locking it here keeps
-    /// its cached byte offset authoritative, so every `.idx` entry still lands on a row boundary.
-    pub(super) fn step_row(&mut self, text: &str) {
-        if let Some(run) = &self.log.run
-            && let Ok(mut target) = run.lock()
-        {
-            target.step_row(text);
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -523,8 +505,6 @@ struct EventLog {
     total: usize,
     label: String,
     name: String,
-    image: Option<String>,
-    index: Option<usize>,
     run: Option<Arc<Mutex<RunTarget>>>,
 }
 
@@ -542,8 +522,6 @@ impl EventLog {
             total,
             label: label.to_owned(),
             name: name.to_owned(),
-            image: None,
-            index: None,
             run: None,
         }
     }
@@ -567,8 +545,8 @@ impl EventLog {
             total: self.total,
             label: &self.label,
             name: &self.name,
-            image: self.image.as_deref(),
-            index: self.index,
+            image: None,
+            index: None,
         };
         self.send(log_frame(&pin, stream.as_str(), text));
     }
@@ -585,8 +563,8 @@ impl EventLog {
             total: self.total,
             label: &self.label,
             name: &self.name,
-            image: self.image.as_deref(),
-            index: self.index,
+            image: None,
+            index: None,
         };
         self.send(note_frame(&pin, text));
     }

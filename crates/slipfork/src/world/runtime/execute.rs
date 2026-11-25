@@ -11,7 +11,7 @@ use slipfork_world::{BootFailure, BootKind, BootState, BootStep, StepOutcome};
 
 use crate::world::supervise::BootSink;
 
-use super::images::record::{RunNotes, StepFailure};
+use super::notes::{RunNotes, StepFailure};
 use super::ready::{Ready, Staged};
 use super::{WorldRuntime, elapsed_ms, resources};
 
@@ -58,6 +58,7 @@ impl WorldRuntime {
                     failure.run_id.as_deref(),
                     note.as_deref(),
                     failure.exit_code,
+                    None,
                 ) {
                     failure
                         .message
@@ -78,16 +79,7 @@ impl WorldRuntime {
                 log.discard_run();
                 None
             }
-            Ok(done) => {
-                let run_id = log.finish_run(done.state.as_str(), duration);
-                if let BootKind::Image = step.kind
-                    && let Err(annotate) =
-                        notes.succeeded(run_id.as_deref(), &self.images.success_note(&step.subject))
-                {
-                    record_error = Some(annotate);
-                }
-                run_id
-            }
+            Ok(done) => log.finish_run(done.state.as_str(), duration),
             Err(error) => {
                 let run_id = log.finish_run("failed", duration);
                 // A readiness failure names its one-line cause and the child code when the wait
@@ -104,7 +96,7 @@ impl WorldRuntime {
                     ..Default::default()
                 });
                 if let Err(annotate) =
-                    notes.failed(run_id.as_deref(), note.as_ref(), error.exit_code)
+                    notes.failed(run_id.as_deref(), note.as_ref(), error.exit_code, None)
                 {
                     record_error = Some(annotate);
                 }
@@ -131,25 +123,25 @@ impl WorldRuntime {
         Ok(done)
     }
 
-    /// The `-v`-only container plumbing a failed image build reported, keyed by image id.
-    pub(crate) fn image_plumbing(&self, image: &str) -> Option<String> {
-        self.images.plumbing(image)
-    }
-
     fn execute_step(&self, step: &BootStep, log: &mut BootSink) -> Result<Staged, StepFailure> {
         match step.kind {
-            BootKind::Image => self
-                .images
-                .build(&step.subject, log)
-                .map(|(_, state)| Staged {
+            // The daemon already sealed every image; the boot step only reports the recorded head.
+            BootKind::Image => {
+                let head = self
+                    .head_for(&step.subject)
+                    .map_err(|error| StepFailure::plain(BootFailure::new(error)))?;
+                let state = match head.state.as_str() {
+                    "cached" => BootState::Cached,
+                    "pulled" => BootState::Pulled,
+                    _ => BootState::Built,
+                };
+                Ok(Staged {
                     state,
-                    detail: state.as_str().to_owned(),
+                    detail: head.state,
                     ready: Ready::None,
                     progress: None,
                 })
-                .map_err(|failure| {
-                    StepFailure::described(BootFailure::new(failure.message), *failure.note)
-                }),
+            }
             BootKind::Resource => resources::start_resource(self, &step.subject, log)
                 .map_err(|error| StepFailure::plain(BootFailure::new(error))),
             BootKind::Setup | BootKind::Hook => {

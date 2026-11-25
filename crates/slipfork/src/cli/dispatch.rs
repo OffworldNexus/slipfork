@@ -228,10 +228,12 @@ fn dispatch(cli: Cli, session: Session) -> ExitCode {
         Command::Supervise {
             project,
             world,
+            heads,
             no_cache,
         } => session.supervise(&SuperviseArgs {
             project,
             world,
+            heads,
             no_cache,
         }),
     }

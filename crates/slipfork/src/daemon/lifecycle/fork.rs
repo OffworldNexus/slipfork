@@ -171,6 +171,21 @@ impl Core {
                 "duration_ms": 0,
             }));
         }
+        // The fork checkout exists only after `snapshot`; seal its heads (parent image nodes are
+        // warm, so this is `cached`) before spawning `__supervise`. A failure rolls the fork back
+        // instead of booting from a half-built head set.
+        let fork_world = WorldName::parse(&prepared.world)
+            .map_err(|error| Failure::new("invalid-world", first_line(&error.to_string())))?;
+        if let Err(failure) = crate::daemon::reconcile::build_world_heads(
+            &self.host,
+            &prepared.project,
+            &fork_world,
+            false,
+            emit,
+        ) {
+            self.discard_fork(&prepared);
+            return Err(failure);
+        }
         let boot = json!({
             "project": prepared.project.clone(),
             "world": prepared.world.clone(),

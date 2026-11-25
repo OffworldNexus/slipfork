@@ -12,7 +12,7 @@ use slipfork_forkfile::ast::Forkfile;
 use slipfork_image::{BuildArgs, DockerfileParser, Stage, stage_walk};
 use slipfork_world::ImageNode;
 
-use super::images::BuiltImage;
+use crate::world::ImageHead;
 
 /// The live checkout a dev pod mounts over its image working directory.
 #[derive(Debug, Clone)]
@@ -129,7 +129,7 @@ impl DevMounts {
     pub(super) fn dev_for(
         &self,
         image: &str,
-        built: &BuiltImage,
+        built: &ImageHead,
     ) -> Result<Option<DevMount>, String> {
         let (context, context_dest, refusal) = match self.plans.get(image) {
             None => return Ok(None),

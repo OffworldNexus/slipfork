@@ -148,19 +148,15 @@ pub(crate) fn build(
         let mut bus = |event: BuildEvent<'_>| pump(ImageFrame::from_event(event));
         let mut log = StepLog::with_events(&mut bus);
         log.plan_width(planned_width);
-        let pulled = crate::world::pull_externals(
-            &source,
-            build_request.target.as_deref(),
-            &puller,
-            &mut log,
-        )
-        .map_err(|error| {
-            failure(
-                "image-build",
-                format!("pull external image failed: {}", error.cause()),
-                "check the `COPY --from` reference and registry credentials, then retry",
-            )
-        })?;
+        let pulled =
+            super::pull_externals(&source, build_request.target.as_deref(), &puller, &mut log)
+                .map_err(|error| {
+                    failure(
+                        "image-build",
+                        format!("pull external image failed: {}", error.cause()),
+                        "check the `COPY --from` reference and registry credentials, then retry",
+                    )
+                })?;
         let build_puller = lab.puller(host).sharing_flights(&puller);
         let builder = NativeImageBuilder::new(
             Arc::clone(&lab.engine),

@@ -14,6 +14,7 @@ pub(crate) mod image;
 mod ingress;
 mod lifecycle;
 mod lock;
+mod reconcile;
 mod registry;
 mod rpc;
 mod spawn;
@@ -396,40 +397,26 @@ impl Daemon {
                 }));
                 Ok(Some(reply))
             }
-            lifecycle::up::UpAction::Reconcile(plan) => {
-                lifecycle::up::reconcile(*plan);
+            lifecycle::up::UpAction::Reconcile => {
+                let (project, world, no_cache) = self.up_target(params)?;
+                self.preplan(&project, &world, no_cache, emit)?;
+                let plan = self
+                    .core()?
+                    .detach_live(&rpc::key_of(&project))
+                    .ok_or_else(|| {
+                        Failure::new("no-world", "no world is running in this directory")
+                    })?;
+                lifecycle::up::reconcile(plan);
                 let mut session = self.core()?.begin_up(params)?;
+                session.plan_already_announced();
                 session.run(self, emit).map(Some)
             }
             lifecycle::up::UpAction::Boot => {
+                let (project, world, no_cache) = self.up_target(params)?;
+                self.preplan(&project, &world, no_cache, emit)?;
                 let mut session = self.core()?.begin_up(params)?;
+                session.plan_already_announced();
                 session.run(self, emit).map(Some)
-            }
-        }
-    }
-
-    /// Restarts the live pods, or reconciles and reboots when the recorded head changed.
-    fn dispatch_restart(
-        &self,
-        params: &Value,
-        emit: &mut dyn FnMut(Value),
-    ) -> Result<Option<Value>, Failure> {
-        // Drop the core guard before the reconcile arm re-locks it: a temporary `MutexGuard` in a
-        // `match` scrutinee lives for the whole arm and would deadlock on the second `core()`.
-        let current = lifecycle::up::fingerprint_for(params)?;
-        let action = self.core()?.restart(params, current, emit)?;
-        match action {
-            lifecycle::core::RestartAction::Restarted(value) => Ok(Some(value)),
-            lifecycle::core::RestartAction::Reconcile(plan) => {
-                lifecycle::up::reconcile(*plan);
-                let mut session = self.core()?.begin_up(params)?;
-                let mut reply = session.run(self, emit)?;
-                // The boot stream already printed `✓ Ready`; mark the reply so the CLI never
-                // fabricates a `Restarted (0 pods)` line for a full rebuild.
-                if let Some(value) = reply.as_object_mut() {
-                    value.insert("reconciled".to_owned(), Value::Bool(true));
-                }
-                Ok(Some(reply))
             }
         }
     }

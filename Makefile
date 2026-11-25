@@ -12,6 +12,7 @@ LIVE_SUITES := \
 	slipfork-world/critical_pod_runtime \
 	slipfork-world/pod_control_lab \
 	slipfork/critical_world_journey \
+	slipfork/critical_heads_live \
 	slipfork/critical_status_live \
 	slipfork/critical_fork_live \
 	slipfork/critical_registry_live

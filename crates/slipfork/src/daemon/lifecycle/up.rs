@@ -34,7 +34,7 @@ pub(crate) enum UpAction {
     /// The live world's fingerprint still matches: verify/restart its pods outside the lock.
     Heal(Box<Heal>),
     /// Detached live world that must be stopped before `begin_up` re-applies the plan.
-    Reconcile(Box<Reconcile>),
+    Reconcile,
     /// Nothing live; boot normally.
     Boot,
 }
@@ -109,10 +109,9 @@ impl Core {
                 fork: entry.fork,
             })));
         }
-        let Some(plan) = self.detach_live(&key) else {
-            return Ok(UpAction::Boot);
-        };
-        Ok(UpAction::Reconcile(Box::new(plan)))
+        // Do not detach yet: the daemon must pre-plan every image first, so a failed build leaves
+        // the old world serving. The caller detaches after the heads are sealed.
+        Ok(UpAction::Reconcile)
     }
 
     /// Whether the live world's recorded head (`Forkfile` + every image's `Dockerfile` + copied
@@ -395,7 +394,12 @@ impl Core {
             .arg("--project")
             .arg(&project)
             .arg("--name")
-            .arg(world.as_str());
+            .arg(world.as_str())
+            .arg("--heads")
+            .arg(crate::world::WorldHeads::path(
+                &self.host.runtime_dir,
+                &world,
+            ));
         if params.get("no_cache").and_then(Value::as_bool) == Some(true) {
             command.arg("--no-cache");
         }

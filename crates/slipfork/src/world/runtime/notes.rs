@@ -1,23 +1,12 @@
-//! Run-record owner: the instruction a step actually executed, published onto its catalog run.
+//! Run-record annotations: the instruction a step executed, published onto its catalog run.
 //!
-//! A capture holds command output only. The instruction that ran, its source line, its child exit
-//! code, and (when no child printed the reason) the engine's one-line cause are *record* facts: they
-//! are written under the catalog lock, so `logs -r` can name the `RUN` that failed without
+//! A capture holds command output only. The instruction that ran, its source line, its child
+//! exit code, and (when no child printed the reason) the engine's one-line cause are *record*
+//! facts written under the catalog lock, so `logs -r` can name the `RUN` that failed without
 //! polluting the capture itself.
 
 use slipfork_world::run_log::RunNote;
 use slipfork_world::{BootFailure, LogStore};
-
-/// One failed image build: the human message plus the instruction that actually ran last.
-#[derive(Debug, Clone)]
-pub(crate) struct BuildFailure {
-    /// One-line failure message, printed by `up` and never appended to the capture.
-    pub(crate) message: String,
-    /// The failing instruction, published onto the step's run record.
-    pub(crate) note: Box<RunNote>,
-    /// Container plumbing behind a failed `RUN` (`crun exited with code 3`), `-v` only.
-    pub(crate) runtime: Option<Box<str>>,
-}
 
 /// One failed step plus the instruction detail its run record still needs.
 pub(crate) struct StepFailure {
@@ -30,13 +19,6 @@ impl StepFailure {
         Self {
             failure,
             note: None,
-        }
-    }
-
-    pub(crate) fn described(failure: BootFailure, note: RunNote) -> Self {
-        Self {
-            failure,
-            note: Some(Box::new(note)),
         }
     }
 }
@@ -58,15 +40,17 @@ impl RunNotes {
         self.annotate(run_id, note)
     }
 
-    /// A failed run names its failing instruction and the typed exit code the step carried.
+    /// A failed run names its failing instruction, the typed exit code, and the engine cause.
     pub(crate) fn failed(
         &self,
         run_id: Option<&str>,
         note: Option<&RunNote>,
         exit_code: Option<i32>,
+        reason: Option<&str>,
     ) -> Result<(), String> {
         let mut note = note.cloned().unwrap_or_default();
         note.exit_code = note.exit_code.or(exit_code);
+        note.reason = note.reason.or_else(|| reason.map(str::to_owned));
         self.annotate(run_id, &note)
     }
 
