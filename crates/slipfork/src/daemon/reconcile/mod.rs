@@ -354,8 +354,9 @@ impl super::Daemon {
         // Drop the core guard before the reconcile arm re-locks it: a temporary `MutexGuard` in a
         // `match` scrutinee lives for the whole arm and would deadlock on the second `core()`.
         let (project, world, _) = self.up_target(params)?;
+        let origin = self.core()?.origin_world(&project);
         let host = { self.core()?.host().clone() };
-        let desired = crate::daemon::lease::prepare(&host, &project, &world)
+        let desired = crate::daemon::lease::prepare(&host, &project, &world, origin.as_ref())
             .ok()
             .map(|(head, _)| head);
         let action = self.core()?.restart(params, desired.as_ref(), emit)?;
@@ -371,7 +372,7 @@ impl super::Daemon {
                         Failure::new("no-world", "no world is running in this directory")
                     })?;
                 super::lifecycle::up::reconcile(plan);
-                let mut session = self.core()?.begin_up(params, planned)?;
+                let mut session = self.core()?.begin_up(params, planned, None)?;
                 session.plan_already_announced();
                 let mut reply = session.run(self, emit)?;
                 // The boot stream already printed `✓ Ready`; mark the reply so the CLI never
@@ -397,7 +398,8 @@ impl super::Daemon {
         let host = self.core()?.host().clone();
         build_world_heads(&host, project, world, no_cache, emit)?;
         // The planned lease derives from the just-sealed image keys; the boot writes it verbatim.
-        let planned = crate::daemon::lease::prepare(&host, project, world)?;
+        let origin = self.core()?.origin_world(project);
+        let planned = crate::daemon::lease::prepare(&host, project, world, origin.as_ref())?;
         // gc runs only once the new heads are sealed, so unreachable nodes are reaped after a
         // known-good plan; its entry keys (never the synthetic world key) are pinned.
         if let Err(error) = crate::daemon::lease::collect_garbage(&host, project, Some(&planned.1))

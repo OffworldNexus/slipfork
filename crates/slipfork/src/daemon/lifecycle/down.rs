@@ -7,12 +7,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use slipfork_world::PodStatus;
 use slipfork_world::control::{PROTOCOL_VERSION, Request};
+use slipfork_world::{LedgerError, PodStatus, RuntimePods, WorldName};
 
-use super::core::{Core, World};
+use super::core::{Core, World, ledger_failure};
 use super::plan;
 use crate::daemon::Failure;
+use crate::daemon::now_ms;
 use crate::daemon::rpc::{key_of, pid_alive, world_answers, world_call};
 
 impl Core {
@@ -34,10 +35,10 @@ impl Core {
                 "no world is running in this directory",
             ));
         };
-        if let World::Booting { world, .. } = world {
+        if let World::Booting { row, .. } = world {
             return Err(Failure::new(
                 "world-booting",
-                format!("world `{world}` is still starting"),
+                format!("world `{}` is still starting", row.world_name),
             ));
         }
         let started = Instant::now();
@@ -74,20 +75,22 @@ impl Core {
             "event": "stopped", "world": stopped["world"],
             "elapsed_ms": millis(started),
         }));
-        self.persist()?;
         Ok(stopped)
     }
 
     /// The pods the live world reports, read before its control plane is shut down.
     fn known_pods(&self, key: &str) -> Vec<PodStatus> {
-        let Some(World::Live { entry, .. }) = self.worlds.get(key) else {
+        let Some(World::Live { row, .. }) = self.worlds.get(key) else {
+            return Vec::new();
+        };
+        let Some(pods_dir) = row.pods_dir.as_deref() else {
             return Vec::new();
         };
         let roster = Request::List {
             v: PROTOCOL_VERSION,
             id: "daemon-down-list".to_owned(),
         };
-        world_call(&entry.pods_dir, &roster)
+        world_call(pods_dir, &roster)
             .ok()
             .and_then(|reply| slipfork_world::pod_statuses(&reply).ok())
             .unwrap_or_default()
@@ -106,44 +109,49 @@ impl Core {
         on_pod: &mut dyn FnMut(&str, u64),
     ) -> Result<Value, Failure> {
         let pods = self.known_pods(key);
-        let Some(mut world) = self.worlds.remove(key) else {
+        let Some(world) = self.worlds.remove(key) else {
             return Err(Failure::new(
                 "no-world",
                 "no world is running in this directory",
             ));
         };
-        let (project, name, pods_dir, pid, mut child) = match &mut world {
-            World::Booting {
-                project,
-                world,
-                pods_dir,
-                supervisor_pid,
-            } => (
-                project.clone(),
-                world.clone(),
-                pods_dir.clone(),
-                *supervisor_pid,
-                None,
+        let id = world.row().id;
+        let project = world.row().checkout_path.clone();
+        let name = world.row().world_name.clone();
+        let recorded_pods = world.row().pods_dir.clone();
+        let runtime_dir = self.host.runtime_dir.clone();
+        let pods_dir = recorded_pods.or_else(|| {
+            WorldName::parse(&name)
+                .ok()
+                .map(|world| RuntimePods::world_root(&runtime_dir, &world))
+        });
+        let (pid, mut child) = match world {
+            World::Booting { row, child } => (
+                row.supervisor_pid.and_then(|pid| u32::try_from(pid).ok()),
+                Some(child),
             ),
-            World::Live { entry, child } => (
-                entry.project.clone(),
-                entry.world.clone(),
-                entry.pods_dir.clone(),
-                entry.supervisor_pid,
-                child.take(),
+            World::Live { row, child } => (
+                row.supervisor_pid.and_then(|pid| u32::try_from(pid).ok()),
+                child,
             ),
         };
+        let pid = pid.unwrap_or(0);
+        if let Err(error) = self.ledger.mark_stopping(id, now_ms())
+            && !matches!(error, LedgerError::UnknownRow { .. })
+        {
+            return Err(ledger_failure(error));
+        }
         let pod_started = Instant::now();
         let roster = PodRoster::new(pods);
         // Pods that already exited answer at `t = 0`, before the shutdown request is sent.
         roster.report_exited(on_pod);
         let sweep_started = Instant::now();
-        if world_answers(&pods_dir) {
+        if let Some(dir) = pods_dir.as_deref().filter(|dir| world_answers(dir)) {
             let shutdown = Request::Shutdown {
                 v: PROTOCOL_VERSION,
                 id: "daemon-down".to_owned(),
             };
-            let _ = world_call(&pods_dir, &shutdown);
+            let _ = world_call(dir, &shutdown);
         }
         let pod_ms = millis(pod_started);
         roster.report_live(on_pod, pod_ms);
@@ -158,15 +166,18 @@ impl Core {
         }
         // Reap any `unshare`/`slipfork-world-init`/`slirp4netns` groups that escaped
         // `__supervise`'s pgid via `.process_group(0)` and wait until `/proc` proves none survive.
-        slipfork_world::reap_world_tree(pid, Some(&pods_dir), Duration::from_secs(5));
+        slipfork_world::reap_world_tree(pid, pods_dir.as_deref(), Duration::from_secs(5));
         // The init removes its own tmpfs root on a clean exit; a killed supervisor can leave
         // bundles and ephemeral subvolume mounts behind, so `down` sweeps the run root too.
-        let swept = sweep_run_root(Some(&pods_dir));
+        let swept = sweep_run_root(pods_dir.as_deref());
         let sweep_ms = millis(sweep_started);
         // A stopped world keeps its newest successes and every failed run, so `logs -r failed`
         // still works after `down`.
         Self::report_retain(self.retain_runs(&project, &name));
-        let _ = fs::remove_file(project.join(".slipfork/world.json"));
+        self.remove_lease(&project, &name);
+        self.ledger
+            .mark_stopped(id, now_ms())
+            .map_err(ledger_failure)?;
         self.ingress = None;
         Ok(json!({
             "stopped": true,
@@ -181,7 +192,6 @@ impl Core {
         for key in keys {
             let _ = self.stop_world(&key, Duration::from_secs(10), &mut |_, _| {});
         }
-        let _ = self.persist();
     }
 }
 

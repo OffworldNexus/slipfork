@@ -11,12 +11,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use serde_json::Value;
-use slipfork_world::{RuntimePods, WorldName};
+use slipfork_world::{LedgerError, RootRequest, RuntimePods, WorldName, WorldRow};
 
-use super::core::{Core, World};
+use super::core::{Core, World, ledger_failure};
 use crate::daemon::Failure;
 use crate::daemon::boot::BootSession;
 use crate::daemon::lease::{self, Head};
+use crate::daemon::now_ms;
 use crate::daemon::rpc::{key_of, pid_alive, world_answers};
 
 pub(crate) use heal::settle;
@@ -58,6 +59,13 @@ fn is_idle(no_cache: bool, head_matches: bool, bundled: bool) -> bool {
     !no_cache && head_matches && bundled
 }
 
+/// The supervisor pid of a row, or `0` when it has never been published.
+fn pid_of(row: &WorldRow) -> u32 {
+    row.supervisor_pid
+        .and_then(|pid| u32::try_from(pid).ok())
+        .unwrap_or(0)
+}
+
 impl Core {
     /// Decides one idempotent `up`: a matching lease stays Idle/heals; an edited head reconciles.
     pub(crate) fn up_plan(
@@ -71,25 +79,31 @@ impl Core {
             .unwrap_or(false);
         let project = project_path(params)?;
         let key = key_of(&project);
-        let Some(World::Live { entry, .. }) = self.worlds.get(&key) else {
+        let Some(World::Live { row, .. }) = self.worlds.get(&key) else {
             return Ok(UpAction::Boot);
         };
-        let entry = entry.clone();
-        if !pid_alive(entry.supervisor_pid) || !world_answers(&entry.pods_dir) {
+        let Some(pods_dir) = row.pods_dir.clone() else {
+            return Ok(UpAction::Boot);
+        };
+        let supervisor_pid = pid_of(row);
+        if supervisor_pid == 0 || !pid_alive(supervisor_pid) || !world_answers(&pods_dir) {
             return Ok(UpAction::Boot);
         }
         if is_idle(
             no_cache,
-            self.head_matches(&entry.project, &entry.world, desired),
-            plan::services_bundled(&entry.project, &entry.pods_dir),
+            self.head_matches(&row.checkout_path, &row.world_name, desired),
+            plan::services_bundled(&row.checkout_path, &pods_dir),
         ) {
             return Ok(UpAction::Idle(Box::new(Heal {
-                world: entry.world,
-                project: entry.project,
-                pods_dir: entry.pods_dir,
-                supervisor_pid: entry.supervisor_pid,
-                started_at_ms: entry.started_at_ms,
-                fork: entry.fork,
+                world: row.world_name.clone(),
+                project: row.checkout_path.clone(),
+                pods_dir,
+                supervisor_pid,
+                started_at_ms: row
+                    .started_at_ms
+                    .and_then(|ms| u64::try_from(ms).ok())
+                    .unwrap_or(0),
+                fork: self.fork_name(row.id),
             })));
         }
         // Do not detach yet: the daemon must pre-plan every image first, so a failed build leaves
@@ -111,52 +125,92 @@ impl Core {
 
     /// Detaches the live world so `reconcile` and the reboot run outside the daemon lock.
     pub(crate) fn detach_live(&mut self, key: &str) -> Option<Reconcile> {
-        let Some(World::Live { entry, child }) = self.worlds.remove(key) else {
+        let pods_dir = match self.worlds.get(key) {
+            Some(World::Live { row, .. }) => row.pods_dir.clone()?,
+            _ => return None,
+        };
+        let Some(World::Live { row, child }) = self.worlds.remove(key) else {
             return None;
         };
-        self.remove_lease(&entry.project, &entry.world);
+        let supervisor_pid = pid_of(&row);
+        self.remove_lease(&row.checkout_path, &row.world_name);
         self.ingress = None;
-        let _ = self.persist();
         Some(Reconcile {
-            project: entry.project,
-            pods_dir: entry.pods_dir,
-            supervisor_pid: entry.supervisor_pid,
+            project: row.checkout_path,
+            pods_dir,
+            supervisor_pid,
             child,
         })
     }
 }
 
 impl Core {
-    /// Spawns `__supervise` and leaves a `Booting` placeholder; the returned session owns the boot.
+    /// Spawns `__supervise` and leaves a `Booting` entry; the returned session owns the boot.
     ///
-    /// The caller holds one `Core` guard for the reservation, so a fork snapshot and its boot can
-    /// never observe two different world maps.
+    /// `world_id` names the row a fork already reserved; `None` registers (or reuses) the root row
+    /// for this checkout. The caller holds one `Core` guard for the reservation, so a fork
+    /// snapshot and its boot can never observe two different world maps.
     pub(crate) fn begin_up(
         &mut self,
         params: &Value,
         planned: lease::Planned,
+        world_id: Option<i64>,
     ) -> Result<BootSession, Failure> {
         let project = project_path(params)?;
         let key = key_of(&project);
         match self.worlds.get(&key) {
-            Some(World::Booting { world, .. }) => {
+            Some(World::Booting { row, .. }) => {
                 return Err(Failure::new(
                     "world-booting",
-                    format!("world `{world}` is still starting"),
+                    format!("world `{}` is still starting", row.world_name),
                 ));
             }
-            Some(World::Live { entry, .. })
-                if pid_alive(entry.supervisor_pid) && world_answers(&entry.pods_dir) =>
+            Some(World::Live { row, .. })
+                if pid_of(row) != 0
+                    && pid_alive(pid_of(row))
+                    && row.pods_dir.as_deref().is_some_and(world_answers) =>
             {
                 return Err(Failure::new(
                     "world-running",
-                    format!("world `{}` is already running", entry.world),
+                    format!("world `{}` is already running", row.world_name),
                 ));
             }
             _ => {}
         }
-        self.worlds.remove(&key);
-        self.spawn(project, key, params, planned)
+        if let Some(stale) = self.worlds.remove(&key) {
+            stale.reap_if_exited();
+        }
+        let row = match world_id {
+            Some(id) => self.row_by_id(id).ok_or_else(|| {
+                Failure::new("no-world", "the world row disappeared from the ledger")
+            })?,
+            None => match self.row_for_project(&project) {
+                Some(row) => row,
+                None => self.register_root(&project, params)?,
+            },
+        };
+        self.spawn(project, key, params, planned, row)
+    }
+
+    /// Registers this checkout's root row, mapping a taken world name to its one remedy.
+    fn register_root(&self, project: &Path, params: &Value) -> Result<WorldRow, Failure> {
+        let world = crate::world::world_name(project, params.get("world").and_then(Value::as_str))
+            .map_err(|message| Failure::new("invalid-world", message))?;
+        let request = RootRequest {
+            name: world,
+            checkout_path: project.to_path_buf(),
+            store_root: self.host.store_root_for(project),
+            now_ms: now_ms(),
+        };
+        self.ledger.register_root(request).map_err(|error| match error {
+            LedgerError::NameTaken { world_name } => Failure::new(
+                "world-name-taken",
+                format!(
+                    "world `{world_name}` is already registered in this store\nnext: run `slipfork up --world <other-name>`"
+                ),
+            ),
+            other => ledger_failure(other),
+        })
     }
 
     fn spawn(
@@ -165,10 +219,14 @@ impl Core {
         key: String,
         params: &Value,
         planned: lease::Planned,
+        row: WorldRow,
     ) -> Result<BootSession, Failure> {
-        let requested = params.get("world").and_then(Value::as_str);
-        let world = crate::world::world_name(&project, requested)
-            .map_err(|message| Failure::new("invalid-world", message))?;
+        let world = WorldName::parse(&row.world_name).map_err(|error| {
+            Failure::new(
+                "invalid-world",
+                error.to_string().lines().next().unwrap_or_default(),
+            )
+        })?;
         let pods_dir = RuntimePods::world_root(&self.host.runtime_dir, &world);
         let log_dir = project.join(".slipfork");
         fs::create_dir_all(&log_dir).map_err(|error| {
@@ -203,7 +261,7 @@ impl Core {
         if params.get("no_cache").and_then(Value::as_bool) == Some(true) {
             command.arg("--no-cache");
         }
-        let child = command
+        let mut child = command
             .current_dir(&project)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -215,71 +273,31 @@ impl Core {
                     format!("cannot start `__supervise`: {error}"),
                 )
             })?;
-        self.worlds.insert(
-            key.clone(),
-            World::Booting {
-                project: project.clone(),
-                world: world.as_str().to_owned(),
-                pods_dir: pods_dir.clone(),
-                supervisor_pid: child.id(),
-            },
-        );
-        let store_root = self.host.store_root_for(&project);
-        let mut session = BootSession::new(
+        let supervisor_pid = child.id();
+        let stdout = child.stdout.take();
+        let store_root = row.store_root.clone();
+        let world_name = row.world_name.clone();
+        let world_id = row.id;
+        self.worlds
+            .insert(key.clone(), World::Booting { row, child });
+        Ok(BootSession::new(
             key,
+            world_id,
             log_path,
-            child,
+            stdout,
+            supervisor_pid,
             pods_dir,
-            project.clone(),
+            project,
             store_root,
+            world_name,
             planned,
-        );
-        if let Some(fork) = layout_fork(&project) {
-            session.reserve_fork(fork);
-        }
-        Ok(session)
+        ))
     }
-}
-
-/// The fork name when `project` is the canonical `<parent>/.forks/<fork>` checkout.
-fn layout_fork(project: &Path) -> Option<String> {
-    let forks = project.parent()?;
-    if !forks
-        .file_name()
-        .is_some_and(|name| name == slipfork_world::FORKS_DIR)
-    {
-        return None;
-    }
-    let fork = project.file_name()?.to_str()?;
-    slipfork_world::ForkName::parse(fork)
-        .ok()
-        .map(|fork| fork.as_str().to_owned())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
-    use super::{is_idle, layout_fork};
-
-    #[test]
-    fn layout_fork_reads_only_the_canonical_forks_directory() {
-        let root = tempfile::Builder::new()
-            .prefix("slipfork-layout-fork")
-            .tempdir_in("/var/tmp")
-            .expect("create a disk temp directory");
-        let parent = root.path().join("demo");
-        let fork = parent.join(slipfork_world::FORKS_DIR).join("feat-auth");
-        fs::create_dir_all(&fork).expect("create the fork checkout");
-        assert_eq!(layout_fork(&fork).as_deref(), Some("feat-auth"));
-        assert_eq!(layout_fork(&parent), None);
-        assert_eq!(layout_fork(&fork.join("nested")), None);
-        assert_eq!(
-            layout_fork(&parent.join(slipfork_world::FORKS_DIR).join("Bad_Name")),
-            None,
-            "an invalid fork name never reserves a fork"
-        );
-    }
+    use super::is_idle;
 
     /// A matching head is Idle only with a warm cache and every declared service bundled.
     #[test]

@@ -7,7 +7,6 @@
 //! here; every input is already on disk.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -55,6 +54,7 @@ pub(crate) fn prepare(
     host: &HostEnv,
     project: &Path,
     world: &WorldName,
+    origin: Option<&WorldName>,
 ) -> Result<Planned, Failure> {
     let Head {
         spec, world_epoch, ..
@@ -79,7 +79,10 @@ pub(crate) fn prepare(
     let mut lease = Lease {
         v: 1,
         world: world.as_str().to_owned(),
-        origin: origin(world),
+        origin: origin.map_or_else(
+            || world.as_str().to_owned(),
+            |origin| origin.as_str().to_owned(),
+        ),
         world_epoch,
         spec: spec.clone(),
         head: NodeKey::from_digest([0; 32]),
@@ -230,13 +233,6 @@ pub(crate) fn collect_garbage(
 }
 
 /// `<fork>--<world>` leases its parent world as `origin`; every other world is its own origin.
-fn origin(world: &WorldName) -> String {
-    StoreLayout::parse_fork_world(OsStr::new(world.as_str())).map_or_else(
-        || world.as_str().to_owned(),
-        |(_, parent)| parent.as_str().to_owned(),
-    )
-}
-
 impl crate::daemon::lifecycle::core::Core {
     /// Deletes a lease whose world failed to boot, was detached, or was dropped.
     pub(crate) fn remove_lease(&self, project: &Path, world: &str) {

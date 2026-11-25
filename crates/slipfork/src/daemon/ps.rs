@@ -3,10 +3,12 @@
 //! Nothing downstream inspects `serde_json::Value` keys or sniffs authority strings: every field is
 //! typed here, including the `Forkfile` domain filter mirror.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use slipfork_forkfile::BucketPolicy;
+use slipfork_world::LedgerRows;
 
 /// The whole `ps` reply.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,6 +16,53 @@ pub struct PsReply {
     /// Every owned world, with forks nested under their parent.
     #[serde(default)]
     pub worlds: Vec<PsWorld>,
+}
+
+/// The ancestor row ids of `id`: the immediate parent first, the root row last.
+///
+/// A root row has no ancestors; a cycle (which the ledger never writes) terminates on the visited
+/// set. Every `ps` lineage and every lease `origin` reads its ancestry through this one walk.
+#[must_use]
+pub fn ancestry(rows: &LedgerRows, id: i64) -> Vec<i64> {
+    let mut chain = Vec::new();
+    let mut parent = rows
+        .forks
+        .iter()
+        .find(|fork| fork.world_id == id)
+        .map(|fork| fork.parent_id);
+    let mut seen = BTreeSet::from([id]);
+    while let Some(id) = parent {
+        if !seen.insert(id) {
+            break;
+        }
+        chain.push(id);
+        parent = rows
+            .forks
+            .iter()
+            .find(|fork| fork.world_id == id)
+            .map(|fork| fork.parent_id);
+    }
+    chain
+}
+
+/// The ancestor fork names of `id`: immediate parent first, the root world name last.
+///
+/// A root row has no lineage; an edge whose parent row vanished stops before naming it, and a
+/// cycle (which the ledger never writes) terminates on the visited set.
+#[must_use]
+pub fn lineage(rows: &LedgerRows, id: i64) -> Vec<String> {
+    ancestry(rows, id)
+        .into_iter()
+        .filter_map(|id| {
+            if let Some(fork) = rows.forks.iter().find(|fork| fork.world_id == id) {
+                return Some(fork.name.clone());
+            }
+            rows.worlds
+                .iter()
+                .find(|row| row.id == id)
+                .map(|row| row.world_name.clone())
+        })
+        .collect()
 }
 
 /// One world or fork.
@@ -52,7 +101,10 @@ pub struct PsWorld {
     /// Why this world cannot be fully described: a missing checkout or an invalid `Forkfile`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
-    /// Forks that still exist under `<project>/.forks` but are no longer live.
+    /// Ancestor fork names of this row, immediate parent first, the root world name last.
+    #[serde(default)]
+    pub lineage: Vec<String>,
+    /// Reserved for wire compatibility; the ledger now owns every stopped fork as a row.
     #[serde(default)]
     pub stopped_forks: Vec<PsStoppedFork>,
     /// Forks nested under this world.
@@ -78,6 +130,7 @@ impl PsWorld {
             booting: false,
             services: Vec::new(),
             problem: None,
+            lineage: Vec::new(),
             stopped_forks: Vec::new(),
             forks: Vec::new(),
         }
@@ -93,6 +146,8 @@ pub enum PsWorldState {
     Live,
     /// The checkout exists on disk but nothing runs for it.
     Stopped,
+    /// The ledger and disk disagree; `problem` is the only honest row.
+    Broken,
 }
 
 /// One stopped fork found under a parent world's `.forks` directory.
@@ -204,5 +259,73 @@ impl From<BucketPolicy> for PsBucketPolicy {
             BucketPolicy::Private => Self::Private,
             BucketPolicy::PublicRead => Self::PublicRead,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use slipfork_world::{ForkRow, LedgerRows, WorldRow, WorldState};
+
+    use super::{ancestry, lineage};
+
+    fn row(id: i64, world: &str, checkout: &str) -> WorldRow {
+        WorldRow {
+            id,
+            checkout_path: PathBuf::from(checkout),
+            world_name: world.to_owned(),
+            store_root: PathBuf::from("/var/tmp/slipfork-store"),
+            state: WorldState::Stopped,
+            supervisor_pid: None,
+            pods_dir: None,
+            started_at_ms: None,
+            problem: None,
+            updated_at_ms: 0,
+        }
+    }
+
+    fn edge(world_id: i64, root_id: i64, parent_id: i64, name: &str) -> ForkRow {
+        ForkRow {
+            world_id,
+            root_id,
+            parent_id,
+            name: name.to_owned(),
+            branch: name.to_owned(),
+        }
+    }
+
+    /// `salut` is a fork of `bonjour` under `ghostroot`: the immediate parent names first, the
+    /// root world last, and a root row has no ancestors at all.
+    #[test]
+    fn lineage_names_ancestor_forks_then_the_root_world() {
+        let rows = LedgerRows {
+            worlds: vec![
+                row(1, "ghostroot", "/p"),
+                row(2, "bonjour--ghostroot", "/p/.forks/bonjour"),
+                row(3, "salut--ghostroot", "/p/.forks/salut"),
+            ],
+            forks: vec![edge(2, 1, 1, "bonjour"), edge(3, 1, 2, "salut")],
+        };
+        assert_eq!(
+            lineage(&rows, 3),
+            vec!["bonjour".to_owned(), "ghostroot".to_owned()]
+        );
+        assert_eq!(lineage(&rows, 2), vec!["ghostroot".to_owned()]);
+        assert!(lineage(&rows, 1).is_empty());
+        assert_eq!(ancestry(&rows, 3), vec![2, 1]);
+        assert_eq!(ancestry(&rows, 2), vec![1]);
+        assert!(ancestry(&rows, 1).is_empty());
+    }
+
+    /// A corrupt edge that loops back on itself must terminate instead of hanging `ps`.
+    #[test]
+    fn lineage_stops_at_a_cycle() {
+        let rows = LedgerRows {
+            worlds: vec![row(1, "a--b", "/p/.forks/a"), row(2, "b--c", "/p/.forks/b")],
+            forks: vec![edge(1, 1, 2, "a"), edge(2, 1, 1, "b")],
+        };
+        assert_eq!(lineage(&rows, 1), vec!["b".to_owned()]);
+        assert_eq!(lineage(&rows, 2), vec!["a".to_owned()]);
     }
 }

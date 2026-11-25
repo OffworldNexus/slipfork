@@ -8,7 +8,6 @@
 //! page cache. Btrfs ioctls stay inside `slipfork_world` and branch topology stays behind the
 //! injected `VcsWorkspace` port.
 
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -16,8 +15,8 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use slipfork_vcs::{Dirty, VcsError, VcsWorkspace};
 use slipfork_world::{
-    BtrfsEngine, Dirtiness, Error as WorldError, ForkName, PostgresLauncher, RuntimePods,
-    StoreLayout, WorldEngine, WorldName, is_subvolume_path,
+    BtrfsEngine, Dirtiness, Error as WorldError, ForkName, LedgerError, PostgresLauncher, Resolved,
+    RuntimePods, StoreLayout, WorldEngine, WorldName, is_subvolume_path,
 };
 
 use super::core::{Core, World};
@@ -47,12 +46,17 @@ pub(crate) struct ForkTarget {
 
 /// One project snapshot that is ready to boot as its own world.
 pub(crate) struct PreparedFork {
+    /// The family root checkout, which owns both `.forks/<name>` and the store.
     pub(crate) parent: PathBuf,
     pub(crate) project: PathBuf,
     pub(crate) fork: String,
     pub(crate) fork_name: ForkName,
+    /// The fork's world id (`<fork>--<root>`), taken from [`slipfork_world::ForkPaths`].
     pub(crate) world: String,
-    pub(crate) world_name: WorldName,
+    /// The family root world every fork world id is suffixed with.
+    pub(crate) root_world: WorldName,
+    /// The immediate parent world (`origin` of the fork's lease).
+    pub(crate) parent_world: WorldName,
     pub(crate) snapshot_ms: u64,
     /// Pre-fork preparation time (branch/slug resolution). No SQL runs here.
     pub(crate) preflight_ms: u64,
@@ -86,11 +90,19 @@ impl Core {
         let started = Instant::now();
         let project = project_param(params)?;
         let (parent, pods_dir) = match self.worlds.get(&key_of(&project)) {
-            Some(World::Live { entry, .. }) => (entry.world.clone(), entry.pods_dir.clone()),
-            Some(World::Booting { world, .. }) => {
+            Some(World::Live { row, .. }) => {
+                let Some(pods_dir) = row.pods_dir.clone() else {
+                    return Err(Failure::new(
+                        "no-world",
+                        "no world is running in this directory",
+                    ));
+                };
+                (row.world_name.clone(), pods_dir)
+            }
+            Some(World::Booting { row, .. }) => {
                 return Err(Failure::new(
                     "world-booting",
-                    format!("world `{world}` is still starting"),
+                    format!("world `{}` is still starting", row.world_name),
                 ));
             }
             None => {
@@ -186,14 +198,18 @@ impl Core {
             self.discard_fork(&prepared);
             return Err(failure);
         }
-        let planned =
-            match crate::daemon::lease::prepare(&self.host, &prepared.project, &fork_world) {
-                Ok(planned) => planned,
-                Err(failure) => {
-                    self.discard_fork(&prepared);
-                    return Err(failure);
-                }
-            };
+        let planned = match crate::daemon::lease::prepare(
+            &self.host,
+            &prepared.project,
+            &fork_world,
+            Some(&prepared.parent_world),
+        ) {
+            Ok(planned) => planned,
+            Err(failure) => {
+                self.discard_fork(&prepared);
+                return Err(failure);
+            }
+        };
         if let Err(error) =
             crate::daemon::lease::collect_garbage(&self.host, &prepared.project, Some(&planned.1))
         {
@@ -203,7 +219,41 @@ impl Core {
             "project": prepared.project.clone(),
             "world": prepared.world.clone(),
         });
-        match self.begin_up(&boot, planned) {
+        let Some(root_row) = self.root_row(&prepared.parent) else {
+            self.discard_fork(&prepared);
+            return Err(Failure::new(
+                "no-world",
+                "the fork's root world has no ledger row\nnext: run `slipfork up` in the root checkout, then retry `slipfork fork`",
+            ));
+        };
+        // The immediate parent edge comes from the snapshot's own `ForkPaths.parent`; a fork of a
+        // fork keeps its real ancestry instead of flattening every child onto the root.
+        let parent_id = self
+            .ledger
+            .list()
+            .ok()
+            .and_then(|rows| {
+                rows.worlds
+                    .into_iter()
+                    .find(|row| row.world_name == prepared.parent_world.as_str())
+                    .map(|row| row.id)
+            })
+            .unwrap_or(root_row.id);
+        let fork_row = match self.ledger.begin_fork(slipfork_world::ForkRequest {
+            root_id: root_row.id,
+            parent_id,
+            name: prepared.fork_name.clone(),
+            runtime_dir: self.host.runtime_dir.clone(),
+            branch: raw_name.to_owned(),
+            now_ms: crate::daemon::now_ms(),
+        }) {
+            Ok(row) => row,
+            Err(error) => {
+                self.discard_fork(&prepared);
+                return Err(crate::daemon::lifecycle::core::ledger_failure(error));
+            }
+        };
+        match self.begin_up(&boot, planned, Some(fork_row.world_id)) {
             Ok(mut session) => {
                 session.reserve_fork(prepared.fork.clone());
                 session.plan_already_announced();
@@ -332,14 +382,27 @@ impl Core {
         self.remove_lease(&prepared.project, &prepared.world);
         self.worlds.remove(&key);
         self.ingress = None;
-        let _ = self.persist();
-        let forked = StoreLayout::fork_world_name(&prepared.world_name, &prepared.fork_name);
+        // The ledger row exists only once `begin_fork` reserved it; an earlier failure has none.
+        if let Some(row) = self.row_for_project(&prepared.project) {
+            let outcome = if self.is_fork_row(row.id) {
+                self.ledger.delete_world_row(row.id)
+            } else {
+                self.ledger.mark_stopped(row.id, crate::daemon::now_ms())
+            };
+            if let Err(error) = outcome {
+                eprintln!(
+                    "slipfork daemon: {}",
+                    error.to_string().lines().next().unwrap_or_default()
+                );
+            }
+        }
+        let forked = StoreLayout::fork_world_name(&prepared.root_world, &prepared.fork_name);
         Self::report_retain(self.retain_runs(&prepared.parent, forked.as_str()));
         let _ = RuntimePods::purge(&self.host.runtime_dir, &forked);
         let engine = BtrfsEngine::new(StoreLayout::at(self.host.store_root_for(&prepared.parent)));
         let _ = engine.drop_fork(
             &prepared.parent,
-            &prepared.world_name,
+            &prepared.root_world,
             &prepared.fork_name,
             Dirtiness::Clean,
             true,
@@ -392,9 +455,9 @@ impl Core {
             .fork(&project, &world, &fork)
             .map_err(|error| btrfs_failure(&error, &project))?;
         let snapshot_ms = elapsed_ms(snapshot_started);
-        // Keep `.slipfork/*.stamp` hashes intact while stripping the parent world's live handle
-        // and supervisor log so the fork starts with its own clean boot log.
-        let _ = std::fs::remove_file(paths.project.join(".slipfork/world.json"));
+        // Keep `.slipfork/*.stamp` hashes intact while stripping the parent world's live
+        // supervisor log so the fork starts with its own clean boot log. The world handle lives in
+        // the ledger row, never in a checkout file.
         let _ = std::fs::remove_file(paths.project.join(".slipfork/supervisor.log"));
         emit(snapshot.finished("snapshot".to_owned(), "project + world data", snapshot_ms));
         let git_started = Instant::now();
@@ -409,22 +472,37 @@ impl Core {
             return Err(failure);
         }
         emit(git.finished(git_name.clone(), "checked out", elapsed_ms(git_started)));
+        // `ForkPaths` is authoritative: the family root owns the store, the parent names the
+        // lease origin, and the world snapshot's file name is the fork's world id.
+        let world = paths
+            .world
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| WorldName::parse(name).ok())
+            .map_or_else(
+                || {
+                    StoreLayout::fork_world_name(&paths.root, &fork)
+                        .as_str()
+                        .to_owned()
+                },
+                |world| world.as_str().to_owned(),
+            );
         Ok(PreparedFork {
-            parent: project,
+            parent: slipfork_world::fork_checkout(&project)
+                .map_or_else(|| project.clone(), |(root, _)| root),
             project: paths.project,
             fork: fork.as_str().to_owned(),
             fork_name: fork.clone(),
-            world: StoreLayout::fork_world_name(&world, &fork)
-                .as_str()
-                .to_owned(),
-            world_name: world,
+            world,
+            root_world: paths.root,
+            parent_world: paths.parent,
             snapshot_ms,
             preflight_ms,
             started,
         })
     }
 
-    /// Stops the fork when live, then removes all fork subvolumes and its registry entry.
+    /// Stops the fork when live, then removes every fork artifact and its single ledger row.
     pub(crate) fn drop_fork(
         &mut self,
         params: &Value,
@@ -440,30 +518,90 @@ impl Core {
             .unwrap_or(false);
         let fork = ForkName::parse(name)
             .map_err(|error| Failure::new("invalid-fork", error.to_string()))?;
-        let parent = self.parent_world(&project, fork.as_str())?;
-        let world = WorldName::parse(&parent)
-            .map_err(|error| Failure::new("invalid-world", first_line(&error.to_string())))?;
-        let layout = StoreLayout::at(self.host.store_root_for(&project));
-        let fork_project = StoreLayout::project_fork(&project, &fork);
-        let fork_world = layout.fork_world(&world, &fork);
-        let fork_key = key_of(&fork_project);
-        let registered = self.worlds.contains_key(&fork_key);
-        let has_checkout = fork_project.is_dir();
+        // The family root owns both `<root>/.forks/<name>` and the world store.
+        let root = slipfork_world::fork_checkout(&project)
+            .map_or_else(|| project.clone(), |(root, _)| root);
+        let rows = self
+            .ledger
+            .list()
+            .map_err(crate::daemon::lifecycle::core::ledger_failure)?;
+        // One resolver owns every target rule: the family root refuses, a fork row names its own
+        // checkout, and a vanished row falls through to the artifact-only ghost path.
+        let scope = slipfork_world::ProjectScope::resolve(&project);
+        let resolved = match self.ledger.resolve(&scope, name) {
+            Ok(resolved) => resolved,
+            Err(LedgerError::UnknownTarget { .. }) => None,
+            Err(error) => return Err(crate::daemon::lifecycle::core::ledger_failure(error)),
+        };
+        let (checkout, fork_row, root_checkout, root_world) = match resolved {
+            // A row without a `forks` edge is a root: `drop` never deletes a root world.
+            Some(Resolved { fork: None, .. }) => {
+                return Err(Failure::new(
+                    "root-world",
+                    format!(
+                        "{name} is a root world; drop only removes forks\nnext: slipfork down {name}"
+                    ),
+                ));
+            }
+            Some(Resolved {
+                world,
+                fork: Some(fork),
+            }) => {
+                let row = rows.worlds.iter().find(|row| row.id == fork.root_id).ok_or_else(|| {
+                    Failure::new(
+                        "ledger",
+                        "the fork's root row is missing\nnext: run `slipfork up` in the root checkout",
+                    )
+                })?;
+                let world_root = WorldName::parse(&row.world_name).map_err(|error| {
+                    Failure::new("invalid-world", first_line(&error.to_string()))
+                })?;
+                (
+                    world.checkout_path.clone(),
+                    Some(fork),
+                    row.checkout_path.clone(),
+                    world_root,
+                )
+            }
+            // Artifact-only ghost: no row survives, so only the canonical paths can be swept.
+            None => {
+                let root_world_name = rows
+                    .worlds
+                    .iter()
+                    .find(|row| row.checkout_path == root)
+                    .map(|row| row.world_name.clone())
+                    .or_else(|| {
+                        root.file_name()
+                            .and_then(|name| name.to_str())
+                            .map(str::to_owned)
+                    })
+                    .unwrap_or_default();
+                let world_root = WorldName::parse(&root_world_name).map_err(|error| {
+                    Failure::new("invalid-world", first_line(&error.to_string()))
+                })?;
+                (
+                    StoreLayout::project_fork(&root, &fork),
+                    None,
+                    root.clone(),
+                    world_root,
+                )
+            }
+        };
+        let layout = StoreLayout::at(self.host.store_root_for(&root_checkout));
+        let fork_world = layout.fork_world(&root_world, &fork);
+        let has_checkout = checkout.is_dir();
         let has_world = is_subvolume_path(&fork_world).unwrap_or(false);
-        if !registered && !has_checkout && !has_world {
+        if fork_row.is_none() && !has_checkout && !has_world {
             return Err(Failure::new(
                 "no-fork",
                 format!("no fork named `{}` exists", fork.as_str()),
             ));
         }
-        // Only a real fork is pruned, and the store root belongs to the PARENT project.
-        let fork_world_name = StoreLayout::fork_world_name(&world, &fork);
-        Self::report_retain(self.retain_runs(&project, fork_world_name.as_str()));
         // Refuse dirty work before stopping anything: a refusal leaves the fork running.
         let dirtiness = if force || !has_checkout {
             Dirtiness::Clean
         } else {
-            match self.vcs.dirtiness(&fork_project) {
+            match self.vcs.dirtiness(&checkout) {
                 Ok(Dirty::Clean) => Dirtiness::Clean,
                 // A failed probe is dirty work: never discard what cannot be proven clean.
                 Ok(Dirty::Dirty) | Err(_) => Dirtiness::Dirty,
@@ -481,7 +619,8 @@ impl Core {
         plan::emit(&plan.rows, plan.rows.len(), emit);
         emit(plan.stop.started(format!("stopping {}", fork.as_str())));
         let stop_started = Instant::now();
-        if registered {
+        let fork_key = key_of(&checkout);
+        if self.worlds.contains_key(&fork_key) {
             self.stop_world(&fork_key, Duration::from_secs(60), &mut |_, _| {})
                 .map_err(|failure| Failure::new("fork-busy", first_line(&failure.message)))?;
         }
@@ -492,44 +631,29 @@ impl Core {
         ));
         emit(plan.delete.started(format!("deleting {}", fork.as_str())));
         let delete_started = Instant::now();
+        let forked = StoreLayout::fork_world_name(&root_world, &fork);
+        Self::report_retain(self.retain_runs(&root_checkout, forked.as_str()));
         let engine = BtrfsEngine::new(layout);
         engine
-            .drop_fork(&project, &world, &fork, dirtiness, force)
-            .map_err(|error| btrfs_failure(&error, &project))?;
+            .drop_fork(&root_checkout, &root_world, &fork, dirtiness, force)
+            .map_err(|error| btrfs_failure(&error, &root_checkout))?;
         emit(plan.delete.finished(
             "deleted".to_owned(),
             "project + world data",
             elapsed_ms(delete_started),
         ));
-
+        // `delete_world_row` splices the fork's children in one transaction, so no hand-reparent.
+        if let Some(fork) = &fork_row {
+            self.ledger
+                .delete_world_row(fork.world_id)
+                .map_err(crate::daemon::lifecycle::core::ledger_failure)?;
+        }
         self.worlds.remove(&fork_key);
         self.ingress = None;
-        self.persist()?;
         Ok(json!({
             "dropped": fork.as_str(),
             "elapsed_ms": elapsed_ms(started),
         }))
-    }
-
-    /// The world a fork belongs to: the live parent, else the fork's own registry record.
-    fn parent_world(&self, project: &Path, fork: &str) -> Result<String, Failure> {
-        if let Some(entity) = self.worlds.get(&key_of(project)) {
-            return Ok(entity.name().to_owned());
-        }
-        for entity in self.worlds.values() {
-            let World::Live { entry, .. } = entity else {
-                continue;
-            };
-            if entry.fork.as_deref() != Some(fork) {
-                continue;
-            }
-            if let Some((_, world)) = StoreLayout::parse_fork_world(OsStr::new(&entry.world)) {
-                return Ok(world.as_str().to_owned());
-            }
-        }
-        crate::world::world_name(project, None)
-            .map(|name| name.as_str().to_owned())
-            .map_err(|error| Failure::new("invalid-world", first_line(&error)))
     }
 }
 

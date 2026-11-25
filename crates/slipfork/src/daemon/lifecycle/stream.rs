@@ -130,11 +130,14 @@ impl Core {
             .get(&key_of(project))
             .ok_or_else(|| Failure::new("no-world", "no world is running in this directory"))?;
         match entity {
-            World::Booting { world, .. } => Err(Failure::new(
+            World::Booting { row, .. } => Err(Failure::new(
                 "world-booting",
-                format!("world `{world}` is still starting"),
+                format!("world `{}` is still starting", row.world_name),
             )),
-            World::Live { entry, .. } => Ok(entry.pods_dir.clone()),
+            World::Live { row, .. } => row
+                .pods_dir
+                .clone()
+                .ok_or_else(|| Failure::new("no-world", "no world is running in this directory")),
         }
     }
 }

@@ -1,13 +1,14 @@
 //! The one thin client for `<runtime_dir>/daemon.sock`; it owns the daemon's lifetime.
 //!
 //! Every local verb connects here and nowhere else. When no daemon answers, the client spawns
-//! `slipfork __daemon` detached and waits up to three seconds for the socket.
+//! `slipfork __daemon` detached and waits up to twenty seconds for the socket.
 
 use std::fmt;
+use std::fs;
 use std::io::{Read, Write};
 use std::os::fd::{OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -58,7 +59,8 @@ impl DaemonClient {
     ///
     /// # Errors
     ///
-    /// Fails after a three-second wait when a freshly spawned daemon never answers.
+    /// Fails after a twenty-second wait when a freshly spawned daemon never answers, reporting the
+    /// startup log's own `error:`/`next:` pair when it wrote one.
     pub fn connect(host: &HostEnv) -> Result<Self, DaemonError> {
         let socket = socket_path(host);
         match UnixStream::connect(&socket) {
@@ -77,7 +79,8 @@ impl DaemonClient {
         let hint = "• daemon not installed; running ephemeral — the package enables it; \
                     on a tarball run `docs/install.sh`";
         eprintln!("{}", crate::ui::Palette::new(host.color).meta(hint));
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let log = host.state_dir.join("daemon.log");
+        let deadline = Instant::now() + Duration::from_secs(20);
         loop {
             match UnixStream::connect(&socket) {
                 Ok(stream) => return Self::handshake(stream, socket, host),
@@ -85,12 +88,17 @@ impl DaemonClient {
                     std::thread::sleep(Duration::from_millis(50));
                 }
                 Err(error) => {
+                    // A daemon that refused to start already wrote the exact remedy; surface it
+                    // instead of a generic "did not answer".
+                    if let Some(remedy) = startup_remedy(&log) {
+                        return Err(DaemonError::new("daemon-startup", remedy));
+                    }
                     return Err(DaemonError::new(
                         "daemon-unavailable",
                         format!(
                             "the slipfork daemon did not answer at `{}`: {error} (see `{}`)",
                             socket.display(),
-                            host.state_dir.join("daemon.log").display()
+                            log.display()
                         ),
                     ));
                 }
@@ -491,4 +499,74 @@ fn is_absent(error: &std::io::Error) -> bool {
         error.kind(),
         std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
     )
+}
+
+/// The daemon's own last `error:` line and the `next:` line that follows it, if it logged one.
+fn startup_remedy(log: &Path) -> Option<String> {
+    let text = fs::read_to_string(log).ok()?;
+    let lines: Vec<&str> = text.lines().collect();
+    let (index, error) = lines
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, line)| line.strip_prefix("error: ").map(|error| (index, error)))?;
+    let next = lines.get(index + 1)?.strip_prefix("next: ")?;
+    Some(format!("{error}\nnext: {next}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::startup_remedy;
+
+    /// Real disk scratch space; `/tmp` is RAM-backed and never holds daemon state.
+    fn log_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        PathBuf::from("/var/tmp").join(format!(
+            "slipfork-daemon-log-{name}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    /// A daemon that refused to start prints `error:` then `next:`; the last pair is the remedy.
+    #[test]
+    fn startup_remedy_returns_the_last_error_and_its_next_line() {
+        let path = log_path("pair");
+        fs::write(
+            &path,
+            "slipfork daemon: noise\n\
+             error: open the world ledger: busy\nnext: check that the state directory is writable\n\
+             error: state.db was written by a newer slipfork (migration m0009)\nnext: upgrade slipfork\n",
+        )
+        .expect("write the daemon log");
+        assert_eq!(
+            startup_remedy(&path).as_deref(),
+            Some(
+                "state.db was written by a newer slipfork (migration m0009)\nnext: upgrade slipfork"
+            )
+        );
+        let _ = fs::remove_file(&path);
+    }
+
+    /// Without an `error:`/`next:` pair the caller keeps its generic message.
+    #[test]
+    fn startup_remedy_is_none_without_a_pair() {
+        let path = log_path("bare");
+        fs::write(
+            &path,
+            "slipfork daemon: another daemon already holds the runtime lock\n",
+        )
+        .expect("write the daemon log");
+        assert_eq!(startup_remedy(&path), None);
+        assert_eq!(
+            startup_remedy(Path::new("/var/tmp/slipfork-daemon-log-missing")),
+            None
+        );
+        let _ = fs::remove_file(&path);
+    }
 }

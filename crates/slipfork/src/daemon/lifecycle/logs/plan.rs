@@ -5,15 +5,14 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use slipfork_forkfile::Forkfile;
-use slipfork_world::LogStore;
 use slipfork_world::run_log::RunRecord;
+use slipfork_world::{LogStore, WorldRow};
 
 use super::super::super::Failure;
 use super::super::super::rpc::key_of;
 use super::super::core::{Core, World};
 use super::super::stream::{SHELLABLE, load_document, project_param, world_rows};
 use super::{LogStream, RunIndex, log_store_of};
-use crate::daemon::registry::RegistryEntry;
 use crate::ps::PsKind;
 use crate::world::features::WorldFeatures;
 
@@ -357,11 +356,15 @@ impl Core {
         &mut self,
         project: &Path,
     ) -> Result<Option<(PathBuf, String, Vec<(PsKind, String, bool)>)>, Failure> {
-        let Some(entry) = self.live_entry(project) else {
+        let Some((pods_dir, world)) = self
+            .live_entry(project)
+            .map(|row| (row.pods_dir.clone(), row.world_name.clone()))
+        else {
             return Ok(None);
         };
-        let pods_dir = entry.pods_dir.clone();
-        let world = entry.world.clone();
+        let Some(pods_dir) = pods_dir else {
+            return Ok(None);
+        };
         let reply = self.ps()?;
         let mut rows = Vec::new();
         for row in world_rows(&reply, project) {
@@ -372,9 +375,9 @@ impl Core {
         Ok(Some((pods_dir, world, rows)))
     }
 
-    fn live_entry(&self, project: &Path) -> Option<&RegistryEntry> {
+    fn live_entry(&self, project: &Path) -> Option<&WorldRow> {
         match self.worlds.get(&key_of(project)) {
-            Some(World::Live { entry, .. }) => Some(entry),
+            Some(World::Live { row, .. }) => Some(row),
             _ => None,
         }
     }

@@ -41,6 +41,9 @@ pub(crate) enum ImageFrame {
         elapsed_ms: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         exit_code: Option<i32>,
+        /// Typed tail phase (`sealing` …), rendered by the CLI as the row's suffix.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        phase: Option<String>,
         /// Transport-only alignment hint, omitted from every rendered `--json` object.
         #[serde(default)]
         width: usize,
@@ -63,6 +66,9 @@ impl ImageFrame {
                 state: step.state.as_str().to_owned(),
                 elapsed_ms: u64::try_from(step.elapsed.as_millis()).unwrap_or(u64::MAX),
                 exit_code: step.exit_code,
+                phase: step
+                    .phase
+                    .map(|phase| crate::world::StepPin::tail_label(phase).to_owned()),
                 width: step.instruction_width,
             },
             BuildEvent::Line { stream, text } => Self::Log {
@@ -406,6 +412,21 @@ mod tests {
     use slipfork_image::ImageLayout;
 
     use super::forget_ref;
+
+    /// The wire `phase` label is the one `StepPin` vocabulary, both directions.
+    #[test]
+    fn tail_phase_labels_round_trip_through_the_wire() {
+        use slipfork_world::snapshot::TailPhase;
+
+        assert_eq!(
+            crate::world::StepPin::tail_phase("sealing"),
+            Some(TailPhase::Sealing)
+        );
+        assert_eq!(
+            crate::world::StepPin::tail_label(TailPhase::Sealing),
+            "sealing"
+        );
+    }
 
     /// A forgotten reference is gone before the pull re-resolves, and the next remember wins.
     #[test]

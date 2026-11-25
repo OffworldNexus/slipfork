@@ -20,7 +20,9 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use reference_control::ReferenceWorldControl;
-use slipfork_world::PodStatus;
+use slipfork_world::{
+    ForkLedger, ForkName, ForkRequest, LiveFork, PodStatus, RootRequest, StatePaths, WorldName,
+};
 
 fn scratch(prefix: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -35,11 +37,38 @@ fn scratch(prefix: &str) -> PathBuf {
     root
 }
 
+/// The canonical `Lease` JSON: a zero head is the lowercase hex digest, never a byte array.
+fn seed_lease(world: &str, origin: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "v": 1,
+        "world": world,
+        "origin": origin,
+        "world_epoch": "",
+        "spec": "",
+        "head": "0".repeat(64),
+        "seeds": [],
+        "services": {},
+        "effects": {},
+    }))
+    .expect("encode the lease")
+}
+
+fn write_lease(store: &Path, world: &str, origin: &str) {
+    let dir = store.join("worlds").join(world);
+    fs::create_dir_all(&dir).expect("create the world data directory");
+    fs::write(
+        dir.join(slipfork_world::LEASE_FILE),
+        seed_lease(world, origin),
+    )
+    .expect("write the world lease");
+}
+
 fn daemon_command(runtime: &Path, state: &Path) -> Child {
     Command::new(env!("CARGO_BIN_EXE_slipfork"))
         .arg("__daemon")
         .env("XDG_RUNTIME_DIR", runtime)
         .env("XDG_STATE_HOME", state)
+        .env("XDG_DATA_HOME", state.join("data"))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(
@@ -170,6 +199,16 @@ fn process_group(pid: u32) -> Option<u32> {
         .and_then(|pgrp| pgrp.parse().ok())
 }
 
+/// Every world row and its nested forks, depth first.
+fn flattened(worlds: &[serde_json::Value], out: &mut Vec<serde_json::Value>) {
+    for world in worlds {
+        out.push(world.clone());
+        if let Some(forks) = world["forks"].as_array() {
+            flattened(forks, out);
+        }
+    }
+}
+
 #[test]
 fn daemon_control_plane_and_status_tree_lifecycle() {
     let runtime = scratch("rt");
@@ -223,27 +262,83 @@ fn daemon_control_plane_and_status_tree_lifecycle() {
         .process_group(0)
         .spawn()
         .expect("spawn the world supervisor");
-    let worlds_file = state_root.join("worlds.json");
-    fs::write(
-        &worlds_file,
-        serde_json::to_vec(&serde_json::json!([
-            {
-                "project": project,
-                "world": "kept",
-                "pods_dir": live_pods,
-                "supervisor_pid": supervisor.id(),
-                "started_at_ms": 1_700_000_000_000_u64,
-            },
-            {
-                "project": "/var/tmp/forgotten-project",
-                "world": "forgotten",
-                "pods_dir": "/var/tmp/forgotten-pods",
-                "supervisor_pid": 999_999_u32,
-            }
-        ]))
-        .expect("encode seed registry"),
+
+    // The store root the daemon derives for this `/`-mounted project, seeded with a real lease so
+    // convergence keeps the surviving `live` row instead of reaping it.
+    let store = state.join("data/slipfork/store");
+    write_lease(&store, "kept", "kept");
+
+    let ledger = ForkLedger::open_writer(
+        StatePaths::new(state_root.clone()),
+        fs::File::create(state_root.join("seed.lock")).expect("create the seed lock"),
     )
-    .expect("seed the registry");
+    .expect("open the seed ledger writer");
+    let kept = ledger
+        .register_root(RootRequest {
+            name: WorldName::parse("kept").expect("valid world name"),
+            checkout_path: project.clone(),
+            store_root: store.clone(),
+            now_ms: 1_699_999_999_000,
+        })
+        .expect("register the retained root");
+    ledger
+        .publish_live(
+            kept.id,
+            LiveFork {
+                supervisor_pid: i64::from(supervisor.id()),
+                pods_dir: live_pods.clone(),
+                started_at_ms: 1_700_000_000_000,
+            },
+            1_700_000_000_000,
+        )
+        .expect("publish the retained world live");
+
+    // Two real untracked forks: their lease `origin` names the parent convergence adopts under.
+    for (name, origin) in [("bonjour", "kept"), ("salut", "bonjour--kept")] {
+        let checkout = project.join(".forks").join(name);
+        fs::create_dir_all(&checkout).expect("create the fork checkout");
+        fs::copy(project.join("Forkfile"), checkout.join("Forkfile"))
+            .expect("copy the Forkfile into the fork");
+        write_lease(&store, &format!("{name}--kept"), origin);
+    }
+
+    // A half-created fork: a `creating` row (parented under bonjour) with a partial checkout that
+    // convergence must roll back, not adopt.
+    let temporary_parent = ledger
+        .begin_fork(ForkRequest {
+            root_id: kept.id,
+            parent_id: kept.id,
+            name: ForkName::parse("bonjour").expect("valid fork name"),
+            runtime_dir: runtime.clone(),
+            branch: String::new(),
+            now_ms: 1_700_000_000_000,
+        })
+        .expect("insert the temporary parent row");
+    ledger
+        .begin_fork(ForkRequest {
+            root_id: kept.id,
+            parent_id: temporary_parent.world_id,
+            name: ForkName::parse("merci").expect("valid fork name"),
+            runtime_dir: runtime.clone(),
+            branch: String::new(),
+            now_ms: 1_700_000_000_000,
+        })
+        .expect("insert the half-created fork");
+    ledger
+        .delete_world_row(temporary_parent.world_id)
+        .expect("drop the temporary parent row");
+    let merci = project.join(".forks/merci");
+    fs::create_dir_all(&merci).expect("create the partial checkout");
+    fs::write(merci.join(".partial-x"), "stage").expect("mark the partial checkout");
+
+    // An orphan world whose pods exist in both the tmpfs runtime and the store.
+    fs::create_dir_all(runtime.join("slipfork/pods/gone--kept/api"))
+        .expect("create the orphan runtime pod");
+    fs::create_dir_all(store.join("pods/gone--kept")).expect("create the orphan store pod");
+
+    drop(ledger);
+    // The pre-`1.0` registry: the daemon's writer must unlink it on open.
+    fs::write(state_root.join("worlds.json"), "[]").expect("seed the legacy registry");
 
     let mut daemon = daemon_command(&runtime, &state);
     let guard = DaemonGuard { pid: daemon.id() };
@@ -268,18 +363,45 @@ fn daemon_control_plane_and_status_tree_lifecycle() {
     let ps = client.call("ps-1", "ps", "{}");
     assert_eq!(ps["v"], 1);
     let worlds = ps["ok"]["worlds"].as_array().expect("worlds array");
-    assert_eq!(
-        worlds.len(),
-        1,
-        "only the live retained world survives: {worlds:?}"
+    let mut all = Vec::new();
+    flattened(worlds, &mut all);
+    assert!(
+        all.iter()
+            .all(|world| !world.to_string().contains("checkout missing")),
+        "no adopted row may render a missing checkout: {all:?}"
     );
-    let world = &worlds[0];
-    assert_eq!(world["world"], "kept");
-    assert_eq!(world["url"], "http://kept.localhost");
-    assert_eq!(world["path"], project.to_string_lossy().as_ref());
-    assert_eq!(world["started_at_ms"], 1_700_000_000_000_u64);
-    assert!(world["forks"].as_array().is_some_and(Vec::is_empty));
-    let services = world["services"].as_array().expect("services array");
+    let kept = worlds
+        .iter()
+        .find(|world| world["world"] == "kept")
+        .expect("the retained root survives the daemon restart");
+    assert_eq!(kept["url"], "http://kept.localhost");
+    assert_eq!(kept["path"], project.to_string_lossy().as_ref());
+    assert_eq!(kept["started_at_ms"], 1_700_000_000_000_u64);
+    assert_eq!(kept["state"], "live", "the adopted world must stay live");
+    assert_eq!(kept["supervisor_pid"], supervisor.id());
+    let forks = kept["forks"].as_array().expect("forks array");
+    let bonjour = forks
+        .iter()
+        .find(|fork| fork["world"] == "bonjour--kept")
+        .unwrap_or_else(|| panic!("missing adopted fork `bonjour`: {forks:?}"));
+    assert_eq!(bonjour["lineage"], serde_json::json!(["kept"]));
+    let nested = bonjour["forks"].as_array().expect("nested forks array");
+    let salut = nested
+        .iter()
+        .find(|fork| fork["world"] == "salut--kept")
+        .unwrap_or_else(|| panic!("missing adopted fork `salut`: {nested:?}"));
+    assert_eq!(salut["lineage"], serde_json::json!(["bonjour", "kept"]));
+    assert!(
+        all.iter().all(|world| world["world"] != "merci--kept"),
+        "a `creating` row must be rolled back, never listed: {all:?}"
+    );
+    let services = kept["services"].as_array().expect("services array");
+    assert_eq!(
+        services.len(),
+        3,
+        "all three services survive: {services:?}"
+    );
+    assert!(services.iter().all(|service| service["running"] == true));
     let by_id = |id: &str| {
         services
             .iter()
@@ -296,11 +418,44 @@ fn daemon_control_plane_and_status_tree_lifecycle() {
     assert_eq!(by_id("uploads")["kind"], "s3");
     assert_eq!(by_id("uploads")["cdn"], "assets-cdn");
 
-    let stored: serde_json::Value =
-        serde_json::from_slice(&fs::read(&worlds_file).expect("read the registry"))
-            .expect("registry is JSON");
-    assert_eq!(stored.as_array().map(Vec::len), Some(1));
-    assert_eq!(stored[0]["world"], "kept");
+    // The real ledger now owns exactly the three survivors, and the legacy registry is gone.
+    let reader = ForkLedger::open_reader(state_root.clone()).expect("open the ledger reader");
+    let rows = reader.list().expect("list the adopted ledger");
+    assert_eq!(
+        rows.worlds
+            .iter()
+            .filter(|row| row.world_name == "kept")
+            .count(),
+        1,
+        "exactly one `kept` world row: {rows:?}"
+    );
+    assert_eq!(
+        rows.worlds.len(),
+        3,
+        "kept plus the two adopted forks: {rows:?}"
+    );
+    assert!(
+        rows.worlds
+            .iter()
+            .all(|row| row.world_name != "merci--kept"),
+        "the half-created fork row must be deleted: {rows:?}"
+    );
+    assert!(
+        !state_root.join("worlds.json").exists(),
+        "the daemon must unlink the legacy registry"
+    );
+    assert!(
+        !project.join(".forks/merci").exists(),
+        "the partial fork checkout must be rolled back"
+    );
+    assert!(
+        !runtime.join("slipfork/pods/gone--kept").exists(),
+        "the orphan world's pod directory must be swept"
+    );
+    assert!(
+        !store.join("pods/gone--kept").exists(),
+        "the store pod sweep must run"
+    );
 
     // The shipped binary renders the same world through the read-only client.
     let status = Command::new(env!("CARGO_BIN_EXE_slipfork"))

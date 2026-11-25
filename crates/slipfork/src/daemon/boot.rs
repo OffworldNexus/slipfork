@@ -1,34 +1,38 @@
-//! One boot's event relay: the reserved world key, the supervisor stream, and its publication.
+//! One boot's event relay: the ledger row, the supervisor stream, and its publication.
+//!
+//! The daemon owns the supervisor `Child` in [`super::lifecycle::core::World`]; the session only
+//! holds its stdout pipe, pid, and the row it publishes, so a rollback can never orphan a process.
 
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::Child;
-use std::time::{Duration, Instant};
+use std::process::ChildStdout;
+use std::time::Duration;
 
 use serde_json::{Value, json};
+use slipfork_world::LiveFork;
+use slipfork_world::WorldName;
 use slipfork_world::control::{PROTOCOL_VERSION, Request};
 
-use slipfork_world::WorldName;
-
 use super::lease::{self, Planned};
-use super::registry::RegistryEntry;
+use super::now_ms;
 use super::rpc::{world_answers, world_call_within};
 use super::{Daemon, Failure};
 
 const ABORT_CALL: Duration = Duration::from_secs(5);
-const ABORT_EXIT: Duration = Duration::from_secs(2);
 const REAP_BUDGET: Duration = Duration::from_secs(5);
 
-/// One in-flight boot, from the reserved registry key to the published live world.
+/// One in-flight boot, from the reserved ledger row to the published live world.
 #[derive(Debug)]
 pub(super) struct BootSession {
-    /// Registry key the placeholder already occupies.
+    /// World-map key the `Booting` entry occupies.
     key: String,
+    /// Ledger row this boot publishes.
+    world_id: i64,
     /// `supervisor.log` the child's stderr is appended to.
     log: PathBuf,
-    /// Supervised child; `None` once published or stopped.
-    child: Option<Child>,
-    /// Supervisor pid retained after `child` is taken so rollback can still reap its session.
+    /// Supervisor stdout, taken before the `Child` moved into the world map.
+    stdout: Option<ChildStdout>,
+    /// Supervisor process group leader, retained after the `Child` moves into the map.
     supervisor_pid: u32,
     /// Canonical `<runtime_dir>/slipfork/pods/<world>` tmpfs root for this boot.
     pods_dir: PathBuf,
@@ -36,6 +40,8 @@ pub(super) struct BootSession {
     project: PathBuf,
     /// Store root the published lease is written under.
     store_root: PathBuf,
+    /// The world name the ledger row reserved.
+    world: String,
     /// The preplanned head and the exact lease `ready` must persist verbatim.
     planned: Planned,
     /// Fork name when this boot is a fork world.
@@ -48,24 +54,29 @@ pub(super) struct BootSession {
 
 impl BootSession {
     /// Builds the session around one already-spawned supervisor.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         key: String,
+        world_id: i64,
         log: PathBuf,
-        child: Child,
+        stdout: Option<ChildStdout>,
+        supervisor_pid: u32,
         pods_dir: PathBuf,
         project: PathBuf,
         store_root: PathBuf,
+        world: String,
         planned: Planned,
     ) -> Self {
-        let supervisor_pid = child.id();
         Self {
             key,
+            world_id,
             log,
-            child: Some(child),
+            stdout,
             supervisor_pid,
             pods_dir,
             project,
             store_root,
+            world,
             planned,
             fork: None,
             plan_announced: false,
@@ -73,7 +84,7 @@ impl BootSession {
         }
     }
 
-    /// Records the fork this boot belongs to, so its published entry nests under the parent world.
+    /// Records the fork this boot belongs to, so its failure names the fork checkout.
     pub(super) fn reserve_fork(&mut self, fork: String) {
         self.fork = Some(fork);
     }
@@ -83,22 +94,18 @@ impl BootSession {
         self.plan_announced = true;
     }
 
-    /// Relays one boot's typed events, then publishes the live entry or forgets the placeholder.
+    /// Relays one boot's typed events, then publishes the live row or settles it `stopped`.
     pub(super) fn run(
         &mut self,
         daemon: &Daemon,
         emit: &mut dyn FnMut(Value),
     ) -> Result<Value, Failure> {
-        let stdout = self
-            .child
-            .as_mut()
-            .and_then(|child| child.stdout.take())
-            .ok_or_else(|| {
-                Failure::new(
-                    "supervisor-spawn",
-                    "the world supervisor gave no event stream",
-                )
-            })?;
+        let stdout = self.stdout.take().ok_or_else(|| {
+            Failure::new(
+                "supervisor-spawn",
+                "the world supervisor gave no event stream",
+            )
+        })?;
         let mut reader = BufReader::new(stdout);
         let mut line = String::new();
         loop {
@@ -112,11 +119,18 @@ impl BootSession {
             if read == 0 {
                 self.stop();
                 daemon.core()?.forget(&self.key);
+                let kind = if self.fork.is_some() { "fork" } else { "world" };
                 let tail = self.log_tail();
                 let reason = if tail.is_empty() {
-                    "the world supervisor exited before the world was ready".to_owned()
+                    format!(
+                        "the {kind} supervisor exited before `{}` was ready",
+                        self.world
+                    )
                 } else {
-                    format!("the world supervisor exited before the world was ready:\n{tail}")
+                    format!(
+                        "the {kind} supervisor exited before `{}` was ready:\n{tail}",
+                        self.world
+                    )
                 };
                 return Err(Failure::new("supervisor-exited", reason));
             }
@@ -128,77 +142,14 @@ impl BootSession {
             if self.plan_announced && event["event"].as_str() == Some("plan") {
                 continue;
             }
-            // `ready` is published, not streamed: a registry write that fails after the world
-            // booted must never let the CLI print `✓` for a fork that is about to be rolled back.
+            // `ready` is published, not streamed: a ledger write that fails after the world booted
+            // must never let the CLI print `✓` for a fork that is about to be rolled back.
             let ready = event["event"].as_str() == Some("ready");
             if !ready {
                 emit(event.clone());
             }
             match event["event"].as_str().unwrap_or_default() {
-                "ready" => {
-                    let Some(pods_dir) = event["pods_dir"].as_str().map(PathBuf::from) else {
-                        self.fail_boot(daemon)?;
-                        return Err(Failure::new(
-                            "world-state",
-                            "the world published no pod directory",
-                        ));
-                    };
-                    let Some(world) = event["world"]
-                        .as_str()
-                        .filter(|world| !world.is_empty())
-                        .map(str::to_owned)
-                    else {
-                        self.fail_boot(daemon)?;
-                        return Err(Failure::new("world-state", "the world published no name"));
-                    };
-                    let entry = RegistryEntry {
-                        project: self.project.clone(),
-                        world: world.clone(),
-                        fork: self.fork.clone(),
-                        pods_dir,
-                        supervisor_pid: self.supervisor_pid,
-                        started_at_ms: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map_or(0, |since| since.as_millis() as u64),
-                    };
-                    let child = self.child.take().ok_or_else(|| {
-                        Failure::new("supervisor-spawn", "the world supervisor disappeared")
-                    })?;
-                    let Ok(world_name) = WorldName::parse(&world) else {
-                        self.fail_boot(daemon)?;
-                        return Err(Failure::new("world-state", "the world published no name"));
-                    };
-                    // The plan was sealed before the boot; a checkout edit during the boot must
-                    // fail closed instead of publishing a stale head. This probe is pure and
-                    // runs outside the core lock.
-                    let drifted = lease::desired_for(&self.project, &world_name)
-                        .map_or(true, |head| head.spec != self.planned.0.spec);
-                    if drifted {
-                        self.stop();
-                        daemon.core()?.forget(&self.key);
-                        lease::remove(&self.store_root, &world_name);
-                        return Err(Failure::new(
-                            "checkout-drift",
-                            "the checkout changed while the world was booting\nnext: run `slipfork up` again",
-                        ));
-                    }
-                    // Write the preplanned lease verbatim, never re-deriving it under the lock.
-                    if let Err(failure) =
-                        lease::write(&self.store_root, &world_name, &self.planned.1)
-                    {
-                        self.stop();
-                        daemon.core()?.forget(&self.key);
-                        return Err(failure);
-                    }
-                    daemon.core()?.publish(&self.key, entry, child)?;
-                    // Only a persisted registry entry may announce `✓ Ready` / `{"event":"ready"}`.
-                    let url = event["url"].clone();
-                    emit(event);
-                    return Ok(json!({
-                        "world": world,
-                        "url": url,
-                    }));
-                }
+                "ready" => return self.publish(daemon, event, emit),
                 "failed" => {
                     let message = event["message"]
                         .as_str()
@@ -207,29 +158,10 @@ impl BootSession {
                     if let Some(reported) = event["pods_dir"].as_str() {
                         self.pods_dir = PathBuf::from(reported);
                     }
-                    if self.fork.is_none()
-                        && let (Some(pods_dir), Some(world), Some(child)) = (
-                            event["pods_dir"].as_str().map(PathBuf::from),
-                            event["world"].as_str().filter(|world| !world.is_empty()),
-                            self.child.take(),
-                        )
-                    {
-                        let entry = RegistryEntry {
-                            project: self.project.clone(),
-                            world: world.to_owned(),
-                            fork: None,
-                            pods_dir,
-                            supervisor_pid: self.supervisor_pid,
-                            started_at_ms: std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map_or(0, |since| since.as_millis() as u64),
-                        };
-                        daemon.core()?.publish(&self.key, entry, child)?;
-                        daemon.core()?.remove_lease(&self.project, world);
-                    } else {
-                        self.stop();
-                        daemon.core()?.forget(&self.key);
-                    }
+                    // `forget` deletes a fork row and marks a root `stopped`, so a failed boot
+                    // never leaves a half-fork that blocks a retry.
+                    self.stop();
+                    daemon.core()?.forget(&self.key);
                     return Err(Failure::new("boot-failed", message));
                 }
                 _ => {}
@@ -237,8 +169,73 @@ impl BootSession {
         }
     }
 
-    /// Shuts down any live `slipfork-world-init`, reaps `__supervise` plus escaped world groups,
-    /// and cleans `.slipfork/world.json` so no half-booted world or pipe outlives the session.
+    /// Writes the preplanned lease verbatim, then publishes the row `live`.
+    fn publish(
+        &mut self,
+        daemon: &Daemon,
+        event: Value,
+        emit: &mut dyn FnMut(Value),
+    ) -> Result<Value, Failure> {
+        let Some(pods_dir) = event["pods_dir"].as_str().map(PathBuf::from) else {
+            self.fail_boot(daemon)?;
+            return Err(Failure::new(
+                "world-state",
+                "the world published no pod directory",
+            ));
+        };
+        let Some(world) = event["world"]
+            .as_str()
+            .filter(|world| !world.is_empty())
+            .map(str::to_owned)
+        else {
+            self.fail_boot(daemon)?;
+            return Err(Failure::new("world-state", "the world published no name"));
+        };
+        let Ok(world_name) = WorldName::parse(&world) else {
+            self.fail_boot(daemon)?;
+            return Err(Failure::new("world-state", "the world published no name"));
+        };
+        self.world = world.clone();
+        self.pods_dir = pods_dir.clone();
+        // The plan was sealed before the boot; a checkout edit during the boot must fail closed
+        // instead of publishing a stale head. This probe is pure and runs outside the core lock.
+        let drifted = lease::desired_for(&self.project, &world_name)
+            .map_or(true, |head| head.spec != self.planned.0.spec);
+        if drifted {
+            self.stop();
+            daemon.core()?.forget(&self.key);
+            lease::remove(&self.store_root, &world_name);
+            return Err(Failure::new(
+                "checkout-drift",
+                "the checkout changed while the world was booting\nnext: run `slipfork up` again",
+            ));
+        }
+        // Write the preplanned lease verbatim, never re-deriving it under the lock.
+        if let Err(failure) = lease::write(&self.store_root, &world_name, &self.planned.1) {
+            self.stop();
+            daemon.core()?.forget(&self.key);
+            return Err(failure);
+        }
+        let live = LiveFork {
+            supervisor_pid: i64::from(self.supervisor_pid),
+            pods_dir,
+            started_at_ms: now_ms(),
+        };
+        if let Err(failure) = daemon.core()?.publish_live(&self.key, self.world_id, live) {
+            self.stop();
+            daemon.core()?.forget(&self.key);
+            return Err(failure);
+        }
+        // Only a published ledger row may announce `✓ Ready` / `{"event":"ready"}`.
+        let url = event["url"].clone();
+        emit(event);
+        Ok(json!({
+            "world": world,
+            "url": url,
+        }))
+    }
+
+    /// Shuts down any live `slipfork-world-init` and reaps `__supervise` plus escaped world groups.
     pub(super) fn stop(&mut self) {
         if self.stopped {
             return;
@@ -251,30 +248,18 @@ impl BootSession {
             };
             let _ = world_call_within(&self.pods_dir, &shutdown, ABORT_CALL);
         }
-        if let Some(mut child) = self.child.take() {
-            let deadline = Instant::now() + ABORT_EXIT;
-            while Instant::now() < deadline {
-                if matches!(child.try_wait(), Ok(Some(_)) | Err(_)) {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(15));
-            }
-            if let Ok(pid) = i32::try_from(self.supervisor_pid) {
-                slipfork_world::kill_group(pid);
-            }
-            let _ = child.wait();
+        if let Ok(pid) = i32::try_from(self.supervisor_pid) {
+            slipfork_world::kill_group(pid);
         }
         slipfork_world::reap_world_tree(self.supervisor_pid, Some(&self.pods_dir), REAP_BUDGET);
-        let _ = std::fs::remove_file(self.project.join(".slipfork/world.json"));
     }
 
-    /// Stops an unusable half-boot and drops its placeholder before the failure is reported.
+    /// Stops an unusable half-boot and settles its row before the failure is reported.
     ///
     /// `forget` prunes the world's run catalog exactly once, so a half-boot never prunes twice.
     fn fail_boot(&mut self, daemon: &Daemon) -> Result<(), Failure> {
         self.stop();
-        let mut core = daemon.core()?;
-        core.forget(&self.key);
+        daemon.core()?.forget(&self.key);
         Ok(())
     }
 

@@ -69,7 +69,6 @@ pub(crate) fn reconcile(plan: Reconcile) {
         plan.child,
         RECONCILE_EXIT,
     );
-    let _ = fs::remove_file(plan.project.join(".slipfork/world.json"));
 }
 
 /// Whether every service the current `Forkfile` declares already wrote its pod bundle.

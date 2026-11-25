@@ -1,204 +1,154 @@
-//! `ps`: declared rows folded together with the world's own live pod reply.
+//! `ps`: one row per ledger world, joined to the daemon's owned worlds for liveness.
 //!
-//! Honesty rules: a missing checkout or an uncompilable `Forkfile` becomes one `problem` row
-//! instead of a fabricated empty/orphaned tree, and stopped forks still on disk under
-//! `<project>/.forks` stay visible until they are reaped or dropped.
+//! The ledger is authoritative for what exists — roots, live forks, stopped forks, and broken
+//! rows all come from `worlds`/`forks`. The daemon only adds the live facts it can prove: an
+//! owned supervisor, an answering control socket, and the pods behind it. Untracked checkouts are
+//! converged into the ledger before `ps`, so this module never rescans `.forks`.
 
-use std::collections::BTreeSet;
-use std::ffi::OsStr;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use slipfork_forkfile::Diagnostics;
-use slipfork_world::PodStatus;
 use slipfork_world::control::{PROTOCOL_VERSION, Request};
+use slipfork_world::{PodStatus, WorldRow, WorldState};
 
-use super::core::{Core, World};
+use super::core::{Core, World, ledger_failure};
 use crate::daemon::Failure;
-use crate::daemon::rpc::{pid_alive, world_answers, world_call};
+use crate::daemon::rpc::{key_of, pid_alive, world_answers, world_call};
 use crate::daemon::view;
-use crate::ps::{PsKind, PsReply, PsService, PsStoppedFork, PsWorld, PsWorldState};
+use crate::ps::{PsKind, PsReply, PsService, PsWorld, PsWorldState, lineage};
 
 impl Core {
     pub(crate) fn ps(&mut self) -> Result<PsReply, Failure> {
-        let mut rows: Vec<(Option<String>, PsWorld)> = Vec::new();
-        for world in self.worlds.values() {
-            match world {
-                World::Booting {
-                    project,
-                    world,
-                    supervisor_pid,
-                    ..
-                } => rows.push((
-                    None,
-                    WorldView::new(project, world, None, 0, *supervisor_pid, true, true, &[])
-                        .ps_json(),
-                )),
-                World::Live { entry, .. } => {
-                    let alive = pid_alive(entry.supervisor_pid) && world_answers(&entry.pods_dir);
-                    let pods = world_call(
-                        &entry.pods_dir,
-                        &Request::List {
-                            v: PROTOCOL_VERSION,
-                            id: "daemon-list".to_owned(),
-                        },
-                    )
-                    .ok()
-                    .and_then(|reply| slipfork_world::pod_statuses(&reply).ok())
-                    .unwrap_or_default();
-                    let parent = entry.fork.as_ref().and_then(|fork| {
-                        let (parsed, parent) = slipfork_world::StoreLayout::parse_fork_world(
-                            OsStr::new(entry.world.as_str()),
-                        )?;
-                        (parsed.as_str() == fork).then(|| parent.as_str().to_owned())
-                    });
-                    rows.push((
-                        parent,
-                        WorldView::new(
-                            &entry.project,
-                            &entry.world,
-                            entry.fork.as_deref(),
-                            started_at(entry),
-                            entry.supervisor_pid,
-                            alive,
-                            false,
-                            &pods,
-                        )
-                        .ps_json(),
-                    ));
-                }
-            }
-        }
-        let mut worlds: Vec<PsWorld> = rows
+        let rows = self.ledger.list().map_err(ledger_failure)?;
+        let known: BTreeSet<i64> = rows.worlds.iter().map(|row| row.id).collect();
+        let fork_names: BTreeMap<i64, String> = rows
+            .forks
             .iter()
-            .filter(|(parent, _)| parent.is_none())
-            .map(|(_, world)| world.clone())
+            .map(|fork| (fork.world_id, fork.name.clone()))
             .collect();
-        let mut orphans: Vec<(String, PsWorld)> = Vec::new();
-        for (parent, world) in &rows {
-            let Some(parent) = parent else {
+        let mut built: BTreeMap<i64, PsWorld> = BTreeMap::new();
+        for row in &rows.worlds {
+            let (state, alive, booting) = self.liveness(row);
+            let started_at_ms = row
+                .started_at_ms
+                .and_then(|ms| u64::try_from(ms).ok())
+                .unwrap_or(0);
+            let pid = row
+                .supervisor_pid
+                .and_then(|pid| u32::try_from(pid).ok())
+                .unwrap_or(0);
+            let pods = if alive { live_pods(row) } else { Vec::new() };
+            let view = WorldView::new(
+                &row.checkout_path,
+                &row.world_name,
+                fork_names.get(&row.id).map(String::as_str),
+                started_at_ms,
+                pid,
+                alive,
+                booting,
+                &pods,
+            );
+            let mut world = view.ps_json(state);
+            // The ledger's one-line divergence is the only problem a broken row renders.
+            world.problem = row.problem.clone().or_else(|| world.problem.take());
+            if state == PsWorldState::Broken {
+                world.services.clear();
+            }
+            world.lineage = lineage(&rows, row.id);
+            built.insert(row.id, world);
+        }
+        // `children` is the tree: a fork nests under its parent row, or under its root row when
+        // the immediate parent row is gone.
+        let mut children: BTreeMap<i64, Vec<i64>> = BTreeMap::new();
+        for fork in &rows.forks {
+            let parent = if known.contains(&fork.parent_id) {
+                fork.parent_id
+            } else if known.contains(&fork.root_id) {
+                fork.root_id
+            } else {
                 continue;
             };
-            match find_world_mut(&mut worlds, parent) {
-                Some(row) => push_fork(row, world.clone()),
-                None => orphans.push((parent.clone(), world.clone())),
+            children.entry(parent).or_default().push(fork.world_id);
+        }
+        let nested: BTreeSet<i64> = children.values().flatten().copied().collect();
+        let mut worlds = Vec::new();
+        for row in &rows.worlds {
+            if nested.contains(&row.id) {
+                continue;
+            }
+            if let Some(world) = assemble(row.id, &children, &mut built) {
+                worlds.push(world);
             }
         }
-        for (parent, fork) in orphans {
-            attach_orphan(&mut worlds, &parent, fork);
-        }
-        let live = live_worlds(&worlds);
-        for world in &mut worlds {
-            attach_stopped(world, &live);
+        // A cycle can never be written by the ledger, but a remainder must still be visible.
+        while let Some(id) = built.keys().next().copied() {
+            if let Some(world) = assemble(id, &children, &mut built) {
+                worlds.push(world);
+            }
         }
         Ok(PsReply { worlds })
     }
+
+    /// The ledger row's state joined to the daemon's owned world.
+    fn liveness(&self, row: &WorldRow) -> (PsWorldState, bool, bool) {
+        let owned = self.worlds.get(&key_of(&row.checkout_path));
+        let booting = matches!(owned, Some(World::Booting { .. }));
+        let pid = row
+            .supervisor_pid
+            .and_then(|pid| u32::try_from(pid).ok())
+            .unwrap_or(0);
+        let alive = matches!(owned, Some(World::Live { .. }))
+            && pid != 0
+            && pid_alive(pid)
+            && row.pods_dir.as_deref().is_some_and(world_answers);
+        let state = if row.state == WorldState::Broken {
+            PsWorldState::Broken
+        } else if alive {
+            PsWorldState::Live
+        } else {
+            PsWorldState::Stopped
+        };
+        (state, alive, booting)
+    }
 }
 
-/// Depth-first search for the world registered under `id`.
-fn find_world_mut<'a>(worlds: &'a mut [PsWorld], id: &str) -> Option<&'a mut PsWorld> {
-    for world in worlds.iter_mut() {
-        if world.world == id {
-            return Some(world);
-        }
-        if let Some(found) = find_world_mut(&mut world.forks, id) {
-            return Some(found);
+/// Takes one assembled subtree out of `worlds`, nesting its children in id order.
+fn assemble(
+    id: i64,
+    children: &BTreeMap<i64, Vec<i64>>,
+    worlds: &mut BTreeMap<i64, PsWorld>,
+) -> Option<PsWorld> {
+    let mut world = worlds.remove(&id)?;
+    if let Some(kids) = children.get(&id) {
+        for &kid in kids {
+            if let Some(child) = assemble(kid, children, worlds) {
+                world.forks.push(child);
+            }
         }
     }
-    None
-}
-
-/// Depth-first search for the world booted from `project`.
-fn find_project_mut<'a>(worlds: &'a mut [PsWorld], project: &Path) -> Option<&'a mut PsWorld> {
-    for world in worlds.iter_mut() {
-        if world.project == project {
-            return Some(world);
-        }
-        if let Some(found) = find_project_mut(&mut world.forks, project) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-fn push_fork(row: &mut PsWorld, fork: PsWorld) {
-    row.forks.push(fork);
-    row.forks
+    world
+        .forks
         .sort_by(|left, right| left.project.cmp(&right.project));
+    Some(world)
 }
 
-/// Nests a fork whose parent world is no longer registered under the canonical parent project.
-///
-/// A root world stopped with `slipfork down` leaves its running forks in the registry: without
-/// this, they would pose as top-level worlds and every sibling stopped checkout would vanish.
-fn attach_orphan(worlds: &mut Vec<PsWorld>, parent: &str, fork: PsWorld) {
-    let Some((root, _)) =
-        slipfork_world::fork_checkout(&fork.project).filter(|(root, _)| root.is_dir())
-    else {
-        worlds.push(fork);
-        return;
+/// The running pods a live world reports over its control socket.
+fn live_pods(row: &WorldRow) -> Vec<PodStatus> {
+    let Some(dir) = row.pods_dir.as_deref() else {
+        return Vec::new();
     };
-    if let Some(row) = find_project_mut(worlds, &root) {
-        push_fork(row, fork);
-        return;
-    }
-    match find_world_mut(worlds, parent) {
-        Some(row) => push_fork(row, fork),
-        None => {
-            let mut placeholder = PsWorld::stopped(&root, parent, None);
-            push_fork(&mut placeholder, fork);
-            worlds.push(placeholder);
-        }
-    }
-}
-
-/// Every registered world id, so a discovered `.forks` entry can be skipped when it is live.
-fn live_worlds(worlds: &[PsWorld]) -> BTreeSet<String> {
-    let mut live = BTreeSet::new();
-    for world in worlds {
-        live.insert(world.world.clone());
-        live.extend(live_worlds(&world.forks));
-    }
-    live
-}
-
-/// Attaches every stopped fork found under this world and its nested forks.
-fn attach_stopped(world: &mut PsWorld, live: &BTreeSet<String>) {
-    match discover_stopped(&world.project, &world.world, live) {
-        Ok(forks) => world.stopped_forks = forks,
-        Err(problem) => {
-            world.problem = Some(match world.problem.take() {
-                Some(existing) => format!("{existing}; {problem}"),
-                None => problem,
-            });
-        }
-    }
-    for fork in &mut world.forks {
-        attach_stopped(fork, live);
-    }
-}
-
-/// `.forks` subvolume checkouts under `<project>` that no registered world already owns.
-///
-/// A `read_dir` failure is returned so the caller can print one honest `problem` row instead of an
-/// empty family.
-fn discover_stopped(
-    project: &Path,
-    parent_world: &str,
-    live: &BTreeSet<String>,
-) -> Result<Vec<PsStoppedFork>, String> {
-    let forks = slipfork_world::fork_checkouts(project).map_err(|error| error.to_string())?;
-    Ok(forks
-        .into_iter()
-        .filter(|fork| {
-            slipfork_world::fork_world_id(parent_world, &fork.name)
-                .is_none_or(|id| !live.contains(id.as_str()))
-        })
-        .map(|fork| PsStoppedFork {
-            name: fork.name,
-            path: fork.path,
-        })
-        .collect())
+    world_call(
+        dir,
+        &Request::List {
+            v: PROTOCOL_VERSION,
+            id: "daemon-list".to_owned(),
+        },
+    )
+    .ok()
+    .and_then(|reply| slipfork_world::pod_statuses(&reply).ok())
+    .unwrap_or_default()
 }
 
 /// One world's evaluated rows plus the live facts the daemon can prove.
@@ -308,9 +258,9 @@ impl WorldView {
         &self.services
     }
 
-    /// The wire object for this live world.
+    /// The wire object for this world under its authoritative lifecycle `state`.
     #[must_use]
-    pub(crate) fn ps_json(&self) -> PsWorld {
+    pub(crate) fn ps_json(&self, state: PsWorldState) -> PsWorld {
         PsWorld {
             project: self.project.clone(),
             path: self.project.clone(),
@@ -318,15 +268,16 @@ impl WorldView {
             fork: self.fork.clone(),
             url: format!("http://{}.localhost", self.world),
             primary_domain: self.primary_domain.clone(),
-            state: PsWorldState::Live,
+            state,
             started_at_ms: (self.started_at_ms > 0).then_some(self.started_at_ms),
-            supervisor_pid: Some(self.supervisor_pid),
+            supervisor_pid: (self.supervisor_pid > 0).then_some(self.supervisor_pid),
             alive: self.alive,
             booting: self.booting,
             services: self.service_rows().to_vec(),
             problem: self.problem.clone(),
             stopped_forks: Vec::new(),
             forks: Vec::new(),
+            lineage: Vec::new(),
         }
     }
 }
@@ -386,70 +337,5 @@ fn live_service(pod: &PodStatus) -> PsService {
         orphaned: false,
         image: None,
         command: None,
-    }
-}
-
-/// The world's start time, falling back to the pod root's creation time.
-fn started_at(entry: &crate::daemon::registry::RegistryEntry) -> u64 {
-    if entry.started_at_ms > 0 {
-        return entry.started_at_ms;
-    }
-    fs::metadata(&entry.pods_dir)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|time| {
-            time.duration_since(std::time::UNIX_EPOCH)
-                .ok()
-                .map(|since| since.as_millis() as u64)
-        })
-        .unwrap_or(0)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::BTreeSet;
-    use std::fs;
-    use std::path::PathBuf;
-
-    use super::{PsWorld, attach_stopped};
-
-    /// A real disk scratch project under `/var/tmp`, removed even when an assertion panics.
-    struct Scratch(PathBuf);
-
-    impl Scratch {
-        fn new(prefix: &str) -> Self {
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |elapsed| elapsed.as_nanos());
-            let dir =
-                PathBuf::from("/var/tmp").join(format!("{prefix}-{}-{nanos}", std::process::id()));
-            fs::create_dir_all(&dir).expect("create the disk scratch project");
-            Self(dir)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    /// A project that simply has no forks yet must not surface a `problem` row.
-    #[test]
-    fn a_project_without_a_forks_dir_reports_no_problem() {
-        let scratch = Scratch::new("slipfork-ps-no-forks");
-        let mut world = PsWorld::stopped(&scratch.0, "demo", None);
-        attach_stopped(&mut world, &BTreeSet::new());
-        assert!(
-            world.problem.is_none(),
-            "a missing `.forks` must not become a problem row: {:?}",
-            world.problem
-        );
-        assert!(world.stopped_forks.is_empty());
-        assert!(
-            slipfork_world::fork_checkouts(&scratch.0)
-                .expect("list fork checkouts for a project with no `.forks`")
-                .is_empty()
-        );
     }
 }

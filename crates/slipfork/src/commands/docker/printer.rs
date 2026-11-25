@@ -53,6 +53,7 @@ impl<'sink> EventPrinter<'sink> {
                 state,
                 elapsed_ms,
                 exit_code,
+                phase: _,
                 width,
             } => {
                 let state = match state.as_str() {

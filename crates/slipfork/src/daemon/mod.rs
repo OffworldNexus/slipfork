@@ -6,6 +6,7 @@
 
 mod boot;
 mod client;
+mod converge;
 mod frames;
 mod handoff;
 mod host;
@@ -16,7 +17,6 @@ mod lease;
 mod lifecycle;
 mod lock;
 mod reconcile;
-mod registry;
 mod rpc;
 mod spawn;
 mod view;
@@ -34,6 +34,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::world::HostEnv;
 use frames::{FrameReader, write_frame};
@@ -41,6 +42,16 @@ use identity::DaemonIdentity;
 use lifecycle::core::Core;
 use serde_json::{Value, json};
 use slipfork_vcs::VcsWorkspace;
+use slipfork_world::{ForkLedger, LedgerError, StatePaths};
+
+/// Wall clock for ledger timestamps; the daemon is a composition root.
+pub(crate) fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
+        })
+}
 
 /// A typed control-plane failure rendered as an `error` frame with a bare message.
 #[derive(Debug, Clone)]
@@ -105,6 +116,27 @@ fn report(startup: &Startup) {
     eprintln!("next: {}", startup.next);
 }
 
+/// Maps a ledger open refusal to the daemon's one startup line and one `next:` remedy.
+fn startup_ledger(error: LedgerError) -> Startup {
+    match error {
+        LedgerError::SchemaNewer { version } => Startup::new(
+            format!("state.db was written by a newer slipfork (migration {version})"),
+            "upgrade slipfork",
+        ),
+        LedgerError::WriterBusy => Startup::new(
+            "another slipfork daemon holds the ledger writer lock",
+            "stop the other slipfork daemon",
+        ),
+        other => Startup::new(
+            format!(
+                "open the world ledger: {}",
+                other.to_string().lines().next().unwrap_or_default()
+            ),
+            "check that the state directory is writable",
+        ),
+    }
+}
+
 struct Daemon {
     core: Mutex<Core>,
     /// Serializes image builds/pulls so `images/refs.json` and `built.json` never race.
@@ -145,18 +177,20 @@ impl Daemon {
         let identity = DaemonIdentity::new(&host.exe);
         let state_dir = host.state_dir.clone();
         let env = host.env.clone();
-        let entries = registry::load(&state_dir).map_err(|error| {
+        let ledger = ForkLedger::open_writer(StatePaths::new(state_dir.clone()), lock)
+            .map_err(startup_ledger)?;
+        let mut core = Core::new(host, vcs, ledger);
+        core.converge().map_err(|failure| {
             Startup::new(
-                format!(
-                    "cannot read `{}`: {error}",
-                    registry::path(&state_dir).display()
-                ),
-                format!("fix or delete `{}`", registry::path(&state_dir).display()),
+                failure
+                    .message
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned(),
+                "fix the reported world state, then retry",
             )
         })?;
-        let core = Core::new(host, vcs, state_dir.clone(), lock, entries);
-        let retained = core.retained();
-        let _ = registry::store(&state_dir, &retained);
         Ok(Some(Self {
             core: Mutex::new(core),
             image_lock: Mutex::new(()),
@@ -334,8 +368,17 @@ impl Daemon {
         match request.method.as_str() {
             "ingress.accept" => self.dispatch_ingress(descriptor),
             "up" => self.dispatch_up(&request.params, emit),
-            "fork" => self.dispatch_fork(&request.params, emit),
-            "drop" => self.core()?.drop_fork(&request.params, emit).map(Some),
+            "fork" => {
+                // Settle any divergence from a previous daemon before snapshotting a parent.
+                self.core()?.converge()?;
+                self.dispatch_fork(&request.params, emit)
+            }
+            "drop" => {
+                // Settle any divergence before the ledger row that names the fork is deleted.
+                let mut core = self.core()?;
+                core.converge()?;
+                core.drop_fork(&request.params, emit).map(Some)
+            }
             "ping" => {
                 let mut reply = self.identity.ping_fields();
                 reply["pong"] = json!(true);
@@ -344,7 +387,9 @@ impl Daemon {
                 Ok(Some(reply))
             }
             "ps" => {
-                let reply = self.core()?.ps()?;
+                let mut core = self.core()?;
+                core.converge()?;
+                let reply = core.ps()?;
                 let value = serde_json::to_value(reply)
                     .map_err(|error| Failure::new("ps-encode", error.to_string()))?;
                 Ok(Some(value))
@@ -382,12 +427,15 @@ impl Daemon {
         params: &Value,
         emit: &mut dyn FnMut(Value),
     ) -> Result<Option<Value>, Failure> {
+        // Settle any divergence from a previous daemon before deciding this boot.
+        self.core()?.converge()?;
         // Decide under the daemon lock, then release it: heal/reconcile run typed world calls
         // that must never block `ps`/`ping`, exactly like the `logs` stream path.
         // The head walks the build context, so it is computed before taking the lock.
         let (project, world, _) = self.up_target(params)?;
+        let origin = self.core()?.origin_world(&project);
         let host = { self.core()?.host().clone() };
-        let desired = crate::daemon::lease::prepare(&host, &project, &world)
+        let desired = crate::daemon::lease::prepare(&host, &project, &world, origin.as_ref())
             .ok()
             .map(|(head, _)| head);
         let action = self.core()?.up_plan(params, desired.as_ref())?;
@@ -412,14 +460,14 @@ impl Daemon {
                         Failure::new("no-world", "no world is running in this directory")
                     })?;
                 lifecycle::up::reconcile(plan);
-                let mut session = self.core()?.begin_up(params, planned)?;
+                let mut session = self.core()?.begin_up(params, planned, None)?;
                 session.plan_already_announced();
                 session.run(self, emit).map(Some)
             }
             lifecycle::up::UpAction::Boot => {
                 let (project, world, no_cache) = self.up_target(params)?;
                 let planned = self.preplan(&project, &world, no_cache, emit)?;
-                let mut session = self.core()?.begin_up(params, planned)?;
+                let mut session = self.core()?.begin_up(params, planned, None)?;
                 session.plan_already_announced();
                 session.run(self, emit).map(Some)
             }
