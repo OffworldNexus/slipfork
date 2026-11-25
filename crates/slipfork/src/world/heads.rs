@@ -118,7 +118,7 @@ impl WorldHeads {
                 self.world
             ));
         }
-        let expected = crate::world::image_inputs(project, doc, &plan.images, features);
+        let expected = crate::world::image_inputs(project, world, doc, &plan.images, features);
         if expected != self.image_inputs {
             return Err(
                 "image build inputs changed since the heads were sealed\nnext: run `slipfork up` to rebuild the changed images"
@@ -181,7 +181,7 @@ mod tests {
         let root = temp("slipfork-heads");
         fs::write(
             root.path().join("Forkfile"),
-            "# forkfile: 0.1\n\nimage web . {\n  dockerfile Dockerfile\n}\n",
+            "# forkfile: 0.1\n\nimage web . {\n  dockerfile Dockerfile\n  arg PORT = web.port\n  service web {\n    port 3000\n    route /\n    run: sleep 3600\n  }\n}\n",
         )
         .expect("write Forkfile");
         fs::write(
@@ -254,7 +254,7 @@ mod tests {
         let (root, doc, world) = fixture();
         let features: FeatureSet = doc.default_features();
         let plan = world_plan_with(&doc, root.path(), &features).expect("world plan");
-        let actual = crate::world::image_inputs(root.path(), &doc, &plan.images, &features);
+        let actual = crate::world::image_inputs(root.path(), &world, &doc, &plan.images, &features);
 
         let mut stale = heads(
             &world,
@@ -301,5 +301,82 @@ mod tests {
             .validate(root.path(), &doc, &world, &plan, &features, root.path())
             .expect_err("a vanished rootfs must fail closed");
         assert!(error.contains("gone or unsealed"), "{error}");
+    }
+
+    /// A resolved `arg` is a build input: heads sealed for port 3000 refuse a port-5173 doc, while
+    /// heads carrying the port-5173 inputs pass the inputs check.
+    #[test]
+    fn validate_refuses_heads_whose_image_arg_changed() {
+        let (root, doc3000, world) = fixture();
+        let features3000 = doc3000.default_features();
+        let plan3000 =
+            world_plan_with(&doc3000, root.path(), &features3000).expect("port-3000 plan");
+        let inputs3000 = crate::world::image_inputs(
+            root.path(),
+            &world,
+            &doc3000,
+            &plan3000.images,
+            &features3000,
+        );
+
+        let source = fs::read_to_string(root.path().join("Forkfile")).expect("read Forkfile");
+        let checked = slipfork_forkfile::compile(&source.replace("port 3000", "port 5173"))
+            .expect("the port-5173 Forkfile compiles");
+        let doc5173 = *checked.document;
+        let features5173 = doc5173.default_features();
+        let plan5173 =
+            world_plan_with(&doc5173, root.path(), &features5173).expect("port-5173 plan");
+        let inputs5173 = crate::world::image_inputs(
+            root.path(),
+            &world,
+            &doc5173,
+            &plan5173.images,
+            &features5173,
+        );
+        assert_ne!(
+            inputs3000, inputs5173,
+            "a changed `arg PORT` must move the digest without any file edit"
+        );
+
+        let sealed3000 = heads(
+            &world,
+            inputs3000,
+            root.path().join("img").to_str().unwrap(),
+        );
+        let error = sealed3000
+            .validate(
+                root.path(),
+                &doc5173,
+                &world,
+                &plan5173,
+                &features5173,
+                root.path(),
+            )
+            .expect_err("heads sealed for port 3000 must refuse the port-5173 doc");
+        assert!(
+            error.starts_with("image build inputs changed since the heads were sealed"),
+            "{error}"
+        );
+        assert!(error.contains("\nnext: "), "one line + next: {error}");
+
+        let sealed5173 = heads(
+            &world,
+            inputs5173,
+            root.path().join("img").to_str().unwrap(),
+        );
+        let error = sealed5173
+            .validate(
+                root.path(),
+                &doc5173,
+                &world,
+                &plan5173,
+                &features5173,
+                root.path(),
+            )
+            .expect_err("the fixture has no sealed rootfs subvolume");
+        assert!(
+            !error.contains("build inputs changed"),
+            "matching inputs must pass the inputs check: {error}"
+        );
     }
 }

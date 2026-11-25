@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use slipfork_forkfile::FeatureSet;
 use slipfork_forkfile::ast::Forkfile;
-use slipfork_image::{BuildArgs, DockerfileParser, Stage, stage_walk};
+use slipfork_image::{DockerfileParser, Stage, stage_walk};
 use slipfork_world::ImageNode;
 
 use crate::world::ImageHead;
@@ -80,10 +80,7 @@ impl DevMounts {
             let Ok(walk) = stage_walk(&stages, target.as_deref()) else {
                 continue;
             };
-            let mut args = BuildArgs::new();
-            for (key, value) in doc.eval_image_args_with(world, scheme, &node.id, features) {
-                args.declare(key, value);
-            }
+            let args = crate::world::build_args(doc, world, scheme, &node.id, features);
             let plan = match DockerfileParser::dev_stage(&stages, target.as_deref(), &args) {
                 Ok(Some((_, context_dest))) => Plan::Mount {
                     context: paths.context,

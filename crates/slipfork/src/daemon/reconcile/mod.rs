@@ -15,8 +15,7 @@ use std::time::Instant;
 
 use serde_json::Value;
 use slipfork_image::{
-    BuildArgs, BuildRequest, Cache, ImageReference, NativeImageBuilder, PulledImage,
-    planned_instruction_width,
+    BuildRequest, Cache, ImageReference, NativeImageBuilder, PulledImage, planned_instruction_width,
 };
 use slipfork_world::{LogStore, NodeKey, WorldName, world_plan_with};
 
@@ -72,7 +71,7 @@ pub(crate) fn build_world_heads(
             format!("{error}\nnext: fix the Forkfile, then run `slipfork doctor`"),
         )
     })?;
-    let image_inputs = crate::world::image_inputs(project, &doc, &plan.images, &features);
+    let image_inputs = crate::world::image_inputs(project, world, &doc, &plan.images, &features);
     let lab = ImageLab::for_project(host, project)?;
     let arch = lab.architecture.oci();
     let store = LogStore::at(host.store_root_for(project), world.clone());
@@ -179,10 +178,13 @@ fn build_image(
             paths.dockerfile.display()
         ))
     })?;
-    let mut args = BuildArgs::new();
-    for (key, value) in doc.eval_image_args_with(world.as_str(), "http", &node.id, features) {
-        args.declare(key, value);
-    }
+    let args = crate::world::build_args(
+        doc,
+        world.as_str(),
+        crate::world::INGRESS_SCHEME,
+        &node.id,
+        features,
+    );
     let target = doc.eval_image_stage_with(&node.id, features);
     let request = BuildRequest {
         context: paths.context,

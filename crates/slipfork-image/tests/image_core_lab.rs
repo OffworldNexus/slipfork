@@ -161,7 +161,7 @@ fn a_real_build_context_hashes_stably_and_honours_dockerignore() {
 /// The canonical build-input digest tracks the `Dockerfile` and copied context, and ignores a
 /// checkout edit for an image that copies nothing (so bind-mounted sources never force rebuilds).
 #[test]
-fn build_inputs_digest_tracks_the_dockerfile_and_copied_context_only() {
+fn build_inputs_digest_tracks_the_dockerfile_copied_context_and_args() {
     let root = lab("inputs-digest");
     fs::create_dir_all(root.join("src")).expect("create the context");
     fs::write(root.join("src/app.txt"), "one").expect("write source");
@@ -174,20 +174,22 @@ fn build_inputs_digest_tracks_the_dockerfile_and_copied_context_only() {
     )
     .expect("write the Dockerfile");
 
-    let first = build_inputs_digest(&root, &dockerfile, None).expect("digest");
+    let first = build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new()).expect("digest");
     assert_eq!(
         first,
-        build_inputs_digest(&root, &dockerfile, None).expect("digest again")
+        build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new()).expect("digest again")
     );
     // An ignored file is not a build input.
     fs::write(root.join("debug.log"), "more noise").expect("edit the ignored log");
     assert_eq!(
         first,
-        build_inputs_digest(&root, &dockerfile, None).expect("ignored edit keeps the digest")
+        build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new())
+            .expect("ignored edit keeps the digest")
     );
     // A copied context file is.
     fs::write(root.join("src/app.txt"), "two").expect("edit the copied source");
-    let context_edited = build_inputs_digest(&root, &dockerfile, None).expect("context digest");
+    let context_edited =
+        build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new()).expect("context digest");
     assert_ne!(
         first, context_edited,
         "a copied file edit must change the key"
@@ -198,19 +200,58 @@ fn build_inputs_digest_tracks_the_dockerfile_and_copied_context_only() {
         "FROM alpine:3.20\nCOPY src /src\nRUN echo two\n",
     )
     .expect("edit the Dockerfile");
-    let dockerfile_edited =
-        build_inputs_digest(&root, &dockerfile, None).expect("Dockerfile digest");
+    let dockerfile_edited = build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new())
+        .expect("Dockerfile digest");
     assert_ne!(
         context_edited, dockerfile_edited,
         "a Dockerfile edit must change the key"
     );
     // A `Dockerfile` with no host `COPY`/`ADD` never walks the checkout.
     fs::write(&dockerfile, "FROM alpine:3.20\nRUN echo three\n").expect("drop the COPY");
-    let no_context = build_inputs_digest(&root, &dockerfile, None).expect("no-context digest");
+    let no_context = build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new())
+        .expect("no-context digest");
     fs::write(root.join("src/app.txt"), "three").expect("edit an uncopied source");
     assert_eq!(
         no_context,
-        build_inputs_digest(&root, &dockerfile, None).expect("uncopied edit keeps the digest")
+        build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new())
+            .expect("uncopied edit keeps the digest")
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// M3.166: the resolved build `arg` map is a build input. Identical args keep the digest, a `PORT`
+/// value change moves it, and an empty map differs from a populated one.
+#[test]
+fn build_inputs_digest_tracks_resolved_build_args() {
+    let root = lab("inputs-args");
+    fs::create_dir_all(root.join("src")).expect("create the context");
+    fs::write(root.join("src/app.txt"), "one").expect("write source");
+    let dockerfile = root.join("Dockerfile");
+    fs::write(
+        &dockerfile,
+        "FROM alpine:3.20\nCOPY src /src\nARG PORT=3000\n",
+    )
+    .expect("write the Dockerfile");
+
+    let empty = build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new()).expect("digest");
+    let mut port_3000 = BuildArgs::new();
+    port_3000.declare("PORT", "3000");
+    let sealed = build_inputs_digest(&root, &dockerfile, None, &port_3000).expect("args digest");
+    assert_ne!(empty, sealed, "an empty and a populated args map differ");
+
+    let mut same = BuildArgs::new();
+    same.declare("PORT", "3000");
+    assert_eq!(
+        sealed,
+        build_inputs_digest(&root, &dockerfile, None, &same).expect("same args keep the digest")
+    );
+
+    let mut port_5173 = BuildArgs::new();
+    port_5173.declare("PORT", "5173");
+    assert_ne!(
+        sealed,
+        build_inputs_digest(&root, &dockerfile, None, &port_5173).expect("changed arg digest"),
+        "a changed `PORT` value must move the digest"
     );
     let _ = fs::remove_dir_all(&root);
 }
@@ -240,7 +281,7 @@ fn a_git_only_change_never_moves_the_build_input_digest_or_reaches_copy() {
     let dockerfile = root.join("Dockerfile");
     fs::write(&dockerfile, "FROM alpine:3.20\nCOPY . /code\n").expect("write the Dockerfile");
 
-    let first = build_inputs_digest(&root, &dockerfile, None).expect("digest");
+    let first = build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new()).expect("digest");
     let paths: Vec<String> = BuildContext::load(&root)
         .expect("load the real build context")
         .entries()
@@ -271,19 +312,22 @@ fn a_git_only_change_never_moves_the_build_input_digest_or_reaches_copy() {
     .expect("switch the worktree");
     assert_eq!(
         first,
-        build_inputs_digest(&root, &dockerfile, None).expect("branch-switch digest"),
+        build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new())
+            .expect("branch-switch digest"),
         "a branch switch must not change a root-context image's inputs"
     );
 
     // A real copied source edit and the Dockerfile still move the digest.
     fs::write(root.join("src/app.txt"), "two").expect("edit the copied source");
-    let edited = build_inputs_digest(&root, &dockerfile, None).expect("edited digest");
+    let edited =
+        build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new()).expect("edited digest");
     assert_ne!(first, edited, "a copied file edit must rebuild");
     fs::write(&dockerfile, "FROM alpine:3.20\nCOPY . /code\nRUN true\n")
         .expect("edit the Dockerfile");
     assert_ne!(
         edited,
-        build_inputs_digest(&root, &dockerfile, None).expect("Dockerfile digest"),
+        build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new())
+            .expect("Dockerfile digest"),
         "a Dockerfile edit must rebuild"
     );
     let _ = fs::remove_dir_all(&root);

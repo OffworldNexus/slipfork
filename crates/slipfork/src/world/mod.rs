@@ -9,12 +9,14 @@ pub(crate) mod features;
 mod fork;
 mod heads;
 mod init;
+mod inputs;
 mod runtime;
 mod supervise;
 mod target;
 mod up;
 
 pub(crate) use heads::{HEADS_VERSION, ImageHead, WorldHeads};
+pub(crate) use inputs::{INGRESS_SCHEME, build_args, image_inputs};
 pub(crate) use runtime::capture::RunTarget;
 pub(crate) use runtime::frames::{StepPin, log_frame, note_frame, step_frame};
 pub(crate) use runtime::notes::RunNotes;
@@ -27,38 +29,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use serde_json::Value;
-use slipfork_forkfile::ast::Forkfile;
-use slipfork_forkfile::{FeatureEdit, FeatureSet};
+use slipfork_forkfile::FeatureEdit;
 use slipfork_image::RegistryCredentials;
-use slipfork_world::{ForkLedger, ImageNode, WorldName};
-
-/// The canonical build-input digest per build image (`Dockerfile` bytes + context hash).
-///
-/// `slipfork-image` owns the `.dockerignore` walk and the digest; every caller (the daemon's
-/// staleness check and the world stamp's epoch) folds this same map so a `Dockerfile` or copied
-/// context edit always rewrites the key and rebuilds.
-pub(crate) fn image_inputs(
-    project: &Path,
-    doc: &Forkfile,
-    images: &[ImageNode],
-    features: &FeatureSet,
-) -> BTreeMap<String, String> {
-    images
-        .iter()
-        .filter(|image| image.from.is_none())
-        .filter_map(|image| {
-            let paths = image.paths(project);
-            let target = doc.eval_image_stage_with(&image.id, features);
-            slipfork_image::build_inputs_digest(
-                &paths.context,
-                &paths.dockerfile,
-                target.as_deref(),
-            )
-            .ok()
-            .map(|digest| (image.id.clone(), digest))
-        })
-        .collect()
-}
+use slipfork_world::{ForkLedger, WorldName};
 
 /// Ambient host state, resolved exactly once in `main.rs` and injected everywhere below.
 ///

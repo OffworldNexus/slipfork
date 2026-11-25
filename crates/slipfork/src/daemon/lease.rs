@@ -146,7 +146,7 @@ fn spec_head(
     features: &FeatureSet,
     plan: &WorldPlan,
 ) -> Head {
-    let inputs = crate::world::image_inputs(project, doc, &plan.images, features);
+    let inputs = crate::world::image_inputs(project, world, doc, &plan.images, features);
     let world_epoch = plan_epoch(plan, features, &inputs);
     let canonical = slipfork_forkfile::format(doc);
     let mut seed = format!(
