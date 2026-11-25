@@ -248,7 +248,8 @@ fn policy_parses_formats_canonically_and_round_trips() {
     let source = "# forkfile: 0.1\n\ns3 assets {\n  cdn static-cdn\n  policy public-read\n}\n";
     let document = parse(source).expect("parses");
     let formatted = slipfork_forkfile::format(&document);
-    let expected = "# forkfile: 0.1\ns3 assets {\n    policy public-read\n    cdn static-cdn\n}\n";
+    let expected =
+        "# forkfile: 0.1\n\ns3 assets {\n    policy public-read\n    cdn static-cdn\n}\n";
     assert_eq!(formatted, expected);
     let reparsed = parse(&formatted).expect("reparses");
     assert_eq!(slipfork_forkfile::format(&reparsed), formatted);

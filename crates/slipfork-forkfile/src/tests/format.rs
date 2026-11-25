@@ -123,3 +123,154 @@ fn missing_final_newline_still_produces_a_real_hunk() {
         check.diff
     );
 }
+
+const DEMO: &str = include_str!("../../../../support/demo/Forkfile");
+
+#[test]
+fn header_blank_is_preserved_when_authored_and_flush_when_not() {
+    let spaced = "# forkfile: 0.1\n\ns3 assets\n";
+    assert_eq!(format(&parse(spaced).expect("parses")), spaced);
+    assert_eq!(
+        format(&parse(&format(&parse(spaced).expect("parses"))).expect("reparses")),
+        spaced
+    );
+
+    let flush = "# forkfile: 0.1\ns3 assets {\n  policy public-read\n}\n";
+    let expected = "# forkfile: 0.1\ns3 assets {\n    policy public-read\n}\n";
+    assert_eq!(format(&parse(flush).expect("parses")), expected);
+    assert_eq!(format(&parse(expected).expect("reparses")), expected);
+
+    let commented = "# forkfile: 0.1\n\n# note\ndomain main\n";
+    assert_eq!(format(&parse(commented).expect("parses")), commented);
+}
+
+#[test]
+fn authored_blank_between_services_is_preserved_byte_for_byte() {
+    let source = "# forkfile: 0.1\n\nimage app . {\n  service alpha {\n    run: one\n  }\n\n  service beta {\n    run: two\n  }\n}\n";
+    let expected = "# forkfile: 0.1\n\nimage app . {\n    service alpha {\n        run: one\n    }\n\n    service beta {\n        run: two\n    }\n}\n";
+    assert_eq!(format(&parse(source).expect("parses")), expected);
+}
+
+#[test]
+fn port_only_services_and_leaf_items_keep_authored_blanks() {
+    let source = "# forkfile: 0.1\n\nimage app . {\n  service alpha {\n    port 8000\n  }\n\n  service beta {\n    port 9000\n  }\n\n  stage prod\n}\n\nenv common {\n  A = \"1\"\n}\n";
+    let expected = "# forkfile: 0.1\n\nimage app . {\n    service alpha {\n        port 8000\n    }\n\n    service beta {\n        port 9000\n    }\n\n    stage prod\n}\n\nenv common {\n    A = \"1\"\n}\n";
+    assert_eq!(format(&parse(source).expect("parses")), expected);
+
+    let leaves = "# forkfile: 0.1\n\nimage app . {\n  dockerfile Dockerfile.dev\n\n  workdir ./app\n\n  use env common\n}\n";
+    let expected = "# forkfile: 0.1\n\nimage app . {\n    dockerfile Dockerfile.dev\n\n    workdir ./app\n\n    use env common\n}\n";
+    assert_eq!(format(&parse(leaves).expect("parses")), expected);
+
+    let service = "# forkfile: 0.1\n\nimage app . {\n  use env common\n\n  service web {\n    run: one\n  }\n}\n";
+    let expected = "# forkfile: 0.1\n\nimage app . {\n    use env common\n\n    service web {\n        run: one\n    }\n}\n";
+    assert_eq!(format(&parse(service).expect("parses")), expected);
+}
+
+#[test]
+fn port_and_run_separated_by_a_blank_stay_separated() {
+    let source = "# forkfile: 0.1\n\nimage app . {\n  service web {\n    port 8000\n\n    run: one\n  }\n}\n";
+    let expected = "# forkfile: 0.1\n\nimage app . {\n    service web {\n        port 8000\n\n        run: one\n    }\n}\n";
+    assert_eq!(format(&parse(source).expect("parses")), expected);
+}
+
+#[test]
+fn run_block_bodies_keep_one_authored_blank() {
+    let source = "# forkfile: 0.1\n\nimage app . {\n  service web {\n    run {\n      /bin/true\n\n      on dev: echo dev\n    }\n  }\n}\n";
+    let expected = "# forkfile: 0.1\n\nimage app . {\n    service web {\n        run {\n            /bin/true\n\n            on dev: echo dev\n        }\n    }\n}\n";
+    assert_eq!(format(&parse(source).expect("parses")), expected);
+}
+
+#[test]
+fn authored_blank_between_env_entries_is_preserved_and_runs_collapse() {
+    let spaced = "# forkfile: 0.1\n\nenv common {\n  A = \"1\"\n\n  B = \"2\"\n}\n";
+    let expected = "# forkfile: 0.1\n\nenv common {\n    A = \"1\"\n\n    B = \"2\"\n}\n";
+    assert_eq!(format(&parse(spaced).expect("parses")), expected);
+
+    let run = "# forkfile: 0.1\n\nenv common {\n  A = \"1\"\n\n\n\n  B = \"2\"\n}\n";
+    assert_eq!(format(&parse(run).expect("parses")), expected);
+}
+
+#[test]
+fn adjacent_items_without_a_source_gap_get_no_blank() {
+    let source = "# forkfile: 0.1\n\nenv common {\n  A = \"1\"\n  B = \"2\"\n}\n";
+    let expected = "# forkfile: 0.1\n\nenv common {\n    A = \"1\"\n    B = \"2\"\n}\n";
+    assert_eq!(format(&parse(source).expect("parses")), expected);
+
+    let adjacent_top = "# forkfile: 0.1\n\ndomain a\ndomain b\n";
+    assert_eq!(
+        format(&parse(adjacent_top).expect("parses")),
+        "# forkfile: 0.1\n\ndomain a\ndomain b\n"
+    );
+    let spaced_top = "# forkfile: 0.1\n\ndomain a\n\ndomain b\n";
+    assert_eq!(
+        format(&parse(spaced_top).expect("parses")),
+        "# forkfile: 0.1\n\ndomain a\n\ndomain b\n"
+    );
+}
+
+#[test]
+fn comment_adjacency_and_authored_gaps_are_byte_exact() {
+    let attached = "# forkfile: 0.1\n\nimage app . {\n  # the service\n  service api {\n    run: one\n  }\n}\n";
+    let expected = "# forkfile: 0.1\n\nimage app . {\n    # the service\n    service api {\n        run: one\n    }\n}\n";
+    assert_eq!(format(&parse(attached).expect("parses")), expected);
+
+    let gapped = "# forkfile: 0.1\n\nimage app . {\n  # the service\n\n  service api {\n    run: one\n  }\n}\n";
+    let expected = "# forkfile: 0.1\n\nimage app . {\n    # the service\n\n    service api {\n        run: one\n    }\n}\n";
+    assert_eq!(format(&parse(gapped).expect("parses")), expected);
+
+    let before_comment =
+        "# forkfile: 0.1\n\nenv common {\n  A = \"1\"\n\n  # note\n  B = \"2\"\n}\n";
+    let expected =
+        "# forkfile: 0.1\n\nenv common {\n    A = \"1\"\n\n    # note\n    B = \"2\"\n}\n";
+    assert_eq!(format(&parse(before_comment).expect("parses")), expected);
+}
+
+#[test]
+fn trailing_blanks_inside_a_body_and_at_eof_are_removed() {
+    let source = "# forkfile: 0.1\n\nenv common {\n  A = \"1\"\n\n\n}\n\n\n";
+    assert_eq!(
+        format(&parse(source).expect("parses")),
+        "# forkfile: 0.1\n\nenv common {\n    A = \"1\"\n}\n"
+    );
+}
+
+#[test]
+fn demo_forkfile_round_trips_and_stays_clean_after_one_pass() {
+    let once = format(&parse(DEMO).expect("demo parses"));
+    assert_eq!(once, DEMO, "canonical demo must not churn");
+    let twice = format(&parse(&once).expect("formatted demo parses"));
+    assert_eq!(once, twice);
+    let check = format_check(&once).expect("formatted demo parses");
+    assert!(check.is_formatted(), "{}", check.diff);
+}
+
+#[test]
+fn s3_bodies_honour_authored_blanks_through_the_policy_sort() {
+    let canonical = "# forkfile: 0.1\n\ns3 assets {\n  policy public-read\n\n  cdn c1\n}\n";
+    let expected = "# forkfile: 0.1\n\ns3 assets {\n    policy public-read\n\n    cdn c1\n}\n";
+    assert_eq!(format(&parse(canonical).expect("parses")), expected);
+    assert_eq!(format(&parse(expected).expect("reparses")), expected);
+
+    let reorder = "# forkfile: 0.1\n\ns3 assets {\n  cdn c1\n\n  policy public-read\n}\n";
+    let once = "# forkfile: 0.1\n\ns3 assets {\n    policy public-read\n    cdn c1\n}\n";
+    assert_eq!(format(&parse(reorder).expect("parses")), once);
+    let check = format_check(once).expect("canonical parses");
+    assert!(check.is_formatted(), "{}", check.diff);
+}
+
+#[test]
+fn run_block_keeps_blank_before_a_second_on_after_a_comment() {
+    let source = "# forkfile: 0.1\n\nimage app . {\n    service w {\n        run {\n            /bin/true\n\n            # note\n            on dev: echo d\n\n            on prod: echo p\n        }\n    }\n}\n";
+    assert_eq!(format(&parse(source).expect("parses")), source);
+}
+
+#[test]
+fn consecutive_inline_on_commands_keep_exactly_one_authored_blank() {
+    let spaced = "# forkfile: 0.1\n\nimage app . {\n    service w {\n        run {\n            on dev: echo d\n\n\n            on prod: echo p\n        }\n    }\n}\n";
+    let expected = "# forkfile: 0.1\n\nimage app . {\n    service w {\n        run {\n            on dev: echo d\n\n            on prod: echo p\n        }\n    }\n}\n";
+    assert_eq!(format(&parse(spaced).expect("parses")), expected);
+    assert_eq!(format(&parse(expected).expect("reparses")), expected);
+
+    let flush = "# forkfile: 0.1\n\nimage app . {\n    service w {\n        run {\n            on dev: echo d\n            on prod: echo p\n        }\n    }\n}\n";
+    assert_eq!(format(&parse(flush).expect("parses")), flush);
+}

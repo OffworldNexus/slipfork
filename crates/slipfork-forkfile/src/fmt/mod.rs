@@ -30,67 +30,53 @@ pub fn render_diff(original: &str, formatted: &str, label: &str) -> String {
     crate::diff::line_diff(original, formatted, label)
 }
 
-/// Renders a parsed document canonically: 4-space indents, one blank line
-/// between top-level blocks, comments and declaration order preserved.
+/// Renders a parsed document canonically: 4-space indents, at most one authored
+/// blank line between consecutive declarations, comments and order preserved.
 #[must_use]
 pub fn format(doc: &Forkfile) -> String {
     let mut renderer = Renderer::new();
     renderer.line(&format!("# forkfile: {}", doc.version));
-    let block = &doc.items;
-    for index in 0..=block.items.len() {
-        let leading: Vec<&str> = block
-            .comments
-            .iter()
-            .filter(|comment| comment.index == index && !comment.trailing)
-            .map(|comment| comment.text.as_str())
-            .collect();
-        let trailing: Vec<&str> = block
-            .comments
-            .iter()
-            .filter(|comment| comment.index == index && comment.trailing)
-            .map(|comment| comment.text.as_str())
-            .collect();
-        if index < block.items.len() {
-            if index > 0 {
-                renderer.blank();
-            }
-            for comment in &leading {
-                renderer.line(comment);
-            }
-            render_top(&mut renderer, &block.items[index]);
-            for comment in &trailing {
-                renderer.append(comment);
-            }
-        } else {
-            if !leading.is_empty() {
-                renderer.blank();
-                for comment in &leading {
-                    renderer.line(comment);
-                }
-            }
-            for comment in &trailing {
-                renderer.line(comment);
-            }
-        }
-    }
+    render_root(&mut renderer, &doc.items, render_top);
     renderer.finish()
 }
 
-fn render_block<T>(
+/// The top-level body: the header line counts as already rendered, so a first
+/// element that the author separated from the header keeps exactly one blank.
+fn render_root<T>(renderer: &mut Renderer, block: &Block<T>, item: impl FnMut(&mut Renderer, &T)) {
+    render_elements(renderer, block, item, true);
+}
+
+/// Renders a body, keeping exactly one authored blank line wherever the source
+/// had a gap between consecutive rendered elements.
+fn render_block<T>(renderer: &mut Renderer, block: &Block<T>, item: impl FnMut(&mut Renderer, &T)) {
+    render_elements(renderer, block, item, false);
+}
+
+fn render_elements<T>(
     renderer: &mut Renderer,
     block: &Block<T>,
     mut item: impl FnMut(&mut Renderer, &T),
+    mut started: bool,
 ) {
+    let mut cursor = 0usize;
     for index in 0..=block.items.len() {
         for comment in block
             .comments
             .iter()
             .filter(|comment| comment.index == index && !comment.trailing)
         {
+            if next_blank(block, &mut cursor) && started {
+                renderer.blank();
+            }
             renderer.line(&comment.text);
+            started = true;
         }
         if let Some(node) = block.items.get(index) {
+            if next_blank(block, &mut cursor) && started {
+                renderer.blank();
+            }
             item(renderer, node);
+            started = true;
             for comment in block
                 .comments
                 .iter()
@@ -108,6 +94,12 @@ fn render_block<T>(
             }
         }
     }
+}
+
+fn next_blank<T>(block: &Block<T>, cursor: &mut usize) -> bool {
+    let blank = block.blank_lines.get(*cursor).copied().unwrap_or(false);
+    *cursor += 1;
+    blank
 }
 
 fn render_on<I>(renderer: &mut Renderer, on: &On<I>, mut item: impl FnMut(&mut Renderer, &I)) {
@@ -406,9 +398,18 @@ fn render_redis_item(renderer: &mut Renderer, item: &RedisItem) {
 
 fn render_s3_body(renderer: &mut Renderer, body: &Block<S3Item>) {
     if body.comments.is_empty() {
-        let mut ordered: Vec<&S3Item> = body.items.iter().collect();
-        ordered.sort_by_key(|item: &&S3Item| !matches!(**item, S3Item::Policy(_)));
-        for item in ordered {
+        // Carry each item's authored gap through the stable policy-first sort.
+        let mut ordered: Vec<(&S3Item, bool)> = body
+            .items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (item, body.blank_lines.get(index).copied().unwrap_or(false)))
+            .collect();
+        ordered.sort_by_key(|(item, _)| !matches!(**item, S3Item::Policy(_)));
+        for (index, (item, blank)) in ordered.into_iter().enumerate() {
+            if index > 0 && blank {
+                renderer.blank();
+            }
             render_s3_item(renderer, item);
         }
     } else {

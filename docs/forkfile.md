@@ -44,7 +44,7 @@ image api . {
 }
 ```
 
-`slipfork fmt` rewrites the file canonically, and `slipfork fmt --check` is the CI gate.
+`slipfork fmt` rewrites the file canonically, keeps at most one authored blank line between consecutive declarations in a body (and after the `# forkfile:` header when you authored one), and `slipfork fmt --check` is the CI gate.
 
 ## The version header
 

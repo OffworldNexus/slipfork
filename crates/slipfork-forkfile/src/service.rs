@@ -4,6 +4,7 @@ use crate::ast::*;
 use crate::diag::Diagnostic;
 use crate::expr::Command;
 use crate::parser::Parser;
+use crate::parser::trivia::Gap;
 use crate::span::Span;
 use crate::token::TokenKind;
 
@@ -202,11 +203,13 @@ impl<'a> Parser<'a> {
     fn parse_command_block(&mut self) -> Result<Block<CommandItem>, Diagnostic> {
         let mut block = Block::default();
         let mut pending = Vec::new();
+        let mut gap = Gap::new();
         loop {
             self.lexer.skip_inline_space();
             match self.lexer.peek_char() {
                 Some('\n') => {
                     self.lexer.bump_char();
+                    gap.break_line();
                 }
                 None => {
                     return Err(Diagnostic::new(
@@ -222,29 +225,34 @@ impl<'a> Parser<'a> {
                 }
                 Some('#') => {
                     let (text, _) = self.raw_to_line_end()?;
-                    pending.push(text);
+                    let blank_before = gap.take_pending();
+                    pending.push((text, blank_before));
                 }
                 Some(_) => {
                     // A line beginning with `else` attaches to the previous block-bodied `on`.
                     if self.lexer.starts_keyword("else")
                         && let Some(CommandItem::On(on)) = block.items.last_mut()
                         && on.else_body.is_none()
-                        && let Some(else_body) = self.parse_command_else()?
+                        && let Some(else_body) = self.parse_command_else(&mut gap)?
                     {
                         on.else_body = Some(else_body);
+                        gap.reset();
                         continue;
                     }
-                    let item = match self.parse_on_command_item()? {
+                    let item_blank = gap.take_pending();
+                    let item = match self.parse_on_command_item(&mut gap)? {
                         Some(on) => CommandItem::On(on),
                         None => {
                             let (raw, command_span) = self.raw_to_line_end()?;
                             if raw.is_empty() {
+                                gap.reset();
                                 continue;
                             }
                             CommandItem::Command(Command::parse(&raw, command_span)?)
                         }
                     };
                     Self::flush_comments(&mut block, &mut pending);
+                    block.blank_lines.push(item_blank);
                     block.items.push(item);
                 }
             }
@@ -255,7 +263,10 @@ impl<'a> Parser<'a> {
     ///
     /// A line whose leading `on <expr>` never resolves to `:` or `{` is a diagnostic, not a shell
     /// command: silently running `sh -c 'on dev'` hid a missing guard body.
-    fn parse_on_command_item(&mut self) -> Result<Option<On<CommandItem>>, Diagnostic> {
+    fn parse_on_command_item(
+        &mut self,
+        gap: &mut Gap,
+    ) -> Result<Option<On<CommandItem>>, Diagnostic> {
         self.assert_raw();
         self.lexer.skip_inline_space();
         if !self.lexer.starts_word("on") {
@@ -271,7 +282,7 @@ impl<'a> Parser<'a> {
         };
         let token = self.bump()?;
         let body = match token.kind {
-            TokenKind::Colon => OnBody::Inline(Box::new(self.parse_command_item_inline()?)),
+            TokenKind::Colon => OnBody::Inline(Box::new(self.parse_command_item_inline(gap)?)),
             TokenKind::LBrace => OnBody::Block(self.parse_command_block()?),
             other => {
                 return Err(Diagnostic::new(
@@ -284,7 +295,7 @@ impl<'a> Parser<'a> {
                 ));
             }
         };
-        let else_body = self.parse_command_else()?;
+        let else_body = self.parse_command_else(gap)?;
         Ok(Some(On {
             cond,
             body,
@@ -294,8 +305,11 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses `else { ... }`, `else: <command>`, or `else on <expr> ...` after a command guard.
-    fn parse_command_else(&mut self) -> Result<Option<OnElse<CommandItem>>, Diagnostic> {
-        self.skip_command_separators();
+    fn parse_command_else(
+        &mut self,
+        gap: &mut Gap,
+    ) -> Result<Option<OnElse<CommandItem>>, Diagnostic> {
+        self.skip_command_separators(gap);
         if !self.lexer.starts_keyword("else") {
             return Ok(None);
         }
@@ -306,7 +320,7 @@ impl<'a> Parser<'a> {
             let cond = self.parse_expr()?;
             let token = self.bump()?;
             let body = match token.kind {
-                TokenKind::Colon => OnBody::Inline(Box::new(self.parse_command_item_inline()?)),
+                TokenKind::Colon => OnBody::Inline(Box::new(self.parse_command_item_inline(gap)?)),
                 TokenKind::LBrace => OnBody::Block(self.parse_command_block()?),
                 other => {
                     return Err(Diagnostic::new(
@@ -319,7 +333,8 @@ impl<'a> Parser<'a> {
                     ));
                 }
             };
-            let else_body = self.parse_command_else()?;
+            let else_body = self.parse_command_else(gap)?;
+            gap.reset();
             return Ok(Some(OnElse::Chain(Box::new(On {
                 cond,
                 body,
@@ -328,27 +343,29 @@ impl<'a> Parser<'a> {
             }))));
         }
         let token = self.bump()?;
-        match token.kind {
-            TokenKind::Colon => Ok(Some(OnElse::Body(OnBody::Inline(Box::new(
-                self.parse_command_item_inline()?,
-            ))))),
-            TokenKind::LBrace => Ok(Some(OnElse::Body(OnBody::Block(
-                self.parse_command_block()?,
-            )))),
-            other => Err(Diagnostic::new(
-                token.span,
-                format!(
-                    "expected `:`, `{{`, or `on` after `else`, found {}",
-                    other.describe()
-                ),
-                "write `else { ... }`, `else: <command>`, or `else on <expr> ...`",
-            )),
-        }
+        let value = match token.kind {
+            TokenKind::Colon => OnElse::Body(OnBody::Inline(Box::new(
+                self.parse_command_item_inline(gap)?,
+            ))),
+            TokenKind::LBrace => OnElse::Body(OnBody::Block(self.parse_command_block()?)),
+            other => {
+                return Err(Diagnostic::new(
+                    token.span,
+                    format!(
+                        "expected `:`, `{{`, or `on` after `else`, found {}",
+                        other.describe()
+                    ),
+                    "write `else { ... }`, `else: <command>`, or `else on <expr> ...`",
+                ));
+            }
+        };
+        gap.reset();
+        Ok(Some(value))
     }
 
     /// One inline command item: another nested `on <expr>: ...`, or a shell command line.
-    fn parse_command_item_inline(&mut self) -> Result<CommandItem, Diagnostic> {
-        if let Some(on) = self.parse_on_command_item()? {
+    fn parse_command_item_inline(&mut self, gap: &mut Gap) -> Result<CommandItem, Diagnostic> {
+        if let Some(on) = self.parse_on_command_item(gap)? {
             return Ok(CommandItem::On(on));
         }
         let (raw, span) = self.raw_to_line_end()?;
@@ -356,11 +373,12 @@ impl<'a> Parser<'a> {
     }
 
     /// Skips inline space and the line breaks that may separate an `else` from its `on`.
-    fn skip_command_separators(&mut self) {
+    fn skip_command_separators(&mut self, gap: &mut Gap) {
         loop {
             self.lexer.skip_inline_space();
             if self.lexer.peek_char() == Some('\n') {
                 self.lexer.bump_char();
+                gap.break_line();
             } else {
                 return;
             }
