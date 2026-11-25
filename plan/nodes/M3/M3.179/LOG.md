@@ -39,3 +39,7 @@ attempt 2/3 started
 ## 2026-11-25T18:58 [lead]
 
 fix pass 1: single visible_width owner (ansi)
+
+## 2026-11-25T18:59 [lead]
+
+status active -> done

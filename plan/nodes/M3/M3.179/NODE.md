@@ -2,7 +2,7 @@
 id: M3.179
 title: "M3.148c: narrow Palette/paint/table to pub(super)"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.178]
@@ -19,7 +19,7 @@ attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-25T18:26"
-updated: "2026-11-25T18:58"
+updated: "2026-11-25T18:59"
 ---
 
 # Goal
