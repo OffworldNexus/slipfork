@@ -1,6 +1,6 @@
 %global debug_package %{nil}
 
-%define _slipfork_version %{?slipfork_version}%{!?slipfork_version:0.1.0}
+%define _slipfork_version %{?slipfork_version}%{!?slipfork_version:0.1.1}
 %define _slipfork_release %{?slipfork_release}%{!?slipfork_release:1}
 %define _slipfork_arch %{?slipfork_arch}%{!?slipfork_arch:x86_64}
 %define _slipfork_glibc %{?slipfork_glibc}%{!?slipfork_glibc:%{error:slipfork_glibc must come from check-portable-elf.sh}}

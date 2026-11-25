@@ -275,6 +275,56 @@ class ToolsTests(unittest.TestCase):
             crit_mod.main(["--repo", str(repo), "--base", base, "--node", "M1.1"]), 0
         )
 
+    def test_critical_guard_protects_opencode_plugin_tests(self) -> None:
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null"}
+        repo = _git_repo(self.tmp_path)
+        plugin_test = repo / "packages" / "opencode-slipfork" / "tests" / "e2e.test.ts"
+        plugin_test.parent.mkdir(parents=True)
+        plugin_test.write_text("test('e2e', () => {});\n", encoding="utf-8")
+        node_dir = repo / "plan" / "nodes" / "M1" / "M1.181"
+        node_dir.mkdir(parents=True)
+        (node_dir / "NODE.md").write_text(
+            "---\nid: M1.181\npaths: [packages/opencode-slipfork/src/**]\n---\n# Goal\n\n# Acceptance\n- [ ] ok\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, env=env)
+        subprocess.run(
+            ["git", "commit", "--no-gpg-sign", "-m", "init"],
+            cwd=repo,
+            check=True,
+            env=env,
+        )
+        base = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        ).stdout.strip()
+
+        # 1. A brand-new untracked plugin suite is always allowed.
+        new_suite = plugin_test.with_name("contract.test.ts")
+        new_suite.write_text("test('contract', () => {});\n", encoding="utf-8")
+        self.assertEqual(
+            crit_mod.main(["--repo", str(repo), "--base", base, "--node", "M1.181"]), 0
+        )
+
+        # 2. Editing a tracked plugin suite without a covering path fails.
+        plugin_test.write_text("test('e2e weakened', () => {});\n", encoding="utf-8")
+        self.assertEqual(
+            crit_mod.main(["--repo", str(repo), "--base", base, "--node", "M1.181"]), 1
+        )
+
+        # 3. Authorizing packages/opencode-slipfork/tests/** passes.
+        (node_dir / "NODE.md").write_text(
+            "---\nid: M1.181\npaths: [packages/opencode-slipfork/tests/**]\n---\n# Goal\n\n# Acceptance\n- [ ] ok\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            crit_mod.main(["--repo", str(repo), "--base", base, "--node", "M1.181"]), 0
+        )
+
     def test_docs_honesty_rejects_vaporware_subcommands_in_published_docs(self) -> None:
         tmp_path = self.tmp_path
         (tmp_path / "docs" / "design").mkdir(parents=True)

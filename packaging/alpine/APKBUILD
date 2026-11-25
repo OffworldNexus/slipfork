@@ -2,7 +2,7 @@
 # Built by scripts/build-apk.sh inside alpine:3.21 from the musl bundle; the
 # payload is a dynamically linked musl binary (a static one cannot dlopen).
 pkgname=slipfork
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=0
 pkgdesc="Copy-on-write Btrfs development environments, Docker-free"
 url="https://github.com/OffworldNexus/slipfork"

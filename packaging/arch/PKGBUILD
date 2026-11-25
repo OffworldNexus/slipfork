@@ -3,7 +3,7 @@
 # source and never references a `payload/` staging tree. Release automation
 # substitutes the sha256 of each architecture's published `.pkg.tar.zst`.
 pkgname=slipfork-bin
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="Copy-on-write Btrfs development environments, Docker-free"
 arch=('x86_64' 'aarch64')

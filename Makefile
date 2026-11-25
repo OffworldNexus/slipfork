@@ -15,6 +15,7 @@ LIVE_SUITES := \
 	slipfork-image/critical_oci_live \
 	slipfork-image/critical_dockerfile_live \
 	slipfork-world/critical_pod_runtime \
+	slipfork-world/critical_snapshot_graph \
 	slipfork-world/pod_control_lab \
 	slipfork-world/pod_run_live \
 	slipfork/critical_world_journey \
@@ -23,6 +24,7 @@ LIVE_SUITES := \
 	slipfork/critical_fork_live \
 	slipfork/critical_registry_live \
 	slipfork/logs_colour_live \
+	slipfork/logs_last_live \
 	slipfork/image_rpc
 
 .PHONY: fmt clippy test check coverage guard test-tools live-test lsp-assets js-test typecheck packages-check docs-check docs-serve install uninstall
@@ -237,7 +239,7 @@ uninstall:
 # ---------------------------------------------------------------------------
 # Distribution artifacts (specs/06-distribution-and-docs.md §1-§8).
 # ---------------------------------------------------------------------------
-VERSION ?= 0.1.0
+VERSION ?= 0.1.1
 # `CHANNEL=nightly` needs the run, UTC date and commit that produced the build;
 # `scripts/release_stamp.py` turns them into the per-ecosystem stamps below.
 CHANNEL ?= stable
