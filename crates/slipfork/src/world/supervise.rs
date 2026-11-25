@@ -1,28 +1,33 @@
 //! Hidden detached-supervisor mode: boot the world, stream typed events, wait for the init.
 
+mod events;
+mod log;
+mod sink;
+
 use std::fs;
-use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use slipfork_world::{
-    BootEvent, BootFailure, BootScheduler, BootState, BootStep, LogStore, ResourceKind, StampStore,
+    BootEvent, BootFailure, BootScheduler, BootStep, LogStore, ResourceKind, StampStore,
     StepOutcome, WorldName, WorldStamp, WorldStampStore, is_btrfs_path, plan_epoch,
     world_plan_with, write_pg_checkpoints,
 };
 
 use crate::commands::Session;
+use crate::ui::report::{Failure, Report};
 use crate::world::features::WorldFeatures;
-use crate::world::runtime::capture::RunTarget;
 use crate::world::runtime::frames::{
-    ROTATION_NOTE, StepPin, UP_NOTE_ENV, failure_facts, log_frame, note_frame,
+    ROTATION_NOTE, StepPin, UP_NOTE_ENV, failure_facts, note_frame,
 };
 
-use crate::ui::report::{Counter, Failure, Outcome, Report};
+use self::events::{boot_event_json, step_index};
 
 use super::{HostEnv, SuperviseArgs, runtime::WorldBoot, runtime::WorldRuntime};
+
+pub(super) use sink::{BootSink, Emitter};
 
 impl Session {
     /// Hidden detached-supervisor mode: boot, wait until `down`, then exit.
@@ -300,304 +305,6 @@ fn stamps_for(project: &Path, store: &WorldStampStore, trusted: bool) -> StampSt
     }
 }
 
-fn boot_event_json(event: &BootEvent, total: usize) -> Value {
-    match event {
-        BootEvent::Plan { rows } => json!({
-            "event": "plan",
-            "rows": rows
-                .iter()
-                .map(|row| json!({ "kind": row.kind.as_str(), "name": row.name }))
-                .collect::<Vec<_>>(),
-            "total": rows.len(),
-        }),
-        BootEvent::Started {
-            step,
-            total,
-            kind,
-            name,
-            run_id,
-        } => json!({
-            "event": "started",
-            "step": step + 1,
-            "total": total,
-            "kind": kind.as_str(),
-            "name": name,
-            "state": "running",
-            "outcome": Outcome::Running,
-            "run_id": run_id,
-        }),
-        BootEvent::Finished {
-            kind,
-            name,
-            elapsed,
-            state,
-            detail,
-            run_id,
-            ..
-        } => json!({
-            "event": "finished",
-            "kind": kind.as_str(),
-            "name": name,
-            "state": state.as_str(),
-            "detail": detail,
-            "elapsed_ms": elapsed.as_millis(),
-            "duration_ms": elapsed.as_millis(),
-            "run_id": run_id,
-        }),
-        BootEvent::UpToDate {
-            kind,
-            name,
-            elapsed,
-            ..
-        } => json!({
-            "event": "up-to-date",
-            "kind": kind.as_str(),
-            "name": name,
-            "state": BootState::UpToDate.as_str(),
-            "detail": "up to date",
-            "elapsed_ms": elapsed.as_millis(),
-            "duration_ms": elapsed.as_millis(),
-        }),
-        BootEvent::Failed {
-            step,
-            kind,
-            name,
-            line,
-            message,
-            remedy,
-            elapsed,
-            run_id,
-            command,
-            ..
-        } => {
-            let mut event = json!({
-                "event": "failed",
-                "kind": kind.as_str(),
-                "name": name,
-                "state": BootState::Failed.as_str(),
-                "line": line,
-                "message": message,
-                "elapsed_ms": elapsed.as_millis(),
-                "duration_ms": elapsed.as_millis(),
-                "run_id": run_id,
-                "command": command,
-            });
-            if let Some(remedy) = remedy {
-                event["remedy"] = json!(remedy);
-            }
-            // The producing path owns the typed envelope: the outer catch only merges the
-            // store-derived phase, reason, and exit code, never a second projection.
-            let at = (total > 0 && *step < total).then(|| Counter {
-                index: *step + 1,
-                total,
-            });
-            failure_facts(&mut event, None, command.as_deref(), at);
-            event
-        }
-    }
-}
-
-/// The plan index a boot event names, when it names one.
-fn step_index(event: &BootEvent) -> Option<usize> {
-    match event {
-        BootEvent::Started { step, .. } | BootEvent::Failed { step, .. } => Some(*step),
-        _ => None,
-    }
-}
-
-pub(super) struct Emitter {
-    open: bool,
-}
-
-impl Emitter {
-    fn send(&mut self, value: Value) {
-        if !self.open {
-            return;
-        }
-        let mut bytes = value.to_string().into_bytes();
-        bytes.push(b'\n');
-        let mut stdout = std::io::stdout().lock();
-        if stdout
-            .write_all(&bytes)
-            .and_then(|()| stdout.flush())
-            .is_err()
-        {
-            // `up` returned and closed the pipe; the world must keep serving.
-            self.open = false;
-        }
-    }
-}
-
-/// Step-scoped NDJSON writer: one line buffer per DAG node, locking [`Emitter`] only to flush.
-pub(super) struct BootSink {
-    log: EventLog,
-    mirror: std::io::Stderr,
-}
-
-impl Clone for BootSink {
-    fn clone(&self) -> Self {
-        Self {
-            log: self.log.clone(),
-            mirror: std::io::stderr(),
-        }
-    }
-}
-
-impl BootSink {
-    pub(super) fn for_step(
-        emitter: Arc<Mutex<Emitter>>,
-        step: usize,
-        total: usize,
-        label: &str,
-        name: &str,
-    ) -> Self {
-        Self {
-            log: EventLog::for_step(emitter, step, total, label, name),
-            mirror: std::io::stderr(),
-        }
-    }
-
-    /// Opens this step's run capture **before** it executes, so an early error still leaves one.
-    pub(super) fn capture_run(
-        mut self,
-        store: &LogStore,
-        project: &Path,
-        kind: &str,
-        name: &str,
-        command: &str,
-    ) -> Result<Self, BootFailure> {
-        self.log.run = Some(Arc::new(Mutex::new(RunTarget::open(
-            store, project, kind, name, command,
-        )?)));
-        Ok(self)
-    }
-
-    /// Appends the catalog line and returns the minted id, or `None` when nothing ran.
-    pub(super) fn finish_run(&self, state: &str, duration_ms: u64) -> Option<String> {
-        self.log.run.as_ref().and_then(|run| {
-            run.lock()
-                .ok()
-                .and_then(|mut target| target.finish(state, duration_ms))
-        })
-    }
-
-    /// Drops a no-op capture: no id, no `.log`/`.idx`, no catalog line.
-    pub(super) fn discard_run(&self) {
-        if let Some(run) = &self.log.run
-            && let Ok(mut target) = run.lock()
-        {
-            target.discard();
-        }
-    }
-
-    /// Emits one engine narration frame pinned to this step; the renderer shows it only under `-v`.
-    pub(super) fn engine_note(&mut self, text: &str) {
-        let _ = writeln!(self.mirror, "{text}");
-        self.log.note(text);
-    }
-
-    /// Emits one readiness note pinned to this step; never a child gutter line or capture line.
-    pub(super) fn progress(&mut self, message: &str) {
-        self.engine_note(message);
-    }
-
-    /// Flushes the supervisor diagnostic mirror.
-    pub(super) fn flush(&mut self) {
-        let _ = self.mirror.flush();
-    }
-
-    /// Appends one stream-tagged child line to the stderr mirror and this step's run capture.
-    ///
-    /// The bytes are stored exactly as the child wrote them (ANSI included): a later colour
-    /// terminal can replay them, while a pipe/`NO_COLOR`/`--json` viewer strips at the edge.
-    pub(super) fn append_stream(&mut self, stream: slipfork_world::Stream, line: &str) {
-        let text = line.trim_end_matches('\r');
-        if text.trim().is_empty() {
-            return;
-        }
-        let _ = writeln!(self.mirror, "{text}");
-        self.log.append_stream(stream, text);
-    }
-}
-
-#[derive(Clone)]
-struct EventLog {
-    emitter: Arc<Mutex<Emitter>>,
-    step: usize,
-    total: usize,
-    label: String,
-    name: String,
-    run: Option<Arc<Mutex<RunTarget>>>,
-}
-
-impl EventLog {
-    fn for_step(
-        emitter: Arc<Mutex<Emitter>>,
-        step: usize,
-        total: usize,
-        label: &str,
-        name: &str,
-    ) -> Self {
-        Self {
-            emitter,
-            step,
-            total,
-            label: label.to_owned(),
-            name: name.to_owned(),
-            run: None,
-        }
-    }
-
-    fn append_stream(&mut self, stream: slipfork_world::Stream, text: &str) {
-        self.emit(stream, text.trim_end_matches('\r'));
-    }
-
-    fn emit(&self, stream: slipfork_world::Stream, text: &str) {
-        if text.trim().is_empty() {
-            return;
-        }
-        if let Some(run) = &self.run
-            && let Ok(mut target) = run.lock()
-        {
-            target.append_stream(stream, text);
-        }
-        let pin = StepPin {
-            step: self.step,
-            total: self.total,
-            label: &self.label,
-            name: &self.name,
-            image: None,
-            index: None,
-        };
-        self.send(log_frame(&pin, stream.as_str(), text));
-    }
-
-    /// Flushes one engine narration frame pinned to this step, without touching any capture.
-    fn note(&self, text: &str) {
-        let text = crate::ui::strip(text);
-        let text = text.trim_end_matches('\r');
-        if text.is_empty() {
-            return;
-        }
-        let pin = StepPin {
-            step: self.step,
-            total: self.total,
-            label: &self.label,
-            name: &self.name,
-            image: None,
-            index: None,
-        };
-        self.send(note_frame(&pin, text));
-    }
-
-    /// Flushes one complete frame through the shared emitter, immediately.
-    fn send(&self, frame: Value) {
-        if let Ok(mut emitter) = self.emitter.lock() {
-            emitter.send(frame);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -610,7 +317,9 @@ mod tests {
         WorldStampStore, plan_epoch, write_pg_checkpoint,
     };
 
-    use super::{RunTarget, boot_event_json, stamps_for};
+    use super::events::boot_event_json;
+    use super::stamps_for;
+    use crate::world::runtime::capture::RunTarget;
 
     /// The conditional-stamp key a `pre-deploy when changed(uv.lock)` hook records.
     const LOCK_STAMP: &str = "pre-deploy-lock";

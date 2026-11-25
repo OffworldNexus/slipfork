@@ -1,46 +1,44 @@
 //! The sharded runtime that executes boot steps concurrently from the daemon-sealed image heads,
 //! plus lock-free `control.sock` `RunOnce`/`Dial`/`ConfigureS3` and narrow supervisor launches.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use slipfork_forkfile::{FeatureSet, ast::Forkfile};
 use slipfork_ospp::FileSecretVault;
 use slipfork_world::{
-    BootFailure, BootState, BootStep, BtrfsEngine, Dirtiness, PodEnv, PodHost, PodSpec,
-    PostgresLauncher, ResourceKind, ResourceNode, ServiceNode, StoreLayout, Stream, WorldEngine,
-    WorldHost, WorldName, WorldPlan, WorldStampStore, WorldSupervisor, WorldTools, control,
-    write_bundle,
+    BtrfsEngine, Dirtiness, PodHost, ResourceKind, ResourceNode, ServiceNode, StoreLayout,
+    WorldEngine, WorldHost, WorldName, WorldPlan, WorldStampStore, WorldSupervisor, WorldTools,
 };
 
 use super::HostEnv;
 use super::heads::{ImageHead, WorldHeads};
-use super::supervise::{BootSink, Emitter};
+use super::supervise::Emitter;
 
 pub(crate) mod capture;
 mod dev;
 mod execute;
 pub(crate) mod frames;
 mod helpers;
+mod lifecycle;
 pub(crate) mod notes;
+mod pods;
 mod ready;
 mod resources;
 mod rootfs;
+mod steps;
 use dev::DevMounts;
-use helpers::{
-    ServiceLaunch, dev_binds, merge_env, merge_path, sealed_identity, shell_command, upsert_env,
-};
+
+pub(super) use lifecycle::elapsed_ms;
 
 /// The one line a non-zero pod exit writes into both the capture and the failure message.
 pub(crate) fn exit_line(command: &str, code: i32) -> String {
     format!("`{command}` exited with {code}")
 }
-
-use ready::{Ready, Staged};
 
 pub(super) struct WorldRuntime {
     engine: BtrfsEngine,
@@ -240,327 +238,17 @@ impl WorldRuntime {
         })
     }
 
-    pub(super) fn pods_dir(&self) -> &Path {
+    pub(in crate::world) fn pods_dir(&self) -> &Path {
         &self.pods_dir
     }
 
-    /// Runs one `CHECKPOINT` inside every live postgres pod, over its readiness-proven socket.
-    ///
-    /// Dials `127.0.0.1:5432` through `<pods>/control.sock` (`SCM_RIGHTS`) and speaks the minimal
-    /// PostgreSQL v3 wire protocol, so the checkpoint costs `< 5ms` with zero `crun`/`psql` spawn.
-    /// The clone keeps `fsync=off`, so this is what makes the next `fork` snapshot durable data.
-    pub(super) fn checkpoint_postgres(&self) -> Result<(), String> {
-        PostgresLauncher::new(self.layout.clone(), self.world.clone())
-            .checkpoint_live(&self.pods_dir)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
-    }
-
-    /// Flushes the store filesystem after the checkpoint so the next fork snapshots durable data.
-    pub(super) fn flush_store(&self) -> Result<(), String> {
-        self.engine.flush_store().map_err(|error| error.to_string())
-    }
-
-    /// Records that at least one long-lived pod or native S3 endpoint entered the world.
-    pub(super) fn mark_live_world(&self) {
-        self.live_world.store(true, Ordering::Release);
-    }
-
-    /// Whether any resource or service entered the world; a cold build/hook failure with `false`
-    /// tears the empty world down immediately instead of orphaning `slipfork-world-init`.
-    pub(super) fn has_live_world(&self) -> bool {
-        self.live_world.load(Ordering::Acquire)
-    }
-
-    /// Writes `<pods>/<id>/config.json` and launches the detached container concurrently over
-    /// `<pods>/control.sock`, with zero supervisor lock held.
-    pub(super) fn launch_pod(&self, spec: &PodSpec) -> Result<u32, String> {
-        write_bundle(spec, &self.pod_host, &self.pods_dir.join(&spec.id))
-            .map_err(|error| error.to_string())?;
-        let pid = control::launch_pod(&self.pods_dir, spec, self.boot_timeout)
-            .map_err(|error| error.to_string())?;
-        self.mark_live_world();
-        Ok(pid)
-    }
-
-    /// Runs one setup/hook/`initdb` pod over `<pods>/control.sock` with zero supervisor lock held.
-    pub(super) fn run_pod_once(
-        &self,
-        spec: &PodSpec,
-        on_line: &mut dyn FnMut(Stream, &str),
-    ) -> slipfork_world::Result<i32> {
-        write_bundle(spec, &self.pod_host, &self.pods_dir.join(&spec.id))?;
-        control::run_once(&self.pods_dir, spec, self.boot_timeout, on_line)
-    }
-
-    /// Returns a writable pod rootfs subvolume: reuses a pre-snapshotted `<store>/pods/<world>/<slot>`
-    /// from `fork` in 0ms when `reusable` is true, otherwise clones `sealed`.
-    pub(super) fn clone_rootfs(
-        &self,
-        sealed: &Path,
-        slot: &str,
-        reusable: bool,
-    ) -> Result<PathBuf, String> {
-        let dir = self.layout.world_pods(&self.world);
-        fs::create_dir_all(&dir).map_err(|error| format!("create `{}`: {error}", dir.display()))?;
-        let dest = if reusable {
-            let candidate = dir.join(slot);
-            if slipfork_world::is_subvolume_path(&candidate).unwrap_or(false) {
-                return Ok(candidate);
-            }
-            candidate
-        } else {
-            let seq = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
-            dir.join(format!("{slot}-{seq}"))
-        };
-        if slipfork_world::is_subvolume_path(&dest).unwrap_or(false) {
-            self.engine
-                .destroy(&dest, Dirtiness::Clean, true)
-                .map_err(|error| error.to_string())?;
-        } else if dest.is_dir() {
-            fs::remove_dir(&dest)
-                .map_err(|error| format!("remove `{}`: {error}", dest.display()))?;
-        }
-        self.engine
-            .clone_subvolume(sealed, &dest)
-            .map_err(|error| error.to_string())?;
-        if let Ok(mut clones) = self.clones.lock() {
-            clones.push(dest.clone());
-        }
-        Ok(dest)
-    }
-
-    fn built_for(&self, image: Option<&String>, _log: &mut BootSink) -> Result<ImageHead, String> {
-        let image = image.ok_or_else(|| "step has no enclosing image".to_owned())?;
-        self.head_for(image)
-    }
-
-    /// The daemon-sealed head for `image`; a missing head fails closed with no fallback build.
-    pub(super) fn head_for(&self, image: &str) -> Result<ImageHead, String> {
-        self.heads.get(image).cloned().ok_or_else(|| {
-            format!(
-                "no sealed image head for `{image}`\nnext: run `slipfork up` to plan this world again"
-            )
-        })
-    }
-
-    /// Merges image-level and subject-level runtime `env`, plus the declared `PORT`.
-    fn pod_env_for(&self, subject: &str, image: Option<&str>, port: Option<u16>) -> Vec<PodEnv> {
-        merge_env(&self.resolved_env, subject, image, port)
-    }
-
-    fn run_once(&self, step: &BootStep, log: &mut BootSink) -> Result<String, BootFailure> {
-        if step.uses_env {
-            return Err(BootFailure::with_remedy(
-                "this step reads `$env.`, which this build cannot resolve",
-                "replace `$env.<KEY>` with a literal value, or export the variable inside the step's own `run:` shell",
-            ));
-        }
-        let command = step
-            .command
-            .clone()
-            .ok_or_else(|| BootFailure::new(format!("`{}` has no command", step.label)))?;
-        let built = self
-            .built_for(step.image.as_ref(), log)
-            .map_err(BootFailure::new)?;
-        let identity = sealed_identity(&self.layout, &self.engine, &built).map_err(|error| {
-            log.append_stream(Stream::Stderr, error.cause());
-            log.append_stream(Stream::Stderr, error.remedy());
-            BootFailure::with_remedy(error.cause(), error.remedy())
-        })?;
-        let dev = match step.image.as_deref() {
-            Some(image) => self
-                .dev_mounts
-                .dev_for(image, &built)
-                .map_err(BootFailure::new)?,
-            None => None,
-        };
-        let rootfs = self
-            .clone_rootfs(&built.rootfs, &format!("boot{}", step.line), false)
-            .map_err(BootFailure::new)?;
-        let seq = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
-        let spec = PodSpec {
-            id: format!("boot-{seq}"),
-            rootfs,
-            workdir: dev
-                .as_ref()
-                .map_or_else(|| built.workdir.clone(), |mount| mount.workdir.clone()),
-            argv: vec![
-                "/bin/sh".to_owned(),
-                "-c".to_owned(),
-                shell_command(&command),
-            ],
-            inherited_env: built.inherited_env,
-            env: self.pod_env_for(&step.subject, step.image.as_deref(), None),
-            binds: dev_binds(&self.features, &self.project, dev.as_ref()),
-            files: Vec::new(),
-            identity: Some(identity),
-        };
-        // Setup and hook pods run to completion over `control.sock` with their pipes attached, so
-        // independent nodes never stall behind a long `pre-deploy` seed.
-        let mut tail: VecDeque<String> = VecDeque::new();
-        let code = self
-            .run_pod_once(&spec, &mut |stream, line| {
-                log.append_stream(stream, line);
-                if tail.len() == 10 {
-                    tail.pop_front();
-                }
-                tail.push_back(line.to_owned());
-            })
-            .map_err(|error| BootFailure::new(error.to_string()))?;
-        if code == 0 {
-            Ok("ok".to_owned())
-        } else {
-            // A command that printed nothing still leaves one real line in its run capture, so a
-            // failed step is never reported against an empty `slipfork logs -r <id>`.
-            let line = exit_line(&command, code);
-            log.append_stream(Stream::Stdout, &line);
-            let mut message = line;
-            for line in tail {
-                message.push_str("\n  ");
-                message.push_str(&line);
-            }
-            Err(BootFailure::new(message).with_exit_code(code))
-        }
-    }
-
-    fn start_service(&self, step: &BootStep, log: &mut BootSink) -> Result<Staged, BootFailure> {
-        let sigma = step.subject.clone();
-        let image = step.image.as_deref().ok_or_else(|| {
-            BootFailure::with_remedy(
-                format!("service `{sigma}` has no enclosing image"),
-                "declare the service inside its image block",
-            )
-        })?;
-        let built = self
-            .built_for(step.image.as_ref(), log)
-            .map_err(BootFailure::new)?;
-        let identity = sealed_identity(&self.layout, &self.engine, &built).map_err(|error| {
-            // An unresolvable `USER` must be visible before the pane closes: stream its cause and
-            // concrete fix through the step's own gutter, and keep the fix as the envelope remedy.
-            log.append_stream(Stream::Stderr, error.cause());
-            log.append_stream(Stream::Stderr, error.remedy());
-            BootFailure::with_remedy(error.cause(), error.remedy())
-        })?;
-        // Defense in depth: the same derivation that passed preflight refuses the bind here too.
-        let dev = self
-            .dev_mounts
-            .dev_for(image, &built)
-            .map_err(BootFailure::new)?;
-        let rootfs = self
-            .clone_rootfs(&built.rootfs, &format!("svc-{sigma}"), true)
-            .map_err(BootFailure::new)?;
-        let port = self
-            .services
-            .iter()
-            .find(|service| service.id == sigma)
-            .and_then(|service| service.port);
-        // Build the merged pod env before resolving the launch so a `Forkfile`/image `PATH` is
-        // the base the shim directory is prepended to — never something we overwrite.
-        let env = self.pod_env_for(&step.subject, step.image.as_deref(), port);
-        let path = merge_path(&env, &built.inherited_env);
-        let mut launch_env = Vec::new();
-        let (argv, display) = if let Some(command) = &step.command {
-            let launch = ServiceLaunch::resolve(
-                &self.project,
-                dev.as_ref()
-                    .map_or(built.workdir.as_str(), |mount| mount.workdir.as_str()),
-                &rootfs,
-                &path,
-                command,
-            );
-            launch_env = launch.env;
-            (launch.argv, command.clone())
-        } else if built.argv.is_empty() {
-            return Err(BootFailure::new(format!(
-                "service `{sigma}` declares no `run:` and its image has no `ENTRYPOINT`/`CMD`"
-            )));
-        } else {
-            (built.argv.clone(), built.argv.join(" "))
-        };
-        let mut spec = PodSpec {
-            id: sigma,
-            rootfs,
-            workdir: dev
-                .as_ref()
-                .map_or_else(|| built.workdir.clone(), |mount| mount.workdir.clone()),
-            argv,
-            inherited_env: built.inherited_env,
-            env,
-            binds: dev_binds(&self.features, &self.project, dev.as_ref()),
-            files: Vec::new(),
-            identity: Some(identity),
-        };
-        upsert_env(&mut spec.env, launch_env);
-        self.launch_pod(&spec).map_err(BootFailure::new)?;
-        let ready = match port {
-            Some(port) => Ready::Service {
-                pods_dir: self.pods_dir.clone(),
-                port,
-                label: display,
-                service: spec.id.clone(),
-            },
-            None => Ready::Portless {
-                pods_dir: self.pods_dir.clone(),
-                service: spec.id.clone(),
-            },
-        };
-        Ok(Staged {
-            state: BootState::Ready,
-            detail: "started".to_owned(),
-            ready,
-            progress: None,
-        })
-    }
-
     /// The injected store layout (used to resolve sibling resource clones).
-    pub(super) fn store_layout(&self) -> StoreLayout {
+    pub(in crate::world) fn store_layout(&self) -> StoreLayout {
         self.layout.clone()
     }
 
     /// `<mount>/.slipfork-store/worlds/<world>`.
-    pub(super) fn world_dir(&self) -> PathBuf {
+    pub(in crate::world) fn world_dir(&self) -> PathBuf {
         self.layout.world(&self.world)
     }
-
-    /// Stops an empty world immediately and sweeps ephemeral pod rootfs clones.
-    pub(super) fn stop_and_cleanup(&self) -> Result<(), String> {
-        let stopped = self
-            .supervisor
-            .lock()
-            .map_err(|_| "world supervisor lock poisoned".to_owned())?
-            .stop()
-            .map_err(|error| error.to_string());
-        self.sweep_clones();
-        stopped
-    }
-
-    /// Blocks until the world init exits, then sweeps ephemeral pod rootfs clones.
-    pub(super) fn await_exit_and_cleanup(&self) -> Result<(), String> {
-        let awaited = self
-            .supervisor
-            .lock()
-            .map_err(|_| "world supervisor lock poisoned".to_owned())?
-            .await_exit()
-            .map_err(|error| error.to_string());
-        self.sweep_clones();
-        awaited
-    }
-
-    fn sweep_clones(&self) {
-        let clones = self
-            .clones
-            .lock()
-            .map(|mut guard| std::mem::take(&mut *guard))
-            .unwrap_or_default();
-        for clone in clones {
-            let _ = self.engine.destroy(&clone, Dirtiness::Clean, true);
-        }
-        let _ = fs::remove_dir(self.layout.world_pods(&self.world));
-        let _ = fs::remove_dir(self.layout.pods_root());
-    }
-}
-/// Step wall time in whole milliseconds, clamped for a pathological clock jump.
-fn elapsed_ms(started: std::time::Instant) -> u64 {
-    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }

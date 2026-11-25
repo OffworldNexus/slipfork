@@ -4,60 +4,27 @@
 //! This module only sends the request, feeds the typed `event` frames into [`BootTui`], and prints
 //! exactly one `next:` remedy (or one `specs/02` JSON object under `--json`).
 
+mod helpers;
+mod reply;
+
 use std::process::ExitCode;
 use std::time::Instant;
 
-use serde_json::{Value, json};
-use slipfork_forkfile::Diagnostics;
+use serde_json::json;
 
 use crate::boot::BootTui;
-use crate::commands::{Session, emit};
-use crate::daemon::{DaemonClient, DaemonError};
-use crate::ui::report::{Failure, Report};
+use crate::commands::Session;
+use crate::ui::report::Failure;
+use crate::world::features::WorldFeatures;
+use crate::world::runtime::frames::ROTATION_NOTE;
 
-use super::features::WorldFeatures;
-use super::runtime::frames::ROTATION_NOTE;
+use self::reply::{boot_node, ps_reply};
+
 use super::{DownArgs, RestartArgs, Targets, UpArgs, WorldIdentities};
 
-impl Session {
-    /// Reads, compiles, and verifies `<project>/Forkfile` with `request` merged over the persisted
-    /// `.slipfork/features.json`; the returned configuration is exactly what a boot will read.
-    ///
-    /// Persistence belongs to the caller: `up`/`fork` save, `env` evaluates only.
-    pub(super) fn project_features(
-        &self,
-        project: &std::path::Path,
-        request: &WorldFeatures,
-        json: bool,
-    ) -> Result<WorldFeatures, ExitCode> {
-        let path = project.join("Forkfile");
-        let source = match std::fs::read_to_string(&path) {
-            Ok(source) => source,
-            Err(error) => {
-                return Err(self.report(
-                    "forkfile",
-                    &format!("cannot read `{}`: {error}", path.display()),
-                    "create a `Forkfile` in this directory, then run `slipfork up`",
-                    json,
-                ));
-            }
-        };
-        let checked = match slipfork_forkfile::compile(&source) {
-            Ok(checked) => checked,
-            Err(diagnostics) => return Err(self.forkfile_failure(&diagnostics, json)),
-        };
-        let config = match WorldFeatures::merged(project, request) {
-            Ok(config) => config,
-            Err(error) => {
-                return Err(self.report("feature", &error, WorldFeatures::REMEDY, json));
-            }
-        };
-        if let Err(diagnostic) = config.resolve(&checked.document) {
-            return Err(self.feature_failure(&diagnostic, json));
-        }
-        Ok(config)
-    }
+pub(in crate::world) use reply::{emit_json, emit_stream};
 
+impl Session {
     /// Boots the world through the daemon and renders every boot node until ready.
     pub fn up(&self, args: &UpArgs) -> ExitCode {
         let identities = match WorldIdentities::open(self.host().state_dir.clone()) {
@@ -446,98 +413,4 @@ impl Session {
             ),
         }
     }
-
-    /// The one refusal for an unresolvable positional target.
-    fn target_failure(&self, error: &super::TargetError, json_mode: bool) -> ExitCode {
-        self.lifecycle_failure(
-            Failure::remedied("no-target", error.message.clone(), error.next),
-            json_mode,
-            false,
-        )
-    }
-
-    /// Renders the first compiler diagnostic as `Forkfile:line:col`, plus its one `next:`.
-    pub(super) fn forkfile_failure(&self, diagnostics: &Diagnostics, json_mode: bool) -> ExitCode {
-        let first = diagnostics.first();
-        let message = first.map_or_else(
-            || "invalid Forkfile".to_owned(),
-            |item| {
-                format!(
-                    "Forkfile:{}:{}: {}",
-                    item.span.line(),
-                    item.span.col(),
-                    item.message
-                )
-            },
-        );
-        let next = first.map_or("fix the Forkfile", |item| item.next.as_str());
-
-        self.lifecycle_failure(
-            Failure::remedied("forkfile", message, next),
-            json_mode,
-            false,
-        )
-    }
-
-    /// Prints exactly one `next:` remedy, or one JSON error object under `--json`.
-    pub(super) fn lifecycle_failure(
-        &self,
-        failure: Failure,
-        json_mode: bool,
-        already_rendered: bool,
-    ) -> ExitCode {
-        if json_mode {
-            let _ = self.renderer().emit_json(&failure.json());
-            return ExitCode::FAILURE;
-        }
-        if already_rendered {
-            return ExitCode::FAILURE;
-        }
-        let _ = self.renderer().emit(&Report::failure(failure));
-        ExitCode::FAILURE
-    }
-}
-
-/// Reads the daemon's typed `ps` reply so target resolution has one canonical registry view.
-fn ps_reply(client: &mut DaemonClient) -> Result<crate::ps::PsReply, DaemonError> {
-    let value = client.call_streaming("ps", json!({}), &mut |_| {})?;
-    crate::status::parse(&value).map_err(|error| {
-        DaemonError::new(
-            "ps-decode",
-            format!("cannot decode the daemon's ps reply: {error}"),
-        )
-    })
-}
-
-/// One completed boot node, projected into the `specs/02` `nodes` array.
-///
-/// Exactly one row per node: live `started` frames feed `tui.observe` for the spinner only,
-/// never the published contract.
-fn boot_node(event: &Value) -> Option<Value> {
-    if !matches!(
-        event["event"].as_str(),
-        Some("finished") | Some("up-to-date")
-    ) {
-        return None;
-    }
-    let kind = event["kind"].as_str()?;
-    let name = event["name"].as_str()?;
-    Some(json!({
-        "kind": kind,
-        "name": name,
-        "state": event["state"].as_str().unwrap_or("unknown"),
-        "duration_ms": event["duration_ms"],
-    }))
-}
-
-/// Emits one streamed frame when `--json` is on: `--verbose` keeps `note` frames, else they drop.
-pub(super) fn emit_stream(json: bool, verbose: bool, event: &Value) {
-    if json && (verbose || event["event"].as_str() != Some("note")) {
-        let _ = emit_json(event);
-    }
-}
-
-/// Emits one already-built JSON object with zero ANSI.
-pub(super) fn emit_json(value: &Value) -> ExitCode {
-    emit(&format!("{value}\n"))
 }

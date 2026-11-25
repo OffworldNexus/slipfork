@@ -82,7 +82,6 @@ pub fn host(_args: &[OsString], _cwd: &Path, terminal: Terminal) -> Result<HostE
         ),
         home,
         install_root,
-        hostname: host_name(),
         display: std::env::var_os("DISPLAY").is_some()
             || std::env::var_os("WAYLAND_DISPLAY").is_some(),
         ssh: std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_TTY").is_some(),
@@ -92,21 +91,6 @@ pub fn host(_args: &[OsString], _cwd: &Path, terminal: Terminal) -> Result<HostE
         config_dir,
         registry_credentials,
     })
-}
-
-/// Reads this host's name once; the kernel truncates anything longer than 255 bytes.
-fn host_name() -> String {
-    let mut buffer = [0_u8; 256];
-    // SAFETY: the kernel writes at most `buffer.len()` bytes into the live array.
-    let ret = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) };
-    if ret != 0 {
-        return "localhost".to_owned();
-    }
-    let end = buffer
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(buffer.len());
-    String::from_utf8_lossy(&buffer[..end]).into_owned()
 }
 
 /// Resolves the one resolver file every pod and image step binds as `/etc/resolv.conf`.
