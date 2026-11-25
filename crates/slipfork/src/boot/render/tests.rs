@@ -108,10 +108,10 @@ fn plan_widths_hold_every_row_in_the_same_columns() {
     assert!(!completed_row(&cached, &widths, Palette::new(false)).contains('\u{1b}'));
 }
 
-/// M3.133: `drop`'s four rows share one plan and one verdict; the bytes are pinned plain and styled.
+/// M3.133: `drop`'s two rows share one plan and one verdict; the bytes are pinned plain and styled.
 #[test]
 fn drop_rows_share_one_plan_and_a_single_verdict() {
-    let rows: Vec<(String, String)> = ["stop", "stop", "delete", "delete"]
+    let rows: Vec<(String, String)> = ["stop", "delete"]
         .into_iter()
         .map(|kind| (kind.to_owned(), "jello".to_owned()))
         .collect();
@@ -119,7 +119,7 @@ fn drop_rows_share_one_plan_and_a_single_verdict() {
     assert_eq!((widths.kind, widths.target, widths.state), (6, 5, 0));
 
     let stop = Row::settled(
-        Some(Counter { index: 2, total: 4 }),
+        Some(Counter { index: 1, total: 2 }),
         "stop",
         "jello",
         Outcome::Ok(Done::Settled),
@@ -127,7 +127,7 @@ fn drop_rows_share_one_plan_and_a_single_verdict() {
     )
     .with_command(Some("pods stopped".to_owned()));
     let delete = Row::settled(
-        Some(Counter { index: 4, total: 4 }),
+        Some(Counter { index: 2, total: 2 }),
         "delete",
         "jello",
         Outcome::Ok(Done::Settled),
@@ -137,12 +137,12 @@ fn drop_rows_share_one_plan_and_a_single_verdict() {
     let plain_stop = completed_row(&stop, &widths, Palette::new(false));
     assert_eq!(
         plain_stop,
-        "✓ [2/4] stop    jello  done  pods stopped  100ms"
+        "✓ [1/2] stop    jello  done  pods stopped  100ms"
     );
     let plain_delete = completed_row(&delete, &widths, Palette::new(false));
     assert_eq!(
         plain_delete,
-        "✓ [4/4] delete  jello  done  project + world data  101ms"
+        "✓ [2/2] delete  jello  done  project + world data  101ms"
     );
     assert!(!plain_stop.contains('\u{1b}') && !plain_delete.contains('\u{1b}'));
 
@@ -151,7 +151,7 @@ fn drop_rows_share_one_plan_and_a_single_verdict() {
         "\u{1b}[35mstop\u{1b}[0m",
         "\u{1b}[1mjello\u{1b}[0m",
         "\u{1b}[32mdone\u{1b}[0m",
-        "\u{1b}[38;5;244m[2/4]\u{1b}[0m",
+        "\u{1b}[38;5;244m[1/2]\u{1b}[0m",
         "\u{1b}[38;5;244m100ms\u{1b}[0m",
     ] {
         assert!(

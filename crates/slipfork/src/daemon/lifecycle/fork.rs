@@ -188,13 +188,14 @@ impl Core {
         // instead of booting from a half-built head set.
         let fork_world = WorldName::parse(&prepared.world)
             .map_err(|error| Failure::new("invalid-world", first_line(&error.to_string())))?;
-        if let Err(failure) = crate::daemon::reconcile::build_world_heads(
-            &self.host,
-            &prepared.project,
-            &fork_world,
-            false,
-            emit,
-        ) {
+        let sealed = crate::daemon::reconcile::WorldBuild {
+            host: &self.host,
+            project: &prepared.project,
+            world: &fork_world,
+            rows: &rows,
+        }
+        .seal(false, emit);
+        if let Err(failure) = sealed {
             self.discard_fork(&prepared);
             return Err(failure);
         }
@@ -613,8 +614,8 @@ impl Core {
                 format!("fork `{}` has uncommitted changes", fork.as_str()),
             ));
         }
-        // One four-row plan before the first `started`: `stop` owns rows 1-2, `delete` rows 3-4,
-        // so every frame echoes `[i/4]` and the fork name is the target on both phases.
+        // One two-row plan before the first `started`: `stop` owns row 1, `delete` row 2, so every
+        // frame echoes `[i/2]` and the fork name is the target on both phases.
         let plan = plan::drop_plan(fork.as_str());
         plan::emit(&plan.rows, plan.rows.len(), emit);
         emit(plan.stop.started(format!("stopping {}", fork.as_str())));

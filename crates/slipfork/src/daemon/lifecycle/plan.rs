@@ -15,6 +15,13 @@ use crate::world::features::WorldFeatures;
 /// One planned row: `(kind, name)` exactly as the later frames spell them.
 pub(crate) type PlannedRow = (String, String);
 
+/// One planned row's 1-based counter in the merged plan the CLI already latched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlanPosition {
+    pub(crate) step: u64,
+    pub(crate) total: u64,
+}
+
 /// Every step of `project`'s world plan; empty when its `Forkfile` does not compile.
 pub(crate) fn world_rows(project: &Path) -> Vec<PlannedRow> {
     world_rows_with(project, None)
@@ -118,25 +125,20 @@ impl DropPhase {
     }
 }
 
-/// `drop <name>`'s one transparent plan: four rows plus the frames that echo them.
+/// `drop <name>`'s one transparent plan: two rows plus the frames that echo them.
 pub(crate) struct DropPlan {
     pub(crate) rows: Vec<PlannedRow>,
     pub(crate) stop: DropPhase,
     pub(crate) delete: DropPhase,
 }
 
-/// Builds `drop <name>`'s four rows and both phase frames together, so `[1/4]`..`[4/4]` and
+/// Builds `drop <name>`'s two rows and both phase frames together, so `[1/2]`/`[2/2]` and
 /// `total = rows.len()` cannot disagree by construction.
 pub(crate) fn drop_plan(name: &str) -> DropPlan {
-    let rows: Vec<PlannedRow> = [
-        ("stop", name),
-        ("stop", name),
-        ("delete", name),
-        ("delete", name),
-    ]
-    .into_iter()
-    .map(|(kind, name)| (kind.to_owned(), name.to_owned()))
-    .collect();
+    let rows: Vec<PlannedRow> = [("stop", name), ("delete", name)]
+        .into_iter()
+        .map(|(kind, name)| (kind.to_owned(), name.to_owned()))
+        .collect();
     let total = total(&rows);
     let phase = |kind: &str, step: u64| DropPhase {
         started: PlanFrame {
@@ -148,25 +150,25 @@ pub(crate) fn drop_plan(name: &str) -> DropPlan {
         finished: PlanFrame {
             kind: kind.to_owned(),
             name: name.to_owned(),
-            step: step + 1,
+            step,
             total,
         },
     };
     DropPlan {
         stop: phase("stop", 1),
-        delete: phase("delete", 3),
+        delete: phase("delete", 2),
         rows,
     }
 }
 
 /// The merged plan's row count, as every per-row `step`/`total` frame echoes it.
-fn total(rows: &[PlannedRow]) -> u64 {
+pub(crate) fn total(rows: &[PlannedRow]) -> u64 {
     u64::try_from(rows.len()).unwrap_or(u64::MAX)
 }
 
 /// The 1-based position of a planned row, matched by the exact `kind` and `name` the later
 /// `started`/`finished` frames carry.
-fn index(rows: &[PlannedRow], kind: &str, name: &str) -> Option<u64> {
+pub(crate) fn index(rows: &[PlannedRow], kind: &str, name: &str) -> Option<u64> {
     occurrence(rows, kind, name, 1)
 }
 
@@ -333,17 +335,15 @@ mod tests {
         );
     }
 
-    /// M3.133: `drop` is one four-row plan; both phase frames are built from the same rows, so
-    /// `[1/4]`..`[4/4]` and `total = 4` are guaranteed by construction.
+    /// M3.133: `drop` is one two-row plan (one row per step); both phase frames are built from
+    /// the same rows, so `[1/2]`/`[2/2]` and `total = 2` are guaranteed by construction.
     #[test]
-    fn drop_plan_builds_four_rows_and_their_frames_together() {
+    fn drop_plan_builds_two_rows_and_their_frames_together() {
         let plan = super::drop_plan("jello");
         assert_eq!(
             plan.rows,
             vec![
                 ("stop".to_owned(), "jello".to_owned()),
-                ("stop".to_owned(), "jello".to_owned()),
-                ("delete".to_owned(), "jello".to_owned()),
                 ("delete".to_owned(), "jello".to_owned()),
             ]
         );
@@ -352,20 +352,20 @@ mod tests {
             (
                 plan.stop
                     .finished("stopped".to_owned(), "pods stopped", 100),
-                (2, "stop"),
+                (1, "stop"),
             ),
             (
                 plan.delete.started("deleting jello".to_owned()),
-                (3, "delete"),
+                (2, "delete"),
             ),
             (
                 plan.delete
                     .finished("deleted".to_owned(), "project + world data", 101),
-                (4, "delete"),
+                (2, "delete"),
             ),
         ] {
             assert_eq!(frame["step"], step, "{frame}");
-            assert_eq!(frame["total"], 4, "{frame}");
+            assert_eq!(frame["total"], 2, "{frame}");
             assert_eq!(frame["kind"], kind, "{frame}");
             assert_eq!(frame["name"], "jello", "{frame}");
         }

@@ -12,9 +12,10 @@ use std::time::Instant;
 use serde_json::{Value, json};
 use slipfork_image::{BuildEvent, StepEvent, StepLog, StepPlace, StepState, StepTrace};
 use slipfork_world::run_log::RunNote;
-use slipfork_world::{ImageNode, LogStore, WorldPlan};
+use slipfork_world::{ImageNode, WorldPlan};
 
 use crate::daemon::Failure;
+use crate::daemon::lifecycle::plan::PlanPosition;
 use crate::ui::report::{Counter, Done, FailureFacts, Outcome, StepSettlement};
 use crate::world::{RunNotes, RunTarget, StepPin, log_frame, note_frame, step_frame};
 
@@ -38,6 +39,16 @@ impl ImageSettle {
             Self::Built(_) => "built",
         }
     }
+}
+
+/// One image row a build announces: its merged-plan counter, its capture, and the checkout whose
+/// Dockerfile names the build source.
+pub(super) struct ImageRow<'a> {
+    pub(super) position: PlanPosition,
+    pub(super) run: RunTarget,
+    pub(super) notes: RunNotes,
+    pub(super) project: &'a Path,
+    pub(super) image: &'a str,
 }
 
 /// One image attempt: a `started`/`finished` image row, its inner `step`/`log`/`note` frames, and
@@ -70,25 +81,32 @@ pub(super) struct ImageAttempt<'a> {
 
 impl<'a> ImageAttempt<'a> {
     /// Announces the image row and opens its eager capture.
+    ///
+    /// `row.position` is the 1-based merged-plan counter the daemon resolved once
+    /// (`index`/`total`); `plan.steps` supplies only the human label here, never a counter.
     pub(super) fn begin(
         emit: &'a mut dyn FnMut(Value),
         plan: &'a WorldPlan,
-        store: &LogStore,
-        project: &Path,
-        image: &str,
-        command: &str,
+        row: ImageRow<'a>,
     ) -> Result<Self, Failure> {
-        let position = plan
+        let ImageRow {
+            position,
+            run,
+            notes,
+            project,
+            image,
+        } = row;
+        let step = usize::try_from(position.step).unwrap_or(usize::MAX);
+        let total = usize::try_from(position.total).unwrap_or(usize::MAX);
+        // `plan.steps` supplies only the human label here; the counter came from the merged plan.
+        let label = plan
             .steps
             .iter()
-            .position(|step| step.kind.as_str() == "image" && step.subject == image);
-        let step = position.map_or(1, |index| index + 1);
-        let label = position.map_or_else(
-            || format!("image {image}"),
-            |index| plan.steps[index].label.clone(),
-        );
-        let run = RunTarget::open(store, project, "image", image, command)
-            .map_err(|failure| Failure::new("image-log", failure.message))?;
+            .position(|step| step.kind.as_str() == "image" && step.subject == image)
+            .map_or_else(
+                || format!("image {image}"),
+                |index| plan.steps[index].label.clone(),
+            );
         let run_id = run.run_id().map(str::to_owned);
         // A `from:` image fetched a reference; a Dockerfile build names its source file.
         let dockerfile = plan
@@ -100,7 +118,7 @@ impl<'a> ImageAttempt<'a> {
         emit(json!({
             "event": "started",
             "step": step,
-            "total": plan.steps.len().max(1),
+            "total": total,
             "kind": "image",
             "name": image,
             "label": label,
@@ -113,14 +131,14 @@ impl<'a> ImageAttempt<'a> {
             withheld: Vec::new(),
             live: false,
             lines: false,
-            total: plan.steps.len().max(1),
+            total,
             step,
             label,
             image: image.to_owned(),
             index: None,
             inner_total: None,
             run: Some(run),
-            notes: RunNotes::new(store),
+            notes,
             nodes: &plan.images,
             dockerfile,
             started: None,

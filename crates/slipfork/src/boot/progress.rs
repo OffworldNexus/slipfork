@@ -109,9 +109,9 @@ impl BootProgress {
 
     /// The row's `[i/n]` position, honouring a plan that repeats one `(kind, name)`.
     ///
-    /// When the frame's own `step` names this exact row in the plan it wins (the second `stop`
-    /// frame settles at `[2/4]`, not the first match's `[1/4]`); otherwise the first planned match
-    /// is used, so an unplanned or reassembled frame keeps [`Self::position`]'s behaviour.
+    /// When the frame's own `step` names this exact row in the plan it wins (a second repeated row
+    /// settles at its own position, not the first match's); otherwise the first planned match is
+    /// used, so an unplanned or reassembled frame keeps [`Self::position`]'s behaviour.
     pub(super) fn position_at(&self, kind: &str, name: &str, frame_step: usize) -> (usize, usize) {
         let total = self.outer_total.max(self.plan.len());
         let index = frame_step

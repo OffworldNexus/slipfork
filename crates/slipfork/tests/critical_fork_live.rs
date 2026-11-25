@@ -219,41 +219,30 @@ fn processes_naming(scope: &Path) -> Vec<u32> {
     found
 }
 
-/// Makes one directory read-only and restores its original mode on drop, so a failed assertion
-/// cannot leave the isolated registry locked for the lab teardown.
-struct UnwritableDir {
-    path: PathBuf,
-    mode: u32,
+/// Refuses the fork's lease publish for real: `Lease::write_atomic` writes
+/// `<world>/.slipfork-lease.json.tmp-<daemon pid>` before renaming it, and the parent world's CoW
+/// snapshot inherits a directory planted at that exact temp name, so the publish `fs::write`
+/// fails with `EISDIR` after every pod booted. The parent's live lease is never touched.
+struct BlockedLeaseInstall {
+    tmp: PathBuf,
 }
 
-impl UnwritableDir {
-    fn new(path: &Path) -> Self {
-        let mode = fs::metadata(path)
-            .unwrap_or_else(|error| {
-                fail_closed(&format!(
-                    "stat the isolated registry `{}`: {error}",
-                    path.display()
-                ))
-            })
-            .permissions()
-            .mode()
-            & 0o7777;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o555)).unwrap_or_else(|error| {
+impl BlockedLeaseInstall {
+    fn new(world_dir: &Path, daemon_pid: u32) -> Self {
+        let tmp = world_dir.join(format!(".slipfork-lease.json.tmp-{daemon_pid}"));
+        fs::create_dir(&tmp).unwrap_or_else(|error| {
             fail_closed(&format!(
-                "lock the isolated registry `{}`: {error}",
-                path.display()
+                "plant the refused publish temp `{}`: {error}",
+                tmp.display()
             ))
         });
-        Self {
-            path: path.to_path_buf(),
-            mode,
-        }
+        Self { tmp }
     }
 }
 
-impl Drop for UnwritableDir {
+impl Drop for BlockedLeaseInstall {
     fn drop(&mut self) {
-        let _ = fs::set_permissions(&self.path, fs::Permissions::from_mode(self.mode));
+        let _ = fs::remove_dir(&self.tmp);
     }
 }
 
@@ -349,7 +338,7 @@ struct Lab {
     project: PathBuf,
     runtime: PathBuf,
     store_root: PathBuf,
-    /// Isolated `$XDG_STATE_HOME`: the daemon's `worlds.json`, lock, and log live under it.
+    /// Isolated `$XDG_STATE_HOME`: the daemon's SQLite ledger, lock, and log live under it.
     state_home: PathBuf,
 }
 
@@ -359,7 +348,7 @@ impl Lab {
         assert_ne!(
             unsafe { libc::geteuid() },
             0,
-            "the rollback journey must run as the unprivileged slipfork lab user; root bypasses 0o555"
+            "the rollback journey must run as the unprivileged slipfork lab user; root bypasses filesystem refusals"
         );
         let Some(test_root) =
             std::env::var_os("SLIPFORK_TEST_ROOT").filter(|root| !root.is_empty())
@@ -448,6 +437,20 @@ impl Lab {
 
     fn run(&self, args: &[&str]) -> Output {
         self.run_in(&self.project, args)
+    }
+
+    /// The one `__daemon` serving this lab runtime; its pid names the lease publish temp file.
+    fn daemon_pid(&self) -> u32 {
+        daemons_for(&self.runtime)
+            .into_iter()
+            .find(|pid| {
+                fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|cmdline| {
+                    cmdline
+                        .split(|byte| *byte == 0)
+                        .any(|arg| arg == b"__daemon")
+                })
+            })
+            .expect("the lab must have one `__daemon` for its runtime")
     }
 
     fn run_in(&self, directory: &Path, args: &[&str]) -> Output {
@@ -1361,8 +1364,10 @@ fn failed_fork_publish_rolls_back_without_leaking() {
     let rollback_project = canonical_parent.join(".forks/rollback");
     let rollback_world = lab.store_root.join("worlds/rollback--demo");
     let state_dir = lab.state_home.join("slipfork");
-    // An unwritable registry makes the fork's own `ready` publish fail for real: no mocks.
-    let locked = UnwritableDir::new(&state_dir);
+    // A directory planted at the daemon's lease publish temp name is inherited by the fork's own
+    // world snapshot, so `Lease::write_atomic`'s `fs::write` is refused with `EISDIR` after every
+    // pod booted; the parent's live lease is untouched: a real refusal, no mocks.
+    let blocked = BlockedLeaseInstall::new(&lab.store_root.join("worlds/demo"), lab.daemon_pid());
     let failed = lab.run(&["fork", "rollback", "--json"]);
     // `--json` reports the daemon failure as a final `{"error": …}` frame on stdout.
     let transcript = format!(
@@ -1372,11 +1377,22 @@ fn failed_fork_publish_rolls_back_without_leaking() {
     );
     assert!(
         !failed.status.success(),
-        "an unwritable registry must fail the fork: {transcript}"
+        "a refused lease publish must fail the fork: {transcript}"
     );
     assert!(
-        transcript.contains("worlds.json"),
-        "the fork must fail writing the registry, not during boot: {transcript}"
+        transcript.contains(".slipfork-lease.json"),
+        "the fork must fail publishing its lease, not during boot: {transcript}"
+    );
+    // `--json` carries its one remedy in `error.next` (never a literal `next:` line), so exactly
+    // one remedy key may appear and the message must not smuggle an embedded one.
+    assert_eq!(
+        transcript.matches("\"next\":").count(),
+        1,
+        "one refused publish surfaces exactly one remedy: {transcript}"
+    );
+    assert!(
+        !transcript.contains("next:"),
+        "a `--json` failure must not carry a second `next:` remedy: {transcript}"
     );
     assert!(
         !transcript.contains("exited with"),
@@ -1436,20 +1452,11 @@ fn failed_fork_publish_rolls_back_without_leaking() {
         "no supervisor or pod may survive a rolled-back fork: {:?}",
         processes_naming(&rollback_project)
     );
-    let registry: Vec<serde_json::Value> =
-        serde_json::from_slice(&fs::read(state_dir.join("worlds.json")).expect("worlds.json"))
-            .expect("worlds.json is JSON");
+    // The blocker is only needed for the refusal: remove it before the ledger view and the retry.
+    std::mem::drop(blocked);
     assert!(
-        !registry
-            .iter()
-            .any(|entry| entry["project"].as_str() == rollback_project.to_str()),
-        "worlds.json must not retain the failed fork: {registry:?}"
-    );
-    assert!(
-        registry
-            .iter()
-            .any(|entry| entry["project"].as_str() == canonical_parent.to_str()),
-        "rolling back a fork must not drop the live parent world: {registry:?}"
+        state_dir.join("state.db").is_file(),
+        "the daemon's SQLite ledger lives at `state.db`, not `worlds.json`"
     );
     // The daemon's live view must agree: parent present, no rolled-back fork row or nested fork.
     fn world_rows<'a>(rows: &'a [serde_json::Value], out: &mut Vec<&'a serde_json::Value>) {
@@ -1477,8 +1484,8 @@ fn failed_fork_publish_rolls_back_without_leaking() {
             .any(|row| row["world"] == "rollback--demo" || row["fork"] == "rollback"),
         "the daemon must not report a rolled-back fork: {status_reply}"
     );
-    std::mem::drop(locked);
-    // With the registry writable again the same name must pass preflight and boot to `ready`.
+    // The ledger is writable again and the parent lease is restored, so the same name must pass
+    // preflight and boot to `ready`.
     let retry = lab.run(&["fork", "rollback", "--json"]);
     let retry_stderr = String::from_utf8_lossy(&retry.stderr);
     assert!(
@@ -1496,7 +1503,7 @@ fn failed_fork_publish_rolls_back_without_leaking() {
 }
 
 /// One isolated real-Btrfs scratch world shared by both fork journeys: an owner-shaped checkout,
-/// a tmpfs daemon runtime, and an isolated `$XDG_STATE_HOME` (its own `worlds.json` and lock).
+/// a tmpfs daemon runtime, and an isolated `$XDG_STATE_HOME` (its own SQLite ledger and lock).
 /// `plain()` is a checkout without a `Dockerfile` (the `fork` copy path); `root_context()` holds
 /// `.git` at the context root, where a `fork` branch switch is a real build-input test.
 struct ForkLab {
@@ -1715,14 +1722,25 @@ impl ForkLab {
         .unwrap_or_else(|error| panic!("parse the `{world}` world stamp: {error}"))
     }
 
-    /// The sealed read-only rootfs the world stamp recorded for the `app` image.
+    /// The sealed read-only rootfs the daemon's `WorldHeads` recorded for the `app` image.
     fn image_rootfs(&self, world: &str) -> PathBuf {
-        let stamp = self.stamp(world);
+        let path = self
+            .runtime
+            .join("slipfork/heads")
+            .join(format!("{world}.json"));
+        let heads: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap_or_else(|error| {
+                panic!(
+                    "read the `{world}` daemon heads `{}`: {error}",
+                    path.display()
+                )
+            }))
+            .unwrap_or_else(|error| panic!("parse the `{world}` daemon heads: {error}"));
         PathBuf::from(
-            stamp["images"]["app"]["rootfs"]
+            heads["images"]["app"]["rootfs"]
                 .as_str()
                 .unwrap_or_else(|| {
-                    panic!("the `{world}` stamp must record the `app` image rootfs: {stamp}")
+                    panic!("the `{world}` heads must record the `app` image rootfs: {heads}")
                 }),
         )
     }
@@ -2096,10 +2114,10 @@ fn fork_adopts_a_root_context_image_cached_across_a_branch_switch() {
     );
 }
 
-/// M3.133: `drop` is one four-row plan (`[1/4]`..`[4/4]`) plus one verdict under `NO_COLOR`,
-/// `--json` mirrors those steps, and an unreachable control plane surfaces one remedy only.
+/// M3.133: `drop` is one two-row plan (`[1/2]`..`[2/2]`, one row per step) plus one verdict under
+/// `NO_COLOR`, `--json` mirrors those steps, and an unreachable control plane surfaces one remedy.
 #[test]
-fn drop_prints_one_four_row_plan_and_json_mirrors_it() {
+fn drop_prints_one_two_row_plan_and_json_mirrors_it() {
     let _guard = LAB_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let lab = Lab::new();
     // One tiny service keeps this drop-focused journey fast and independent of the eight-pod demo.
@@ -2148,9 +2166,7 @@ fn drop_prints_one_four_row_plan_and_json_mirrors_it() {
         .lines()
         .filter(|line| !line.trim().is_empty())
         .collect();
-    assert_eq!(lines.len(), 5, "four frames + one verdict: {stdout:?}");
-    assert_eq!(lines[0], "→ [1/4] stop jello");
-    assert_eq!(lines[2], "→ [3/4] delete jello");
+    assert_eq!(lines.len(), 3, "two settled rows + one verdict: {stdout:?}");
     /// Exactly one real `ui/elapsed` token: `<1ms`, `\d+ms`, or `\d+\.\ds`.
     fn is_timing(token: &str) -> bool {
         if token == "<1ms" {
@@ -2171,10 +2187,10 @@ fn drop_prints_one_four_row_plan_and_json_mirrors_it() {
             && fraction.bytes().all(|byte| byte.is_ascii_digit())
     }
     for (line, prefix) in [
-        (lines[1], "✓ [2/4] stop    jello  done  pods stopped  "),
+        (lines[0], "✓ [1/2] stop    jello  done  pods stopped  "),
         (
-            lines[3],
-            "✓ [4/4] delete  jello  done  project + world data  ",
+            lines[1],
+            "✓ [2/2] delete  jello  done  project + world data  ",
         ),
     ] {
         let timing = line
@@ -2185,9 +2201,9 @@ fn drop_prints_one_four_row_plan_and_json_mirrors_it() {
         assert!(is_timing(tokens[0]), "real elapsed grammar: {line:?}");
     }
     assert!(
-        lines[4].starts_with("✓ Dropped jello (") && lines[4].ends_with(')'),
+        lines[2].starts_with("✓ Dropped jello (") && lines[2].ends_with(')'),
         "one verdict: {:?}",
-        lines[4]
+        lines[2]
     );
 
     // The same plan in the machine transcript: one `plan` frame, four stepped frames, summary last.
@@ -2202,8 +2218,8 @@ fn drop_prints_one_four_row_plan_and_json_mirrors_it() {
         .iter()
         .find(|frame| frame["event"] == "plan")
         .expect("drop must announce one plan");
-    assert_eq!(plan["total"], 4, "{plan}");
-    assert_eq!(plan["rows"].as_array().map(Vec::len), Some(4), "{plan}");
+    assert_eq!(plan["total"], 2, "{plan}");
+    assert_eq!(plan["rows"].as_array().map(Vec::len), Some(2), "{plan}");
     let phases: Vec<&serde_json::Value> = frames
         .iter()
         .filter(|frame| matches!(frame["event"].as_str(), Some("started" | "finished")))
@@ -2212,10 +2228,10 @@ fn drop_prints_one_four_row_plan_and_json_mirrors_it() {
     for (frame, (step, kind)) in
         phases
             .iter()
-            .zip([(1, "stop"), (2, "stop"), (3, "delete"), (4, "delete")])
+            .zip([(1, "stop"), (1, "stop"), (2, "delete"), (2, "delete")])
     {
         assert_eq!(frame["step"], step, "{frame}");
-        assert_eq!(frame["total"], 4, "{frame}");
+        assert_eq!(frame["total"], 2, "{frame}");
         assert_eq!(frame["kind"], kind, "{frame}");
         assert_eq!(frame["name"], "jello", "{frame}");
     }

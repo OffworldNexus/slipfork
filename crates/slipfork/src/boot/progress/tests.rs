@@ -234,25 +234,23 @@ fn the_label_switches_between_the_build_step_and_the_outer_step() {
     assert_eq!(progress.label(), "Booting demo");
 }
 
-/// M3.133: a `drop` plan repeats `(stop, jello)` and `(delete, jello)`; each frame's own step
-/// must resolve its row, so the settled stop prints `[2/4]` rather than the first match.
+/// M3.133: a two-row `drop` plan announces each `(kind, name)` once; each frame's own step must
+/// resolve its row, and a frame pointing at another row falls back to the first planned match.
 #[test]
-fn a_repeated_plan_row_resolves_from_the_frame_step() {
-    let rows: Vec<(String, String)> = ["stop", "stop", "delete", "delete"]
+fn a_two_row_drop_plan_resolves_each_frames_own_step() {
+    let rows: Vec<(String, String)> = ["stop", "delete"]
         .into_iter()
         .map(|kind| (kind.to_owned(), "jello".to_owned()))
         .collect();
     let mut progress = BootProgress::new("Dropping jello");
-    progress.announce(&rows, 4);
-    assert_eq!(progress.position_at("stop", "jello", 1), (1, 4));
-    assert_eq!(progress.position_at("stop", "jello", 2), (2, 4));
-    assert_eq!(progress.position_at("delete", "jello", 3), (3, 4));
-    assert_eq!(progress.position_at("delete", "jello", 4), (4, 4));
+    progress.announce(&rows, 2);
+    assert_eq!(progress.position_at("stop", "jello", 1), (1, 2));
+    assert_eq!(progress.position_at("delete", "jello", 2), (2, 2));
     // A frame whose step points at another row falls back to the first planned match.
-    assert_eq!(progress.position_at("stop", "jello", 3), (1, 4));
-    assert_eq!(progress.settled("stop", "jello", (2, 4)), (2, 4));
-    assert_eq!(progress.settled("delete", "jello", (4, 4)), (4, 4));
-    assert_eq!(progress.settled("stop", "jello", (0, 0)), (1, 4));
+    assert_eq!(progress.position_at("stop", "jello", 2), (1, 2));
+    assert_eq!(progress.settled("stop", "jello", (1, 2)), (1, 2));
+    assert_eq!(progress.settled("delete", "jello", (2, 2)), (2, 2));
+    assert_eq!(progress.settled("stop", "jello", (0, 0)), (1, 2));
 }
 
 /// M3.133: on a unique plan the frame-derived lookup can never move a row away from its plan
