@@ -65,6 +65,29 @@ Each `image` declares a rootfs and encloses the `service`s and hooks that run in
 | `image api ./backend { ... }` | Build in `./backend`; that directory is the default `workdir` |
 | `image mailpit from axllent/mailpit:latest { ... }` | Pull OCI layers over HTTPS |
 | `arg KEY = <expr>` | Build-time value; `secret(...)` is rejected statically |
+| `service web { port 3000 }` | Exposes the running `web.port` and `web.name` to `arg` |
+
+`arg` expressions read the same flat symbol namespace as `env`, so a service's running port flows straight into the `Dockerfile`:
+
+```forkfile
+postgres pg { database app_db }
+redis cache
+
+image api . {
+  arg DB_URL = app_db.url
+  arg REDIS_PORT = cache.port
+  arg PORT = web.port
+  on dev { arg DEBUG = "1" }
+
+  service web {
+    port 3000
+    route /
+    run: app --port $port
+  }
+}
+```
+
+A service's `port` must be declared unconditionally in its body; a `port` inside `on dev` never satisfies `web.port`. An arg whose expression does not evaluate fails at `Forkfile:line:col`, naming the arg and the valid properties; no build arg is ever silently dropped.
 
 `workdir`, `dockerfile` and `stage` override inside the block. Build-time `arg`s are never runtime `env`, and a secret-tainted `arg` in any `on` branch fails the file.
 

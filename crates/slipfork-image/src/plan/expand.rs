@@ -332,3 +332,46 @@ fn expand_command(command: &Command, variables: &Variables) -> Command {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pairs(port: &str) -> BTreeMap<String, String> {
+        BTreeMap::from([("PORT".to_owned(), port.to_owned())])
+    }
+
+    /// `arg PORT = web.port` reaches the step cache: a changed value mints a new step key, so the
+    /// image rebuilds; identical values keep the key, so it does not.
+    #[test]
+    fn a_changed_arg_value_rekeys_the_step_and_identical_args_stay_stable() {
+        let parent = NodeKey::image(
+            "amd64",
+            &NodeKey::base("amd64", "sha256:parent", "linux/amd64"),
+            "FROM app",
+            "config",
+        );
+        let config = ImageConfig::default().fingerprint();
+        let key = |args: &BTreeMap<String, String>| {
+            NodeKey::step_with_inputs(
+                "amd64",
+                std::slice::from_ref(&parent),
+                "RUN run-app",
+                &config,
+                &args_pairs(args),
+                &[],
+            )
+        };
+        let prod = key(&pairs("3000"));
+        assert_ne!(
+            prod,
+            key(&pairs("5173")),
+            "a changed `arg` value must rebuild the step"
+        );
+        assert_eq!(
+            prod,
+            key(&pairs("3000")),
+            "identical args keep the step key"
+        );
+    }
+}

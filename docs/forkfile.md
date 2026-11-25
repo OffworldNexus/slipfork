@@ -99,6 +99,29 @@ image frontend ./front {
 | `image mailpit from axllent/mailpit:latest { ... }` | Pull an OCI image over HTTPS |
 | `dockerfile <path>` / `stage <name>` / `workdir <path>` | Overrides inside the block |
 | `arg KEY = <expr>` | Build-time only; `secret(...)` is rejected statically |
+| `service web { port 3000 }` | Exposes the running `web.port` and `web.name` to `arg` |
+
+```forkfile
+postgres pg { database app_db }
+redis cache
+
+image api . {
+  arg DB_URL = app_db.url
+  arg REDIS_PORT = cache.port
+  arg PORT = web.port
+  on dev { arg DEBUG = "1" }
+
+  service web {
+    port 3000
+    route /
+    run: app --port $port
+  }
+}
+```
+
+Declare `port` unconditionally in the service body; an active `on dev { port 5173 }` may still
+override the running port at boot. An arg whose expression does not evaluate is a
+`Forkfile:line:col` error naming the arg, never a silently dropped build arg.
 
 Every `service` and hook inside the block inherits the rootfs, the default `workdir`, `use env`
 groups and the bind-mounted project subvolume.

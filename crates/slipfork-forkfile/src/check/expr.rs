@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use super::SymbolTable;
-use crate::ast::secret_property;
+use crate::ast::{ArgDecl, secret_property};
 use crate::diag::{Diagnostic, Diagnostics};
 use crate::expr::{Expr, ExprKind, InterpPart};
 use crate::span::Span;
@@ -81,11 +81,25 @@ pub(super) fn check_value(
             }
             tainted
         }
-        ExprKind::Var(_)
-        | ExprKind::GeneratedVar { .. }
-        | ExprKind::String(_)
-        | ExprKind::Int(_) => false,
-        ExprKind::Bool(_) | ExprKind::Feature(_) => false,
+        ExprKind::Var(name) | ExprKind::GeneratedVar { key: name, .. } => {
+            if mode == ValueMode::Build {
+                diags.push(Diagnostic::new(
+                    expr.span,
+                    format!(
+                        "`var({name})` exists only at runtime, so a build-time `arg` cannot read it"
+                    ),
+                    "move it into `env { ... }`",
+                ));
+            }
+            false
+        }
+        ExprKind::String(_) | ExprKind::Int(_) | ExprKind::Bool(_) => false,
+        ExprKind::Feature(_) => {
+            if mode == ValueMode::Build {
+                reject_feature_condition(expr.span, diags);
+            }
+            false
+        }
         ExprKind::Port | ExprKind::EnvVar(_) => {
             if mode == ValueMode::Build {
                 diags.push(Diagnostic::new(
@@ -94,6 +108,10 @@ pub(super) fn check_value(
                     "move runtime values into `env { ... }`",
                 ));
             }
+            false
+        }
+        ExprKind::Not(_) | ExprKind::And(..) | ExprKind::Or(..) if mode == ValueMode::Build => {
+            reject_feature_condition(expr.span, diags);
             false
         }
         ExprKind::Not(inner) => check_value(inner, mode, symbols, diags),
@@ -114,6 +132,27 @@ pub(super) fn check_value(
             let right = check_value(right, mode, symbols, diags);
             left | right
         }
+    }
+}
+
+fn reject_feature_condition(span: Span, diags: &mut Diagnostics) {
+    diags.push(Diagnostic::new(
+        span,
+        "a build-time `arg` needs a value, not a feature condition",
+        "select the value per feature with `on dev: arg PORT = \"5173\"`",
+    ));
+}
+
+/// Types one build-time `arg`, naming the arg in every diagnostic it raises.
+pub(super) fn check_arg(arg: &ArgDecl, symbols: &SymbolTable, diags: &mut Diagnostics) {
+    let mut inner = Diagnostics::new();
+    check_value(&arg.value, ValueMode::Build, symbols, &mut inner);
+    for diagnostic in inner.items {
+        diags.push(Diagnostic::new(
+            diagnostic.span,
+            format!("`arg {}`: {}", arg.key, diagnostic.message),
+            diagnostic.next,
+        ));
     }
 }
 
@@ -179,6 +218,16 @@ fn property_taint(
             format!(
                 "use `{base}.` followed by one of `{}`",
                 properties.join("`, `")
+            ),
+        ));
+        return false;
+    }
+    if symbol.kind == super::SymbolKind::Service && prop == "port" && symbol.port.is_none() {
+        diags.push(Diagnostic::new(
+            span,
+            format!("service `{base}` has no unconditional `port`"),
+            format!(
+                "declare `port 3000` unconditionally inside `service {base}`, or use `{base}.name`"
             ),
         ));
         return false;
