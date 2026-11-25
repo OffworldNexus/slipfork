@@ -16,6 +16,9 @@ flowchart LR
 !!! warning "Zero mocks & real disk only (never RAM `/tmp`)"
     `Mock*`, `Fake*`, `Stub*`, `Recording*`, in-memory vaults, `sleep()` benchmark simulations, and `chmod 0o555` shims are banned; the only stand-ins are minimal `127.0.0.1:0` loopback reference servers (`OSPP v1` and `Distribution v2`). Heavy test state (worktrees, OCI caches, `PGDATA`, Btrfs subvolumes, Cargo scratch) must live on real disk under `/var/tmp`, `~/.cache/slipfork`, `.slipfork/`, or the Btrfs mount — never on RAM-backed `/tmp` `tmpfs` — and `SLIPFORK_TEST_ROOT` must resolve to a real Btrfs disk path.
 
+!!! note "A live run never tests an installed helper the checkout did not build"
+    `SLIPFORK_WORLD_INIT` names the `slipfork-world-init` beside the `slipfork` under test: `tools/do_vm.py test` and `make live-test` build it from this checkout and export that path to every suite. A `PATH` copy outside the binary's own output directory (typically a stale `/usr/bin/slipfork-world-init` from an older install) that predates the binary under test is refused with one line naming both paths and `next: cargo build -p slipfork-world --bin slipfork-world-init` — it is never booted and never silently passes.
+
 ---
 
 ## 1. Enclosing `image` Scopes, Native Rust S3 & Ingress Parity
@@ -67,4 +70,4 @@ flowchart LR
 
 ## 5. Running the Protected Live & Workspace Gates
 
-The twelve Btrfs/VM live suites (`critical_btrfs_live`, `fork_flat_live`, `critical_oci_live`, `critical_dockerfile_live`, `critical_pod_runtime`, `pod_control_lab`, `critical_world_journey`, `critical_heads_live`, `critical_status_live`, `critical_fork_live`, `critical_registry_live`, `image_rpc`) run sequentially on real Btrfs + `crun` (`165.232.86.174` via `tools/do_vm.py sync && tools/do_vm.py test` or locally via real Btrfs `SLIPFORK_TEST_ROOT=<btrfs-mount> make live-test`) and **fail closed with a 1-line remedy** when Btrfs, namespaces, or `crun` are missing. Every other `critical_*` suite (`critical_ospp`, `critical_ingress`, `critical_cli_surface`, `critical_daemon`, `critical_host_verbs`, `critical_fmt_migrate`, `critical_forkfile`, `critical_lsp`) remains protected by `tools/critical_guard.py` and must stay green in the same gate (`cargo test --workspace`).
+The thirteen Btrfs/VM live suites (`critical_btrfs_live`, `fork_flat_live`, `critical_oci_live`, `critical_dockerfile_live`, `critical_pod_runtime`, `pod_control_lab`, `pod_run_live`, `critical_world_journey`, `critical_heads_live`, `critical_status_live`, `critical_fork_live`, `critical_registry_live`, `image_rpc`) run sequentially on real Btrfs + `crun` (`165.232.86.174` via `tools/do_vm.py sync && tools/do_vm.py test` or locally via real Btrfs `SLIPFORK_TEST_ROOT=<btrfs-mount> make live-test`) and **fail closed with a 1-line remedy** when Btrfs, namespaces, or `crun` are missing. Every other `critical_*` suite (`critical_ospp`, `critical_ingress`, `critical_cli_surface`, `critical_daemon`, `critical_host_verbs`, `critical_fmt_migrate`, `critical_forkfile`, `critical_lsp`) remains protected by `tools/critical_guard.py` and must stay green in the same gate (`cargo test --workspace`).

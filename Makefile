@@ -5,6 +5,10 @@ UVX ?= uvx
 # Point this at a directory on a real Btrfs mount (a loop file is fine); never `/tmp`.
 SLIPFORK_TEST_ROOT ?=
 LIVE_RUNTIME_DIR ?= /dev/shm/sf-live-runtime
+# The suites boot the helper this checkout builds, never an installed `/usr/bin` copy.
+LIVE_PROFILE ?= debug
+LIVE_CARGO_PROFILE := $(if $(filter release,$(LIVE_PROFILE)),--release,)
+LIVE_WORLD_INIT ?= $(TARGET_DIR)/$(LIVE_PROFILE)/slipfork-world-init
 LIVE_SUITES := \
 	slipfork-world/critical_btrfs_live \
 	slipfork-world/fork_flat_live \
@@ -12,6 +16,7 @@ LIVE_SUITES := \
 	slipfork-image/critical_dockerfile_live \
 	slipfork-world/critical_pod_runtime \
 	slipfork-world/pod_control_lab \
+	slipfork-world/pod_run_live \
 	slipfork/critical_world_journey \
 	slipfork/critical_heads_live \
 	slipfork/critical_status_live \
@@ -130,6 +135,11 @@ live-test:
 	@rm -rf "$(SLIPFORK_TEST_ROOT)/home" "$(SLIPFORK_TEST_ROOT)/tmp" && install -d -m 700 "$(SLIPFORK_TEST_ROOT)" "$(SLIPFORK_TEST_ROOT)/home" "$(SLIPFORK_TEST_ROOT)/tmp" || { echo "live-test: cannot create $(SLIPFORK_TEST_ROOT)/home; next: sudo chown \"$$(id -u):$$(id -g)\" $(SLIPFORK_TEST_ROOT)" >&2; exit 2; } && \
 		chmod 700 "$(SLIPFORK_TEST_ROOT)/home" "$(SLIPFORK_TEST_ROOT)/tmp" && \
 		rm -rf "$(LIVE_RUNTIME_DIR)" && install -d -m 700 "$(LIVE_RUNTIME_DIR)"
+	@case "$(LIVE_PROFILE)" in debug|release) ;; *) \
+		echo "live-test: unknown LIVE_PROFILE=$(LIVE_PROFILE); next: LIVE_PROFILE=debug make live-test" >&2; exit 2 ;; esac
+	@$(CARGO) build $(LIVE_CARGO_PROFILE) --target-dir "$(TARGET_DIR)" -p slipfork-world --bin slipfork-world-init
+	@test -x "$(LIVE_WORLD_INIT)" || { \
+		echo "live-test: $(LIVE_WORLD_INIT) is missing; next: $(CARGO) build $(LIVE_CARGO_PROFILE) --target-dir \"$(TARGET_DIR)\" -p slipfork-world --bin slipfork-world-init" >&2; exit 2; }
 	@set -e; live_cargo_home="$${CARGO_HOME:-$$HOME/.cargo}"; \
 		live_rustup_home="$${RUSTUP_HOME:-$$HOME/.rustup}"; \
 		for suite in $(LIVE_SUITES); do \
@@ -138,7 +148,8 @@ live-test:
 		HOME="$(SLIPFORK_TEST_ROOT)/home" TMPDIR="$(SLIPFORK_TEST_ROOT)/tmp" \
 			CARGO_HOME="$$live_cargo_home" RUSTUP_HOME="$$live_rustup_home" \
 			XDG_RUNTIME_DIR="$(LIVE_RUNTIME_DIR)" SLIPFORK_TEST_ROOT="$(SLIPFORK_TEST_ROOT)" \
-			$(CARGO) test -p "$$pkg" --features "$$pkg/live" --test "$$test" -- --test-threads=1; \
+			SLIPFORK_WORLD_INIT="$(abspath $(LIVE_WORLD_INIT))" \
+			$(CARGO) test $(LIVE_CARGO_PROFILE) --target-dir "$(TARGET_DIR)" -p "$$pkg" --features "$$pkg/live" --test "$$test" -- --test-threads=1; \
 	done
 
 # ---------------------------------------------------------------------------

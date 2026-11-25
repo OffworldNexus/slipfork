@@ -2179,7 +2179,12 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
 
 def suite_command(command: str) -> str:
-    """One fixed envelope for every unprivileged remote suite command."""
+    """One fixed envelope for every unprivileged remote suite command.
+
+    `SLIPFORK_WORLD_INIT` names the helper beside the `slipfork` this run built, so a suite never
+    boots a `/usr/bin` copy left from an older build (the product refuses one that is older, but
+    the harness must not make it guess at all).
+    """
     inner = (
         f"cd {REMOTE_TREE} && "
         f'runtime={SUITE_RUNTIME_DIR} && rm -rf "$runtime" && install -d -m 700 "$runtime" && '
@@ -2190,6 +2195,7 @@ def suite_command(command: str) -> str:
         f"HOME={SUITE_HOME} TMPDIR={SUITE_HOME}/tmp "
         f"XDG_RUNTIME_DIR={SUITE_RUNTIME_DIR} "
         f"SLIPFORK_TEST_ROOT={SUITE_TEST_ROOT} "
+        f"SLIPFORK_WORLD_INIT={REMOTE_TREE}/target/{BUILD_PROFILE}/slipfork-world-init "
         f"CARGO_HOME={REMOTE_HOME}/.cargo RUSTUP_HOME={REMOTE_HOME}/.rustup "
         f"PATH={REMOTE_HOME}/.cargo/bin:/usr/local/bin:/usr/bin:/bin "
     ) + command

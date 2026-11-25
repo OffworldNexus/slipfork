@@ -8,6 +8,7 @@
 pub(crate) mod features;
 mod fork;
 mod heads;
+mod init;
 mod runtime;
 mod supervise;
 mod target;
@@ -150,13 +151,11 @@ impl HostEnv {
     }
 
     pub(super) fn init_binary(&self) -> Result<PathBuf, String> {
-        let sibling = self.exe.parent().map(|dir| dir.join("slipfork-world-init"));
-        if let Some(path) = sibling
-            && path.is_file()
-        {
-            return Ok(path);
-        }
-        self.tool("slipfork-world-init")
+        init::resolve(
+            &self.exe,
+            &self.path,
+            self.env.get("SLIPFORK_WORLD_INIT").map(String::as_str),
+        )
     }
 }
 
