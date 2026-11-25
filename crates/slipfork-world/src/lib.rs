@@ -30,6 +30,8 @@ mod error;
 #[allow(unsafe_code)]
 pub mod fdpass;
 mod layout;
+#[allow(unsafe_code)]
+pub mod ledger;
 mod log_store;
 pub mod namespaces;
 mod pod;
@@ -78,6 +80,12 @@ pub use fdpass::{PAYLOAD_CAP, recv_fd, send_fd};
 pub use layout::{
     FORKS_DIR, ForkDir, ForkName, PODS_DIR, ProjectScope, STORE_DIR, StoreLayout, WorldName,
     fork_checkout, fork_checkouts, fork_under, fork_world_id, project_root, world_id_for_project,
+};
+pub use ledger::{
+    Access, ConvergeAction, ConvergeInput, ForkLedger, ForkRequest, ForkRow, LeaseState,
+    LedgerError, LedgerResult, LedgerRows, LiveFork, OrphanWorld, Resolved, RootRequest, StateDb,
+    StatePaths, UnregisteredFork, UntrackedKind, WorldFacts, WorldRow, WorldState, plan_converge,
+    resolve_target,
 };
 pub use log_store::{LogStore, RETAIN_RUNS};
 pub use namespaces::{NAMESPACE_KINDS, NamespaceIdentity, NamespaceTable};
