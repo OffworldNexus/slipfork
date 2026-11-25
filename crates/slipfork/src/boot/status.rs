@@ -11,7 +11,7 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use crate::ui::Palette;
+use crate::ui::report::Palette;
 use crate::ui::report::Pane;
 
 use super::build::LiveSteps;

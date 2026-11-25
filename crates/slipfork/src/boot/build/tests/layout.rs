@@ -5,7 +5,7 @@ use serde_json::json;
 use super::super::super::layout::truncate_visible;
 use super::super::{Action, Columns, LiveKey, Narrative, Phase, gutter_line, wrap_gutter};
 use super::phase;
-use crate::ui::Palette;
+use crate::ui::report::Palette;
 
 #[test]
 fn instruction_and_target_columns_pad_to_the_image_wide_columns() {

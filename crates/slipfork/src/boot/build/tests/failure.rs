@@ -3,7 +3,7 @@
 use serde_json::json;
 
 use super::super::{Action, Narrative};
-use crate::ui::Palette;
+use crate::ui::report::Palette;
 
 fn printed_rows(actions: &[Action]) -> Vec<String> {
     actions

@@ -6,7 +6,7 @@
 use std::io::{self, Write};
 use std::process::ExitCode;
 
-use crate::ui::Palette;
+use super::Palette;
 
 use super::failure::Failure;
 use super::model::{Entry, Report, Section, StreamKind};

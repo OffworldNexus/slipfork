@@ -6,7 +6,7 @@ use serde_json::json;
 use super::super::{Columns, LiveKey, Narrative, Phase};
 use crate::boot::progress::BootProgress;
 use crate::boot::render::{OuterWidths, completed_row, counter, digits, outer_row, outer_widths};
-use crate::ui::Palette;
+use crate::ui::report::Palette;
 use crate::ui::report::{Counter as PlanCounter, Done, Outcome, Row};
 
 #[test]

@@ -10,8 +10,8 @@ use slipfork_forkfile::FeatureEdit;
 use slipfork_forkfile::ast::Forkfile;
 
 use crate::commands::Session;
-use crate::ui::Palette;
-use crate::ui::table::{Column, Table};
+use crate::ui::report::Palette;
+use crate::ui::report::{Column, Table};
 use crate::world::WorldIdentities;
 use crate::world::features::WorldFeatures;
 

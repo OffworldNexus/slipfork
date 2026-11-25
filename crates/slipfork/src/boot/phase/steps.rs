@@ -149,7 +149,7 @@ impl LiveSteps {
         &self,
         spinner: char,
         width: usize,
-        palette: crate::ui::Palette,
+        palette: crate::ui::report::Palette,
     ) -> Option<String> {
         let step = self.steps.iter().max_by_key(|step| step.touched)?;
         Some(

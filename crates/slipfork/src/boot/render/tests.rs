@@ -4,7 +4,7 @@ use super::{
     BarProgress, OuterWidths, completed_row, dropped_row, outer_widths, panel_line, percent_of,
     status_line,
 };
-use crate::ui::Palette;
+use crate::ui::report::Palette;
 use crate::ui::report::{Counter, Done, Outcome, Row};
 
 /// M3.149: an overfull fraction (`4/3`, the shape a late `step` frame produces) must render a

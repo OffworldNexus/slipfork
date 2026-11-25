@@ -63,7 +63,9 @@ impl ConnectNotice {
     #[must_use]
     pub fn render(&self) -> String {
         match self {
-            Self::Ephemeral { color } => crate::ui::Palette::new(*color).meta(EPHEMERAL_HINT),
+            Self::Ephemeral { color } => {
+                crate::ui::report::Palette::new(*color).meta(EPHEMERAL_HINT)
+            }
         }
     }
 }

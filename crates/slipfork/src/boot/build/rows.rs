@@ -6,8 +6,8 @@
 
 use serde_json::Value;
 
-use crate::ui::Palette;
 use crate::ui::elapsed_text;
+use crate::ui::report::Palette;
 use crate::ui::report::{Counter, Done, Outcome, Row};
 
 use super::super::phase::{Phase, tail_label};

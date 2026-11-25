@@ -7,7 +7,7 @@ use super::StatusLine;
 use crate::boot::build::LiveSteps;
 use crate::boot::progress::BootProgress;
 use crate::boot::render::status_line;
-use crate::ui::Palette;
+use crate::ui::report::Palette;
 use crate::ui::report::Pane;
 
 fn status() -> StatusLine {

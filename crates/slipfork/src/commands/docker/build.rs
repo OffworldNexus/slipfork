@@ -519,7 +519,7 @@ mod tests {
             width: 4,
         });
         assert_eq!(
-            row.line(crate::ui::Palette::new(false)),
+            row.line(crate::ui::report::Palette::new(false)),
             "[1/1] workdir /app ✓ (1ms)"
         );
     }

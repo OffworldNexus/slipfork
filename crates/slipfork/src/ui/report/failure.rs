@@ -6,7 +6,9 @@
 
 use serde::Serialize;
 
-use crate::ui::{Palette, Verdict, elapsed_text};
+use super::Palette;
+use super::palette::Verdict;
+use crate::ui::elapsed_text;
 
 use super::row::FailureFacts;
 
@@ -229,7 +231,7 @@ impl FailureFacts {
 #[cfg(test)]
 mod tests {
     use super::Failure;
-    use crate::ui::Palette;
+    use crate::ui::report::Palette;
     use crate::ui::report::{Counter, FailureFacts};
 
     #[test]

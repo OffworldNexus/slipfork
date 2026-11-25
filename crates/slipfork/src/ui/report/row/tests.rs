@@ -1,7 +1,7 @@
 use std::num::NonZeroUsize;
 
 use super::{Counter, Done, FailureFacts, Outcome, Row, RowLevel, StepSettlement};
-use crate::ui::Palette;
+use crate::ui::report::Palette;
 
 fn counter(index: usize, total: usize) -> Option<Counter> {
     Some(Counter { index, total })

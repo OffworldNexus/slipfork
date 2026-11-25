@@ -6,8 +6,8 @@
 
 use serde_json::Value;
 
+use super::table::{Column, Table};
 use crate::ui::elapsed_text;
-use crate::ui::table::{Column, Table};
 
 use super::render::ReportRenderer;
 
@@ -108,8 +108,8 @@ impl ReportRenderer {
 #[cfg(test)]
 mod tests {
     use super::RunRow;
+    use crate::ui::report::visible_width;
     use crate::ui::report::{ReportRenderer, WallZone};
-    use crate::ui::table::visible_width;
     use crate::ui::{Terminal, UiMode, strip};
 
     fn row(run_id: &str, state: &str, duration_ms: u64) -> RunRow {

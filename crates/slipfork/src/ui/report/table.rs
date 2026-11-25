@@ -10,6 +10,8 @@
 //! renders every row, while a streaming caller measures from its plan and renders each row as it
 //! arrives — either way the grid is identical.
 
+use crate::ui::visible_width;
+
 /// The default gap between two adjacent columns.
 pub const GAP: &str = "  ";
 
@@ -164,16 +166,11 @@ fn push_padded(out: &mut String, cell: &str, width: usize, align: Align) {
     }
 }
 
-/// Visible width: [`console::measure_text_width`] drops every `ESC[ … m` sequence first.
-#[must_use]
-pub fn visible_width(text: &str) -> usize {
-    console::measure_text_width(text)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Column, ColumnWidths, Table, visible_width};
-    use crate::ui::paint;
+    use super::{Column, ColumnWidths, Table};
+    use crate::ui::report::paint::paint;
+    use crate::ui::report::visible_width;
 
     const PREFIX: [Column; 2] = [Column::left(), Column::right().at_least(6)];
 

@@ -17,7 +17,7 @@ fn plan() -> Vec<(String, String)> {
 #[test]
 fn a_fork_plan_keeps_one_denominator_and_the_magenta_keyword() {
     use crate::boot::render::{completed_row, outer_verb, outer_widths};
-    use crate::ui::Palette;
+    use crate::ui::report::Palette;
     use crate::ui::report::{Counter, Done, Outcome, Row};
 
     let plan: Vec<(String, String)> = [

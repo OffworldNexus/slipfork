@@ -6,7 +6,8 @@
 
 use std::io::{self, BufWriter, Write};
 
-use crate::ui::{Palette, Terminal, UiMode};
+use super::Palette;
+use crate::ui::{Terminal, UiMode};
 
 use super::model::{Entry, Report, StreamKind, Verdict};
 use super::wall::WallZone;

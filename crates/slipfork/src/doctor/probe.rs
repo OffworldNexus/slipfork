@@ -45,7 +45,7 @@ impl Part {
 
     /// The same fragment under the shipped palette.
     #[must_use]
-    pub fn render(&self, palette: &crate::ui::Palette) -> String {
+    pub fn render(&self, palette: &crate::ui::report::Palette) -> String {
         match self {
             Self::Path(text) => palette.path(text),
             Self::Meta(text) => palette.meta(text),

@@ -6,9 +6,9 @@ use std::process::ExitCode;
 use serde_json::{Value, json};
 
 use crate::commands::Session;
-use crate::ui::Palette;
+use crate::ui::report::Palette;
+use crate::ui::report::{Column, Table};
 use crate::ui::report::{Report, ReportRenderer, StreamKind};
-use crate::ui::table::{Column, Table};
 
 /// The three columns of one `secret list`: key, separator, redacted value.
 const SECRET: [Column; 3] = [Column::left(), Column::left(), Column::left()];

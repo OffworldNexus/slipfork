@@ -10,8 +10,8 @@ use std::process::ExitCode;
 use serde_json::json;
 use slipfork_forkfile::Diagnostics;
 
+use crate::ui::report::Palette;
 use crate::ui::report::{Failure, Report, StreamKind};
-use crate::ui::{Palette, paint};
 
 use super::Session;
 
@@ -226,6 +226,7 @@ impl Session {
 
 /// Tints diff removals red and additions green; never emits an escape otherwise.
 fn tint_diff(diff: &str, color: bool) -> String {
+    let palette = Palette::new(color);
     let mut out = String::new();
     for line in diff.lines() {
         let code = if line.starts_with("---") || line.starts_with("+++") || line.starts_with("@@") {
@@ -237,9 +238,10 @@ fn tint_diff(diff: &str, color: bool) -> String {
         } else {
             None
         };
-        match (color, code) {
-            (true, Some(code)) => out.push_str(&paint(line, code, true)),
-            _ => out.push_str(line),
+        if let Some(code) = code {
+            out.push_str(&palette.tint(line, code));
+        } else {
+            out.push_str(line);
         }
         out.push('\n');
     }

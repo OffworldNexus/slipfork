@@ -7,10 +7,10 @@
 
 use std::time::Duration;
 
-use crate::ui::Palette;
 pub use crate::ui::elapsed_text;
+use crate::ui::report::Palette;
 use crate::ui::report::Row;
-use crate::ui::table::visible_width;
+use crate::ui::report::visible_width;
 
 /// Appends `styled` followed by enough plain spaces to occupy `width` visible cells.
 ///

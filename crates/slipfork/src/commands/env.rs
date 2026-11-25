@@ -6,8 +6,8 @@ use serde_json::{Value, json};
 use slipfork_forkfile::FeatureEdit;
 
 use crate::commands::Session;
-use crate::ui::Palette;
-use crate::ui::table::{Column, Table};
+use crate::ui::report::Palette;
+use crate::ui::report::{Column, Table};
 
 /// The three columns of one `env` listing: key, separator, value.
 const ENV: [Column; 3] = [Column::left(), Column::left(), Column::left()];

@@ -16,8 +16,8 @@ use slipfork::boot::{
 };
 use slipfork::status::{self, Options};
 use slipfork::ui::elapsed_text;
+use slipfork::ui::report::visible_width;
 use slipfork::ui::report::{Counter, Done, Outcome, Row};
-use slipfork::ui::table::visible_width;
 use slipfork_world::{
     ForkLedger, ForkName, ForkRequest, LogStore, RootRequest, StatePaths, WorldName,
 };
@@ -206,11 +206,11 @@ fn every_boot_row_keeps_one_start_per_role_and_carries_its_plan_counter() {
     let widths = plan_widths(&rows.iter().collect::<Vec<_>>());
     let plain: Vec<String> = rows
         .iter()
-        .map(|row| completed_row(row, &widths, slipfork::ui::Palette::new(false)))
+        .map(|row| completed_row(row, &widths, slipfork::ui::report::Palette::new(false)))
         .collect();
     let styled: Vec<String> = rows
         .iter()
-        .map(|row| completed_row(row, &widths, slipfork::ui::Palette::new(true)))
+        .map(|row| completed_row(row, &widths, slipfork::ui::report::Palette::new(true)))
         .collect();
 
     for (index, row) in rows.iter().enumerate() {
@@ -267,15 +267,19 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
     );
     let widths = plan_widths(&[&row]);
     assert_eq!(
-        completed_row(&row, &widths, slipfork::ui::Palette::new(true)),
+        completed_row(&row, &widths, slipfork::ui::report::Palette::new(true)),
         "\u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  \u{1b}[32mcached\u{1b}[0m  \u{1b}[38;5;244m420ms\u{1b}[0m"
     );
     assert_eq!(
-        completed_row(&row, &widths, slipfork::ui::Palette::new(false)),
+        completed_row(&row, &widths, slipfork::ui::report::Palette::new(false)),
         "✓ [1/3] image  base  cached  420ms"
     );
-    assert!(!completed_row(&row, &widths, slipfork::ui::Palette::new(false)).contains(ANSI));
-    assert!(!completed_row(&row, &widths, slipfork::ui::Palette::new(false)).contains('\r'));
+    assert!(
+        !completed_row(&row, &widths, slipfork::ui::report::Palette::new(false)).contains(ANSI)
+    );
+    assert!(
+        !completed_row(&row, &widths, slipfork::ui::report::Palette::new(false)).contains('\r')
+    );
 
     let declined = Row::settled(
         Some(Counter { index: 2, total: 3 }),
@@ -286,11 +290,15 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
     );
     let widths = plan_widths(&[&declined]);
     assert_eq!(
-        completed_row(&declined, &widths, slipfork::ui::Palette::new(true)),
+        completed_row(&declined, &widths, slipfork::ui::report::Palette::new(true)),
         "\u{1b}[38;5;244m•\u{1b}[0m \u{1b}[38;5;244m[2/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  \u{1b}[32mup to date\u{1b}[0m  \u{1b}[38;5;244m420ms\u{1b}[0m"
     );
     assert_eq!(
-        completed_row(&declined, &widths, slipfork::ui::Palette::new(false)),
+        completed_row(
+            &declined,
+            &widths,
+            slipfork::ui::report::Palette::new(false)
+        ),
         "• [2/3] image  base  up to date  420ms"
     );
 

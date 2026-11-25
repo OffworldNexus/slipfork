@@ -11,9 +11,9 @@ use slipfork_world::ProjectScope;
 use std::collections::BTreeSet;
 
 use crate::ps::{PsReply, PsWorld, PsWorldState};
-use crate::ui::Palette;
 use crate::ui::report::Outcome;
-use crate::ui::table::{Column, ColumnWidths, Table};
+use crate::ui::report::Palette;
+use crate::ui::report::{Column, ColumnWidths, Table};
 
 use super::model::{Options, display_name, display_path, parse as decode};
 use super::rows::{DomainRows, RoutedRow, SupportRow, WorldRows, project};

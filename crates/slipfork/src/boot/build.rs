@@ -16,8 +16,8 @@ use std::sync::{Arc, Mutex};
 use serde_json::Value;
 use slipfork_world::snapshot::TailPhase;
 
-use crate::ui::Palette;
 use crate::ui::report::FailureFacts;
+use crate::ui::report::Palette;
 
 use self::rows::tail_row;
 use self::tally::ImageSteps;

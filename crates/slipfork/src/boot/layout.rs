@@ -4,7 +4,7 @@
 //! machine while every byte it prints stays testable in isolation. A `NO_COLOR` palette returns
 //! these same strings with zero escapes.
 
-use crate::ui::Palette;
+use crate::ui::report::Palette;
 
 use super::render::OuterWidths;
 

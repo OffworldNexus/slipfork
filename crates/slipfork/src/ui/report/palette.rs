@@ -4,9 +4,9 @@
 //! every method degrades to the exact input text when colour is off. No caller formats an SGR code
 //! by hand, so `NO_COLOR`, `TERM=dumb`, a pipe, and `--json` all emit zero `ESC[` bytes.
 
-use super::elapsed_text;
+use crate::ui::elapsed_text;
 
-use super::paint;
+use super::paint::paint;
 
 /// One settled run's verdict inputs, shared by every surface that prints the result line.
 #[derive(Debug, Clone, PartialEq, Eq)]

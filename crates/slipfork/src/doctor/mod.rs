@@ -9,9 +9,9 @@ use std::process::ExitCode;
 
 use serde_json::json;
 
-use crate::ui::Palette;
+use crate::ui::report::Palette;
 use crate::ui::report::ReportRenderer;
-use crate::ui::table::{Column, ColumnWidths, Table};
+use crate::ui::report::{Column, ColumnWidths, Table};
 use crate::world::HostEnv;
 
 pub use probe::{Doctor, Part};
@@ -141,8 +141,8 @@ impl Doctor {
 #[cfg(test)]
 mod tests {
     use super::{CHECK, Check, Doctor, Part, widths};
-    use crate::ui::Palette;
-    use crate::ui::table::Table;
+    use crate::ui::report::Palette;
+    use crate::ui::report::Table;
 
     fn doctor() -> Doctor {
         Doctor {

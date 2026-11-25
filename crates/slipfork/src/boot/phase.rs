@@ -11,8 +11,8 @@ use std::time::Instant;
 
 use slipfork_world::snapshot::TailPhase;
 
-use crate::ui::Palette;
 use crate::ui::elapsed_text;
+use crate::ui::report::Palette;
 
 use super::layout::{Columns, compose_live};
 use super::render::{counter, digits, outer_row, push_padded};
@@ -277,7 +277,7 @@ impl Phase {
 mod tests {
     use super::{LiveKey, LiveSteps, Phase, tail_label};
     use crate::boot::layout::Columns;
-    use crate::ui::Palette;
+    use crate::ui::report::Palette;
     use slipfork_world::snapshot::TailPhase;
 
     fn inner() -> Phase {

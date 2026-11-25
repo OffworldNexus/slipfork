@@ -3,7 +3,7 @@
 use serde_json::{Value, json};
 
 use super::super::{Action, Narrative};
-use crate::ui::Palette;
+use crate::ui::report::Palette;
 
 #[allow(clippy::too_many_arguments)]
 fn frame(

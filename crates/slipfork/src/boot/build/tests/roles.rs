@@ -8,7 +8,7 @@ use super::super::{Columns, LiveKey, Narrative, Phase};
 use super::phase;
 use crate::boot::render::{OuterWidths, completed_row, outer_widths};
 use crate::ui::report::{Counter, Done, Outcome, Row};
-use crate::ui::{Palette, Verdict};
+use crate::ui::report::{Palette, RunVerdict as Verdict};
 
 /// One `built N steps` completion.
 fn built(steps: usize) -> Outcome {

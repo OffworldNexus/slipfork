@@ -8,7 +8,8 @@ use std::num::NonZeroUsize;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ui::{Palette, elapsed_text};
+use super::Palette;
+use crate::ui::elapsed_text;
 
 /// Where one row sits in a two-level plan or a status tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

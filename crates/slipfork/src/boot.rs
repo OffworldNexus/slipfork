@@ -21,9 +21,9 @@ use std::time::Instant;
 
 use serde_json::Value;
 
-use crate::ui::Palette;
 use crate::ui::UiMode;
 use crate::ui::normalize_size;
+use crate::ui::report::Palette;
 use crate::ui::report::Pane;
 
 use self::build::Narrative;

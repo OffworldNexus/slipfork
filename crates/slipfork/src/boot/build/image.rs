@@ -7,7 +7,7 @@ use std::num::NonZeroUsize;
 
 use serde_json::Value;
 
-use crate::ui::Palette;
+use crate::ui::report::Palette;
 use crate::ui::report::{Counter, Done, Outcome, Row, StepSettlement};
 
 use super::super::render::completed_row;

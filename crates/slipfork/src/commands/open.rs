@@ -5,7 +5,7 @@ use std::process::{Command, ExitCode, Stdio};
 use serde_json::json;
 
 use crate::commands::Session;
-use crate::ui::Palette;
+use crate::ui::report::Palette;
 use crate::ui::report::Report;
 use crate::world::WorldIdentities;
 

@@ -15,9 +15,9 @@ use slipfork_world::StoreLayout;
 
 use crate::commands::secret::EchoGuard;
 use crate::commands::{Session, emit};
-use crate::ui::Palette;
+use crate::ui::report::Palette;
+use crate::ui::report::{Column, Table};
 use crate::ui::report::{StreamKind, digest_cell};
-use crate::ui::table::{Column, Table};
 
 use super::{DockerArgs, DockerVerb};
 

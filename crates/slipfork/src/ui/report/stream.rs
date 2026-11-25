@@ -9,8 +9,8 @@ use std::io;
 
 use serde_json::{Value, json};
 
-use crate::ui::Verdict;
-use crate::ui::table::{Column, Table};
+use super::palette::Verdict;
+use super::table::{Column, Table};
 
 use super::{Entry, ReportRenderer, StreamKind};
 
@@ -446,11 +446,9 @@ impl StreamRenderer {
 #[cfg(test)]
 mod tests {
     use super::{TailRing, visible};
+    use crate::ui::report::{Column, Table};
     use crate::ui::report::{Entry, ReportRenderer, StreamKind, WallZone};
-    use crate::ui::{
-        Terminal, UiMode,
-        table::{Column, Table},
-    };
+    use crate::ui::{Terminal, UiMode};
 
     const RED: &str = "\u{1b}[31mred\u{1b}[0m";
 
