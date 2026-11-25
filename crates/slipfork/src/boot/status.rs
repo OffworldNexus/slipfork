@@ -1,16 +1,18 @@
 //! The one in-place status line of the append-only boot renderer.
 //!
-//! Completed rows are ordinary newline-terminated scrollback lines; this module owns the only
-//! bytes that may ever use `\r` or `ESC[2K`: one status frame written as `\r\x1b[2K` plus the
-//! rendered line. The live vocabulary (spinner, `[i/n]`, verb/target, elapsed, and the tail
-//! phase suffix) comes from [`super::phase::Phase::live_row`] for the most recently active step;
-//! with no live step it falls back to the global [`super::progress::BootProgress`] bar label.
+//! Completed rows are ordinary newline-terminated scrollback lines; the in-place byte mechanic
+//! itself lives in [`crate::ui::report::live::Pane`], the workspace's only `\r\x1b[2K` writer.
+//! This module is the content adapter: the live vocabulary (spinner, `[i/n]`, verb/target,
+//! elapsed, and the tail phase suffix) comes from [`super::phase::Phase::live_row`] for the most
+//! recently active step; with no live step it falls back to the global
+//! [`super::progress::BootProgress`] bar label.
 
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::ui::Palette;
+use crate::ui::report::Pane;
 
 use super::build::LiveSteps;
 use super::progress::BootProgress;
@@ -20,32 +22,24 @@ mod ticker;
 
 pub(super) use ticker::Ticker;
 
-/// Braille spinner for a terminal that accepts ANSI.
-const BRAILLE: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
-
 /// A status line exists only for a colour terminal, so its frame is always styled.
 const PALETTE: Palette = Palette::new(true);
 
-/// The one in-place status line: its progress model, live-step registry, and paint state.
+/// The one in-place status line: its content model plus the shared [`Pane`] mechanic.
 pub(super) struct StatusLine {
     progress: BootProgress,
     started: Instant,
-    cols: usize,
     steps: Arc<Mutex<LiveSteps>>,
-    frame: usize,
-    /// Whether a status frame currently owns the cursor's line.
-    painted: bool,
+    pane: Pane,
 }
 
 impl StatusLine {
-    pub(super) fn new(progress: BootProgress, cols: usize, steps: Arc<Mutex<LiveSteps>>) -> Self {
+    pub(super) fn new(progress: BootProgress, steps: Arc<Mutex<LiveSteps>>, pane: Pane) -> Self {
         Self {
             progress,
             started: Instant::now(),
-            cols,
             steps,
-            frame: 0,
-            painted: false,
+            pane,
         }
     }
 
@@ -56,53 +50,36 @@ impl StatusLine {
 
     /// Re-measures the terminal after a resize; never emits a row or erases anything.
     pub(super) fn resize(&mut self, cols: usize) {
-        if cols > 0 {
-            self.cols = cols;
-        }
+        self.pane.resize(cols);
     }
 
-    /// The status frame prefix; the only place `\r`/`ESC[2K` may be written.
-    pub(super) const fn prefix() -> &'static str {
-        "\r\x1b[2K"
-    }
-
-    /// One full status frame: the prefix plus the rendered line.
+    /// One full status frame: [`Pane::PREFIX`] plus the rendered line.
+    #[cfg(test)]
     pub(super) fn frame_text(&self, spinner: char) -> String {
-        let line = self.line(spinner);
-        format!("{}{line}", Self::prefix())
+        Pane::frame(&self.line(spinner))
     }
 
     fn line(&self, spinner: char) -> String {
         self.steps
             .lock()
             .ok()
-            .and_then(|steps| steps.live_row(spinner, self.cols, PALETTE))
+            .and_then(|steps| steps.live_row(spinner, self.pane.cols(), PALETTE))
             .unwrap_or_else(|| {
                 panel_line(
                     spinner,
                     self.progress.bar(),
                     &self.progress.label(),
                     self.started.elapsed(),
-                    self.cols,
+                    self.pane.cols(),
                 )
             })
     }
 
-    fn next_spinner(&mut self) -> char {
-        let spinner = BRAILLE
-            .chars()
-            .nth(self.frame % BRAILLE.chars().count())
-            .unwrap_or('⠋');
-        self.frame = self.frame.wrapping_add(1);
-        spinner
-    }
-
     /// Writes one status frame without flushing; the caller owns the lock and the flush.
     fn paint_to(&mut self, out: &mut dyn Write) {
-        let spinner = self.next_spinner();
-        let frame = self.frame_text(spinner);
-        let _ = out.write_all(frame.as_bytes());
-        self.painted = true;
+        let spinner = self.pane.spinner();
+        let line = self.line(spinner);
+        self.pane.paint_to(&line, out);
     }
 
     /// Repaints the status line in place, flushed.
@@ -121,14 +98,9 @@ impl StatusLine {
         if rows.is_empty() {
             return;
         }
-        if self.painted {
-            let _ = out.write_all(Self::prefix().as_bytes());
-        }
-        for row in rows {
-            let _ = writeln!(out, "{row}");
-        }
-        self.painted = false;
-        self.paint_to(out);
+        let spinner = self.pane.spinner();
+        let line = self.line(spinner);
+        self.pane.emit_to(rows, &line, out);
     }
 
     /// Emits completed rows through stdout and repaints the status line.
@@ -140,11 +112,7 @@ impl StatusLine {
 
     /// Erases the status line exactly once into `out`; idempotent when called twice.
     pub(super) fn erase_to(&mut self, out: &mut dyn Write) {
-        if !self.painted {
-            return;
-        }
-        let _ = out.write_all(Self::prefix().as_bytes());
-        self.painted = false;
+        self.pane.erase_to(out);
     }
 
     /// Erases the status line exactly once; idempotent when called twice.

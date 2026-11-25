@@ -1,8 +1,9 @@
 //! The one append-only boot narrative shared by `up`, `restart`, `fork`, `down`, and `drop`.
 //!
 //! Completed rows are ordinary newline-terminated scrollback lines in event order; a colour TTY
-//! additionally owns one in-place status line (`\r\x1b[2K` + the rendered line) carrying the
-//! spinner, counter, verb/target, elapsed clock, and tail phase. A pipe, `NO_COLOR` terminal, or
+//! additionally owns one in-place status line (`\r\x1b[2K` + the rendered line) — its prefix
+//! written only by `ui::report::live::Pane` — carrying the spinner, counter, verb/target, elapsed
+//! clock, and tail phase. A pipe, `NO_COLOR` terminal, or
 //! unmeasurable terminal gets plain `println!` lines with zero escapes and zero `\r`.
 //!
 //! The daemon's `plan` frame latches the plan positions before row 1; `--json` passes through.
@@ -24,6 +25,7 @@ use serde_json::Value;
 use crate::ui::Palette;
 use crate::ui::UiMode;
 use crate::ui::normalize_size;
+use crate::ui::report::Pane;
 
 use self::build::Narrative;
 use self::progress::BootProgress;
@@ -86,8 +88,8 @@ impl BootTui {
         let status = live.then(|| {
             Arc::new(Mutex::new(StatusLine::new(
                 progress.clone(),
-                cols,
                 narrative.steps(),
+                Pane::new(cols),
             )))
         });
         let ticker = status
