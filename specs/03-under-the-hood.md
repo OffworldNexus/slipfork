@@ -447,18 +447,18 @@ Convergence scopes strictly to root checkouts registered in `state.db`, so isola
 
 It builds a `max_connections(1)` pool via `SqlxSqliteConnector::from_sqlx_sqlite_pool` and runs `Migrator::up` once before `UnixListener::bind`.
 
-Offline CLI readers (`status` and `ps` when no daemon runs) call sync `StateDb::open_reader` (`SqliteConnectOptions::read_only(true)`, `busy_timeout(5s)`, returning empty when `state.db` is absent) and never mutate or converge.
+Offline CLI readers (`status` and `ps` when no daemon runs) call sync `StateDb::open_reader` (`read_only(true)`, `busy_timeout(5s)`, empty when `state.db` is absent): they never write, never walk `.forks/`, and **omit** untracked checkouts until `slipfork up` converges.
 
 Entities live in `ledger/entity/{mod,worlds,forks}.rs` (`WorldState` as `DeriveActiveEnum`) and migrations in `ledger/migrations/{mod,m0001_create_ledger}.rs`:
 
 | Entity (`DeriveEntityModel`) | Typed Columns & `sea_query` Constraints (`m0001_create_ledger`) |
 | :--- | :--- |
 | `worlds::Model` (`table_name = "worlds"`) | `id: i64` PK, `checkout_path: String` `UNIQUE`, `world_name: String`, `store_root: String`, `state: WorldState` (`Creating \| Booting \| Live \| Stopping \| Stopped \| Deleting \| Broken`, guarded by `Table::check(is_in)`), `supervisor_pid: Option<i64>`, `pods_dir: Option<String>`, `started_at_ms: Option<i64>`, `problem: Option<String>`, `updated_at_ms: i64`; `UNIQUE(store_root, world_name)` + partial unique `idx_worlds_active_name` (`Index::and_where` on `Creating..=Deleting`). |
-| `forks::Model` (`table_name = "forks"`) | `world_id: i64` PK (`FK worlds.id ON DELETE CASCADE`), `root_id: i64` (`FK worlds.id ON DELETE CASCADE`, `idx_forks_root`), `parent_id: i64` (`FK worlds.id ON DELETE RESTRICT`, `idx_forks_parent`), `name: String`, `branch: String` (default `""`), `created_at_ms: i64`; `UNIQUE(root_id, name)`. |
+| `forks::Model` (`table_name = "forks"`) | `world_id: i64` PK (`FK worlds.id ON DELETE CASCADE`), `root_id: i64` (`FK worlds.id ON DELETE RESTRICT`, `idx_forks_root`), `parent_id: i64` (`FK worlds.id ON DELETE RESTRICT`, `idx_forks_parent`), `name: String`, `branch: String` (default `""`), `created_at_ms: i64`; `UNIQUE(root_id, name)`. |
 
 A root takes `<basename>` when free on `store_root`, else `<basename[..58]>-<4hex(sha256(checkout_path))>` (`world_name <= 63` bytes and `control.sock < 108` bytes enforced upfront); a duplicate active name fails closed with `next: slipfork down <world_name>`.
 
-Every deletion runs through `delete_world_row` inside one `TransactionTrait::begin` transaction on the single-connection writer pool, splicing child `forks.parent_id` rows to the deleted row's parent before deleting the `worlds` model.
+Every deletion runs through `delete_world_row` (the **single** delete path): inside one transaction it enforces `forks::Entity::find_by_id(id).is_some()` (refusing root rows closed), splices child `forks.parent_id` rows to the deleted fork's parent, then deletes `worlds`.
 
 - **Forward-only `Migrator::up` (never auto-wipe):** `m0001_create_ledger` creates `worlds`/`forks` and later changes add numbered `MigrationTrait` files (`up` only; `down` migrations are not part of the shipped flow, and Slipfork **never** deletes `state.db` automatically).
 - **Downgrade & pending-migration refusal:** `StateDb` checks `seaql_migrations` against `Migrator::migrations()` before running; unknown newer versions fail closed with `next: upgrade slipfork`, and `open_reader` refuses pending migrations with `next: slipfork up`.
@@ -516,7 +516,7 @@ stateDiagram-v2
   deleting --> [*]: fork snapshots unlinked + delete_world_row
 ```
 
-`creating`, `deleting`, and `delete_world_row` apply strictly to `forks` rows; root rows are never deleted and Slipfork **never** unlinks a root's `checkout_path` or `worlds/<root>`.
+`creating`, `deleting`, and `delete_world_row` are **enforced** as fork-only (`delete_world_row` refuses any root row, and `BtrfsEngine::drop_world` refuses while forks exist with `next: slipfork drop <fork>`); Slipfork never unlinks a root's `checkout_path` or `worlds/<root>`.
 
 On a `broken` root, `slipfork down <root>` unlinks `worlds/<root>/.slipfork-lease.json` (freeing `gc`) and settles the row at `stopped`, keeping `UNIQUE(store_root, world_name)` intact so no other checkout can claim its `PGDATA`.
 
@@ -549,7 +549,7 @@ Every runtime question has **one** canonical owner after §6 slice 4 and §7 lan
 | :--- | :--- | :--- | :--- |
 | 1 | `Cargo.toml` (`sea-orm`, `sea-orm-migration`) + `slipfork-world` `ledger/{mod,db,resolve}.rs`, `ledger/entity/{mod,worlds,forks}.rs`, `ledger/migrations/{mod,m0001_create_ledger}.rs` | §6.7 #4 | Real-disk `/var/tmp` WAL suite: `Migrator::up`, concurrent read-only `open_reader`, unknown/pending migration fail-closed refusal, rollback on drop, `delete_world_row` splice, lineage & resolution. |
 | 2 | `slipfork-world` `ledger/converge.rs`, `engine.rs`, `layout.rs`: flat `<root>/.forks/<name>` + `<name>--<root>` (deleting nested id compounding), `.forks` checkout-free invariant, pure `plan_converge` | 1 | Unit: `plan_converge` state matrix. Real-Btrfs lab: 3-deep fork (`salut ← bonjour ← test1`) lands flat with zero `.forks` inside checkouts and length bounds enforced. |
-| 3 | `slipfork` `daemon/lifecycle/{converge,core,fork,down,ps,plan}.rs` + `daemon/mod.rs`: wire `ForkLedger` + `ConvergeExecutor`, `worlds.json` import + unlink, single-plan `drop`; delete `daemon/registry.rs`, `WorldState`, `PrepFrame::fixed`, `fork_checkouts`, `world_id_for_project` | 2 | Lab journey: `drop` emits one `plan` frame (`[1/N]..[N/N]`), `SIGKILL` mid-`fork` leaves zero ghosts on next `ps`, and `rm -rf .forks/<name>` reaps live pods immediately. |
+| 3 | `slipfork` `daemon/lifecycle/{converge,core,fork,down,ps,plan}.rs` + `daemon/mod.rs`: wire `ForkLedger` + `ConvergeExecutor`, unlink stale `worlds.json`, single-plan `drop`; delete `daemon/registry.rs`, `WorldState`, `PrepFrame::fixed`, `fork_checkouts`, `world_id_for_project` | 2 | Lab journey: `drop` emits one `plan` frame (`[1/N]..[N/N]`), `SIGKILL` mid-`fork` leaves zero ghosts on next `ps`, and `rm -rf .forks/<name>` reaps live pods immediately. |
 | 4 | `slipfork` `status/{tree,rows,model}.rs`, `world/target.rs`, `commands/mod.rs` + `specs/02-cli-ux.md` (§3 `ps`/`status` lineage samples, §7 `drop` `plan`-frame & `--json` stream) + `TESTING_PLAN.md`: `← parent ← root` column, offline `StateDb::open_reader`, unified `Targets` | 3 | Full live Btrfs VM journey below (`tools/do_vm.py test`), zero ghosts remaining. |
 
 Live Btrfs VM acceptance journey (Slice 4):
@@ -560,7 +560,7 @@ Live Btrfs VM acceptance journey (Slice 4):
 
 ### 7.6 Operational risks & latency budget
 
-- **Existing-store upgrades:** `StateDb::open_writer` runs `Migrator::up`, imports legacy `worlds.json` in one transaction, and unlinks `worlds.json` after commit; first `converge` strips pre-upgrade `ino == 2` `.forks` stubs and legacy `<fork>--<parent>` leftovers on drop.
+- **Pre-`1.0` `worlds.json` cutover:** `open_writer` unlinks stale `worlds.json` (zero importer); pre-upgrade worlds stay untracked until `slipfork up` (`next: slipfork up`) registers `<root>`, reaps old pods, strips `ino == 2` stubs, and adopts `.forks/*` as `stopped`.
 - **SQLite WAL on Btrfs:** `state.db` sits in `<state_dir>` (outside snapshots) with normal Btrfs CoW kept on (`FS_NOCOW_FL` disables CRC32C checksums); `wal_autocheckpoint = 1000` plus `PRAGMA wal_checkpoint(TRUNCATE)` on daemon shutdown bounds `-wal` below `2 MiB`.
 - **Daemon-vs-CLI binary skew:** `DaemonIdentity` replaces a stale daemon on upgrade before RPC dispatch, running `Migrator::up` once under `slipfork-daemon.lock`; downgraded binaries seeing unknown `seaql_migrations` fail closed with `next: upgrade slipfork`.
 - **`fork` latency (`< 2ms` ledger cost):** `fork` commits two tiny `WAL` + `synchronous(Full)` SeaORM transactions (`creating` before `CHECKPOINT`, `live` on `ready`, `~0.5–2ms` total on SSD/NVMe), holding zero DB locks across Btrfs ioctls, `CHECKPOINT`, or `git`.
