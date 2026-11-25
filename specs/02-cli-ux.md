@@ -140,27 +140,27 @@ A project root keeps its whole family visible after `slipfork down`: the root ro
 
 `orphaned` (yellow) appears only after a successful recompile that no longer declares a live pod, and the next `up` clears it. Bare `slipfork` is `status`; with nothing running it prints `○ No worlds running` and exits `0`.
 
-## 4. `up` reconciliation and the `DECSTBM` bottom bar
+## 4. `up` reconciliation and the append-only status line
 
 Repeating `slipfork up` on an unchanged world is Idle (`~0.1s`): the detector prints `• [1/1] world <w> up to date` plus `✓ Ready -> <url>`, never an image row. Idle requires `<world>/.slipfork-lease.json` to match the fresh plan's head across the `Forkfile`, resolved features, world plan, and every image's `Dockerfile` + copied-context digest.
 
 A matching head with a pod down heals only that service, and `restart` on a matching head recycles pods in place on the leased images without rebuilding. A changed head reconciles while the old world keeps serving, stopping undeclared pods (`orphaned`) and booting changed services only after new heads seal; `--no-cache` rebuilds every image from `FROM` down, and the next plain `up` is cached again.
 
-On an interactive ANSI TTY with `rows >= 3`, `up`, `restart` and `fork` establish a VT100 scroll region (`\x1b[1;{rows-1}r`) above a one-line `apt`-style panel on row `rows` (§9).
+On a colour TTY the boot narrative is append-only: settled rows are ordinary newline-terminated scrollback lines, and exactly one in-place status line is redrawn (prefixed `\r\x1b[2K`). While a phase runs it carries that phase's live row (counter, verb, target, command, elapsed); between phases it falls back to a panel frame (spinner + a 24-cell bar only when `cols >= 80`, without shearing the counter + `done/total` + `pct%` + label + elapsed clock). Slipfork never emits a scroll region, `\x1b[r`, absolute cursor addressing, DSR, alternate screen, or a screen clear.
 
 ```mermaid
 flowchart TD
-  Region["Rows 1..rows-1: settled [i/n] outer rows + indented n/N build steps scroll into history<br/>active phases + up to 8 live gutter lines update in place above the bar"]
-  Panel["Row rows: never scrolls<br/>⠸ [██████░░░░░░░░░░░░░░░░░░]  0/2  25% · [1/2] image api · step 3/6 RUN · 1.2s<br/>clamped to cols, SIGWINCH redraw, RAII clear"]
-  Region --- Panel
+  Scroll["Scrollback: settled [i/n] outer rows + indented n/N build steps, one newline-terminated line each"]
+  Status["One status line (Pane-owned): while a phase runs → ⠸ 0/2 · image api · step 3/6 RUN · 1.2s; between phases → [██████░░░░░░░░░░░░░░░░░░]  0/2  25% · [1/2] image api · 1.2s (rewritten with CR + clear-line; 24-cell bar when cols >= 80)"]
+  Scroll --- Status
 ```
 
 - **Two-level `plan` frame:** before the first `started`, the daemon emits `{"event":"plan","rows":[{"kind","name"}…],"total":N}` (`fork` prepends `snapshot` and `branch <name>`; `down`/`drop` announce pods plus teardown). The renderer latches outer `keyword` and `target` widths once from that frame and inner lowercase instruction widths from the planned stage, so columns never shift mid-stream.
 - **Outer `[i/n]` and inner `n/N` rows:** outer steps sit at column 0 (`✓ [1/2] image  web  built 3 steps  1.4s  #b7f2a1`); cold image builds open `→ [1/2] image  web  running` and nest indented `  ✓ 1/3 from  python:3.13-slim  <1ms` rows (no `[` brackets, no repeated target), while a cached image emits `✓ [1/2] image  web  cached  8ms` with zero inner rows.
-- **Two-level bar math:** while an image builds, fill uses `(outer_done * inner_total + inner_settled) / (outer_total * inner_total)` (`filled = round(num / den * 24)`, `pct = round(num / den * 100)`) while the counter stays `outer_done/outer_total` and the label reads `[i/n] image <id> · step k/K <VERB>`.
-- **Resize and narrow terminals:** `SIGWINCH` pushes `Resize { cols, rows }` into the live driver, re-applying the region and redrawing; below `cols < 80` the 24-cell bar drops without shearing counters, and with `rows < 3` or `NO_COLOR` TTY the panel rewrites one `\r` line.
+- **Status-line counter:** the counter reads `outer_done/outer_total` while the label reads `[i/n] image <id> · step k/K <VERB>`; inner progress settles into scrollback rows and never widens the status line.
+- **Resize and narrow terminals:** `SIGWINCH` re-measures the terminal and `Pane::resize(cols)` re-clamps the one status line and repaints; under `NO_COLOR`/`TERM=dumb` there is no status line at all — rows append plainly with zero `\x1b[` and zero `\r`.
 
-A successful `up` restores `\x1b[r`, clears row `rows`, and prints `✓ Ready -> <url>` with no trailing reminder. On failure, the RAII guard restores the screen, expands the failing phase and its full arrival-ordered `│`/`┃` output once, settles the image row at its failing step, and emits one verdict plus one `next:` on stderr:
+A successful `up` settles the final rows into scrollback, drops the status line, and prints `✓ Ready -> <url>` with no trailing reminder. On failure, `BootTui` expands the failing phase and its full arrival-ordered `│`/`┃` output once, settles the image row at its failing step, and emits one verdict plus one `next:` on stderr:
 
 ```text
   ✗ 3/6 run   pnpm run build
@@ -229,7 +229,7 @@ Setup and hook runs keep `#<id>  setup  <target>  <command>  <started>` and sett
 | :--- | :--- |
 | `slipfork up [TARGET] [--no-cache]` | Boot this directory, `.forks/<name>`, or a registered world/fork; preflight `Forkfile` first; `--no-cache` rebuilds every image step |
 | `slipfork down [TARGET]` | Stop this directory's world or the named world/fork; remove run subvolumes, keep data and logs |
-| `slipfork restart [TARGET] [-s SERVICE]` | Restart one service, a world/fork, or every service here through the bottom-bar TUI |
+| `slipfork restart [TARGET] [-s SERVICE]` | Restart one service, a world/fork, or every service here through the append-only status line |
 | `slipfork logs [-f] [-a] [-t] [--since <ms>] [--until <ms>] [--last <N>] [targets]...` | Services by default; `-a` adds images and resources; several targets merge in timestamp order; `--last N` tails rendered lines and `-f` implies 20 unless explicit |
 | `slipfork logs -r [<id>\|last\|failed]` | Replay one catalog run (`#<id>` accepted) with local wall-clock rows, `│`/`┃` gutters, and one verdict; bare `-r` means `failed` |
 | `slipfork logs --runs` | Borderless `#run_id`, kind, step, status, duration, recorded table of every executed step |
@@ -252,7 +252,7 @@ slipfork exec --no-interactive api -- python3 -c 'import sys; print(sys.stdin.is
 
 ## 7. Terminal gate split and `--json`
 
-- **Modes:** colour TTY uses the `DECSTBM` region and panel; `NO_COLOR` / `TERM=dumb` TTY rewrites one `\r` plain line with zero `\x1b[`; a pipe emits append-only rows with zero `\x1b[` and zero `\r`; `--json` serializes the same typed `Report` events and final payload.
+- **Modes:** a colour TTY owns exactly one in-place status line (prefixed `\r\x1b[2K`; while a phase runs it is that phase's live row — counter, verb, target, command, elapsed — and between phases it is a panel frame of spinner + a 24-cell bar only when `cols >= 80` (dropped without shearing the counter) + `done/total` + `pct%` + label + elapsed clock) while settled rows append to scrollback; `NO_COLOR` / `TERM=dumb` emits append-only plain rows with zero `\x1b[` and zero `\r` (no rewritten line); a pipe emits append-only rows with zero `\x1b[` and zero `\r`; `--json` serializes the same typed `Report` events and final payload.
 - **Plan frame:** `up`, `restart`, `fork`, `down`, and `drop` stream `{"event":"plan","rows":[{"kind","name"}…],"total":N}` before the first `started`; `--json` forwards it verbatim with zero escapes.
 - **Payloads:** `up`/`restart` → `{world, url, elapsed_ms, nodes:[{kind,name,state,duration_ms}]}` (`up` adds `no_cache`); `down` → `{world, elapsed_ms}`; `fork` → `{fork, world, project, url, elapsed_ms, snapshot_ms}`; `drop` → `{dropped, elapsed_ms}`; `doctor` → `{ready, checks:[{name,ok,detail,next?}]}`; `status`/`ps` → `{worlds:[...]}`; failures → `{"error":{code,message,next}}`.
 - **Ephemeral daemon:** auto-start emits one `Entry::Notice` (`•`, `38;5;244`) on stderr through `ReportRenderer` when the user service is not enabled (`docs/install.sh` and distro packages enable both units).
@@ -280,7 +280,7 @@ Every CLI surface — live `up`/`restart`/`fork`/`down`/`drop`, `docker`, `logs`
 flowchart LR
   Daemon["Daemon / Host Facts\n(typed events, epoch ms, zero ANSI)"] --> Report["Report\nSections + Rows(Outcome) + Verdict/Failure"]
   Report --> Renderer["ReportRenderer\n(Terminal + Palette + Table + WallZone)"]
-  Renderer -->|Interactive / Plain| Term["Terminal / Pipe\n(DECSTBM pane or append rows + 1 stderr Failure)"]
+  Renderer -->|Interactive / Plain| Term["Terminal / Pipe\n(one status line + append rows + 1 stderr Failure)"]
   Renderer -->|Json| Json["--json\n(NDJSON frames + final object / error JSON)"]
 ```
 
@@ -309,23 +309,23 @@ A `Report` is `{ sections: Vec<Section>, verdict: Option<Verdict>, remedy: Optio
 
 ### 9.3 Injected local wall clock (`WallZone`)
 
-Daemon events and run logs store epoch milliseconds (`ts_ms: u64`) only; neither the daemon nor any print site calls `Utc::now`, `tzset`, or `libc::localtime_r`. `compose.rs` reads `$TZ` / `/etc/localtime` RFC 8536 TZif transitions once into a plain `WallZone` value struct (replacing `LocalClock` / `LocalClock::Fixed` — zero `*Clock` types, zero `unsafe`) injected into `ReportRenderer` to format local `YYYY-MM-DD HH:MM:SS` (`-t`, `--runs`, replay headers) and `HH:MM:SS.mmm` (replay rows).
+Daemon events and run logs store epoch milliseconds (`ts_ms: u64`) only; neither the daemon nor any print site calls `Utc::now`, `tzset`, or `libc::localtime_r`. `compose.rs` composes one plain `WallZone` from `$TZ` / `/etc/localtime` through `jiff::tz::TimeZone` (`from_time_zone`, plus `named` and `fixed` constructors) once at startup — zero `*Clock` types, zero `unsafe` — and injects it into `ReportRenderer` to format local `YYYY-MM-DD HH:MM:SS` (`-t`, `--runs`, replay headers) and `HH:MM:SS.mmm` (replay rows).
 
-Unit tests pin `WallZone::from_tzif(...)` directly against fixed epoch integers across CET/CEST DST boundaries in safe parallel Rust, and CLI lab journeys pass `.env("TZ", "Europe/Paris")` to `Command::new`.
+Unit tests pin `WallZone::from_time_zone`, `named`, and `fixed` against fixed epoch integers across CET/CEST DST boundaries in safe parallel Rust, and CLI lab journeys pass `.env("TZ", "Europe/Paris")` to `Command::new`.
 
 ### 9.4 Streaming performance, daemon boundary & two-level `up`
 
-- **Bounded live work, zero re-render:** column widths latch once from `plan`, `planned_instruction_width`, or `roster`; settled rows and piped/replay `Entry::Stream` lines flush once and drop (`BrokenPipe` shuts down the stream and exits `0`), while the `DECSTBM` live block repaints at most active `Phase` headers + `LIVE_LINES` (`8`) tail lines + 1 panel line (`O(active + 8)`).
+- **Bounded live work, zero re-render:** column widths latch once from `plan`, `planned_instruction_width`, or `roster`; settled rows and piped/replay `Entry::Stream` lines flush once and drop (`BrokenPipe` shuts down the stream and exits `0`), while the only rewritten bytes are that one status line (`\r\x1b[2K`); every settled row is written once to scrollback.
 - **Escape-free daemon facts:** `__daemon` and `__supervise` strip child CSI escapes on captured build/hook lines, never construct `Palette`, and send typed `FailureFacts` instead of `"...\nnext: ..."` strings.
 - **Intact two-level `up` plan:** `RowLevel::Outer` (`[i/n]`) and `RowLevel::Inner` (`n/N`) share `BootProgress`, whose `(outer_done * inner_total + inner_settled)` fill clears `building` atomically when the image's single outer slot settles.
 
-### 9.5 Migration map, slices & mechanical grep gate
+### 9.5 Shipped module map, ownership & mechanical grep gate
 
-| Existing call site | Becomes (`ui/report/`) | Deleted | Slice |
-| :--- | :--- | :--- | :---: |
-| `ui/{palette,failure,paint,table,terminal}.rs`, `compose.rs`, `commands/timeparse.rs`, `main.rs`, `cli/dispatch.rs`, `daemon/handoff.rs` | `Report`, `Row`, `Outcome`, `Failure`, `WallZone`, `Terminal { cols, rows }`, `ReportRenderer`; `main`/`dispatch`/`handoff` `--listen` errors render `Failure` (`ui/{palette,paint,table,failure}.rs` stay `pub(crate)` and `LocalClock` delegates to `WallZone` until Slice 4) | `unsafe` `tzset`/`localtime_r`, raw `eprintln!` in `main.rs` and `cli/dispatch.rs` | 1 |
-| `daemon/reconcile/{mod,progress,diagnosis}.rs`, `daemon/client.rs`, `boot.rs`, `boot/**` (including `boot/**/tests*.rs`), `world/{up,fork,mod,supervise}.rs` | `StepSettlement` + `FailureFacts`, `ConnectNotice::EphemeralDaemon`, `ui/report/live.rs` over `BootProgress` + `Pane` (`Resize { cols, rows }`), `boot` unit tests rewritten on `Report`, plain log stderr in `supervise.rs` (zero `critical_*.rs` edits) | `boot/failure.rs`, `boot.rs` `Palette`/`println!`, `Node { success, state }`, `ImageEnd`, `ImageTally` `self.total` bug, `world::fail` | 2 |
-| `commands/docker/{build,printer,registry}.rs`, `commands/{streams,streams/render,runs,exec}.rs` | `ReportRenderer` inner-step + `Stream` rows (`docker build/pull`, `logs`, `logs -r`), 12-char digest tables (`list`, `images`, `--runs`), `Refused` `Failure` | `commands/docker/printer.rs` (`EventPrinter`), `commands/streams/render.rs`, SGR-`2` `paint` in `runs.rs`, raw `eprintln!` in `exec.rs` | 3 |
-| `status/{mod,rows,tree,model}.rs`, `doctor/mod.rs`, `commands/{mod,auth,env,secret,features,open,fmtmigrate}.rs`, `ui/{palette,paint,table,failure}.rs`, `tools/guard.py` | `Report` trees/tables/verdicts; `Palette`, `paint`, and `table` narrowed to `pub(super)` inside `ui`; mechanical no-raw-print gate in `tools/guard.py` | `commands/auth.rs` (dormant), `ui/failure.rs` (`split_remedy`, `failure_block`), `LocalClock`/`LocalClock::Fixed`/`Session::clock`, `status::rows::State`, `Session::{fail,report,report_details}` | 4 |
+| Shipped surface | Owning module (`ui/report/`) | Deleted legacy |
+| :--- | :--- | :--- |
+| Live `up`/`restart`/`fork`/`down`/`drop` boot narrative | `boot.rs` `BootTui` (the one append-only narrative) over `Pane` (sole owner of the `\r\x1b[2K` status line) + `BootProgress`, `StepSettlement`, `FailureFacts`, `ConnectNotice::Ephemeral { color }` | `boot/failure.rs`, `boot.rs` `Palette`/`println!`, `Node { success, state }`, `ImageEnd`, `ImageTally` `self.total` bug, `world::fail` |
+| `docker build`/`pull`, `logs`, `logs -r`, `--runs` | `ReportRenderer` inner-step + `Stream` rows, `StreamRenderer`, 12-char digest `Table`/`Column`/`ColumnWidths` | `commands/docker/printer.rs` (`EventPrinter`), `commands/streams/render.rs`, SGR-`2` `paint` in `runs.rs`, raw `eprintln!` in `exec.rs` |
+| `status`/`ps` trees, `doctor`, `env`/`secret`/`features`/`open`/`fmt`/`migrate`, `main`/usage errors | `Report`, `Section`, `Entry`, `Row`, `Outcome`, `Done`, `Counter`, `Verdict`; public re-exports `Palette`, `Table`, `Failure` from `ui/report/mod.rs`; only the `paint`, `table`, `failure` helpers are `pub(super)` | `commands/auth.rs` (dormant), `ui/failure.rs` (`split_remedy`, `failure_block`), hand-rolled clock types, `status::rows::State`, `Session::{fail,report,report_details}` |
+| Wall clock | `WallZone` (`from_time_zone`/`named`/`fixed`) injected into `ReportRenderer` | `unsafe` `tzset`/`localtime_r` |
 
-**Grep gate (`tools/guard.py`):** zero `println!`, `eprintln!`, `print!`, `eprint!`, `Palette::`, or `ui::paint` outside `crates/slipfork/src/ui/report/**` across CLI modules — exempting only `clap` `--help`/`--version` output, one no-echo `ui::prompt_secret` helper, and detached `__daemon`/`__supervise`/`__ingress` background journal stderr.
+**Grep gate (`tools/guard.py`):** zero `println!`, `eprintln!`, `print!`, or `eprint!` under `crates/slipfork/src/**`, with exactly five allowlisted sinks — `ui/report/render.rs`, `ui/report/exit.rs`, `boot.rs`, `daemon/**`, and `world/supervise.rs` — so no CLI module prints raw and every byte flows through the typed `Report` layer.

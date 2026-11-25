@@ -55,7 +55,9 @@ flowchart LR
 
     Retention keeps the newest 20 successful runs per world and never prunes a `failed` or crashed (`running`) record, so the artifact an operator needs outlives every teardown; `down` deletes only `<runtime_dir>/pods/<world>` and `<store>/pods/<world>/`, and `drop` removes the world's logs.
 
-**Pod user baseline.** Every pod runs as the invoking `$UID`/`$GID` (identity-mapped into the world user namespace) with a synthetic two-line `/etc/passwd`. Unprivileged pods get a writable `0755` `/home/slipfork` inside their CoW rootfs and `HOME=/home/slipfork` in `config.json` whenever the merged image/Forkfile env leaves `HOME` unset, empty, or `/root`; a declared non-`/root` `HOME` always wins and uid `0` keeps `/root`. Images such as `python:3.13-slim` and `node:22-slim` therefore need no `ENV HOME` change for `uv`, `pnpm`, `git`, or `bash` to write caches.
+**Pod user baseline.** Service and build pods run as the image's resolved `USER` — `0:0` (container root) when a Dockerfile declares none — mapped 1:1 onto the invoking host uid/gid inside the world user namespace, so the rootfs stays invoking-uid-owned. Postgres, Redis, and PG-template pods pass no image identity and instead run as the invoking host uid/gid with a synthetic `slipfork` account; the image's own `/etc/passwd` and `/etc/group` stay authoritative, and a synthetic pair is written only for an explicit image identity that has no passwd entry (for example a numeric `USER`). Root gets Docker's `14`-capability set and any non-root uid gets an empty set.
+
+Unprivileged pods get a writable `0755` `/home/slipfork` inside their CoW rootfs and `HOME=/home/slipfork` in `config.json` whenever the merged image/Forkfile env leaves `HOME` unset, empty, or `/root`; a declared non-`/root` `HOME` always wins and uid `0` keeps `/root`. Images such as `python:3.13-slim` and `node:22-slim` therefore need no `ENV HOME` change for `uv`, `pnpm`, `git`, or `bash` to write caches.
 
 **Pod DNS.** Every pod joins its own network namespace, so the resolver file bound as `/etc/resolv.conf` always carries a non-loopback `nameserver`; when the host's `/etc/resolv.conf` only lists loopback stubs (`127.0.0.53`) and `/run/systemd/resolve/resolv.conf` holds the real upstream servers, pods bind that upstream file instead. An absent or still-loopback upstream keeps `/etc/resolv.conf` untouched, so pods fail closed rather than resolving through an invented server.
 
@@ -131,7 +133,7 @@ flowchart LR
 ## 5. Composition Roots, Crate Map & Canonical Ports
 
 Slipfork has **five explicit composition roots** and **zero** ambient OS/env probes in library crates:
-1. `crates/slipfork/src/main.rs` (CLI, `__daemon`, `__ingress`) — parses `Cli`, builds `UiMode`, `BootTui` (`ScrollRegionGuard` / `AsciiLine`), `RawModeGuard`, `DaemonClient`, and `DaemonServer`. `__daemon` opens one `StateDb` + `ForkLedger` (§7) and constructs `BtrfsEngine`, `SnapshotStore`, `OciPuller`, `NativeImageBuilder`, and `Reconciler` per `store_root` (§6).
+1. `crates/slipfork/src/main.rs` (CLI, `__daemon`, `__ingress`) — parses `Cli`, builds `UiMode`, `BootTui` (the one append-only boot narrative over `Pane`), `RawModeGuard`, `DaemonClient`, and `DaemonServer`. `__daemon` opens one `StateDb` + `ForkLedger` (§7) and constructs `BtrfsEngine`, `SnapshotStore`, `OciPuller`, `NativeImageBuilder`, and `Reconciler` per `store_root` (§6).
 2. Detached `__supervise` (`crates/slipfork/src/main.rs` child mode) — owns the single boot `tokio::Runtime` and constructs `BootScheduler` (injecting `tokio::runtime::Handle`), `PostgresLauncher`, `RedisLauncher`, `BtrfsEngine`, `FileSecretVault`, and `S3WorldConfig`; it receives sealed `WorldHeads` from the daemon, never builds, and writes the world's `Lease`.
 3. `crates/slipfork-world/src/bin/world_init/main.rs` (world PID 1) — binds `0600` `control.sock`, serves `ConfigureS3`/`Dial`/`List`/`Shutdown`/`ExecPty`/`Exec`/`Logs`, and hosts `S3Server` on `:8333`.
 4. `crates/slipfork-lsp/src/main.rs` — standalone cross-platform stdio language server.
@@ -139,7 +141,7 @@ Slipfork has **five explicit composition roots** and **zero** ambient OS/env pro
 
 | Crate | Canonical Cohesive Structs / Modules (`<= 500` LOC each) | Port → Adapter |
 | :--- | :--- | :--- |
-| `slipfork` | `Cli` (`clap` 4.6 + `clap_complete` + `clap_mangen`), `UiMode`, `BootTui` (`ScrollRegionGuard` `DECSTBM` + `AsciiLine`), `RawModeGuard`, `TableLayout`, `Reconciler` (`daemon/reconcile/`), `ConvergeExecutor` (`daemon/lifecycle/converge.rs`), `DaemonClient`, `DaemonServer` | — |
+| `slipfork` | `Cli` (`clap` 4.6 + `clap_complete` + `clap_mangen`), `UiMode`, `BootTui` (append-only over `Pane`), `RawModeGuard`, `ReportRenderer`, `StreamRenderer`, `WallZone`, `Table`/`Column`/`ColumnWidths` (`ui/report/`), `Reconciler` (`daemon/reconcile/`), `ConvergeExecutor` (`daemon/lifecycle/converge.rs`), `DaemonClient`, `DaemonServer` | — |
 | `slipfork-forkfile` | `ForkfileCompiler`, `SecretValue` (redacted `Debug`, zeroize-on-drop), `BucketPolicy`, `DnsLabel`, `Formatter`, `SnowMigrator` | — |
 | `slipfork-world` | `BtrfsEngine`, `StateDb` + `ForkLedger` (`ledger/`), `BuildGraph` + `NodeKey` + `SnapshotStore` + `Lease` (`snapshot/`), `BootScheduler` (`Handle` + `spawn_blocking`), `PostgresLauncher`, `RedisLauncher`, `resources/s3/{server.rs,object_ops.rs,listing.rs,policy.rs}`, `WorldSupervisor` | `WorldEngine` → `BtrfsEngine` |
 | `slipfork-image` | `NativeImageBuilder`, `BuildPlanner`, `OciPuller`, `DockerfileExecutor` | `BaseImageBuilder` → `NativeImageBuilder` |
@@ -171,7 +173,7 @@ Root steps get Docker's default capability sets inside the user namespace, non-r
 
 Under the built-in `dev` feature the runtime overlays `<project>/<build context>` at the target stage's effective `WORKDIR` and at any distinct whole-context `COPY`/`ADD` destination, so `slipfork exec` and `slipfork shell` read host edits through the live mounts; a `WORKDIR` already under `/project` keeps that bind. A stage whose effective `WORKDIR` is still `/` refuses the `dev` boot before any pod starts (one line + `next:`), because the rootfs root is never overlaid; `-F -dev` keeps the image copy and its `WORKDIR`.
 
-Runtime pods are unchanged: they keep the identity `$UID` baseline.
+Runtime pods resolve the image's `USER` exactly as a build step does: `0:0` by default, mapped 1:1 onto the invoking host uid/gid, with Docker's `14`-capability set for root and an empty set for any non-root uid.
 
 !!! info "Why one mapping"
     A single uid mapping keeps ownership deterministic and clone-cheap: the invoking host uid owns the whole rootfs, so `fork` snapshots copy ids verbatim and need no translation pass.
@@ -286,8 +288,8 @@ It returns `Reconciled { head, built, reused, pruned, pin }`, or `ReconcileFaile
 
 `materialize: Fn(&Node, &Path, &mut dyn FnMut(&str)) -> Result<Facts> + Send + Sync` is a closure the `Reconciler` builds per node kind; there is no new trait. `OciPuller` unpacks a `base` into its slot from the planned manifest digest and clones a pre-pulled `external` rootfs into its slot, `NativeImageBuilder` applies one `step` or returns an `image` node's OCI config as facts, and `seed` runs `initdb` in a one-shot build container on the `postgres` image through the daemon's `StepHost` (the empty slot bound as `PGDATA`), never a world pod.
 
-!!! note "Externals are pre-pulled before reconcile, for now"
-    Until the daemon owns every pull (§6.7 slice 3), the composition root pre-pulls each `COPY --from` external into `images/oci/<digest>` and hands it to the plan, so the planner keys the `external` node by that digest and the materializer clones the sealed rootfs into the node slot.
+!!! note "Externals are pre-pulled before reconcile"
+    `__daemon` owns every pull: it reconciles `up`/`restart`/`docker build`/`docker pull` and pre-pulls each `COPY --from` external into `images/oci/<digest>` during reconcile, so the planner keys the `external` node by that digest and the materializer clones the sealed rootfs into the node slot.
 
     A `base` node (`FROM`) unpacks into its slot from the **planned manifest digest**, so a tag that moved between plan and materialize cannot change the bytes. A tag is re-resolved only when a tag-only registry returns `404` for the digest path, and the resolved digest is still required to equal the planned one.
 
@@ -362,9 +364,9 @@ sequenceDiagram
 - The fork's lease names its parent as `origin`; effect keys the parent already applied stay current, so hooks print `up to date`.
 - A `world_epoch` mismatch between lease and PG stamp re-runs every effect, exactly as today.
 
-### 6.6 What moves and what is deleted
+### 6.6 Legacy paths the shipped store replaced
 
-| Today | Becomes |
+| Legacy (deleted) | Shipped owner |
 | :--- | :--- |
 | `StepCache`, `StepLayout`, `StepRecord` (`slipfork-image/src/steps.rs`) | `SnapshotStore` + node records; `cache_mount` dirs stay in `slipfork-image` as `CacheMounts`. |
 | `state_key`, whole-context `BuildContext::hash`, `base-`/`external-` keys inside `NativeImageBuilder::build` | `BuildPlanner` keys computed before execution; the builder exposes `materialize(step, slot)` and never looks up a cache. |
@@ -377,14 +379,14 @@ sequenceDiagram
 | `up_plan` `fingerprint`, `Fingerprint`, registry fingerprints, `inputs_predate`, `services_bundled` | Deleted; `up_plan` compares `graph.head()` with `lease.head`. |
 | `BtrfsEngine`, `StoreLayout` | Unchanged primitives; `StoreLayout` gains `snapshots_root()` and drops `templates`. |
 
-### 6.7 Refactor slices
+### 6.7 Shipped subsystems & delivery proof
 
 | # | Crate · files (`<= 500` LOC each) | Depends | Proof |
 | :--- | :--- | :--- | :--- |
 | 1 | `slipfork-world` `snapshot/{graph,key,store,slot,gc,lease}.rs`; PG seed in `resources/pg/template.rs` | — | Unit: key grammar, waves, head, mark closure. Lab: real-Btrfs reconcile, mid-wave failure, `RENAME_EXCHANGE`, gc with zero grace. |
-| 2 | `slipfork-image` `plan/{refs,planner,sources}.rs`, `builder/materialize.rs`, `OciPuller` slot unpack + re-read credentials; switch `ImageCache` and CLI `docker build` call sites to plan + `reconcile` in the same slice; delete `steps.rs` | 1 | Unit: per-`COPY` source Merkle honours `.dockerignore`. Lab: `critical_dockerfile_live` rebuilds only the edited suffix. |
-| 3 | `slipfork` `daemon/reconcile/{mod,progress}.rs`; `up`/`restart`/`docker build`/`docker pull` reconcile in `__daemon` (which then owns every pull, `COPY --from` externals included); supervise takes `WorldHeads`; delete `ImageCache` | 2 | Up journey: failed `RUN` keeps the old world serving; `docker build` then `up` is all `cached`. |
-| 4 | `slipfork-world` `boot/` (split `schedule.rs` into `schedule/{waves,gate}.rs`) + `slipfork` `up_plan` (split `up.rs` into `up/{plan,heal}.rs`) and `fork`: `Lease` replaces stamps; `BootStep` keys; Idle by head; fork re-keys world nodes; gc after reconcile; `--no-cache`; delete fingerprints; `specs/02` (§4 Idle rule, `--no-cache`) + `TESTING_PLAN.md` | 3 | Journey: Dockerfile/context edit leaves Idle; fork boots with zero materialization and its next `up` is Idle; `drop` + gc frees unique nodes. |
+| 2 | `slipfork-image` `plan/{refs,planner,sources}.rs`, `builder/materialize.rs`, `OciPuller` slot unpack + re-read credentials; CLI `docker build` plans then `reconcile`s; `ImageCache` and `steps.rs` are deleted | 1 | Unit: per-`COPY` source Merkle honours `.dockerignore`. Lab: `critical_dockerfile_live` rebuilds only the edited suffix. |
+| 3 | `slipfork` `daemon/reconcile/{mod,progress}.rs`; `up`/`restart`/`docker build`/`docker pull` reconcile in `__daemon`, which owns every pull (`COPY --from` externals included); supervise takes `WorldHeads`; `ImageCache` deleted | 2 | Up journey: failed `RUN` keeps the old world serving; `docker build` then `up` is all `cached`. |
+| 4 | `slipfork-world` `boot/` (`schedule/{waves,gate}.rs`) + `slipfork` `up_plan` (`up/{plan,heal}.rs`) and `fork`: `Lease` replaces stamps; `BootStep` keys; Idle by head; fork re-keys world nodes; gc after reconcile; `--no-cache`; fingerprints deleted | 3 | Journey: Dockerfile/context edit leaves Idle; fork boots with zero materialization and its next `up` is Idle; `drop` + gc frees unique nodes. |
 
 ---
 

@@ -68,7 +68,7 @@ The package enables the **user** unit and the system socket only for the install
 | Builder | Host `rpmbuild` when present, else a `rockylinux:9` container; the builder is not the supported floor |
 | Requires | `glibc >= <measured>` plus `crun`/`btrfs-progs`; measured by the same ELF check as `.deb` |
 | Layout | Same paths as the `.deb` under `/usr`, with the systemd units in `/usr/lib/systemd/system` |
-| Nightly stamp | `0.1.0-0.nightly.YYYYMMDD.rN.gSHA` — the `-0.` prefix sorts below the release |
+| Nightly stamp | `0.1.1-0.nightly.YYYYMMDD.rN.gSHA` — the `-0.` prefix sorts below the release |
 | Verify | `rpm -qpl`, then install and boot one world inside a disposable root |
 
 ---
