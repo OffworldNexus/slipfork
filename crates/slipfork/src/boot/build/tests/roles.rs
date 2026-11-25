@@ -1,11 +1,32 @@
 //! Byte-exact role pins: the golden SGR/`NO_COLOR` lines the two-level visual contract promises.
 
-use super::super::{
-    Columns, ImageEnd, ImageState, LiveKey, Phase, image_done_row, image_end_row, image_failed_row,
-};
+use std::num::NonZeroUsize;
+
+use serde_json::json;
+
+use super::super::{Columns, LiveKey, Narrative, Phase};
 use super::phase;
-use crate::boot::render::{Node, OuterWidths, completed_row, outer_widths};
+use crate::boot::render::{OuterWidths, completed_row, outer_widths};
+use crate::ui::report::{Counter, Done, Outcome, Row};
 use crate::ui::{Palette, Verdict};
+
+/// One `built N steps` completion.
+fn built(steps: usize) -> Outcome {
+    Outcome::Ok(Done::Built {
+        steps: NonZeroUsize::new(steps).expect("a built row always ran a step"),
+    })
+}
+
+/// One image end row at `[index/total]` with no command.
+fn image_row(index: usize, total: usize, outcome: Outcome, millis: u64) -> Row {
+    Row::settled(
+        Some(Counter { index, total }),
+        "image",
+        "api",
+        outcome,
+        Some(millis),
+    )
+}
 
 fn strip_ansi(text: &str) -> String {
     let mut out = String::new();
@@ -32,15 +53,23 @@ fn the_build_end_row_carries_outer_slot_steps_and_time() {
         target: 7,
         state: 0,
     };
-    let row = image_done_row(1, 3, "api", 6, 6, 12_300, &widths, Palette::new(false));
-    assert_eq!(row, "✓ [1/3] image  api      built 6 steps  12.3s");
+    let row = image_row(1, 3, built(6), 12_300);
     assert_eq!(
-        image_done_row(1, 3, "api", 1, 1, 80, &widths, Palette::new(false)),
+        completed_row(&row, &widths, Palette::new(false)),
+        "✓ [1/3] image  api      built 6 steps  12.3s"
+    );
+    assert_eq!(
+        completed_row(&image_row(1, 3, built(1), 80), &widths, Palette::new(false)),
         "✓ [1/3] image  api      built 1 step  80ms"
     );
+    let row = completed_row(&row, &widths, Palette::new(false));
     assert!(!row.contains('\u{1b}'), "plain rows stay colourless");
     assert_eq!(
-        image_done_row(1, 3, "api", 6, 6, 12_300, &widths, Palette::new(true)),
+        completed_row(
+            &image_row(1, 3, built(6), 12_300),
+            &widths,
+            Palette::new(true)
+        ),
         "\u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      \u{1b}[32mbuilt\u{1b}[0m 6 steps  \u{1b}[38;5;244m12.3s\u{1b}[0m"
     );
 }
@@ -52,7 +81,10 @@ fn a_failed_image_row_names_the_last_started_step_and_never_claims_built() {
         target: 7,
         state: 0,
     };
-    let plain = image_failed_row(1, 3, "api", Some((2, 6)), &widths, Palette::new(false));
+    let failed = Outcome::Failed {
+        at: Some(Counter { index: 2, total: 6 }),
+    };
+    let plain = completed_row(&image_row(1, 3, failed, 0), &widths, Palette::new(false));
     assert_eq!(plain, "✗ [1/3] image  api      failed at 2/6  <1ms");
     assert!(
         !plain.contains('✓') && !plain.contains("built"),
@@ -60,11 +92,15 @@ fn a_failed_image_row_names_the_last_started_step_and_never_claims_built() {
     );
     assert!(!plain.contains('\u{1b}'), "plain rows stay colourless");
     assert_eq!(
-        image_failed_row(1, 3, "api", Some((2, 6)), &widths, Palette::new(true)),
+        completed_row(&image_row(1, 3, failed, 0), &widths, Palette::new(true)),
         "\u{1b}[31m✗\u{1b}[0m \u{1b}[38;5;244m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      \u{1b}[31mfailed at 2/6\u{1b}[0m  \u{1b}[38;5;244m<1ms\u{1b}[0m"
     );
     assert_eq!(
-        image_failed_row(1, 3, "api", None, &widths, Palette::new(false)),
+        completed_row(
+            &image_row(1, 3, Outcome::Failed { at: None }, 0),
+            &widths,
+            Palette::new(false),
+        ),
         "✗ [1/3] image  api      failed  <1ms"
     );
 }
@@ -78,49 +114,82 @@ fn a_built_row_counts_only_executed_steps_and_cached_never_says_built() {
     };
     let pale = Palette::new(false);
     assert_eq!(
-        image_end_row(
-            1,
-            3,
-            "api",
-            ImageEnd::new(ImageState::Built, Some(3), Some(3), 1200, None),
-            &widths,
-            pale
-        ),
+        completed_row(&image_row(1, 3, built(3), 1200), &widths, pale),
         "✓ [1/3] image  api      built 3 steps  1.2s"
     );
     assert_eq!(
-        image_end_row(
-            1,
-            3,
-            "api",
-            ImageEnd::new(ImageState::Cached, None, None, 8, None),
-            &widths,
-            pale
-        ),
+        completed_row(&image_row(1, 3, Outcome::Cached, 8), &widths, pale),
         "✓ [1/3] image  api      cached  8ms"
     );
+    let partial = Outcome::Ok(Done::Partial {
+        cached: NonZeroUsize::new(9).expect("nonzero"),
+        built: NonZeroUsize::new(2).expect("nonzero"),
+    });
     assert_eq!(
-        image_end_row(
-            1,
-            3,
-            "api",
-            ImageEnd::new(ImageState::Built, None, None, 0, None),
-            &widths,
-            pale
-        ),
-        "✓ [1/3] image  api      built  <1ms",
-        "an older frame without a count never falls back to the plan size"
+        completed_row(&image_row(1, 3, partial, 2500), &widths, pale),
+        "✓ [1/3] image  api      cached 9 · built 2  2.5s"
     );
-    let unknown = image_end_row(
-        1,
-        3,
-        "api",
-        ImageEnd::new(ImageState::Unknown, None, None, 0, None),
+    assert_eq!(
+        completed_row(&image_row(1, 3, partial, 2500), &widths, Palette::new(true)),
+        "\u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      cached 9 · built 2  \u{1b}[38;5;244m2.5s\u{1b}[0m"
+    );
+    let finished = completed_row(
+        &image_row(1, 3, Outcome::Ok(Done::Finished), 0),
         &widths,
         pale,
     );
-    assert_eq!(unknown, "• [1/3] image  api      finished  <1ms");
-    assert!(!unknown.contains('✓'), "{unknown:?}");
+    assert_eq!(finished, "• [1/3] image  api      finished  <1ms");
+    assert!(!finished.contains('✓'), "{finished:?}");
+    assert_eq!(
+        completed_row(
+            &image_row(1, 3, Outcome::Ok(Done::Finished), 0),
+            &widths,
+            Palette::new(true),
+        ),
+        "\u{1b}[36m•\u{1b}[0m \u{1b}[38;5;244m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      finished  \u{1b}[38;5;244m<1ms\u{1b}[0m"
+    );
+}
+
+#[test]
+fn a_malformed_finished_frame_fails_closed_and_a_prep_frame_reads_done() {
+    let plain = Palette::new(false);
+    let mut narrative = Narrative::new(false);
+    assert!(
+        narrative
+            .finish_node("setup", "docs", &json!({ "event": "finished" }), plain)
+            .is_none(),
+        "a frame without kind/name/duration must not render a row"
+    );
+    assert!(
+        narrative
+            .finish_node(
+                "setup",
+                "docs",
+                &json!({ "event": "finished", "kind": "setup", "name": "docs" }),
+                plain,
+            )
+            .is_none(),
+        "a frame without a duration must not render a row"
+    );
+    let row = narrative.settled_row(
+        &json!({
+            "event": "finished", "kind": "setup", "name": "docs",
+            "detail": "uv sync", "duration_ms": 0,
+        }),
+        "setup",
+        "docs",
+        0,
+        (2, 5),
+    );
+    let widths = OuterWidths::default();
+    assert_eq!(
+        completed_row(&row, &widths, plain),
+        "✓ [2/5] setup  docs  done  uv sync  <1ms"
+    );
+    assert!(
+        completed_row(&row, &widths, Palette::new(true)).contains("\u{1b}[32mdone\u{1b}[0m"),
+        "the prep state word stays green"
+    );
 }
 
 #[test]
@@ -197,15 +266,7 @@ fn golden_two_level_rows_pin_every_styled_and_no_color_byte() {
         }
     );
 
-    let cached_node = Node {
-        kind: "image",
-        name: "api",
-        state: "cached",
-        millis: 8,
-        run_id: None,
-        command: None,
-        success: true,
-    };
+    let cached_row = image_row(1, 3, Outcome::Cached, 8);
     let outer_start = Phase::new(
         LiveKey::Boot {
             kind: "service".to_owned(),
@@ -250,11 +311,11 @@ fn golden_two_level_rows_pin_every_styled_and_no_color_byte() {
 
     let styled = Palette::new(true);
     let styled_rows = [
-        completed_row(&cached_node, 1, 3, &widths, true),
+        completed_row(&cached_row, &widths, styled),
         outer_start.settled_row(195, styled),
         inner_running.live_row('⠸', 1200, 200, styled),
         inner_settled.settled_row(0, styled),
-        image_done_row(1, 3, "api", 6, 6, 12_300, &widths, styled),
+        completed_row(&image_row(1, 3, built(6), 12_300), &widths, styled),
         styled.verdict(&verdict_model),
         format!(
             "  {} {}",
@@ -285,11 +346,11 @@ fn golden_two_level_rows_pin_every_styled_and_no_color_byte() {
 
     let plain = Palette::new(false);
     let plain_rows = [
-        completed_row(&cached_node, 1, 3, &widths, false),
+        completed_row(&cached_row, &widths, plain),
         outer_start.settled_row(195, plain),
         inner_running.live_row('⠸', 1200, 200, plain),
         inner_settled.settled_row(0, plain),
-        image_done_row(1, 3, "api", 6, 6, 12_300, &widths, plain),
+        completed_row(&image_row(1, 3, built(6), 12_300), &widths, plain),
         plain.verdict(&verdict_model),
         format!(
             "  {} {}",

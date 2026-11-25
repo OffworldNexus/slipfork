@@ -1,11 +1,11 @@
 use std::time::Duration;
 
-use serde_json::json;
-
 use super::{
-    BarProgress, Node, OuterWidths, completed_row, dropped_row, outer_widths, panel_line,
-    percent_of, status_line,
+    BarProgress, OuterWidths, completed_row, dropped_row, outer_widths, panel_line, percent_of,
+    status_line,
 };
+use crate::ui::Palette;
+use crate::ui::report::{Counter, Done, Outcome, Row};
 
 /// M3.149: an overfull fraction (`4/3`, the shape a late `step` frame produces) must render a
 /// full 24-cell bar and `100%`, never `capacity overflow` from `cells - filled`.
@@ -42,17 +42,19 @@ fn an_overfull_fraction_clamps_to_a_full_bar_and_one_hundred_percent() {
 #[test]
 fn a_prep_frame_lands_its_detail_in_the_command_column() {
     let widths = outer_widths(&[("fork".to_owned(), "snapshot".to_owned())]);
-    let snapshot = json!({
-        "event": "finished", "step": 1, "total": 5, "kind": "fork",
-        "name": "snapshot", "detail": "project + world data", "elapsed_ms": 34,
-    });
-    let node = Node::from_event(&snapshot).expect("a complete prep frame parses");
-    assert_eq!(node.command, Some("project + world data"));
+    let row = Row::settled(
+        Some(Counter { index: 1, total: 5 }),
+        "fork",
+        "snapshot",
+        Outcome::Ok(Done::Settled),
+        Some(34),
+    )
+    .with_command(Some("project + world data".to_owned()));
     assert_eq!(
-        completed_row(&node, 1, 5, &widths, false),
+        completed_row(&row, &widths, Palette::new(false)),
         "✓ [1/5] fork  snapshot  done  project + world data  34ms"
     );
-    let styled = completed_row(&node, 1, 5, &widths, true);
+    let styled = completed_row(&row, &widths, Palette::new(true));
     assert!(styled.contains("\u{1b}[32mdone\u{1b}[0m"), "{styled:?}");
     assert!(
         styled.contains("project + world data  \u{1b}[38;5;244m34ms"),
@@ -77,37 +79,33 @@ fn plan_widths_hold_every_row_in_the_same_columns() {
             state: 0
         }
     );
-    let cached = Node {
-        kind: "image",
-        name: "api",
-        state: "cached",
-        millis: 8,
-        run_id: None,
-        command: None,
-        success: true,
-    };
-    let settled = Node {
-        kind: "setup",
-        name: "uv sync",
-        state: "up to date",
-        millis: 0,
-        run_id: None,
-        command: None,
-        success: false,
-    };
+    let cached = Row::settled(
+        Some(Counter { index: 1, total: 3 }),
+        "image",
+        "api",
+        Outcome::Cached,
+        Some(8),
+    );
+    let settled = Row::settled(
+        Some(Counter { index: 2, total: 3 }),
+        "setup",
+        "uv sync",
+        Outcome::Ok(Done::Declined),
+        Some(0),
+    );
     assert_eq!(
-        completed_row(&cached, 1, 3, &widths, false),
+        completed_row(&cached, &widths, Palette::new(false)),
         "✓ [1/3] image  api      cached  8ms"
     );
     assert_eq!(
-        completed_row(&cached, 1, 3, &widths, true),
+        completed_row(&cached, &widths, Palette::new(true)),
         "\u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mapi\u{1b}[0m      \u{1b}[32mcached\u{1b}[0m  \u{1b}[38;5;244m8ms\u{1b}[0m"
     );
     assert_eq!(
-        completed_row(&settled, 2, 3, &widths, false),
+        completed_row(&settled, &widths, Palette::new(false)),
         "• [2/3] setup  uv sync  up to date  <1ms"
     );
-    assert!(!completed_row(&cached, 1, 3, &widths, false).contains('\u{1b}'));
+    assert!(!completed_row(&cached, &widths, Palette::new(false)).contains('\u{1b}'));
 }
 
 /// M3.133: `drop`'s four rows share one plan and one verdict; the bytes are pinned plain and styled.
@@ -120,37 +118,35 @@ fn drop_rows_share_one_plan_and_a_single_verdict() {
     let widths = outer_widths(&rows);
     assert_eq!((widths.kind, widths.target, widths.state), (6, 5, 0));
 
-    let stop = Node {
-        kind: "stop",
-        name: "jello",
-        state: "",
-        command: Some("pods stopped"),
-        millis: 100,
-        run_id: None,
-        success: true,
-    };
-    let delete = Node {
-        kind: "delete",
-        name: "jello",
-        state: "",
-        command: Some("project + world data"),
-        millis: 101,
-        run_id: None,
-        success: true,
-    };
-    let plain_stop = completed_row(&stop, 2, 4, &widths, false);
+    let stop = Row::settled(
+        Some(Counter { index: 2, total: 4 }),
+        "stop",
+        "jello",
+        Outcome::Ok(Done::Settled),
+        Some(100),
+    )
+    .with_command(Some("pods stopped".to_owned()));
+    let delete = Row::settled(
+        Some(Counter { index: 4, total: 4 }),
+        "delete",
+        "jello",
+        Outcome::Ok(Done::Settled),
+        Some(101),
+    )
+    .with_command(Some("project + world data".to_owned()));
+    let plain_stop = completed_row(&stop, &widths, Palette::new(false));
     assert_eq!(
         plain_stop,
         "✓ [2/4] stop    jello  done  pods stopped  100ms"
     );
-    let plain_delete = completed_row(&delete, 4, 4, &widths, false);
+    let plain_delete = completed_row(&delete, &widths, Palette::new(false));
     assert_eq!(
         plain_delete,
         "✓ [4/4] delete  jello  done  project + world data  101ms"
     );
     assert!(!plain_stop.contains('\u{1b}') && !plain_delete.contains('\u{1b}'));
 
-    let styled_stop = completed_row(&stop, 2, 4, &widths, true);
+    let styled_stop = completed_row(&stop, &widths, Palette::new(true));
     for needle in [
         "\u{1b}[35mstop\u{1b}[0m",
         "\u{1b}[1mjello\u{1b}[0m",

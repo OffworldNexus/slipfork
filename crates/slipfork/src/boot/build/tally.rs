@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// One image's running totals, so the build-end row can count steps and sum wall time.
 #[derive(Debug, Clone)]
-pub(super) struct ImageTally {
+pub(super) struct ImageSteps {
     pub(super) image: String,
     pub(super) total: usize,
     pub(super) millis: u64,
@@ -28,7 +28,7 @@ pub(super) struct ImageTally {
     pub(super) verb_width: usize,
 }
 
-impl ImageTally {
+impl ImageSteps {
     pub(super) fn new(image: &str) -> Self {
         Self {
             image: image.to_owned(),
@@ -94,15 +94,10 @@ impl ImageTally {
         rows
     }
 
-    /// Drains the contiguous rows, any residual rows, and the instruction count and wall time.
-    pub(super) fn settle(&mut self) -> (Vec<String>, usize, u64) {
+    /// Drains the contiguous rows, any residual rows, and the summed wall time.
+    pub(super) fn drain(&mut self) -> (Vec<String>, u64) {
         let mut rows = self.release();
         rows.extend(std::mem::take(&mut self.buffer).into_values());
-        let steps = if self.total > 0 {
-            self.total
-        } else {
-            rows.len()
-        };
-        (rows, steps, self.millis)
+        (rows, self.millis)
     }
 }

@@ -16,7 +16,9 @@ fn plan() -> Vec<(String, String)> {
 /// prep frame still echoes a narrower `1/3`.
 #[test]
 fn a_fork_plan_keeps_one_denominator_and_the_magenta_keyword() {
-    use crate::boot::render::{Node, completed_row, outer_verb, outer_widths};
+    use crate::boot::render::{completed_row, outer_verb, outer_widths};
+    use crate::ui::Palette;
+    use crate::ui::report::{Counter, Done, Outcome, Row};
 
     let plan: Vec<(String, String)> = [
         ("fork", "snapshot"),
@@ -84,23 +86,31 @@ fn a_fork_plan_keeps_one_denominator_and_the_magenta_keyword() {
             "✓ [5/5] start  web           running  204ms",
         ),
     ];
-    for (position, (kind, name, state, command, millis, success, expected)) in
+    for (position, (kind, name, state, command, millis, _success, expected)) in
         rows.into_iter().enumerate()
     {
         assert_eq!(progress.settled(kind, name, (0, 0)), (position + 1, 5));
-        let node = Node {
+        let outcome = match state {
+            "cached" => Outcome::Cached,
+            "up to date" => Outcome::Ok(Done::Declined),
+            "running" => Outcome::Ok(Done::Running),
+            _ => Outcome::Ok(Done::Settled),
+        };
+        let row = Row::settled(
+            Some(Counter {
+                index: position + 1,
+                total: 5,
+            }),
             kind,
             name,
-            state,
-            command,
-            millis,
-            run_id: None,
-            success,
-        };
-        let plain = completed_row(&node, position + 1, 5, &widths, false);
+            outcome,
+            Some(millis),
+        )
+        .with_command(command.map(str::to_owned));
+        let plain = completed_row(&row, &widths, Palette::new(false));
         assert_eq!(plain, expected);
         assert!(!plain.contains('\u{1b}'));
-        let styled = completed_row(&node, position + 1, 5, &widths, true);
+        let styled = completed_row(&row, &widths, Palette::new(true));
         assert!(
             styled.contains(&format!("\u{1b}[35m{}\u{1b}[0m", outer_verb(kind))),
             "the kind keyword is magenta: {styled}"

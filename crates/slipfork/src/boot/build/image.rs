@@ -1,26 +1,69 @@
-//! Image end routing: parse one `finished` frame into a typed state, then render its end row.
+//! Image end routing: parse one `finished` frame into a typed [`Outcome`], then render its row.
 //!
 //! This is the only place an image success (`✓`) is constructed; failures and unknown states
 //! cannot accidentally fall through to a success row.
 
+use std::num::NonZeroUsize;
+
 use serde_json::Value;
 
 use crate::ui::Palette;
+use crate::ui::report::{Counter, Done, Outcome, Row, StepSettlement};
 
-use super::super::layout::{ImageEnd, ImageState, image_end_row};
+use super::super::render::completed_row;
 use super::{Action, LiveKey, Narrative};
 
-/// Parses a finished frame once; a missing or unexpected state is explicitly [`ImageState::Unknown`].
-fn state_from_frame(event: &Value) -> ImageState {
-    if event["event"].as_str() == Some("up-to-date") {
-        return ImageState::Cached;
+/// The typed outcome of one image `finished` frame.
+///
+/// A `built` frame without an executed count renders the neutral `finished` slot rather than
+/// inventing a step count from buffered rows.
+fn image_outcome(
+    event: &Value,
+    executed: Option<usize>,
+    instruction_total: usize,
+    at: Option<(usize, usize)>,
+) -> Outcome {
+    let at =
+        at.and_then(|(index, total)| (index > 0 && total > 0).then_some(Counter { index, total }));
+    // The daemon's serialized settlement is the authority for cached/skipped/failed.
+    if let Some(settlement) = event
+        .get("settlement")
+        .and_then(|value| serde_json::from_value::<StepSettlement>(value.clone()).ok())
+    {
+        match settlement {
+            StepSettlement::Cached { .. } | StepSettlement::Skipped { .. } => {
+                return Outcome::Cached;
+            }
+            StepSettlement::Failed(facts) => return Outcome::Failed { at: facts.at },
+            StepSettlement::Completed { done, .. } if event["state"].is_null() => {
+                return Outcome::Ok(done);
+            }
+            StepSettlement::Completed { .. } => {}
+        }
     }
-    match event["state"].as_str() {
-        Some("failed") => ImageState::Failed,
-        Some("cached" | "up to date" | "up-to-date") => ImageState::Cached,
-        Some("built") => ImageState::Built,
-        Some("pulled") => ImageState::Pulled,
-        _ => ImageState::Unknown,
+    if event["event"].as_str() == Some("up-to-date") {
+        return Outcome::Cached;
+    }
+    match event["state"].as_str().unwrap_or_default() {
+        "built" => match executed {
+            Some(0) => Outcome::Cached,
+            Some(executed) => {
+                let built = NonZeroUsize::new(executed).expect("a non-zero executed count");
+                match NonZeroUsize::new(instruction_total.saturating_sub(executed)) {
+                    Some(cached) if instruction_total > executed => {
+                        Outcome::Ok(Done::Partial { cached, built })
+                    }
+                    _ => Outcome::Ok(Done::Built { steps: built }),
+                }
+            }
+            None => Outcome::Ok(Done::Finished),
+        },
+        "failed" => Outcome::Failed { at },
+        state => match Outcome::from_state(state) {
+            Some(Outcome::Ok(Done::Declined)) => Outcome::Cached,
+            Some(Outcome::Ok(Done::Settled)) | None => Outcome::Ok(Done::Finished),
+            Some(outcome) => outcome,
+        },
     }
 }
 
@@ -39,10 +82,8 @@ impl Narrative {
             LiveKey::Step { image: keyed, .. } => keyed != image,
             LiveKey::Boot { kind, name } => !(kind == "image" && name == image),
         });
-        let state = state_from_frame(event);
         let position = self.images.iter().position(|tally| tally.image == image);
-        let mut actions = Vec::new();
-        let (outer, at, tally_millis, tally_total) = match position {
+        let (rows, outer, at, tally_millis, instruction_total) = match position {
             Some(position) => {
                 let mut tally = self.images.remove(position);
                 let outer = tally.outer;
@@ -51,14 +92,13 @@ impl Narrative {
                 // `total` is the outer PLAN step count and must never be read as instructions.
                 let total = tally.total;
                 if tally.is_unused() {
-                    (outer, at, 0, total)
+                    (Vec::new(), outer, at, 0, total)
                 } else {
-                    let (rows, _, millis) = tally.settle();
-                    actions.extend(rows.into_iter().map(Action::Settle));
-                    (outer, at, millis, total)
+                    let (rows, millis) = tally.drain();
+                    (rows, outer, at, millis, total)
                 }
             }
-            None => ((0, 0), None, 0, 0),
+            None => (Vec::new(), (0, 0), None, 0, 0),
         };
         self.observe_outer("image", image);
         let millis = event["duration_ms"]
@@ -68,20 +108,24 @@ impl Narrative {
         let executed = event["executed"]
             .as_u64()
             .and_then(|count| usize::try_from(count).ok());
-        let total = (tally_total > 0).then_some(tally_total);
-        actions.push(Action::Print(image_end_row(
-            outer.0,
-            outer.1,
+        let mut actions: Vec<Action> = rows.into_iter().map(Action::Settle).collect();
+        let outcome = image_outcome(event, executed, instruction_total, at);
+        let row = Row::settled(
+            (outer.0 > 0 && outer.1 > 0).then_some(Counter {
+                index: outer.0,
+                total: outer.1,
+            }),
+            "image",
             image,
-            ImageEnd::new(state, executed, total, millis, at),
-            &self.outer,
-            palette,
-        )));
+            outcome,
+            Some(millis),
+        );
+        actions.push(Action::Print(completed_row(&row, &self.outer, palette)));
         actions
     }
 
-    /// One `finished`/`up-to-date` frame: an image always settles through [`ImageState`], so no
-    /// generic `completed_row` fallthrough can mint a `✓` from a missing or unknown state.
+    /// One `finished`/`up-to-date` frame: an image always settles through [`image_outcome`], so no
+    /// generic fallthrough can mint a `✓` from a missing or unknown state.
     pub(in crate::boot) fn finish_node(
         &mut self,
         kind: &str,

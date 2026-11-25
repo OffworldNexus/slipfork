@@ -7,10 +7,9 @@
 
 use std::time::Duration;
 
-use serde_json::Value;
-
 use crate::ui::Palette;
 pub use crate::ui::elapsed_text;
+use crate::ui::report::Row;
 use crate::ui::table::visible_width;
 
 /// Appends `styled` followed by enough plain spaces to occupy `width` visible cells.
@@ -210,56 +209,6 @@ impl BarProgress {
     }
 }
 
-/// One finished boot node, already parsed out of a typed daemon `event` frame.
-///
-/// A frame without a kind, a name/label, or a duration is malformed: parsing yields `None` rather
-/// than inventing a `step`/`ready`/`0` row, so a broken event stream can never print fiction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Node<'a> {
-    /// Node kind (`image`, `service`, `postgres`, …), rendered via [`outer_verb`] in magenta.
-    pub kind: &'a str,
-    /// Node name, printed bold.
-    pub name: &'a str,
-    /// Raw state from the daemon; [`completed_row`] lowercases it into the state cell.
-    pub state: &'a str,
-    /// Plain command/detail for a prep row, shown only in the command column.
-    pub command: Option<&'a str>,
-    /// Wall time the node took, rendered by [`elapsed_text`].
-    pub millis: u64,
-    /// Minted run id for a step that executed work; `None` for a cache hit.
-    pub run_id: Option<&'a str>,
-    /// `false` for an `up-to-date` node, which earns a dim bullet instead of a green check.
-    pub success: bool,
-}
-
-impl<'a> Node<'a> {
-    /// Projects one `finished`/`up-to-date` event frame into a row description.
-    #[must_use]
-    pub fn from_event(event: &'a Value) -> Option<Self> {
-        let state = event["state"].as_str().unwrap_or_default();
-        // A join/prep frame carries only a `detail` phrase, which is its command-column detail; a
-        // lifecycle frame keeps any explicit `command` and never borrows a human `detail`.
-        let command = event["command"].as_str().or_else(|| {
-            if state.is_empty() {
-                event["detail"].as_str()
-            } else {
-                None
-            }
-        });
-        Some(Self {
-            kind: event["kind"].as_str()?,
-            name: event["name"].as_str().or_else(|| event["label"].as_str())?,
-            state,
-            command,
-            millis: event["duration_ms"]
-                .as_u64()
-                .or_else(|| event["elapsed_ms"].as_u64())?,
-            run_id: event["run_id"].as_str(),
-            success: event["event"].as_str() != Some("up-to-date"),
-        })
-    }
-}
-
 /// The status-line bar's cell count, or `None` when the terminal is too narrow for a bar.
 #[must_use]
 pub fn pane_geometry(width: usize) -> Option<usize> {
@@ -419,39 +368,25 @@ pub fn dropped_row(fork: &str, millis: u64, styled: bool) -> String {
     )
 }
 
-/// One outer boot row, always carrying its `[i/n]` plan counter:
+/// One settled outer boot row, projected from a typed [`Row`] into the plan's shared columns:
 /// `✓ [1/3] image  api      cached  8ms` or `• [2/3] setup  uv sync  up to date  <1ms`.
 ///
 /// `widths` comes from [`outer_widths`] over the complete boot plan, so a row printed while the
 /// boot is still streaming lands in the same kind/target columns a batch render would produce.
 #[must_use]
-pub fn completed_row(
-    node: &Node<'_>,
-    index: usize,
-    total: usize,
-    widths: &OuterWidths,
-    styled: bool,
-) -> String {
-    let palette = Palette::new(styled);
-    let mark = if node.success {
-        palette.icon_ok()
-    } else {
-        palette.meta("•")
-    };
-    // A prep/join frame has no lifecycle state of its own: it settled cleanly.
-    let state = if node.state.trim().is_empty() {
-        "done"
-    } else {
-        node.state.trim()
-    };
+pub fn completed_row(row: &Row, widths: &OuterWidths, palette: Palette) -> String {
+    let counter = row
+        .counter
+        .filter(|counter| counter.index > 0 && counter.total > 0)
+        .map(|counter| (counter.index, counter.total));
     outer_row(
-        &mark,
-        (index > 0 && total > 0).then_some((index, total)),
-        outer_verb(node.kind),
-        node.name,
-        &state.to_lowercase(),
-        node.command,
-        Some(node.millis),
+        &row.state.icon(palette),
+        counter,
+        outer_verb(row.keyword.as_deref().unwrap_or("step")),
+        row.target.as_deref().unwrap_or_default(),
+        &row.state.plain(),
+        row.command.as_deref(),
+        row.timing_ms,
         widths,
         palette,
     )

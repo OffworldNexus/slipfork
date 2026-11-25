@@ -49,6 +49,21 @@ pub enum Done {
     Settled,
     /// One inner step of a live build.
     Step,
+    /// A world or fork that came back up.
+    Restarted,
+    /// A world, fork, or service that stopped.
+    Stopped,
+    /// A lease, tag, or effect key matched; rendered with a dim bullet.
+    Declined,
+    /// A neutral settled end with no more specific verb (`finished`).
+    Finished,
+    /// A mixed image: some instructions were cached and some really built.
+    Partial {
+        /// Instructions reused from cache; never zero.
+        cached: NonZeroUsize,
+        /// Instructions really executed; never zero.
+        built: NonZeroUsize,
+    },
 }
 
 impl Done {
@@ -58,6 +73,27 @@ impl Done {
         match NonZeroUsize::new(executed) {
             Some(steps) => Outcome::Ok(Self::Built { steps }),
             None => Outcome::Cached,
+        }
+    }
+
+    /// The unstyled state cell this completion renders.
+    #[must_use]
+    pub fn text(&self) -> String {
+        match self {
+            Self::Built { steps } => {
+                let noun = if steps.get() == 1 { "step" } else { "steps" };
+                format!("built {steps} {noun}")
+            }
+            Self::Pulled => "pulled".to_owned(),
+            Self::Ready => "ready".to_owned(),
+            Self::Running => "running".to_owned(),
+            Self::Settled => "done".to_owned(),
+            Self::Step => String::new(),
+            Self::Restarted => "restarted".to_owned(),
+            Self::Stopped => "stopped".to_owned(),
+            Self::Declined => "up to date".to_owned(),
+            Self::Finished => "finished".to_owned(),
+            Self::Partial { cached, built } => format!("cached {cached} · built {built}"),
         }
     }
 }
@@ -94,6 +130,8 @@ impl Outcome {
     #[must_use]
     pub fn icon(&self, palette: Palette) -> String {
         match self {
+            Self::Ok(Done::Declined) => palette.meta("•"),
+            Self::Ok(Done::Finished) => palette.icon_info(),
             Self::Ok(_) | Self::Cached => palette.tint("✓", "32"),
             Self::Skipped => palette.meta("•"),
             Self::Running => "→".to_owned(),
@@ -104,40 +142,63 @@ impl Outcome {
         }
     }
 
+    /// One daemon state word (trimmed, case-insensitive) projected onto the closed vocabulary.
+    ///
+    /// The single authority for every surface that turns a wire `state` into a typed row; an
+    /// unknown word yields `None` so callers can fail closed instead of inventing `done`.
+    #[must_use]
+    pub fn from_state(state: &str) -> Option<Self> {
+        match state.trim().to_ascii_lowercase().as_str() {
+            "" | "done" => Some(Self::Ok(Done::Settled)),
+            "cached" => Some(Self::Cached),
+            "pulled" => Some(Self::Ok(Done::Pulled)),
+            "ready" => Some(Self::Ok(Done::Ready)),
+            "running" => Some(Self::Ok(Done::Running)),
+            "restarted" => Some(Self::Ok(Done::Restarted)),
+            "stopped" => Some(Self::Ok(Done::Stopped)),
+            "declined" | "up to date" | "up-to-date" => Some(Self::Ok(Done::Declined)),
+            "finished" => Some(Self::Ok(Done::Finished)),
+            "failed" => Some(Self::Failed { at: None }),
+            _ => None,
+        }
+    }
+
     /// The state words, already styled; empty only for [`Done::Step`] and [`Self::Problem`].
     #[must_use]
     pub fn state(&self, palette: Palette) -> String {
         match self {
-            Self::Ok(done) => match done {
-                Done::Built { steps } => {
-                    let noun = if steps.get() == 1 { "step" } else { "steps" };
-                    format!("{} {steps} {noun}", palette.tint("built", "32"))
-                }
-                Done::Pulled => palette.tint("pulled", "32"),
-                Done::Ready => palette.tint("ready", "32"),
-                Done::Running => palette.tint("running", "32"),
-                Done::Settled => palette.tint("done", "32"),
-                Done::Step => String::new(),
-            },
-            Self::Cached => palette.tint("cached", "32"),
-            Self::Skipped => palette.tint("up to date", "32"),
-            Self::Running => palette.tint("running", "32"),
-            Self::Failed { at: None } => palette.tint("failed", "31"),
-            Self::Failed { at: Some(counter) } => palette.tint(
-                &format!("failed at {}/{}", counter.index, counter.total),
-                "31",
-            ),
-            Self::Refused => palette.tint("refused", "31"),
+            Self::Problem | Self::Ok(Done::Step) => String::new(),
+            Self::Failed { at: Some(_) } | Self::Refused => palette.error(&self.plain()),
+            _ => palette.status(&self.plain()),
+        }
+    }
+
+    /// The same state words with zero escapes, for the column-aligned outer boot row.
+    #[must_use]
+    pub fn plain(&self) -> String {
+        match self {
+            Self::Ok(done) => done.text(),
+            Self::Cached => "cached".to_owned(),
+            Self::Skipped => "up to date".to_owned(),
+            Self::Running => "running".to_owned(),
+            Self::Failed { at: None } => "failed".to_owned(),
+            Self::Failed { at: Some(counter) } => {
+                format!("failed at {}/{}", counter.index, counter.total)
+            }
+            Self::Refused => "refused".to_owned(),
             Self::Problem => String::new(),
-            Self::Stopped => palette.tint("stopped", "33"),
-            Self::Orphaned => palette.tint("orphaned", "33"),
+            Self::Stopped => "stopped".to_owned(),
+            Self::Orphaned => "orphaned".to_owned(),
         }
     }
 
     /// Whether a row in this state may print its `#run_id`.
     #[must_use]
     pub const fn shows_run_id(&self) -> bool {
-        !matches!(self, Self::Cached | Self::Skipped)
+        !matches!(
+            self,
+            Self::Cached | Self::Skipped | Self::Ok(Done::Declined | Done::Finished)
+        )
     }
 }
 
@@ -163,6 +224,34 @@ pub struct Row {
 }
 
 impl Row {
+    /// One settled outer boot row: `[i/n] keyword  target  icon state  timing`.
+    #[must_use]
+    pub fn settled(
+        counter: Option<Counter>,
+        keyword: &str,
+        target: &str,
+        state: Outcome,
+        timing_ms: Option<u64>,
+    ) -> Self {
+        Self {
+            level: RowLevel::Outer,
+            counter,
+            keyword: Some(keyword.to_owned()),
+            target: Some(target.to_owned()),
+            state,
+            command: None,
+            timing_ms,
+            id: None,
+        }
+    }
+
+    /// Carries a copyable command in the row's command column.
+    #[must_use]
+    pub fn with_command(mut self, command: Option<String>) -> Self {
+        self.command = command;
+        self
+    }
+
     /// Renders one row: indent, counter, keyword, target, `icon state`, command, timing, `#id`.
     #[must_use]
     pub fn line(&self, palette: Palette) -> String {

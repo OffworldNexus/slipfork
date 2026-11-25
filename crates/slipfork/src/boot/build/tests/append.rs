@@ -5,8 +5,9 @@ use serde_json::json;
 
 use super::super::{Columns, LiveKey, Narrative, Phase};
 use crate::boot::progress::BootProgress;
-use crate::boot::render::{OuterWidths, counter, digits, outer_row, outer_widths};
+use crate::boot::render::{OuterWidths, completed_row, counter, digits, outer_row, outer_widths};
 use crate::ui::Palette;
+use crate::ui::report::{Counter as PlanCounter, Done, Outcome, Row};
 
 #[test]
 fn the_outer_counter_pads_to_the_widest_plan_position_on_both_sides_of_ten() {
@@ -234,19 +235,15 @@ fn a_mixed_image_reports_cached_steps_and_built_steps_from_its_instruction_total
         target: 7,
         state: 0,
     };
-    let full = crate::boot::build::image_end_row(
-        1,
-        2,
+    let full = Row::settled(
+        Some(PlanCounter { index: 1, total: 2 }),
+        "image",
         "api",
-        crate::boot::build::ImageEnd::new(
-            crate::boot::build::ImageState::Built,
-            Some(11),
-            Some(11),
-            2500,
-            None,
-        ),
-        &widths,
-        plain,
+        Outcome::Ok(Done::Built {
+            steps: std::num::NonZeroUsize::new(11).expect("nonzero"),
+        }),
+        Some(2500),
     );
+    let full = completed_row(&full, &widths, plain);
     assert!(full.contains("built 11 steps"), "{full}");
 }

@@ -12,10 +12,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use slipfork::boot::{
-    BarProgress, Node, completed_row, elapsed_text, outer_verb, outer_widths, pane_geometry,
-    status_line,
+    BarProgress, completed_row, elapsed_text, outer_verb, outer_widths, pane_geometry, status_line,
 };
 use slipfork::status::{self, Options};
+use slipfork::ui::report::{Counter, Done, Outcome, Row};
 use slipfork::ui::table::visible_width;
 use slipfork_world::{
     ForkLedger, ForkName, ForkRequest, LogStore, RootRequest, StatePaths, WorldName,
@@ -91,11 +91,16 @@ fn mountinfo_unescapes_octal_and_picks_the_longest_containing_mount() {
 
 const ANSI: &str = "\u{1b}[";
 
-/// Measures the outer kind and target columns over the complete planned node set.
-fn plan_widths(nodes: &[&Node<'_>]) -> slipfork::boot::OuterWidths {
-    let rows: Vec<(String, String)> = nodes
+/// Measures the outer kind and target columns over the complete planned row set.
+fn plan_widths(rows: &[&Row]) -> slipfork::boot::OuterWidths {
+    let rows: Vec<(String, String)> = rows
         .iter()
-        .map(|node| (node.kind.to_owned(), node.name.to_owned()))
+        .map(|row| {
+            (
+                row.keyword.clone().unwrap_or_default(),
+                row.target.clone().unwrap_or_default(),
+            )
+        })
         .collect();
     outer_widths(&rows)
 }
@@ -131,103 +136,83 @@ fn column_start(line: &str, needle: &str) -> usize {
 fn every_boot_row_keeps_one_start_per_role_and_carries_its_plan_counter() {
     let long = format!("service-{}", "x".repeat(20));
     assert_eq!(long.chars().count(), 28);
-    let nodes = vec![
-        Node {
-            kind: "pg",
-            name: "db",
-            state: "running",
-            millis: 7_300,
-            run_id: None,
-            command: None,
-            success: true,
-        },
-        Node {
-            kind: "image",
-            name: "base",
-            state: "cached",
-            millis: 812,
-            run_id: None,
-            command: None,
-            success: true,
-        },
-        Node {
-            kind: "service",
-            name: "api",
-            state: "running",
-            millis: 3,
-            run_id: None,
-            command: None,
-            success: true,
-        },
-        Node {
-            kind: "service",
-            name: "web",
-            state: "starting",
-            millis: 12,
-            run_id: None,
-            command: None,
-            success: true,
-        },
-        Node {
-            kind: "redis",
-            name: "cache",
-            state: "running",
-            millis: 45,
-            run_id: None,
-            command: None,
-            success: true,
-        },
-        Node {
-            kind: "postgres",
-            name: "pg",
-            state: "running",
-            millis: 900,
-            run_id: None,
-            command: None,
-            success: true,
-        },
-        Node {
-            kind: "hook",
-            name: "worker:pre-deploy",
-            state: "cached",
-            millis: 1,
-            run_id: None,
-            command: None,
-            success: false,
-        },
-        Node {
-            kind: "service",
-            name: long.as_str(),
-            state: "running",
-            millis: 7_300,
-            run_id: None,
-            command: None,
-            success: true,
-        },
-        Node {
-            kind: "setup",
-            name: "docs",
-            state: "up to date",
-            millis: 3,
-            run_id: None,
-            command: None,
-            success: false,
-        },
+    let rows = vec![
+        Row::settled(
+            Some(Counter { index: 1, total: 9 }),
+            "pg",
+            "db",
+            Outcome::Ok(Done::Running),
+            Some(7_300),
+        ),
+        Row::settled(
+            Some(Counter { index: 2, total: 9 }),
+            "image",
+            "base",
+            Outcome::Cached,
+            Some(812),
+        ),
+        Row::settled(
+            Some(Counter { index: 3, total: 9 }),
+            "service",
+            "api",
+            Outcome::Ok(Done::Running),
+            Some(3),
+        ),
+        Row::settled(
+            Some(Counter { index: 4, total: 9 }),
+            "service",
+            "web",
+            Outcome::Ok(Done::Running),
+            Some(12),
+        ),
+        Row::settled(
+            Some(Counter { index: 5, total: 9 }),
+            "redis",
+            "cache",
+            Outcome::Ok(Done::Running),
+            Some(45),
+        ),
+        Row::settled(
+            Some(Counter { index: 6, total: 9 }),
+            "postgres",
+            "pg",
+            Outcome::Ok(Done::Running),
+            Some(900),
+        ),
+        Row::settled(
+            Some(Counter { index: 7, total: 9 }),
+            "hook",
+            "worker:pre-deploy",
+            Outcome::Ok(Done::Declined),
+            Some(1),
+        ),
+        Row::settled(
+            Some(Counter { index: 8, total: 9 }),
+            "service",
+            &long,
+            Outcome::Ok(Done::Running),
+            Some(7_300),
+        ),
+        Row::settled(
+            Some(Counter { index: 9, total: 9 }),
+            "setup",
+            "docs",
+            Outcome::Ok(Done::Declined),
+            Some(3),
+        ),
     ];
-    let total = nodes.len();
-    let widths = plan_widths(&nodes.iter().collect::<Vec<_>>());
-    let plain: Vec<String> = nodes
+    let total = rows.len();
+    let widths = plan_widths(&rows.iter().collect::<Vec<_>>());
+    let plain: Vec<String> = rows
         .iter()
-        .enumerate()
-        .map(|(offset, node)| completed_row(node, offset + 1, total, &widths, false))
+        .map(|row| completed_row(row, &widths, slipfork::ui::Palette::new(false)))
         .collect();
-    let styled: Vec<String> = nodes
+    let styled: Vec<String> = rows
         .iter()
-        .enumerate()
-        .map(|(offset, node)| completed_row(node, offset + 1, total, &widths, true))
+        .map(|row| completed_row(row, &widths, slipfork::ui::Palette::new(true)))
         .collect();
 
-    for (index, node) in nodes.iter().enumerate() {
+    for (index, row) in rows.iter().enumerate() {
         assert!(
             !plain[index].contains(ANSI),
             "row {index} is plain: {:?}",
@@ -244,7 +229,9 @@ fn every_boot_row_keeps_one_start_per_role_and_carries_its_plan_counter() {
             "row {index} styles without moving a cell"
         );
         let counter = format!("[{}/{total}]", index + 1);
-        let verb = outer_verb(node.kind);
+        let verb = outer_verb(row.keyword.as_deref().expect("a planned keyword"));
+        let name = row.target.as_deref().expect("a planned target");
+        let state = row.state.plain();
         for line in [&plain[index], &visible] {
             assert!(line.contains(&counter), "missing `{counter}` on `{line}`");
             assert_eq!(
@@ -253,12 +240,12 @@ fn every_boot_row_keeps_one_start_per_role_and_carries_its_plan_counter() {
                 "kind start drifts on `{line}`"
             );
             assert_eq!(
-                column_start(line, node.name),
+                column_start(line, name),
                 column_start(&plain[1], "base"),
                 "name start drifts on `{line}`"
             );
             assert_eq!(
-                column_start(line, node.state),
+                column_start(line, &state),
                 column_start(&plain[1], "cached"),
                 "state start drifts on `{line}`"
             );
@@ -270,55 +257,41 @@ fn every_boot_row_keeps_one_start_per_role_and_carries_its_plan_counter() {
 
 #[test]
 fn the_live_boot_pane_renders_exact_rows_and_bars() {
-    let node = Node {
-        kind: "image",
-        name: "base",
-        state: "Cached",
-        millis: 420,
-        run_id: None,
-        command: None,
-        success: true,
-    };
-    let widths = plan_widths(&[&node]);
+    let row = Row::settled(
+        Some(Counter { index: 1, total: 3 }),
+        "image",
+        "base",
+        Outcome::Cached,
+        Some(420),
+    );
+    let widths = plan_widths(&[&row]);
     assert_eq!(
-        completed_row(&node, 1, 3, &widths, true),
+        completed_row(&row, &widths, slipfork::ui::Palette::new(true)),
         "\u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  \u{1b}[32mcached\u{1b}[0m  \u{1b}[38;5;244m420ms\u{1b}[0m"
     );
     assert_eq!(
-        completed_row(&node, 1, 3, &widths, false),
+        completed_row(&row, &widths, slipfork::ui::Palette::new(false)),
         "✓ [1/3] image  base  cached  420ms"
     );
-    assert!(!completed_row(&node, 1, 3, &widths, false).contains(ANSI));
-    assert!(!completed_row(&node, 1, 3, &widths, false).contains('\r'));
+    assert!(!completed_row(&row, &widths, slipfork::ui::Palette::new(false)).contains(ANSI));
+    assert!(!completed_row(&row, &widths, slipfork::ui::Palette::new(false)).contains('\r'));
 
-    let cached = Node {
-        state: "Up-to-date",
-        run_id: None,
-        command: None,
-        success: false,
-        ..node
-    };
-    let widths = plan_widths(&[&cached]);
+    let declined = Row::settled(
+        Some(Counter { index: 2, total: 3 }),
+        "image",
+        "base",
+        Outcome::Ok(Done::Declined),
+        Some(420),
+    );
+    let widths = plan_widths(&[&declined]);
     assert_eq!(
-        completed_row(&cached, 2, 3, &widths, true),
-        "\u{1b}[38;5;244m•\u{1b}[0m \u{1b}[38;5;244m[2/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  \u{1b}[32mup-to-date\u{1b}[0m  \u{1b}[38;5;244m420ms\u{1b}[0m"
+        completed_row(&declined, &widths, slipfork::ui::Palette::new(true)),
+        "\u{1b}[38;5;244m•\u{1b}[0m \u{1b}[38;5;244m[2/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  \u{1b}[32mup to date\u{1b}[0m  \u{1b}[38;5;244m420ms\u{1b}[0m"
     );
     assert_eq!(
-        completed_row(&cached, 2, 3, &widths, false),
-        "• [2/3] image  base  up-to-date  420ms"
+        completed_row(&declined, &widths, slipfork::ui::Palette::new(false)),
+        "• [2/3] image  base  up to date  420ms"
     );
-
-    // A malformed frame fails closed instead of inventing `step`/`ready`/`0` fiction.
-    assert!(
-        Node::from_event(&json!({ "event": "finished" })).is_none(),
-        "a frame without kind/name/duration must not render a row"
-    );
-    let real_frame = json!({
-        "event": "finished", "kind": "image", "name": "base",
-        "state": "Cached", "duration_ms": 420,
-    });
-    let real = Node::from_event(&real_frame).expect("a complete frame parses");
-    assert_eq!(real, node);
 
     assert_eq!(elapsed_text(0), "<1ms");
     assert_eq!(elapsed_text(420), "420ms");

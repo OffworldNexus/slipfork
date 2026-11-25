@@ -7,6 +7,7 @@
 //! `NO_COLOR`), so both shapes tell the same story and `--json` never reaches here at all.
 
 mod image;
+mod rows;
 mod tally;
 
 use std::collections::BTreeSet;
@@ -16,19 +17,15 @@ use serde_json::Value;
 use slipfork_world::snapshot::TailPhase;
 
 use crate::ui::Palette;
-use crate::ui::elapsed_text;
 use crate::ui::report::FailureFacts;
 
-use self::tally::ImageTally;
-use super::phase::{tail_label, tail_phase};
-use super::render::{OuterWidths, outer_row, outer_verb};
+use self::rows::tail_row;
+use self::tally::ImageSteps;
+use super::phase::tail_phase;
+use super::render::{OuterWidths, completed_row, outer_row, outer_verb};
 
 use super::layout::clamp_visible;
 pub(super) use super::layout::{Columns, gutter_line, wrap_gutter};
-#[cfg(test)]
-pub(super) use super::layout::{
-    ImageEnd, ImageState, image_done_row, image_end_row, image_failed_row,
-};
 pub(super) use super::phase::{LiveKey, LiveSteps, Phase};
 
 /// One routing decision from the narrative to the live driver.
@@ -54,7 +51,7 @@ pub(super) enum Action {
 #[derive(Debug)]
 pub(super) struct Narrative {
     steps: Arc<Mutex<LiveSteps>>,
-    images: Vec<ImageTally>,
+    images: Vec<ImageSteps>,
     streamed: Vec<String>,
     outer: OuterWidths,
     verbose: bool,
@@ -343,12 +340,10 @@ impl Narrative {
         .to_lowercase();
         // The command column always holds the step's own command, registered from its
         // plan/`started` frame. A `finished` frame's `detail` is engine narration and never a
-        // command; prep rows get their detail from `Node::from_event` instead.
-        let row = live
-            .phase
-            .settled_outer(millis, &state, None, up_to_date, palette);
+        // command; prep rows get their detail from [`settled_row`] instead.
+        let row = self.live_row(&live.phase, up_to_date, &state, millis);
         self.retire_key(&live.phase.key);
-        Some(Action::Settle(row))
+        Some(Action::Settle(completed_row(&row, &self.outer, palette)))
     }
 
     /// Whether `image` already streamed its instructions, so its `finished` row must not repeat.
@@ -406,11 +401,11 @@ impl Narrative {
         }
     }
 
-    fn tally(&mut self, image: &str) -> &mut ImageTally {
+    fn tally(&mut self, image: &str) -> &mut ImageSteps {
         if let Some(position) = self.images.iter().position(|tally| tally.image == image) {
             return &mut self.images[position];
         }
-        self.images.push(ImageTally::new(image));
+        self.images.push(ImageSteps::new(image));
         self.images.last_mut().expect("just pushed")
     }
 
@@ -444,24 +439,6 @@ impl Narrative {
         self.headed.insert(sentinel);
         Some(row)
     }
-}
-
-/// One append-only tail line: `    · 4/6 run  3.1s · sealing`.
-fn tail_row(phase: &Phase, millis: u64, palette: Palette) -> String {
-    let mut row = String::from("    ");
-    row.push_str(&palette.meta("·"));
-    row.push(' ');
-    if let Some((index, total)) = phase.count {
-        row.push_str(&palette.meta(&format!("{index}/{total}")));
-        row.push(' ');
-    }
-    row.push_str(&palette.substep(&phase.verb.to_lowercase()));
-    row.push_str("  ");
-    row.push_str(&palette.meta(&elapsed_text(millis)));
-    if let Some(tail) = phase.tail {
-        row.push_str(&palette.meta(&format!(" · {}", tail_label(tail))));
-    }
-    row
 }
 
 fn keys_for(event: &Value) -> Vec<LiveKey> {

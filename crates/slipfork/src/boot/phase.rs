@@ -122,30 +122,6 @@ impl Phase {
         }
     }
 
-    /// The settled outer row: its lifecycle `state` follows the frame, the command stays separate.
-    pub(super) fn settled_outer(
-        &self,
-        millis: u64,
-        state: &str,
-        command: Option<&str>,
-        stale: bool,
-        palette: Palette,
-    ) -> String {
-        let mark = if stale {
-            palette.meta("•")
-        } else {
-            palette.icon_ok()
-        };
-        // A cache hit ran no command; a live service keeps its run command in the command column,
-        // while a prep frame supplies its own `detail` phrase as the override.
-        let command = if stale {
-            None
-        } else {
-            command.or(Some(self.shown_args()))
-        };
-        self.outer_row(&mark, state, command, Some(millis), palette)
-    }
-
     /// The expanded `✗ …` row printed with a failed step's output.
     pub(super) fn failed_row(&self, palette: Palette) -> String {
         let mark = palette.tint("✗", "31");
@@ -287,7 +263,7 @@ impl Phase {
         )
     }
 
-    fn shown_args(&self) -> &str {
+    pub(super) fn shown_args(&self) -> &str {
         let trimmed = self.args.trim();
         if trimmed.is_empty() || trimmed == self.target.trim() {
             ""

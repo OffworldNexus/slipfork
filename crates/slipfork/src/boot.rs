@@ -29,7 +29,7 @@ use crate::ui::report::Pane;
 use self::build::Narrative;
 use self::progress::BootProgress;
 use self::render as text;
-pub use self::render::{Node, OuterWidths, completed_row};
+pub use self::render::{OuterWidths, completed_row};
 use self::status::{StatusLine, Ticker};
 
 pub use self::render::dropped_row;
@@ -296,31 +296,39 @@ impl BootTui {
     }
 
     fn finished_node(&mut self, event: &Value, palette: Palette) {
-        let Some(node) = Node::from_event(event) else {
+        let Some(kind) = event["kind"].as_str() else {
             return;
         };
-        self.progress.advance(node.kind, node.name);
-        if node.kind == "image" {
+        let Some(name) = event["name"].as_str().or_else(|| event["label"].as_str()) else {
+            return;
+        };
+        let Some(millis) = event["duration_ms"]
+            .as_u64()
+            .or_else(|| event["elapsed_ms"].as_u64())
+        else {
+            return;
+        };
+        self.progress.advance(kind, name);
+        if kind == "image" {
             self.progress.finish_build();
         } else {
             self.progress.clear_active();
         }
         if !self.progress.announced() {
-            self.progress.remember(node.kind, node.name);
+            self.progress.remember(kind, name);
             self.refresh_widths();
         }
-        if let Some(actions) = self
-            .narrative
-            .finish_node(node.kind, node.name, event, palette)
-        {
+        if let Some(actions) = self.narrative.finish_node(kind, name, event, palette) {
             self.sync_status(actions.is_empty());
             self.apply(actions, palette);
             return;
         }
         let frame = build::counter(event).unwrap_or((0, 0));
-        let (index, total) = self.progress.settled(node.kind, node.name, frame);
-        let row = completed_row(&node, index, total, &self.widths, self.mode.color());
-        self.emit_rows(&[row]);
+        let (index, total) = self.progress.settled(kind, name, frame);
+        let row = self
+            .narrative
+            .settled_row(event, kind, name, millis, (index, total));
+        self.emit_rows(&[completed_row(&row, &self.widths, palette)]);
     }
 
     fn failed_node(&mut self, event: &Value, palette: Palette) {

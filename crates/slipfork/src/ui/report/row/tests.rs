@@ -37,6 +37,18 @@ fn the_plain_icon_state_table_is_byte_exact() {
         (Outcome::Ok(Done::Running), "✓", "running"),
         (Outcome::Ok(Done::Settled), "✓", "done"),
         (Outcome::Ok(Done::Step), "✓", ""),
+        (Outcome::Ok(Done::Restarted), "✓", "restarted"),
+        (Outcome::Ok(Done::Stopped), "✓", "stopped"),
+        (Outcome::Ok(Done::Declined), "•", "up to date"),
+        (Outcome::Ok(Done::Finished), "•", "finished"),
+        (
+            Outcome::Ok(Done::Partial {
+                cached: NonZeroUsize::new(9).unwrap(),
+                built: NonZeroUsize::new(2).unwrap(),
+            }),
+            "✓",
+            "cached 9 · built 2",
+        ),
         (Outcome::Cached, "✓", "cached"),
         (Outcome::Skipped, "•", "up to date"),
         (Outcome::Running, "→", "running"),
@@ -49,6 +61,7 @@ fn the_plain_icon_state_table_is_byte_exact() {
     ] {
         assert_eq!(outcome.icon(plain), icon, "{outcome:?}");
         assert_eq!(outcome.state(plain), state, "{outcome:?}");
+        assert_eq!(outcome.plain(), state, "{outcome:?}");
     }
 }
 
@@ -66,6 +79,34 @@ fn the_colored_icon_state_table_uses_the_role_codes() {
             Outcome::Cached,
             "\u{1b}[32m✓\u{1b}[0m".to_owned(),
             "\u{1b}[32mcached\u{1b}[0m".to_owned(),
+        ),
+        (
+            Outcome::Ok(Done::Restarted),
+            "\u{1b}[32m✓\u{1b}[0m".to_owned(),
+            "restarted".to_owned(),
+        ),
+        (
+            Outcome::Ok(Done::Stopped),
+            "\u{1b}[32m✓\u{1b}[0m".to_owned(),
+            "\u{1b}[33mstopped\u{1b}[0m".to_owned(),
+        ),
+        (
+            Outcome::Ok(Done::Declined),
+            "\u{1b}[38;5;244m•\u{1b}[0m".to_owned(),
+            "\u{1b}[32mup to date\u{1b}[0m".to_owned(),
+        ),
+        (
+            Outcome::Ok(Done::Finished),
+            "\u{1b}[36m•\u{1b}[0m".to_owned(),
+            "finished".to_owned(),
+        ),
+        (
+            Outcome::Ok(Done::Partial {
+                cached: NonZeroUsize::new(9).unwrap(),
+                built: NonZeroUsize::new(2).unwrap(),
+            }),
+            "\u{1b}[32m✓\u{1b}[0m".to_owned(),
+            "cached 9 · built 2".to_owned(),
         ),
         (
             Outcome::Skipped,
@@ -155,6 +196,31 @@ fn cached_and_skipped_rows_never_print_a_run_id() {
     let line = executed.line(plain);
     assert!(line.starts_with("[1/2] SETUP api "), "{line}");
     assert!(line.ends_with(" (41ms) #3f9c21"), "{line}");
+    assert!(!Outcome::Ok(Done::Declined).shows_run_id());
+    assert!(!Outcome::Ok(Done::Finished).shows_run_id());
+    assert!(Outcome::Ok(Done::Ready).shows_run_id());
+}
+
+#[test]
+fn from_state_maps_every_shipped_word_and_rejects_unknown_states() {
+    for (word, outcome) in [
+        ("", Outcome::Ok(Done::Settled)),
+        (" Done ", Outcome::Ok(Done::Settled)),
+        ("cached", Outcome::Cached),
+        ("pulled", Outcome::Ok(Done::Pulled)),
+        ("ready", Outcome::Ok(Done::Ready)),
+        ("running", Outcome::Ok(Done::Running)),
+        ("restarted", Outcome::Ok(Done::Restarted)),
+        ("stopped", Outcome::Ok(Done::Stopped)),
+        ("declined", Outcome::Ok(Done::Declined)),
+        ("up to date", Outcome::Ok(Done::Declined)),
+        ("up-to-date", Outcome::Ok(Done::Declined)),
+        ("finished", Outcome::Ok(Done::Finished)),
+        ("failed", Outcome::Failed { at: None }),
+    ] {
+        assert_eq!(Outcome::from_state(word), Some(outcome), "{word:?}");
+    }
+    assert_eq!(Outcome::from_state("weird"), None);
 }
 
 #[test]
