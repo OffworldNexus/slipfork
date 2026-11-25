@@ -195,13 +195,21 @@ class ToolsTests(unittest.TestCase):
         self.assertIn("raw print", reasons["crates/slipfork/src/commands/open.rs"])
 
         open_file.write_text("fn open() {}\n", encoding="utf-8")
-        boot_file = repo / "crates" / "slipfork" / "src" / "boot.rs"
-        boot_file.write_text('fn boot() { println!("live"); }\n', encoding="utf-8")
+        allowlisted = next(
+            path
+            for path in sorted(guard_mod.RAW_PRINT_ALLOWLIST)
+            if path.suffix == ".rs"
+        )
+        allowlisted_file = repo / allowlisted
+        allowlisted_file.parent.mkdir(parents=True, exist_ok=True)
+        allowlisted_file.write_text(
+            'fn sink() { println!("live"); }\n', encoding="utf-8"
+        )
         violations, _ = guard_mod.inspect(repo)
         self.assertEqual(
             [v for v in violations if "raw print" in v.reason],
             [],
-            "a clean file and the allowlisted boot sink pass",
+            f"a clean file and the allowlisted sink {allowlisted} pass",
         )
 
     def test_guard_flags_raw_print_in_report_model_and_secret(self) -> None:
