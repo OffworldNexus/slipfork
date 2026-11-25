@@ -15,6 +15,7 @@ mod store;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub use gc::{GC_GRACE_MS, GcOutcome, GcReport, gc_mark_set};
 pub use graph::{BuildGraph, Node};
@@ -25,6 +26,76 @@ pub use store::{
     Cache, Facts, Observed, Parallelism, Pin, RECORD_VERSION, ReconcileFailed, Reconciled,
     SnapshotStore,
 };
+
+/// One tail phase of a sealed node, announced before its operation starts.
+///
+/// The store owns the order and the clock: [`SnapshotStore::reconcile_serial`] announces each
+/// phase through [`Observed::Tail`] before the syscall, so a slow seal or publish is visible on
+/// the caller's live row instead of a silent gap. The parallel wave driver ignores phases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TailPhase {
+    /// The slot is being cloned (or created) from its parent.
+    Cloning,
+    /// The materializer is applying the instruction.
+    Executing,
+    /// The slot subvolume is being sealed read-only.
+    Sealing,
+    /// The node record is being written.
+    Recording,
+    /// The sealed slot is being renamed into place (`publish`/`publish_exchange`).
+    Publishing,
+}
+
+impl TailPhase {
+    /// The short `-v` note label (`clone`, `exec`, `seal`, `record`, `publish`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cloning => "clone",
+            Self::Executing => "exec",
+            Self::Sealing => "seal",
+            Self::Recording => "record",
+            Self::Publishing => "publish",
+        }
+    }
+}
+
+/// The measured wall time of every phase of one sealed node.
+///
+/// `clone` is the parent clone that precedes the materializer, `exec` is the materializer itself,
+/// and `seal`/`record`/`publish` are the post-materialize tail. Nothing here is guessed: the
+/// serial driver times the store's own phase announcements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PhaseTiming {
+    /// Time spent cloning (or creating) the staging slot.
+    pub clone: Duration,
+    /// Time the materializer spent applying the instruction.
+    pub exec: Duration,
+    /// Time spent sealing the slot read-only.
+    pub seal: Duration,
+    /// Time spent writing the node record.
+    pub record: Duration,
+    /// Time spent publishing the sealed slot.
+    pub publish: Duration,
+}
+
+impl PhaseTiming {
+    /// The honest settled time: clone + exec + seal + record + publish.
+    #[must_use]
+    pub fn total(self) -> Duration {
+        self.clone + self.exec + self.seal + self.record + self.publish
+    }
+
+    pub(crate) fn add(&mut self, phase: TailPhase, elapsed: Duration) {
+        match phase {
+            TailPhase::Cloning => self.clone += elapsed,
+            TailPhase::Executing => self.exec += elapsed,
+            TailPhase::Sealing => self.seal += elapsed,
+            TailPhase::Recording => self.record += elapsed,
+            TailPhase::Publishing => self.publish += elapsed,
+        }
+    }
+}
 
 /// Everything the snapshot store can refuse to do.
 #[derive(Debug)]
@@ -136,3 +207,21 @@ impl From<crate::Error> for SnapshotError {
 
 /// Result alias for the snapshot graph.
 pub type SnapshotResult<T> = std::result::Result<T, SnapshotError>;
+
+#[cfg(test)]
+mod tests {
+    use super::TailPhase;
+
+    #[test]
+    fn short_notes_cover_every_typed_phase() {
+        for (phase, note) in [
+            (TailPhase::Cloning, "clone"),
+            (TailPhase::Executing, "exec"),
+            (TailPhase::Sealing, "seal"),
+            (TailPhase::Recording, "record"),
+            (TailPhase::Publishing, "publish"),
+        ] {
+            assert_eq!(phase.as_str(), note);
+        }
+    }
+}

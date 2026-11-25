@@ -5,6 +5,42 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 use slipfork_image::StepEvent;
 use slipfork_world::run_log::RunRecord;
+use slipfork_world::snapshot::TailPhase;
+
+impl StepPin<'_> {
+    /// Parses a `step` frame's `phase` label through the one wire vocabulary owned here.
+    pub(crate) fn tail_phase(value: &str) -> Option<TailPhase> {
+        tail_phase_from_wire(value)
+    }
+
+    /// The label a typed tail phase writes on a `step` frame.
+    pub(crate) const fn tail_label(phase: TailPhase) -> &'static str {
+        tail_wire_label(phase)
+    }
+}
+
+/// The JSON `phase` label one tail frame writes (`cloning` … `publishing`).
+const fn tail_wire_label(phase: TailPhase) -> &'static str {
+    match phase {
+        TailPhase::Cloning => "cloning",
+        TailPhase::Executing => "executing",
+        TailPhase::Sealing => "sealing",
+        TailPhase::Recording => "recording",
+        TailPhase::Publishing => "publishing",
+    }
+}
+
+/// Parses the JSON `phase` label back into the typed phase.
+fn tail_phase_from_wire(value: &str) -> Option<TailPhase> {
+    match value {
+        "cloning" => Some(TailPhase::Cloning),
+        "executing" => Some(TailPhase::Executing),
+        "sealing" => Some(TailPhase::Sealing),
+        "recording" => Some(TailPhase::Recording),
+        "publishing" => Some(TailPhase::Publishing),
+        _ => None,
+    }
+}
 
 /// Identity a `log` frame repeats from the step that produced it.
 pub(crate) struct StepPin<'a> {
@@ -82,6 +118,9 @@ pub(crate) fn step_frame(image: &str, event: &StepEvent<'_>) -> Value {
     if let Some(code) = event.exit_code {
         frame["exit_code"] = json!(code);
     }
+    if let Some(phase) = event.phase {
+        frame["phase"] = json!(tail_wire_label(phase));
+    }
     frame
 }
 
@@ -146,4 +185,55 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(millis)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{StepPin, step_frame, tail_phase_from_wire, tail_wire_label};
+    use slipfork_image::{StepEvent, StepPlace, StepState};
+    use slipfork_world::snapshot::TailPhase;
+    use std::time::Duration;
+
+    #[test]
+    fn tail_wire_labels_round_trip_over_the_typed_phases() {
+        for phase in [
+            TailPhase::Cloning,
+            TailPhase::Executing,
+            TailPhase::Sealing,
+            TailPhase::Recording,
+            TailPhase::Publishing,
+        ] {
+            let label = tail_wire_label(phase);
+            assert_eq!(tail_phase_from_wire(label), Some(phase));
+            assert_eq!(StepPin::tail_label(phase), label);
+            assert_eq!(StepPin::tail_phase(label), Some(phase));
+        }
+        assert_eq!(tail_phase_from_wire("nope"), None);
+    }
+
+    #[test]
+    fn tail_step_frames_carry_the_typed_phase_on_the_wire() {
+        let mut event = StepEvent::new(
+            StepPlace::new(6, 7, 0),
+            "RUN",
+            "sh /tmp/oni.sh",
+            StepState::Tail,
+            Duration::ZERO,
+            None,
+        );
+        event.phase = Some(TailPhase::Sealing);
+        let frame = step_frame("api", &event);
+        assert_eq!(frame["state"], "tail");
+        assert_eq!(frame["phase"], "sealing");
+
+        let started = StepEvent::new(
+            StepPlace::new(6, 7, 0),
+            "RUN",
+            "sh /tmp/oni.sh",
+            StepState::Started,
+            Duration::ZERO,
+            None,
+        );
+        assert!(step_frame("api", &started).get("phase").is_none());
+    }
 }

@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use slipfork_world::snapshot::TailPhase;
+
 use crate::runtime::Stream;
 
 /// The `-v`-only container-runtime detail for a `RUN` that exited with `code`.
@@ -18,6 +20,9 @@ pub fn exit_detail(code: Option<i32>) -> String {
 pub enum StepState {
     /// The instruction is executing now.
     Started,
+    /// The instruction settled its work and is in one post-execution tail phase (seal/record/publish)
+    /// or waiting on the next slot clone; the live row keeps its clock.
+    Tail,
     /// The instruction applied, or was served from the sealed step cache.
     Done,
     /// The instruction failed.
@@ -30,6 +35,7 @@ impl StepState {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Started => "started",
+            Self::Tail => "tail",
             Self::Done => "done",
             Self::Failed => "failed",
         }
@@ -74,6 +80,8 @@ pub struct StepEvent<'a> {
     pub elapsed: Duration,
     /// Child process exit code, when a failed `RUN` carried one.
     pub exit_code: Option<i32>,
+    /// The tail phase this row announces; `Some` exactly when `state` is [`StepState::Tail`].
+    pub phase: Option<TailPhase>,
     /// Widest instruction keyword in the image's whole walked plan, so every args cell aligns.
     pub instruction_width: usize,
 }
@@ -101,6 +109,7 @@ impl<'a> StepEvent<'a> {
             state,
             elapsed,
             exit_code,
+            phase: None,
             instruction_width: instruction.chars().count(),
         }
     }
@@ -211,6 +220,28 @@ impl<'a> StepLog<'a> {
         self.started(place, instruction, args);
     }
 
+    /// Announces one post-execution tail phase without settling or restarting the running row.
+    ///
+    /// The identity is retained, so the following `done`/`failed` still repeats this instruction;
+    /// the caller's renderer keeps the row's own clock ticking across the phase.
+    pub fn tail(&mut self, phase: TailPhase) {
+        let Some(identity) = self.current.take() else {
+            return;
+        };
+        let mut event = StepEvent::new(
+            identity.place,
+            &identity.instruction,
+            &identity.args,
+            StepState::Tail,
+            Duration::ZERO,
+            None,
+        );
+        event.phase = Some(phase);
+        event.instruction_width = event.instruction_width.max(self.planned_width);
+        self.emit(BuildEvent::Step(event));
+        self.current = Some(identity);
+    }
+
     /// Settles the running instruction with the wall time it took.
     pub fn done(&mut self, elapsed: Duration) {
         self.settle(StepState::Done, elapsed, None);
@@ -254,6 +285,7 @@ mod tests {
 
     use super::{BuildEvent, StepLog, StepPlace, StepState};
     use crate::runtime::Stream;
+    use slipfork_world::snapshot::TailPhase;
 
     #[test]
     fn engine_notes_and_child_lines_stay_on_distinct_variants() {
@@ -270,6 +302,7 @@ mod tests {
                         step.args.to_owned(),
                         step.line,
                         step.state,
+                        step.phase,
                     ));
                 }
             };
@@ -277,6 +310,7 @@ mod tests {
             log.started(StepPlace::new(1, 1, 1), "FROM", "python:3.13-slim");
             log.note("sealed sha256:deadbeef: reusing cache");
             log.line(Stream::Stdout, "child-out");
+            log.tail(TailPhase::Sealing);
             log.done(Duration::from_millis(12));
         }
         assert_eq!(notes, ["sealed sha256:deadbeef: reusing cache"]);
@@ -288,20 +322,31 @@ mod tests {
                     "FROM".to_owned(),
                     "python:3.13-slim".to_owned(),
                     1,
-                    StepState::Started
+                    StepState::Started,
+                    None
                 ),
                 (
                     "FROM".to_owned(),
                     "python:3.13-slim".to_owned(),
                     1,
-                    StepState::Done
+                    StepState::Tail,
+                    Some(TailPhase::Sealing)
+                ),
+                (
+                    "FROM".to_owned(),
+                    "python:3.13-slim".to_owned(),
+                    1,
+                    StepState::Done,
+                    None
                 ),
             ]
         );
+        assert_eq!(StepState::Tail.as_str(), "tail");
 
         let mut silent = StepLog::discard();
         silent.started(StepPlace::new(1, 1, 1), "FROM", "alpine:3.20");
         silent.note("sealed sha256:00: reusing cache");
+        silent.tail(TailPhase::Publishing);
         silent.done(Duration::ZERO);
     }
 }

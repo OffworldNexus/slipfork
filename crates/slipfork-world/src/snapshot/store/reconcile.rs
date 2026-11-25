@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::snapshot::{
     BuildGraph, Cache, GC_GRACE_MS, Node, NodeKey, Parallelism, Pin, ReconcileFailed, Reconciled,
-    SnapshotError, SnapshotResult, SnapshotSlot,
+    SnapshotError, SnapshotResult, SnapshotSlot, TailPhase,
 };
 
 use super::{Facts, NodeRecord, RECORD_VERSION, SnapshotStore};
@@ -175,6 +175,7 @@ impl SnapshotStore<'_> {
                                     plan.now_ms,
                                     &mut shim,
                                     &mut sink,
+                                    &mut |_: TailPhase| {},
                                 )
                             })
                         })
@@ -212,6 +213,9 @@ impl SnapshotStore<'_> {
     }
 
     /// The one reconcile core, called by the parallel and serial drivers under a per-key gate.
+    ///
+    /// `tail` receives each post-create phase *before* the store starts it, so the serial driver can
+    /// paint a slow seal/publish while it runs; the parallel wave driver passes a no-op.
     pub(crate) fn process_node(
         &self,
         node: &Node,
@@ -219,11 +223,12 @@ impl SnapshotStore<'_> {
         now_ms: u64,
         materialize: &mut Materialize<'_>,
         sink: &mut dyn FnMut(&str),
+        tail: &mut dyn FnMut(TailPhase),
     ) -> SnapshotResult<NodeOutcome> {
         let gate = self.gate(&node.key);
         let outcome = {
             let _held = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            self.process_locked(node, cache, now_ms, materialize, sink)
+            self.process_locked(node, cache, now_ms, materialize, sink, tail)
         };
         drop(gate);
         self.forget_gate(&node.key);
@@ -237,6 +242,7 @@ impl SnapshotStore<'_> {
         now_ms: u64,
         materialize: &mut Materialize<'_>,
         sink: &mut dyn FnMut(&str),
+        tail: &mut dyn FnMut(TailPhase),
     ) -> SnapshotResult<NodeOutcome> {
         let dir = self.node_dir(&node.key);
         let record = self.read_record(&node.key).ok().flatten();
@@ -291,15 +297,19 @@ impl SnapshotStore<'_> {
             .iter()
             .map(|parent| self.node_dir(parent))
             .find(|path| path.is_dir() && self.engine.is_sealed(path).unwrap_or(false));
-        let mut slot = SnapshotSlot::create(
-            self.engine,
-            &self.root,
-            node.key,
-            self.next_ordinal(),
-            parent.as_deref(),
-        )?;
+        let mut slot = {
+            tail(TailPhase::Cloning);
+            SnapshotSlot::create(
+                self.engine,
+                &self.root,
+                node.key,
+                self.next_ordinal(),
+                parent.as_deref(),
+            )?
+        };
         let published = (|| -> SnapshotResult<()> {
             let facts = materialize(node, slot.path(), &mut *sink)?;
+            tail(TailPhase::Sealing);
             slot.seal()?;
             let record = NodeRecord {
                 v: RECORD_VERSION,
@@ -311,7 +321,9 @@ impl SnapshotStore<'_> {
                 last_used_ms: now_ms,
                 facts,
             };
+            tail(TailPhase::Recording);
             self.write_record(&node.key, &record)?;
+            tail(TailPhase::Publishing);
             if exchange {
                 slot.publish_exchange()?;
             } else {

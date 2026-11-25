@@ -12,8 +12,11 @@ mod tally;
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
+use slipfork_world::snapshot::TailPhase;
 
 use crate::ui::Palette;
+use crate::ui::elapsed_text;
+use crate::world::StepPin;
 
 use self::tally::ImageTally;
 use super::failure;
@@ -228,6 +231,36 @@ impl Narrative {
                 // Rows are released later, in index order, at the next start or `finish_node`.
                 Vec::new()
             }
+            // A tail frame updates the existing live row in place: it never restarts the clock and
+            // never prints a row of its own. The anchored pane repaints on its next tick.
+            "tail" => {
+                let Some(phase) = event["phase"].as_str().and_then(StepPin::tail_phase) else {
+                    return Vec::new();
+                };
+                let (open, changed) = {
+                    let Ok(mut steps) = self.steps.lock() else {
+                        return Vec::new();
+                    };
+                    let changed = steps.phase(&key).and_then(|row| row.tail) != Some(phase);
+                    if changed {
+                        steps.set_tail(&key, phase);
+                    }
+                    (steps.phase(&key).cloned(), changed)
+                };
+                // An anchored pane repaints the row in place; only a pipe / `NO_COLOR` / CI log
+                // gets a line, and only for a real, non-`Executing` phase transition.
+                if !changed || palette.color() || phase == TailPhase::Executing {
+                    return Vec::new();
+                }
+                let Some(row) = open else {
+                    return Vec::new();
+                };
+                let millis = event["elapsed_ms"]
+                    .as_u64()
+                    .filter(|millis| *millis > 0)
+                    .unwrap_or_else(|| row.elapsed_millis());
+                vec![Action::Print(tail_row(&row, millis, palette))]
+            }
             // The boot `failed` frame that follows carries the remedy; the output must survive
             // until then, so a failed step is never collapsed.
             _ => Vec::new(),
@@ -397,6 +430,24 @@ impl Narrative {
         self.images.push(ImageTally::new(image));
         self.images.last_mut().expect("just pushed")
     }
+}
+
+/// One append-only tail line: `    · 4/6 run  3.1s · sealing`.
+fn tail_row(phase: &Phase, millis: u64, palette: Palette) -> String {
+    let mut row = String::from("    ");
+    row.push_str(&palette.meta("·"));
+    row.push(' ');
+    if let Some((index, total)) = phase.count {
+        row.push_str(&palette.meta(&format!("{index}/{total}")));
+        row.push(' ');
+    }
+    row.push_str(&palette.substep(&phase.verb.to_lowercase()));
+    row.push_str("  ");
+    row.push_str(&palette.meta(&elapsed_text(millis)));
+    if let Some(tail) = phase.tail {
+        row.push_str(&palette.meta(&format!(" · {}", StepPin::tail_label(tail))));
+    }
+    row
 }
 
 fn keys_for(event: &Value) -> Vec<LiveKey> {

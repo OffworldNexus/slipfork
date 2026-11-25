@@ -236,47 +236,61 @@ pub(super) fn image_done_row(
     )
 }
 
-/// Truncates an already styled row to `width` visible cells, ending in `…` when it was cut.
+/// Joins a styled `prefix`, plain `args`, and styled `suffix` into `width` visible cells.
 ///
-/// SGR sequences are copied whole and never counted, and a clipped row carries one final reset so
-/// a colour can never bleed into the next line of the live region.
-pub(super) fn truncate_ansi(row: &str, width: usize) -> String {
-    if console::measure_text_width(row) <= width {
-        return row.to_owned();
+/// Only `args` is ever shortened. When even `prefix + suffix` overflows — a degenerate width, or
+/// a suffix wider than the row — the whole progress suffix wins over the identity columns, so the
+/// cell that proves liveness is never the cell that disappears.
+pub(super) fn compose_live(prefix: String, args: &str, suffix: String, width: usize) -> String {
+    let args = args.trim();
+    let prefix_width = console::measure_text_width(&prefix);
+    let suffix_width = console::measure_text_width(&suffix);
+    if args.is_empty() {
+        if prefix_width + suffix_width <= width {
+            return format!("{prefix}{suffix}");
+        }
+        return keep_suffix(suffix);
     }
-    if width == 0 {
+    if prefix_width + 2 + suffix_width > width {
+        if prefix_width + suffix_width <= width {
+            return format!("{prefix}{suffix}");
+        }
+        return keep_suffix(suffix);
+    }
+    let available = width - prefix_width - 2 - suffix_width;
+    let fitted = fit_args(args, available);
+    if fitted.is_empty() {
+        format!("{prefix}{suffix}")
+    } else {
+        format!("{prefix}  {fitted}{suffix}")
+    }
+}
+
+/// The suffix alone, without its leading gap: the last resort when nothing else fits.
+fn keep_suffix(suffix: String) -> String {
+    suffix.trim_start_matches(' ').to_owned()
+}
+
+/// Shortens `args` to `available` visible cells, ending in `…` when it had to be cut.
+fn fit_args(args: &str, available: usize) -> String {
+    if console::measure_text_width(args) <= available {
+        return args.to_owned();
+    }
+    if available == 0 {
         return String::new();
     }
-    let mut out = String::new();
-    let mut visible = 0usize;
-    let mut styled = false;
-    let mut chars = row.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '\u{1b}' {
-            styled = true;
-            out.push(ch);
-            if let Some('[') = chars.next() {
-                out.push('[');
-                for ch in chars.by_ref() {
-                    out.push(ch);
-                    if ('@'..='~').contains(&ch) {
-                        break;
-                    }
-                }
-            }
-            continue;
-        }
-        if visible == width.saturating_sub(1) {
+    let mut head = String::new();
+    let mut used = 0usize;
+    for ch in args.chars() {
+        let width = console::measure_text_width(&ch.to_string());
+        if used + width > available - 1 {
             break;
         }
-        out.push(ch);
-        visible += 1;
+        head.push(ch);
+        used += width;
     }
-    out.push('…');
-    if styled {
-        out.push_str("\u{1b}[0m");
-    }
-    out
+    head.push('…');
+    head
 }
 
 /// Truncates `text` to at most `max` visible characters, ending in `…` when it was cut.

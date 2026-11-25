@@ -6,14 +6,16 @@
 
 mod externals;
 mod materialize;
+mod rows;
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use slipfork_world::snapshot::{PhaseTiming, TailPhase};
 use slipfork_world::{Cache, Node, Observed, SnapshotError, SnapshotStore, WorldEngine};
 
 use crate::Architecture;
@@ -27,12 +29,14 @@ use crate::plan::{BuildPlanner, RefResolver, StepTask};
 use crate::puller::{OciPuller, PulledImage};
 use crate::reference::ImageReference;
 use crate::runtime::{CrunStepRuntime, StepHost, StepLog};
+use crate::step_log::StepPlace;
 
 pub use crate::plan::StepTrace;
 pub use externals::{ExternalFrom, ExternalImage, external_references};
 pub(crate) use externals::{FromSource, classify_from};
 
 use materialize::TaskMaterializer;
+use rows::StageRows;
 
 /// Everything one `build` call needs; every path is absolute and caller-injected.
 #[derive(Debug, Clone)]
@@ -218,46 +222,20 @@ impl NativeImageBuilder {
         for stage in &planned.stages {
             debug_assert_eq!(stage.graph.head(), stage.head);
             let stage_keys: BTreeSet<slipfork_world::NodeKey> = stage.keyed_rows().collect();
-            let cursor = Cell::new(0usize);
-            let open = Cell::new(None::<slipfork_world::NodeKey>);
+            let mut rows = StageRows::default();
             let observer = |node: &Node, observed: Observed| {
                 if !stage_keys.contains(&node.key) {
                     return;
                 }
-                let row = stage.row_index_from(cursor.get(), node.key);
+                let mut log = log_cell.borrow_mut();
                 match observed {
-                    Observed::Reused => {
-                        if let Some(index) = row {
-                            let mut log = log_cell.borrow_mut();
-                            stage.flush_metadata(cursor.get(), index, &mut log);
-                            let (place, keyword, args) = stage.row_parts(index);
-                            log.started(place, keyword, args);
-                            log.done(Duration::ZERO);
-                            cursor.set(index + 1);
-                        }
-                    }
-                    Observed::Building => {
-                        if let Some(index) = row {
-                            let mut log = log_cell.borrow_mut();
-                            stage.flush_metadata(cursor.get(), index, &mut log);
-                            let (place, keyword, args) = stage.row_parts(index);
-                            log.started(place, keyword, args);
-                            cursor.set(index + 1);
-                            open.set(Some(node.key));
-                        }
-                    }
-                    Observed::Built { elapsed } => {
-                        if open.get() == Some(node.key) {
-                            open.set(None);
-                            log_cell.borrow_mut().done(elapsed);
-                        }
-                    }
+                    Observed::Reused => rows.reused(stage, node.key, &mut log),
+                    Observed::Tail { phase } => rows.tail(stage, node.key, phase, &mut log),
+                    Observed::Building => rows.building(stage, node.key, &mut log),
+                    Observed::Built { timing } => rows.built(node.key, timing, &mut log),
                     Observed::Failed { elapsed } => {
-                        if open.get() == Some(node.key) {
-                            open.set(None);
-                            let code = stash.borrow().as_ref().and_then(Error::exit_code);
-                            log_cell.borrow_mut().failed(elapsed, code);
-                        }
+                        let code = stash.borrow().as_ref().and_then(Error::exit_code);
+                        rows.failed(node.key, elapsed, code, &mut log);
                     }
                 }
             };
@@ -295,9 +273,14 @@ impl NativeImageBuilder {
                         }
                     }
                     let mut log = log_cell.borrow_mut();
-                    stage.flush_metadata(cursor.get(), stage.rows.len(), &mut log);
+                    stage.flush_metadata(rows.cursor, stage.rows.len(), &mut log);
                 }
                 Err(failure) => {
+                    let code = stash.borrow().as_ref().and_then(Error::exit_code);
+                    {
+                        let mut log = log_cell.borrow_mut();
+                        rows.close_open(Duration::ZERO, code, &mut log);
+                    }
                     if let Some(error) = stash.into_inner() {
                         return Err(error);
                     }
@@ -337,6 +320,27 @@ impl BaseImageBuilder for NativeImageBuilder {
 /// Whether `task` is the filesystem kind that counts toward cache hits/misses.
 fn is_fs(task: Option<&StepTask>) -> bool {
     matches!(task, Some(StepTask::Fs { .. }))
+}
+
+/// The one `-v` note that proves where a settled step's seconds went.
+fn phase_note(place: StepPlace, timing: PhaseTiming) -> String {
+    let split = [
+        (TailPhase::Cloning, timing.clone),
+        (TailPhase::Executing, timing.exec),
+        (TailPhase::Sealing, timing.seal),
+        (TailPhase::Recording, timing.record),
+        (TailPhase::Publishing, timing.publish),
+    ]
+    .iter()
+    .map(|(phase, elapsed)| format!("{} {:.2}s", phase.as_str(), elapsed.as_secs_f64()))
+    .collect::<Vec<_>>()
+    .join(" ");
+    format!(
+        "step {}/{} {split} total {:.2}s",
+        place.index,
+        place.total,
+        timing.total().as_secs_f64(),
+    )
 }
 
 /// Folds a step failure into a line-decorated `StepFailed` naming the instruction as written.
@@ -445,8 +449,26 @@ fn visible_path(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{instruction_width, planned_instruction_width};
+    use super::{instruction_width, phase_note, planned_instruction_width};
     use crate::dockerfile::DockerfileParser;
+    use crate::step_log::StepPlace;
+    use slipfork_world::snapshot::PhaseTiming;
+    use std::time::Duration;
+
+    #[test]
+    fn phase_note_reports_the_real_split_and_honest_total() {
+        let timing = PhaseTiming {
+            clone: Duration::ZERO,
+            exec: Duration::from_secs_f64(3.02),
+            seal: Duration::from_secs_f64(4.21),
+            record: Duration::from_secs_f64(0.01),
+            publish: Duration::ZERO,
+        };
+        assert_eq!(
+            phase_note(StepPlace::new(6, 7, 0), timing),
+            "step 6/7 clone 0.00s exec 3.02s seal 4.21s record 0.01s publish 0.00s total 7.24s"
+        );
+    }
 
     #[test]
     fn widest_keyword_spans_mixed_from_copy_add_run_workdir() {

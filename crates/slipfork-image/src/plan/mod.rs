@@ -13,5 +13,5 @@ mod sources;
 mod tests;
 
 pub use planner::StepTrace;
-pub(crate) use planner::{BuildPlanner, CopyOrigin, FsKind, StepTask};
+pub(crate) use planner::{BuildPlanner, CopyOrigin, FsKind, PlannedStage, StepTask};
 pub(crate) use refs::RefResolver;

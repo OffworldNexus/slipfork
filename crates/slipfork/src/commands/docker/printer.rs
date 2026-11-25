@@ -57,6 +57,7 @@ impl<'sink> EventPrinter<'sink> {
             } => {
                 let state = match state.as_str() {
                     "started" => StepState::Started,
+                    "tail" => StepState::Tail,
                     "failed" => StepState::Failed,
                     _ => StepState::Done,
                 };
@@ -142,6 +143,7 @@ impl<'sink> EventPrinter<'sink> {
                     ));
                 }
             }
+            StepState::Tail => {}
             StepState::Done | StepState::Failed => {
                 let icon = if step.state == StepState::Done {
                     self.palette.icon_ok()

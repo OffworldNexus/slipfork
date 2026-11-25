@@ -24,8 +24,12 @@ fn instruction_and_target_columns_pad_to_the_image_wide_columns() {
 #[test]
 fn the_live_row_uses_settled_double_space_separators_and_truncates_args() {
     let row = phase(Columns::default()).live_row('⠹', 4800, 30, Palette::new(false));
-    assert_eq!(row, "⠹ [2/4] RUN  api  running  sh…");
-    assert_eq!(row.chars().count(), 30, "{row}");
+    assert!(
+        row.ends_with("4.8s"),
+        "the elapsed cell is never sheared: {row}"
+    );
+    assert!(!row.contains("sh -c"), "the args are what gets cut: {row}");
+    assert!(console::measure_text_width(&row) <= 30, "{row}");
 
     let wide = phase(Columns::default()).live_row('⠹', 1200, 80, Palette::new(false));
     let settled = phase(Columns::default()).settled_row(1200, Palette::new(false));
@@ -127,7 +131,7 @@ fn a_failed_step_expands_both_streams_in_arrival_order() {
 }
 
 #[test]
-fn a_live_row_is_ansi_truncated_at_the_width_with_an_ellipsis() {
+fn a_degenerate_width_keeps_the_elapsed_cell_and_drops_the_args() {
     let phase = Phase::new(
         LiveKey::Step {
             image: "api".to_owned(),
@@ -144,9 +148,10 @@ fn a_live_row_is_ansi_truncated_at_the_width_with_an_ellipsis() {
         console::measure_text_width(&row) <= 12,
         "the live row never exceeds the terminal width: {row:?}"
     );
+    assert!(row.contains("1.2s"), "the elapsed cell survives: {row:?}");
     assert!(
-        row.contains('…'),
-        "a clipped live row ends in an ellipsis: {row:?}"
+        !row.contains("sh -c") && !row.ends_with('…'),
+        "the args are dropped, never the progress cell: {row:?}"
     );
 }
 
@@ -308,6 +313,71 @@ fn twenty_line_failing_step_caps_live_region_at_eight_and_expands_all_twenty_to_
             .any(|action| matches!(action, Action::Hold(_))),
         "append-only failure must not repeat already-printed lines: {append_failed:?}"
     );
+}
+
+#[test]
+fn append_only_tail_prints_one_line_per_phase_and_none_when_settled_or_anchored() {
+    let plain = Palette::new(false);
+    let mut narrative = Narrative::new(false);
+    narrative.step(
+        &json!({
+            "event": "step",
+            "image": "api",
+            "index": 1,
+            "total": 2,
+            "instruction": "RUN",
+            "args": "sh -c 'slow'",
+            "state": "started",
+            "elapsed_ms": 0,
+        }),
+        plain,
+    );
+    let tail = |phase: &str| {
+        json!({
+            "event": "step",
+            "image": "api",
+            "index": 1,
+            "total": 2,
+            "instruction": "RUN",
+            "args": "sh -c 'slow'",
+            "state": "tail",
+            "phase": phase,
+            "elapsed_ms": 3100,
+        })
+    };
+    let printed = |actions: &[Action]| -> Vec<String> {
+        actions
+            .iter()
+            .filter_map(|action| match action {
+                Action::Print(row) => Some(row.to_owned()),
+                _ => None,
+            })
+            .collect()
+    };
+
+    for phase in ["sealing", "recording", "publishing"] {
+        let rows = printed(&narrative.step(&tail(phase), plain));
+        assert_eq!(rows.len(), 1, "one line per transition: {rows:?}");
+        assert_eq!(
+            rows[0],
+            format!("    · 1/2 run  3.1s · {phase}"),
+            "the append-only tail line names the phase"
+        );
+        assert!(
+            printed(&narrative.step(&tail(phase), plain)).is_empty(),
+            "a repeated label is not a new transition, so it never prints twice"
+        );
+    }
+    assert!(
+        printed(&narrative.step(&tail("executing"), plain)).is_empty(),
+        "execution itself never gets a tail line"
+    );
+    assert!(
+        printed(&narrative.step(&tail("recording"), Palette::new(true))).is_empty(),
+        "an anchored pane repaints the row in place instead of printing"
+    );
+    // `--json` is gated in `BootTui::observe` before the narrative ever sees the frame, so it
+    // cannot produce this line either.
 }
 
 #[test]
