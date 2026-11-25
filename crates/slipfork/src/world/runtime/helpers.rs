@@ -59,12 +59,19 @@ impl From<slipfork_world::IdentityError> for IdentityFailure {
 ///
 /// Two records describe one sealed image: the head key names the last *materialized* step and the
 /// image node that wraps it carries the final-stage `ImageConfig`, whose `user` is the `Dockerfile`
-/// `USER`. A pulled image seals no `user` fact, which is Docker's `0:0` default.
+/// `USER`. A pulled or cached-from image seals no `user` fact, which is Docker's `0:0` default.
 pub(super) fn sealed_identity(
     layout: &StoreLayout,
     engine: &dyn WorldEngine,
     built: &ImageHead,
 ) -> Result<Identity, IdentityFailure> {
+    // A pulled image seals its OCI rootfs under `images/oci/<digest>` and records no OCI config
+    // `USER`, so Docker's `0:0` default applies. Node records must never be consulted here: a
+    // from-only image shares its base key with any same-digest Dockerfile build, whose `USER`
+    // would otherwise alias onto the pull.
+    if built.rootfs.starts_with(layout.images_root()) {
+        return Ok(Identity::ROOT);
+    }
     let store = SnapshotStore::new(layout, engine);
     let user = sealed_user(&store, built)?;
     // The one resolver: build `RUN` steps resolve the same `ImageConfig.user` for the same rootfs
@@ -74,45 +81,55 @@ pub(super) fn sealed_identity(
 
 /// The `USER` fact of the image node that wraps the sealed head, if the image names one.
 ///
-/// A Dockerfile-built head must have that image record; a pulled image has none and keeps Docker's
-/// `0:0` default, so neither case can silently fall back to the host identity.
+/// Provenance decides the fallback: a head with no node record at all was pulled (`pulled` on its
+/// first `up`, `cached` thereafter) and keeps Docker's `0:0` default. Any head that *does* have a
+/// record is a Dockerfile build (`built`, or `cached` on a 0-miss rebuild) and must still find its
+/// image record, even if GC swept it, so an explicit `USER` never silently boots root.
 fn sealed_user(
     store: &SnapshotStore<'_>,
     built: &ImageHead,
 ) -> Result<Option<String>, IdentityFailure> {
-    if let Some(record) = read_record(&store.record_path(&built.key))?
+    let head_record = read_record(&store.record_path(&built.key))?;
+    if let Some(record) = head_record.as_ref()
         && record.kind == "image"
         && let Some(facts) = record.facts.as_ref()
     {
         return Ok(field(facts));
     }
-    // The image node is the head's single child: its key hashes the head's key as parent.
+    // The image node is the head's single child: its key hashes the head's key as parent. A pure
+    // pull writes no node record, so the snapshots root may not exist at all: that is no records,
+    // not a failure.
     let parent = built.key.as_hex();
-    let entries = fs::read_dir(store.snapshots_root()).map_err(|error| {
-        IdentityFailure::new(
-            format!(
-                "cannot list the sealed snapshots in `{}`: {error}",
-                store.snapshots_root().display()
-            ),
-            "run `slipfork up` to rebuild this world",
-        )
-    })?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("json") {
-            continue;
-        }
-        let Some(record) = read_record(&path)? else {
-            continue;
-        };
-        if record.kind == "image"
-            && record.parents.as_slice() == [parent.as_str()]
-            && let Some(facts) = record.facts.as_ref()
-        {
-            return Ok(field(facts));
+    let snapshots = store.snapshots_root();
+    if snapshots.is_dir() {
+        let entries = fs::read_dir(snapshots).map_err(|error| {
+            IdentityFailure::new(
+                format!(
+                    "cannot list the sealed snapshots in `{}`: {error}",
+                    snapshots.display()
+                ),
+                "run `slipfork up` to rebuild this world",
+            )
+        })?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(std::ffi::OsStr::to_str) != Some("json") {
+                continue;
+            }
+            let Some(record) = read_record(&path)? else {
+                continue;
+            };
+            if record.kind == "image"
+                && record.parents.as_slice() == [parent.as_str()]
+                && let Some(facts) = record.facts.as_ref()
+            {
+                return Ok(field(facts));
+            }
         }
     }
-    if built.state == "pulled" {
+    // A pulled head writes no node record at all; its absent `USER` is Docker's root default. A
+    // recorded head that lost its image record is a Dockerfile build that must fail closed.
+    if built.state == "pulled" || head_record.is_none() {
         return Ok(None);
     }
     Err(IdentityFailure::new(
@@ -615,17 +632,39 @@ mod tests {
         user: Option<&str>,
         state: &str,
     ) -> (slipfork_world::StoreLayout, super::ImageHead) {
+        sealed_head_with(disk, seed, user, state, true)
+    }
+
+    /// A pulled head: the `OCI` image is sealed but no node record is ever written for the head.
+    fn sealed_head_without_record(
+        disk: &TempDir,
+        seed: u8,
+        state: &str,
+    ) -> (slipfork_world::StoreLayout, super::ImageHead) {
+        sealed_head_with(disk, seed, None, state, false)
+    }
+
+    fn sealed_head_with(
+        disk: &TempDir,
+        seed: u8,
+        user: Option<&str>,
+        state: &str,
+        write_record: bool,
+    ) -> (slipfork_world::StoreLayout, super::ImageHead) {
         use slipfork_world::{NodeKey, StoreLayout};
         let layout = StoreLayout::new(disk.path());
         let snapshots = layout.snapshots_root();
-        fs::create_dir_all(&snapshots).expect("create the snapshots root");
         let head = NodeKey::from_digest([seed; 32]);
-        fs::write(
-            snapshots.join(format!("{}.json", head.as_hex())),
-            r#"{"v":1,"kind":"step","parents":[],"canon":"WORKDIR /app","line":2,"created_ms":0,"last_used_ms":0,"facts":null}"#,
-        )
-        .expect("write the head record");
+        if write_record {
+            fs::create_dir_all(&snapshots).expect("create the snapshots root");
+            fs::write(
+                snapshots.join(format!("{}.json", head.as_hex())),
+                r#"{"v":1,"kind":"step","parents":[],"canon":"WORKDIR /app","line":2,"created_ms":0,"last_used_ms":0,"facts":null}"#,
+            )
+            .expect("write the head record");
+        }
         if let Some(user) = user {
+            fs::create_dir_all(&snapshots).expect("create the snapshots root");
             fs::write(
                 snapshots.join(format!("{}.json", "a".repeat(64))),
                 format!(
@@ -652,6 +691,48 @@ mod tests {
             state: state.to_owned(),
         };
         (layout, head)
+    }
+
+    /// A from-only head's rootfs lives under `images/oci/`; a same-digest Dockerfile build's base
+    /// key can carry a `USER` record, and the pull must never alias it.
+    #[test]
+    fn a_pulled_head_never_aliases_another_images_user_record() {
+        use slipfork_world::{BtrfsEngine, NodeKey, StoreLayout};
+        let disk = TempDir::new_in("/var/tmp").expect("real disk store");
+        let layout = StoreLayout::new(disk.path());
+        let engine = BtrfsEngine::new(StoreLayout::new(disk.path()));
+        let head_key = NodeKey::from_digest([9; 32]);
+        let snapshots = layout.snapshots_root();
+        fs::create_dir_all(&snapshots).expect("create the snapshots root");
+        fs::write(
+            snapshots.join(format!("{}.json", head_key.as_hex())),
+            r#"{"v":1,"kind":"base","parents":[],"canon":"FROM sha256:c64c","line":1,"created_ms":0,"last_used_ms":0,"facts":null}"#,
+        )
+        .expect("write the shared base record");
+        fs::write(
+            snapshots.join(format!("{}.json", "b".repeat(64))),
+            format!(
+                r#"{{"v":1,"kind":"image","parents":["{}"],"canon":"FROM alpine:3.20","line":1,"created_ms":0,"last_used_ms":0,"facts":{{"user":"ghost"}}}}"#,
+                head_key.as_hex()
+            ),
+        )
+        .expect("write the other image's USER record");
+
+        let rootfs = layout.images_root().join("oci").join("c".repeat(64));
+        fs::create_dir_all(rootfs.join("etc")).expect("create the sealed OCI rootfs");
+        let head = super::ImageHead {
+            key: head_key,
+            rootfs,
+            inherited_env: Vec::new(),
+            argv: vec!["/bin/true".to_owned()],
+            workdir: "/".to_owned(),
+            state: "cached".to_owned(),
+        };
+        assert_eq!(
+            super::sealed_identity(&layout, &engine, &head)
+                .expect("a pulled image is root, never the aliased USER"),
+            slipfork_world::Identity::ROOT
+        );
     }
 
     /// A sealed image's `USER` resolves through the same `Identity::resolve` the build uses.
@@ -686,7 +767,7 @@ mod tests {
         assert!(!error.cause().contains("next:"), "no embedded remedy");
     }
 
-    /// A Dockerfile-built head with no image record fails closed instead of booting as root.
+    /// A recorded head that lost its image record fails closed; a record-less pulled head is root.
     #[test]
     fn a_built_head_without_its_image_record_is_refused_but_a_pulled_image_is_root() {
         use slipfork_world::BtrfsEngine;
@@ -706,6 +787,48 @@ mod tests {
         assert_eq!(
             super::sealed_identity(&layout, &engine, &head).expect("a pulled image is 0:0"),
             slipfork_world::Identity::ROOT
+        );
+
+        // The second `up` reports the from-only image as `cached` and still writes no node
+        // record, so its absent `USER` stays Docker's `0:0` default. A pure pull leaves no
+        // `snapshots/` directory at all, so use a store that never wrote one.
+        let bare = TempDir::new_in("/var/tmp").expect("real disk store");
+        let bare_engine = BtrfsEngine::new(slipfork_world::StoreLayout::new(bare.path()));
+        let (layout, head) = sealed_head_without_record(&bare, 5, "cached");
+        assert!(
+            !layout.snapshots_root().is_dir(),
+            "the fixture must model a store with no node records"
+        );
+        assert_eq!(
+            super::sealed_identity(&layout, &bare_engine, &head)
+                .expect("a record-less cached-from image keeps the root default"),
+            slipfork_world::Identity::ROOT
+        );
+
+        // A Dockerfile head cached on a 0-miss rebuild still has its step record: if GC swept the
+        // image record it fails closed rather than booting root over an explicit `USER`.
+        let (layout, head) = sealed_head(&disk, 6, None, "cached");
+        let error = super::sealed_identity(&layout, &engine, &head)
+            .expect_err("a recorded cached head without an image record must fail closed");
+        assert!(
+            error.cause().contains("no recorded `USER`"),
+            "{}",
+            error.cause()
+        );
+
+        // A cached head that does carry an explicit `USER` still fails closed on a missing account.
+        let (layout, head) = sealed_head(&disk, 7, Some("ghost"), "cached");
+        let error = super::sealed_identity(&layout, &engine, &head)
+            .expect_err("an unresolvable USER must fail closed even on a cached head");
+        assert!(
+            error.cause().contains("`ghost`") && error.cause().contains("/etc/passwd"),
+            "the cause names the account and its file: {}",
+            error.cause()
+        );
+        assert!(
+            error.remedy().contains("useradd"),
+            "the remedy names the fix: {}",
+            error.remedy()
         );
     }
 }
