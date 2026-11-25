@@ -11,17 +11,28 @@
 //! A missing, malformed, or stale index is rebuilt once by scanning the log and replacing the
 //! `.idx` atomically; there is no silent "read from zero anyway" path. The init keeps every sink
 //! open and passes the pipe read ends to per-stream pump threads; a restart appends a fresh divider
-//! instead of truncating history. [`append`] is the raw writer the image builder calls for build
-//! logs, so both paths maintain the index.
+//! instead of truncating history. [`LogSink::append`] is the raw writer the image builder calls for
+//! build logs, so both paths maintain the index.
+//!
+//! The index machinery lives in the `index` submodule and the incremental readers in `reader`;
+//! this root owns the framing, the append sinks, and the canonical path helpers.
+
+mod index;
+mod reader;
+
+pub use index::{IndexEntry, load_index};
+pub use reader::{LogMerge, LogRange, LogReader, follow_range, read_range};
 
 use std::fs::{self, DirBuilder, File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::control::{FrameLines, Stream};
+use crate::control::Stream;
 use crate::error::{Error, Result};
+
+use index::{append_index, ensure_index};
 
 /// Left half of the restart divider (`── api started ──`).
 pub const DIVIDER_OPEN: &str = "── ";
@@ -37,35 +48,6 @@ pub const INDEX_ENTRY_BYTES: usize = 16;
 pub const INDEX_LINES: u64 = 64;
 /// Force an index entry after this many captured bytes.
 pub const INDEX_BYTES: u64 = 16 * 1024;
-
-/// One fixed-size timestamp index entry: a log line starting at `byte_offset` with `ts_ms`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct IndexEntry {
-    /// Milliseconds since the Unix epoch of the line at `byte_offset`.
-    pub ts_ms: u64,
-    /// Byte offset of that line inside the `.log`.
-    pub byte_offset: u64,
-}
-
-impl IndexEntry {
-    fn encode(self) -> [u8; INDEX_ENTRY_BYTES] {
-        let mut bytes = [0_u8; INDEX_ENTRY_BYTES];
-        bytes[..8].copy_from_slice(&self.ts_ms.to_be_bytes());
-        bytes[8..].copy_from_slice(&self.byte_offset.to_be_bytes());
-        bytes
-    }
-
-    fn decode(raw: &[u8]) -> Self {
-        let mut ts = [0_u8; 8];
-        let mut offset = [0_u8; 8];
-        ts.copy_from_slice(&raw[..8]);
-        offset.copy_from_slice(&raw[8..]);
-        Self {
-            ts_ms: u64::from_be_bytes(ts),
-            byte_offset: u64::from_be_bytes(offset),
-        }
-    }
-}
 
 /// Whether one replayed line is pod output or a runtime divider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,7 +108,7 @@ impl LogLine {
         }
     }
 
-    fn parse(raw: &[u8]) -> Self {
+    pub(super) fn parse(raw: &[u8]) -> Self {
         let Some(tab) = raw.iter().position(|byte| *byte == b'\t') else {
             return Self::new(0, LogKind::Line, String::from_utf8_lossy(raw));
         };
@@ -318,328 +300,4 @@ fn open_log(path: &Path) -> Result<File> {
         .mode(0o600)
         .open(path)
         .map_err(|source| Error::io("open", path, source))
-}
-
-fn append_index(file: &mut File, path: &Path, entry: IndexEntry) -> Result<()> {
-    file.write_all(&entry.encode())
-        .and_then(|()| file.flush())
-        .map_err(|source| Error::io("write", path, source))
-}
-
-/// Reads or explicitly rebuilds one `<id>.idx` for a log of `log_len` bytes.
-///
-/// A valid index starts at offset `0`, has strictly increasing offsets, and never points past the
-/// current end of the log. Anything else (missing file, `len % 16 != 0`, truncated log, empty
-/// index for a non-empty log) is rebuilt by scanning the log once.
-fn ensure_index(index: &Path, log: &Path, log_len: u64) -> Result<Vec<IndexEntry>> {
-    if let Some(entries) = read_valid_index(index, log_len) {
-        return Ok(entries);
-    }
-    rebuild_index(index, log)?;
-    read_valid_index(index, log_len).ok_or_else(|| Error::Protocol {
-        message: format!(
-            "rebuilt log index `{}` is still inconsistent with `{}`",
-            index.display(),
-            log.display()
-        ),
-    })
-}
-
-fn read_valid_index(index: &Path, log_len: u64) -> Option<Vec<IndexEntry>> {
-    let bytes = fs::read(index).ok()?;
-    if bytes.len() % INDEX_ENTRY_BYTES != 0 {
-        return None;
-    }
-    let entries: Vec<IndexEntry> = bytes
-        .chunks_exact(INDEX_ENTRY_BYTES)
-        .map(IndexEntry::decode)
-        .collect();
-    if entries.is_empty() {
-        return (log_len == 0).then_some(entries);
-    }
-    if entries[0].byte_offset != 0 {
-        return None;
-    }
-    for pair in entries.windows(2) {
-        if pair[1].byte_offset <= pair[0].byte_offset {
-            return None;
-        }
-    }
-    if entries.last()?.byte_offset > log_len {
-        return None;
-    }
-    Some(entries)
-}
-
-fn rebuild_index(index: &Path, log: &Path) -> Result<()> {
-    let file = File::open(log).map_err(|source| Error::io("open", log, source))?;
-    let mut reader = BufReader::new(file);
-    let mut entries = Vec::new();
-    let mut line = Vec::new();
-    let mut offset = 0_u64;
-    let mut line_no = 0_u64;
-    let mut indexed_at = 0_u64;
-    loop {
-        line.clear();
-        let read = reader
-            .read_until(b'\n', &mut line)
-            .map_err(|source| Error::io("read", log, source))?;
-        if read == 0 {
-            break;
-        }
-        if line_no == 0
-            || line_no % INDEX_LINES == 0
-            || offset.saturating_sub(indexed_at) >= INDEX_BYTES
-        {
-            entries.push(IndexEntry {
-                ts_ms: raw_ts(&line),
-                byte_offset: offset,
-            });
-            indexed_at = offset;
-        }
-        offset += read as u64;
-        line_no += 1;
-    }
-    write_index(index, &entries)
-}
-
-fn raw_ts(raw: &[u8]) -> u64 {
-    let tab = raw.iter().position(|byte| *byte == b'\t').unwrap_or(0);
-    std::str::from_utf8(&raw[..tab])
-        .ok()
-        .and_then(|text| text.trim().parse().ok())
-        .unwrap_or(0)
-}
-
-fn write_index(index: &Path, entries: &[IndexEntry]) -> Result<()> {
-    let mut temp = index.as_os_str().to_owned();
-    temp.push(".tmp");
-    let temp = PathBuf::from(temp);
-    let _ = fs::remove_file(&temp);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&temp)
-        .map_err(|source| Error::io("create", &temp, source))?;
-    for entry in entries {
-        file.write_all(&entry.encode())
-            .map_err(|source| Error::io("write", &temp, source))?;
-    }
-    file.sync_all()
-        .map_err(|source| Error::io("sync", &temp, source))?;
-    drop(file);
-    fs::rename(&temp, index).map_err(|source| Error::io("rename", index, source))
-}
-
-/// Loads (or explicitly rebuilds) one world's `.idx`; exposed for replay introspection.
-pub fn load_index(logs_root: &Path, id: &str) -> Result<Vec<IndexEntry>> {
-    let log = log_path(logs_root, id);
-    let len = fs::metadata(&log)
-        .map_err(|source| Error::io("stat", &log, source))?
-        .len();
-    ensure_index(&index_path(logs_root, id), &log, len)
-}
-
-/// Reads one append-only log file incrementally, splitting bytes into timestamped lines.
-#[derive(Debug)]
-pub struct LogReader {
-    file: File,
-    lines: FrameLines,
-    path: PathBuf,
-}
-
-impl LogReader {
-    /// Opens `path` read-only at its start.
-    pub fn open(path: &Path) -> Result<Self> {
-        Self::open_at(path, 0)
-    }
-
-    fn open_at(path: &Path, offset: u64) -> Result<Self> {
-        let mut file = File::open(path).map_err(|source| Error::io("open", path, source))?;
-        if offset > 0 {
-            file.seek(SeekFrom::Start(offset))
-                .map_err(|source| Error::io("seek", path, source))?;
-        }
-        Ok(Self {
-            file,
-            lines: FrameLines::new(),
-            path: path.to_path_buf(),
-        })
-    }
-
-    /// Reads whatever is available and emits completed lines.
-    ///
-    /// Returns the number of bytes consumed; `0` means the file has no new bytes yet.
-    pub fn read_lines(&mut self, on_line: &mut dyn FnMut(LogLine)) -> Result<usize> {
-        let mut chunk = [0_u8; CHUNK];
-        let read = self
-            .file
-            .read(&mut chunk)
-            .map_err(|source| Error::io("read", &self.path, source))?;
-        if read > 0 {
-            for raw in self.lines.feed(&chunk[..read], CHUNK) {
-                on_line(LogLine::parse(&raw));
-            }
-        }
-        Ok(read)
-    }
-
-    /// Emits one trailing partial line, if any.
-    pub fn flush(&mut self, on_line: &mut dyn FnMut(LogLine)) {
-        if let Some(raw) = self.lines.take_partial() {
-            on_line(LogLine::parse(&raw));
-        }
-    }
-}
-
-/// One indexed replay window over a capture file.
-///
-/// Construction seeks to the last index boundary at or before `since_ms`, so a follow-less replay
-/// and a live follower both start at the window instead of byte zero.
-#[derive(Debug)]
-pub struct LogRange {
-    reader: LogReader,
-    since_ms: Option<u64>,
-    until_ms: Option<u64>,
-    start_offset: u64,
-    done: bool,
-}
-
-impl LogRange {
-    /// Reads available lines strictly inside `[since_ms, until_ms]`.
-    ///
-    /// Returns the number of bytes read from the underlying file (including skipped pre-window
-    /// lines); `0` means the file has no new bytes yet or the window is exhausted.
-    pub fn read_lines(&mut self, on_line: &mut dyn FnMut(LogLine)) -> Result<usize> {
-        if self.done {
-            return Ok(0);
-        }
-        let since = self.since_ms;
-        let until = self.until_ms;
-        let mut past_window = false;
-        let read = self.reader.read_lines(&mut |line| {
-            if since.is_some_and(|since| line.ts_ms < since) {
-                return;
-            }
-            if until.is_some_and(|until| line.ts_ms > until) {
-                past_window = true;
-                return;
-            }
-            on_line(line);
-        })?;
-        if past_window {
-            self.done = true;
-        }
-        Ok(read)
-    }
-
-    /// Emits one trailing partial line when it is inside the window.
-    pub fn flush(&mut self, on_line: &mut dyn FnMut(LogLine)) {
-        if self.done {
-            return;
-        }
-        let since = self.since_ms;
-        let until = self.until_ms;
-        self.reader.flush(&mut |line| {
-            if since.is_some_and(|since| line.ts_ms < since) {
-                return;
-            }
-            if until.is_some_and(|until| line.ts_ms > until) {
-                return;
-            }
-            on_line(line);
-        });
-    }
-
-    /// The byte offset this window started reading from (the binary-search boundary).
-    #[must_use]
-    pub fn start_offset(&self) -> u64 {
-        self.start_offset
-    }
-}
-
-/// Opens one capture file at the indexed boundary at or before `since_ms`.
-pub fn read_range(
-    logs_root: &Path,
-    id: &str,
-    since_ms: Option<u64>,
-    until_ms: Option<u64>,
-) -> Result<LogRange> {
-    let path = log_path(logs_root, id);
-    let log_len = fs::metadata(&path)
-        .map_err(|source| Error::io("stat", &path, source))?
-        .len();
-    let start_offset = match since_ms {
-        None => 0,
-        Some(since) => index_start(&index_path(logs_root, id), &path, log_len, since)?,
-    };
-    Ok(LogRange {
-        reader: LogReader::open_at(&path, start_offset)?,
-        since_ms,
-        until_ms,
-        start_offset,
-        done: false,
-    })
-}
-
-/// Follow variant: starts at `since_ms` (or byte zero) and keeps reading as the log grows.
-pub fn follow_range(logs_root: &Path, id: &str, since_ms: Option<u64>) -> Result<LogRange> {
-    read_range(logs_root, id, since_ms, None)
-}
-
-fn index_start(index: &Path, log: &Path, log_len: u64, since_ms: u64) -> Result<u64> {
-    let entries = ensure_index(index, log, log_len)?;
-    if entries.is_empty() {
-        return Ok(0);
-    }
-    let position = entries.partition_point(|entry| entry.ts_ms < since_ms);
-    let start = if position == 0 {
-        entries[0].byte_offset
-    } else {
-        entries[position - 1].byte_offset
-    };
-    Ok(start.min(log_len))
-}
-
-/// Chronological merge buffer shared by replay and follow.
-///
-/// Lines within the reorder window are held; `drain` releases everything older than the cutoff in
-/// timestamp order, and `flush` releases the rest. Ties break by arrival sequence so the order is
-/// stable across identical timestamps.
-#[derive(Debug, Default)]
-pub struct LogMerge {
-    pending: Vec<(u64, u64, String, LogLine)>,
-    sequence: u64,
-}
-
-impl LogMerge {
-    /// Queues one line for `pod`.
-    pub fn push(&mut self, pod: &str, line: LogLine) {
-        self.sequence += 1;
-        self.pending
-            .push((line.ts_ms, self.sequence, pod.to_owned(), line));
-    }
-
-    /// Releases every line whose timestamp is at or before `cutoff_ms`, oldest first.
-    pub fn drain(&mut self, cutoff_ms: u64) -> Vec<(String, LogLine)> {
-        let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending)
-            .into_iter()
-            .partition(|(ts, _, _, _)| *ts <= cutoff_ms);
-        self.pending = waiting;
-        self.sorted(ready)
-    }
-
-    /// Releases every queued line, oldest first.
-    pub fn flush(&mut self) -> Vec<(String, LogLine)> {
-        let pending = std::mem::take(&mut self.pending);
-        self.sorted(pending)
-    }
-
-    fn sorted(&self, mut rows: Vec<(u64, u64, String, LogLine)>) -> Vec<(String, LogLine)> {
-        rows.sort_by_key(|(ts, sequence, _, _)| (*ts, *sequence));
-        rows.into_iter()
-            .map(|(_, _, pod, line)| (pod, line))
-            .collect()
-    }
 }

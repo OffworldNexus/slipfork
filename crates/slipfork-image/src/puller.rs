@@ -1,12 +1,15 @@
 //! The puller: resolve, stream, verify, unpack, seal, cache.
 
-use std::collections::BTreeMap;
+mod flight;
+
 use std::fs;
 use std::io::{self, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+
+use self::flight::{FlightRole, FlightTable, PullGuard, await_flight, new_flight, new_table};
 
 use slipfork_world::{Dirtiness, ImageFacts, WorldEngine, is_subvolume_path};
 
@@ -53,55 +56,6 @@ struct ConfigRuntime {
     cmd: Vec<String>,
 }
 
-/// One in-flight pull of one OCI reference; waiters reuse the leader's sealed result.
-type Flight = Arc<(
-    Mutex<Option<std::result::Result<PulledImage, String>>>,
-    Condvar,
-)>;
-type FlightTable = Arc<Mutex<BTreeMap<String, Flight>>>;
-
-enum FlightRole {
-    Lead(PullGuard),
-    Wait(Flight),
-}
-
-struct PullGuard {
-    key: String,
-    table: FlightTable,
-    flight: Flight,
-    finished: bool,
-}
-
-impl PullGuard {
-    fn finish(mut self, outcome: std::result::Result<PulledImage, String>) {
-        self.finished = true;
-        if let Ok(mut table) = self.table.lock() {
-            table.remove(&self.key);
-        }
-        let (lock, cvar) = &*self.flight;
-        if let Ok(mut slot) = lock.lock() {
-            *slot = Some(outcome);
-            cvar.notify_all();
-        }
-    }
-}
-
-impl Drop for PullGuard {
-    fn drop(&mut self) {
-        if self.finished {
-            return;
-        }
-        if let Ok(mut table) = self.table.lock() {
-            table.remove(&self.key);
-        }
-        let (lock, cvar) = &*self.flight;
-        if let Ok(mut slot) = lock.lock() {
-            *slot = Some(Err("the pull worker panicked".to_owned()));
-            cvar.notify_all();
-        }
-    }
-}
-
 /// Docker-free OCI Distribution v2 puller behind the [`BaseImageBuilder`] port.
 pub struct OciPuller {
     world: Arc<dyn WorldEngine>,
@@ -127,7 +81,7 @@ impl OciPuller {
             layout,
             architecture,
             client: RegistryClient::new(credentials, user_agent),
-            flights: Arc::new(Mutex::new(BTreeMap::new())),
+            flights: new_table(),
             attempts: AtomicUsize::new(0),
         }
     }
@@ -292,14 +246,13 @@ impl OciPuller {
         if let Some(existing) = table.get(key) {
             return Ok(FlightRole::Wait(Arc::clone(existing)));
         }
-        let flight: Flight = Arc::new((Mutex::new(None), Condvar::new()));
+        let flight = new_flight();
         table.insert(key.to_owned(), Arc::clone(&flight));
-        Ok(FlightRole::Lead(PullGuard {
-            key: key.to_owned(),
-            table: Arc::clone(&self.flights),
+        Ok(FlightRole::Lead(PullGuard::new(
+            key.to_owned(),
+            Arc::clone(&self.flights),
             flight,
-            finished: false,
-        }))
+        )))
     }
 
     /// The sealed image `reference` already pulls to, with no registry request at all.
@@ -480,22 +433,6 @@ impl OciPuller {
             );
         }
         Ok(())
-    }
-}
-
-/// Waits for the leader's outcome; a poisoned lock is reported as a failed flight.
-fn await_flight(flight: &Flight) -> std::result::Result<PulledImage, String> {
-    let (lock, cvar) = &**flight;
-    let mut state = lock
-        .lock()
-        .map_err(|_| "the pull singleflight state was poisoned".to_owned())?;
-    loop {
-        if let Some(outcome) = state.clone() {
-            return outcome;
-        }
-        state = cvar
-            .wait(state)
-            .map_err(|_| "the pull singleflight wait was poisoned".to_owned())?;
     }
 }
 

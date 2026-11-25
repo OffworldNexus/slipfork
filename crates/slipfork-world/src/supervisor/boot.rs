@@ -106,11 +106,12 @@ pub(super) fn boot(host: WorldHost, world: &WorldName) -> Result<WorldSupervisor
     // `10.0.2.100/24` plus a default route before any pod starts. `--disable-host-loopback` keeps
     // the host's `127.0.0.1` dark from pods. The forwarder log lands in the durable world capture
     // directory, not the tmpfs pod root the fork path unlinks per entry right after boot.
+    let journal = super::journal::Journal::new(&host.logs_root, world);
     let egress = match egress::WorldEgress::attach(
         &host.tools.slirp4netns,
         init_pid,
         &egress::net_dev_path(init_pid),
-        &egress::log_path(&host.logs_root, world),
+        &journal,
         egress::READY_TIMEOUT,
     ) {
         Ok(egress) => egress,
