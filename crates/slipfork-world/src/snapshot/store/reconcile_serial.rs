@@ -116,7 +116,6 @@ impl SnapshotStore<'_> {
                         &mut |_: &str| {},
                         &mut tail,
                     );
-                    drop(shim);
                     if let Ok(settled) = &outcome {
                         let timing = clock.finish();
                         match settled {

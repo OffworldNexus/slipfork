@@ -58,7 +58,7 @@ fn detect_ui(args: &[OsString]) -> UiMode {
     let tty = std::io::stdout().is_terminal();
     let color = tty
         && std::env::var_os("NO_COLOR").is_none()
-        && !std::env::var_os("TERM").is_some_and(|term| term == "dumb");
+        && std::env::var_os("TERM").is_none_or(|term| term != "dumb");
     let json = args
         .iter()
         .take_while(|argument| argument.as_os_str() != OsStr::new("--"))
