@@ -329,7 +329,7 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
     let panel = status_line('-', six_of_ten, "Starting api…", elapsed, 120);
     assert_eq!(
         panel,
-        "- [##############..........]  6/10  60% · Starting api… · 1.2s"
+        "- [##############..........]   6/10  60% · Starting api… · 1.2s"
     );
     let cells = panel
         .split_once('[')
@@ -340,11 +340,11 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
     assert_eq!(cells.matches('#').count(), 14, "{panel}");
     assert_eq!(
         status_line('-', six_of_ten, "Starting api…", elapsed, 40),
-        "- 6/10  60% · Starting api… · 1.2s"
+        "-  6/10  60% · Starting api… · 1.2s"
     );
     assert_eq!(
         status_line('-', six_of_ten, "Starting api…", elapsed, 79),
-        "- 6/10  60% · Starting api… · 1.2s"
+        "-  6/10  60% · Starting api… · 1.2s"
     );
     assert!(!panel.contains(ANSI), "{panel}");
     assert!(!panel.contains('\r'), "{panel}");
