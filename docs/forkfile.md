@@ -61,6 +61,14 @@ With `dev`, a Dockerfile-built image overlays its live build context at the targ
 `WORKDIR` and at any distinct whole-context `COPY` destination, so `slipfork exec` and
 `slipfork shell` see your edits immediately. An explicit `WORKDIR` under `/project` keeps that bind.
 
+That overlay is a bind mount, so apps see your checkout's **host** ownership and modes: a service
+with a strict writability check (one that refuses a group-writable `drwxrwxr-x` tree) needs `0755`
+directories and `0644` files, while files Slipfork's own containers create are `umask 0022`.
+
+```console
+$ chmod -R g-w,o-w .
+```
+
 A stage with no `WORKDIR` (still `/`) refuses a `dev` boot with one line + a `next:` hint.
 `-F -dev` keeps the image copy instead.
 
