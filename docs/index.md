@@ -22,7 +22,7 @@ It's not based on Docker because it tries to circumvent the typical hurdles that
 
 !!! warning "Pre-1.0"
 
-    **Pre-1.0.** The Forkfile and CLI can change between releases; report what breaks in the
+    The Forkfile and CLI can change between releases; report what breaks in the
     [issue tracker](https://github.com/OffworldNexus/slipfork/issues).
 
 ## Getting started
@@ -81,6 +81,7 @@ def app(environ, start_response):
 ```dockerfile
 # Dockerfile
 FROM python:3.13-slim AS dev
+ARG port
 RUN pip install --no-cache-dir uv
 WORKDIR /project
 ```
@@ -94,4 +95,4 @@ $ slipfork up
 
 The project directory name is the world name, so this world answers on `http://get-started.localhost`.
 
-The [tutorial](tutorial.md) continues from here: adding a database, a SvelteKit front, and forking the running world.
+The [tutorial](tutorial.md) continues from here: a SvelteKit front on the same domain, and forking the running world.
