@@ -26,7 +26,6 @@ impl StepPin<'_> {
     }
 
     /// The label a typed tail phase writes on a `step` frame.
-    #[allow(dead_code)]
     pub(crate) const fn tail_label(phase: TailPhase) -> &'static str {
         tail_wire_label(phase)
     }

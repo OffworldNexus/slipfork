@@ -109,8 +109,9 @@ impl Version {
 pub(crate) struct PgDatabase {
     pub id: String,
     pub cluster: String,
+    /// Legacy `snow.yml` key accepted for `deny_unknown_fields`; never read.
     #[serde(default)]
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "parsed for `deny_unknown_fields` only")]
     pub pool: Option<bool>,
 }
 
@@ -132,8 +133,9 @@ pub(crate) struct Component {
     pub envs: Vec<String>,
     #[serde(default)]
     pub internal_ports: Vec<u16>,
+    /// Legacy `snow.yml` key accepted for `deny_unknown_fields`; never read.
     #[serde(default)]
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "parsed for `deny_unknown_fields` only")]
     pub size_hint: Option<String>,
 }
 

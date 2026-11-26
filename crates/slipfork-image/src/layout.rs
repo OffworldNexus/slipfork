@@ -37,13 +37,6 @@ impl ImageLayout {
         self.root.join(digest_component(digest))
     }
 
-    /// `<root>/.partial-<manifest-digest>` — the legacy fixed staging name.
-    #[must_use]
-    pub fn staging(&self, digest: &str) -> PathBuf {
-        self.root
-            .join(format!("{STAGING_PREFIX}{}", digest_component(digest)))
-    }
-
     /// A unique staging sibling for one attempt, so concurrent pulls never share a directory.
     #[must_use]
     pub fn staging_attempt(&self, digest: &str, pid: u32, seq: usize) -> PathBuf {

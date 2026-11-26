@@ -71,10 +71,6 @@ fn docker_hub_references_normalize_and_hostile_names_are_refused() {
         layout.image("sha256:0123456789abcdef"),
         Path::new("/store/images/oci/sha256-0123456789abcdef")
     );
-    assert_eq!(
-        layout.staging("sha256:0123456789abcdef"),
-        Path::new("/store/images/oci/.partial-sha256-0123456789abcdef")
-    );
 }
 
 #[test]

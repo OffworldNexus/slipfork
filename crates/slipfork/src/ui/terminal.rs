@@ -9,6 +9,15 @@ use super::UiMode;
 /// reads as 80 columns, so no gutter ever wraps at eight characters.
 pub const FALLBACK_COLS: usize = 80;
 
+/// Ambient colour controls the composition root reads once (`NO_COLOR`, `TERM=dumb`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalEnv {
+    /// `NO_COLOR` is present in the environment (any value, including empty).
+    pub no_color: bool,
+    /// `TERM` names the dumb terminal, where colour would only add noise.
+    pub term_dumb: bool,
+}
+
 /// The terminal contract resolved once for this invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Terminal {
@@ -23,10 +32,10 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    /// Probes the terminal and the environment exactly once for the composition root.
+    /// Probes the terminal geometry and stdin once; the composition root injects the colour env.
     #[must_use]
-    pub fn detect(args: &[OsString]) -> Self {
-        let mode = detect_ui(args);
+    pub fn detect(args: &[OsString], env: &TerminalEnv) -> Self {
+        let mode = detect_ui(args, env);
         let (cols, rows) = if mode.interactive() {
             crossterm::terminal::size().map_or((FALLBACK_COLS, 0), |(cols, rows)| {
                 normalize_size(usize::from(cols), usize::from(rows))
@@ -52,13 +61,11 @@ impl Terminal {
 /// Resolves the one output mode for this invocation.
 ///
 /// `--json` wins over everything; a real terminal becomes [`UiMode::Interactive`] with `color`
-/// gated by `NO_COLOR` and `TERM=dumb`; anything else is [`UiMode::Plain`], so a pipe can never
-/// carry an escape or a carriage return.
-fn detect_ui(args: &[OsString]) -> UiMode {
+/// gated by the injected `NO_COLOR`/`TERM=dumb` facts; anything else is [`UiMode::Plain`], so a
+/// pipe can never carry an escape or a carriage return.
+fn detect_ui(args: &[OsString], env: &TerminalEnv) -> UiMode {
     let tty = std::io::stdout().is_terminal();
-    let color = tty
-        && std::env::var_os("NO_COLOR").is_none()
-        && std::env::var_os("TERM").is_none_or(|term| term != "dumb");
+    let color = tty && !env.no_color && !env.term_dumb;
     let json = args
         .iter()
         .take_while(|argument| argument.as_os_str() != OsStr::new("--"))

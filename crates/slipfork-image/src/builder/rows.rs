@@ -10,7 +10,7 @@ use slipfork_world::snapshot::{PhaseTiming, TailPhase};
 use crate::plan::PlannedStage;
 use crate::step_log::{StepLog, StepPlace};
 
-use super::phase_note;
+use super::diagnostics::phase_note;
 
 /// The five-state row machine one stage's reconcile observer drives.
 #[derive(Debug, Default)]

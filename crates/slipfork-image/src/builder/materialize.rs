@@ -18,7 +18,7 @@ use crate::reference::ImageReference;
 use crate::runtime::CrunStepRuntime;
 use crate::step_log::StepLog;
 
-use super::at_line;
+use super::diagnostics::at_line;
 
 /// The injected dependencies one materialization needs.
 pub(crate) struct TaskMaterializer<'a, 's> {

@@ -9,13 +9,17 @@ use std::path::{Path, PathBuf};
 use slipfork_image::RegistryCredentials;
 
 use crate::mounts;
-use crate::ui::Terminal;
 use crate::ui::report::WallZone;
+use crate::ui::{Terminal, TerminalEnv};
 use crate::world::HostEnv;
 
 /// Resolves the output mode, terminal geometry, and stdin tty exactly once.
 pub fn terminal(args: &[OsString]) -> Terminal {
-    Terminal::detect(args)
+    let env = TerminalEnv {
+        no_color: std::env::var_os("NO_COLOR").is_some(),
+        term_dumb: std::env::var_os("TERM").is_some_and(|term| term == "dumb"),
+    };
+    Terminal::detect(args, &env)
 }
 
 /// Resolves the one local wall clock for this invocation, reading `$TZ` then `/etc/localtime`.

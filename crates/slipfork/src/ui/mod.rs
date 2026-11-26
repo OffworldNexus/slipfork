@@ -12,7 +12,7 @@ mod terminal;
 
 pub use ansi::{colour_only, segments, strip, visible_width};
 pub use elapsed::elapsed_text;
-pub use terminal::{FALLBACK_COLS, Terminal, normalize_size};
+pub use terminal::{FALLBACK_COLS, Terminal, TerminalEnv, normalize_size};
 
 /// How this invocation renders its result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

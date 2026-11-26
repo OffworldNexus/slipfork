@@ -4,6 +4,7 @@
 //! content key through [`BuildPlanner`], then asks the world's [`SnapshotStore`] to reconcile one
 //! graph per stage. The planner never writes disk; the store owns sealing, reuse, and GC.
 
+mod diagnostics;
 mod externals;
 mod materialize;
 mod rows;
@@ -11,11 +12,10 @@ mod rows;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use slipfork_world::snapshot::{PhaseTiming, TailPhase};
 use slipfork_world::{Cache, Node, Observed, SnapshotError, SnapshotStore, WorldEngine};
 
 use crate::Architecture;
@@ -35,6 +35,7 @@ pub use crate::plan::StepTrace;
 pub use externals::{ExternalFrom, ExternalImage, external_references};
 pub(crate) use externals::{FromSource, classify_from};
 
+pub(crate) use diagnostics::{at_from, at_line};
 use materialize::TaskMaterializer;
 use rows::StageRows;
 
@@ -379,199 +380,5 @@ fn instruction_at<'a>(
     None
 }
 
-/// The one `-v` note that proves where a settled step's seconds went.
-fn phase_note(place: StepPlace, timing: PhaseTiming) -> String {
-    let split = [
-        (TailPhase::Cloning, timing.clone),
-        (TailPhase::Executing, timing.exec),
-        (TailPhase::Sealing, timing.seal),
-        (TailPhase::Recording, timing.record),
-        (TailPhase::Publishing, timing.publish),
-    ]
-    .iter()
-    .map(|(phase, elapsed)| format!("{} {:.2}s", phase.as_str(), elapsed.as_secs_f64()))
-    .collect::<Vec<_>>()
-    .join(" ");
-    format!(
-        "step {}/{} {split} total {:.2}s",
-        place.index,
-        place.total,
-        timing.total().as_secs_f64(),
-    )
-}
-
-/// Folds a `FROM` resolution failure into a step failure naming that `FROM` row.
-pub(crate) fn at_from(err: Error, line: usize, args: &str) -> Error {
-    match err {
-        Error::StepFailed { .. } | Error::Dockerfile { .. } => err,
-        other => Error::StepFailed {
-            line,
-            phase: "from",
-            instruction: args.into(),
-            message: other.cause(),
-            exit_code: other.exit_code(),
-            runtime: None,
-            next: other.remedy().unwrap_or_else(|| {
-                "check the reference and registry access, then retry".to_owned()
-            }),
-        },
-    }
-}
-
-/// Folds a step failure into a line-decorated `StepFailed` naming the instruction as written.
-pub(crate) fn at_line(err: Error, line: usize, instruction: &Instruction) -> Error {
-    let phase = instruction.phase();
-    let command = instruction.command_text();
-    match err {
-        Error::Dockerfile { .. } => err,
-        unknown @ Error::UnknownAccount { .. } => Error::StepFailed {
-            line,
-            phase,
-            instruction: command.into(),
-            message: unknown.cause(),
-            exit_code: None,
-            runtime: None,
-            next: unknown.remedy().unwrap_or_default(),
-        },
-        Error::StepFailed {
-            message,
-            exit_code,
-            runtime,
-            next,
-            ..
-        } => Error::StepFailed {
-            line,
-            phase,
-            instruction: command.into(),
-            message,
-            exit_code,
-            runtime,
-            next,
-        },
-        Error::Io {
-            action,
-            path,
-            source,
-        } => Error::StepFailed {
-            line,
-            phase,
-            instruction: command.into(),
-            message: format!("could not {action} `{}`: {source}", visible_path(&path)),
-            exit_code: None,
-            runtime: None,
-            next: "check the build context permissions and free disk space, then retry".to_owned(),
-        },
-        Error::Http { url, status } => Error::StepFailed {
-            line,
-            phase,
-            instruction: command.into(),
-            message: format!("`{url}` returned HTTP {status}"),
-            exit_code: None,
-            runtime: None,
-            next: "check the URL or the registry reference, then retry".to_owned(),
-        },
-        Error::Transport { url, message } => Error::StepFailed {
-            line,
-            phase,
-            instruction: command.into(),
-            message: format!("could not reach `{url}`: {message}"),
-            exit_code: None,
-            runtime: None,
-            next: "check the URL and your network connection, then retry".to_owned(),
-        },
-        Error::CrunMissing { path } => Error::StepFailed {
-            line,
-            phase,
-            instruction: command.into(),
-            message: format!("`RUN` needs `crun`, but `{}` is missing", path.display()),
-            exit_code: None,
-            runtime: None,
-            next:
-                "install crun (`apt install crun`, `dnf install crun`, `pacman -S crun`) and retry"
-                    .to_owned(),
-        },
-        Error::UnknownStage { name } => Error::StepFailed {
-            line,
-            phase,
-            instruction: command.into(),
-            message: format!("no build stage named `{name}`"),
-            exit_code: None,
-            runtime: None,
-            next:
-                "declare it above this stage with `FROM <image> AS <name>`, or use a full image reference"
-                    .to_owned(),
-        },
-        other => other,
-    }
-}
-
-/// Drops the internal `snapshots/<slot>` prefix so errors name container paths only.
-fn visible_path(path: &Path) -> String {
-    let components: Vec<String> = path
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy().into_owned())
-        .collect();
-    match components
-        .iter()
-        .position(|component| component == "snapshots")
-    {
-        Some(index) if components.len() > index + 2 => {
-            format!("/{}", components[index + 2..].join("/"))
-        }
-        _ => path.display().to_string(),
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    use super::{instruction_width, phase_note, planned_instruction_width};
-    use crate::dockerfile::DockerfileParser;
-    use crate::step_log::StepPlace;
-    use slipfork_world::snapshot::PhaseTiming;
-    use std::time::Duration;
-
-    #[test]
-    fn phase_note_reports_the_real_split_and_honest_total() {
-        let timing = PhaseTiming {
-            clone: Duration::ZERO,
-            exec: Duration::from_secs_f64(3.02),
-            seal: Duration::from_secs_f64(4.21),
-            record: Duration::from_secs_f64(0.01),
-            publish: Duration::ZERO,
-        };
-        assert_eq!(
-            phase_note(StepPlace::new(6, 7, 0), timing),
-            "step 6/7 clone 0.00s exec 3.02s seal 4.21s record 0.01s publish 0.00s total 7.24s"
-        );
-    }
-
-    #[test]
-    fn widest_keyword_spans_mixed_from_copy_add_run_workdir() {
-        let source = "FROM python:3.14-trixie AS base\n\
-                      COPY . /app\n\
-                      ADD x /y\n\
-                      RUN echo hi\n\
-                      WORKDIR /code\n";
-        let stages = DockerfileParser::parse(source).expect("the fixture parses");
-        assert_eq!(instruction_width(&stages), "WORKDIR".len());
-    }
-
-    #[test]
-    fn planned_width_honours_the_target_prefix() {
-        let source = "FROM alpine AS base\n\
-                      COPY . /app\n\
-                      FROM alpine AS build\n\
-                      RUN true\n\
-                      FROM alpine AS later\n\
-                      WORKDIR /code\n";
-        assert_eq!(
-            planned_instruction_width(source, Some("build")).expect("the target exists"),
-            "COPY".len(),
-            "a later stage's WORKDIR never widens the requested prefix"
-        );
-        assert_eq!(
-            planned_instruction_width(source, None).expect("the final stage"),
-            "WORKDIR".len()
-        );
-    }
-}
+mod tests;
