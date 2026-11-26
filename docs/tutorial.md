@@ -84,6 +84,10 @@ $ slipfork up
 
 `route /api` sends the API its prefix; `route /` sends everything else to the front. The longest prefix wins, so both answer on `http://hello.localhost`.
 
+!!! tip "One domain, no CORS"
+
+    The front and the API share the world domain, so the browser sees one origin and calls `/api` like any local path. No CORS configuration, no proxy and no absolute API URL are needed — and cookies and sessions behave normally.
+
 Scaffold the app, choosing pnpm, then change the API's `route /` to `route /api`.
 
 ```console
