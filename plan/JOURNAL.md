@@ -4600,3 +4600,12 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-26T07:38 [M3.197] (conductor) status done -> done
 - 2026-11-26T07:38 [M3.198] (conductor) status done -> done
 - 2026-11-26T07:38 [M3] (conductor) status active -> done
+- 2026-11-26T07:39 [M3] (conductor) status done -> active
+- 2026-11-26T07:39 [M3.199] (conductor) created (task) Docs: drop the 'breaks things on purpose' line (nobody used 0.1)
+- 2026-11-26T07:39 [M3.199] (conductor) status ready -> active
+- 2026-11-26T07:39 [M3.199] (lead) status active -> active
+- 2026-11-26T07:39 [M3.199] (lead) attempt 1/3 started
+- 2026-11-26T07:39 [M3.199] (lead) base e840e0476c21782c3bc04de6f903b2197d7568db
+- 2026-11-26T07:39 [M3.199] (lead) status active -> review
+- 2026-11-26T07:39 [M3.199] (lead) status review -> done
+- 2026-11-26T07:39 [M3] (conductor) status active -> done
