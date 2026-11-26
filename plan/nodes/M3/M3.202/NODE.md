@@ -16,7 +16,7 @@ attempts: 2
 max_attempts: 3
 escalation: none
 created: "2026-11-26T15:36"
-updated: "2026-11-26T15:44"
+updated: "2026-11-26T15:45"
 ---
 
 # Bug (blocks `up` entirely on non-Btrfs / unwritable-mount projects)

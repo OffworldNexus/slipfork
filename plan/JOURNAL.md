@@ -4634,3 +4634,5 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-26T15:41 [M3.202] (lead) attempt 2/3 started
 - 2026-11-26T15:41 [M3.202] (lead) fix pass: split image module <500 LOC, name actual failing path, E2E for_project lab
 - 2026-11-26T15:44 [M3.202] (lead) status ready -> done
+- 2026-11-26T15:45 [M3.202] (conductor) status done -> done
+- 2026-11-26T15:45 [M3] (conductor) status active -> done
