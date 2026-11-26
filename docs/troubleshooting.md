@@ -94,7 +94,7 @@ running.
 
 ## Remote pairing
 
-0.1.0 has no remote pairing: local `secret()` values do the work, and `slipfork secret list` plus
+0.1.1 has no remote pairing: local `secret()` values do the work, and `slipfork secret list` plus
 `slipfork env <component>` show exactly what this world resolved.
 
 The full OSPP v1 wire contract, with every error code and the frame that produced it, lives in

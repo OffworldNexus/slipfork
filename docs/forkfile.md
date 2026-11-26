@@ -276,4 +276,4 @@ flowchart LR
 ## Where next
 
 * [CLI](cli.md) — the verbs that boot, inspect and fork this file.
-* [Getting started](getting-started.md) — a complete file you can boot today.
+* [Tutorial](tutorial.md) — build a world step by step, then fork it.

@@ -323,4 +323,4 @@ answers the same final shape without the flag, and `fork` answers
 ## Where next
 
 * [The Forkfile](forkfile.md) — what these commands boot.
-* [Getting started](getting-started.md) — the five-step first run.
+* [Tutorial](tutorial.md) — four steps from a Python API to a fork.

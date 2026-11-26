@@ -155,12 +155,6 @@ Request and response heads are capped at 16 KiB; bodies and WebSocket bytes stre
 | `slipfork-ospp` | OSPP v1 frames, device keys, HPKE, sealed dumps |
 | `slipfork-vcs` | worktrees, branch topology, dirty snapshots |
 
-## Where next
-
-* [OSPP v1](ospp.md) — pairing, encrypted secrets and sealed dumps.
-* [Agents & OpenCode](agents-and-opencode.md) — one fork per agent session.
-* [Troubleshooting](troubleshooting.md) — the real message behind every failed boot.
-
 ## One PTY, one log file
 
 `slipfork shell <target>` never nests a shell wrapper. The daemon asks `crun exec` for a console

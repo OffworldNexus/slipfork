@@ -19,7 +19,7 @@ site_dir = "site"
 
 nav = [
   { "Home" = "index.md" },
-  { "Getting started" = "getting-started.md" },
+  { "Tutorial" = "tutorial.md" },
   { "Install" = "install.md" },
   { "The Forkfile" = "forkfile.md" },
   { "CLI" = "cli.md" },

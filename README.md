@@ -60,7 +60,7 @@ The `fork` is the whole operation: a `~150–365ms` CoW snapshot (asserted `< 50
 cloned 8-component stack — `~5.5s` cold on 4 vCPU, asserted `< 8.0s` on 2-vCPU CI. Branch off, test a
 risky migration, and the parent world keeps serving.
 
-[Get started](docs/getting-started.md) · [The Forkfile](docs/forkfile.md)
+[Tutorial](docs/tutorial.md) · [The Forkfile](docs/forkfile.md)
 
 ## Worlds and forks
 
@@ -122,7 +122,7 @@ exactly those things and prints one `next:` remedy per failing row — zero Dock
 
 ## Documentation
 
-* [Getting started](docs/getting-started.md) — install, Forkfile, `up`, `fork`, `drop`, `down`.
+* [Tutorial](docs/tutorial.md) — a Python API, PostgreSQL, a SvelteKit front, then `fork` and `drop`.
 * [Install](docs/install.md) — `.deb`, `.rpm`, pacman, APK, the daemon and the `:80` ingress.
 * [The Forkfile](docs/forkfile.md) — the complete `# forkfile: 0.1` language.
 * [CLI](docs/cli.md) — daily verbs, domain trees, progress and `NO_COLOR`.

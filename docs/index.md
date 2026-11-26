@@ -1,5 +1,5 @@
 ---
-description: "Slipfork boots your containers, databases, caches and buckets from one Forkfile behind one .localhost URL on native Btrfs — no Docker."
+description: "Slipfork is a cloud in a box: set up any project and its infrastructure in seconds on your laptop, and let your coding agent fork the whole running stack."
 hide:
   - toc
 ---
@@ -8,98 +8,77 @@ hide:
 
 # Your cloud environment, locally in a box
 
-**Slipfork turns one `Forkfile` into your whole stack** — images, PostgreSQL, Redis, S3 buckets and
-workers — and serves it from one `.localhost` URL. It runs natively on Btrfs with `crun`, so there is
-no Docker daemon to install and no shared staging box to fight over.
+Slipfork is Docker Compose with opinions, without Docker: one `Forkfile` boots your images, PostgreSQL, Redis and S3 buckets behind one `.localhost` URL. `slipfork fork` snapshots the whole running world — code, dependencies and data — in milliseconds, then boots it in seconds.
+
+!!! warning "Linux, Btrfs and `crun`"
+
+    Slipfork uses Btrfs subvolumes and rootless `crun` pods. On ext4 or XFS, [mount a Btrfs workspace image in your home folder](install.md#on-ext4-or-xfs-mount-a-btrfs-workspace-image-in-your-home-folder) first; `slipfork doctor` names any other missing piece.
 
 !!! warning "Very experimental release"
 
-    0.1.0 is a very experimental release with breaking changes ahead. Report what breaks in the
-    [issue tracker](https://github.com/OffworldNexus/slipfork/issues).
+    0.1.1 breaks things on purpose. Report what breaks in the [issue tracker](https://github.com/OffworldNexus/slipfork/issues).
+
+## Start here
 
 ```console
 $ curl -fsSL https://offworldnexus.github.io/slipfork/install.sh | sh
-$ slipfork up
-✓ Ready -> http://acme-shop.localhost
+$ git clone --depth 1 https://github.com/OffworldNexus/slipfork
+$ cd slipfork/support/demo && slipfork up
+✓ Ready -> http://demo.localhost
 ```
 
-[Get started](getting-started.md){ .md-button .md-button--primary }
-[The Forkfile](forkfile.md){ .md-button }
+That demo is the full eight-component stack; the [tutorial](tutorial.md) builds the same shape from scratch in four steps. [Install](install.md) covers packages, the Btrfs workspace image and uninstall.
 
-!!! info "One URL, cloud-identical routes"
+## What you get
 
-    `http://acme-shop.localhost` is the front door. `route /api` keeps its prefix on the primary
-    world domain (the first declared `domain`), an extra declared `domain mail` answers on
-    `mail.acme-shop.localhost`, and each `s3` bucket on `<bucket>.acme-shop.localhost`.
+- **No Docker daemon.** Images build natively on Btrfs; every `RUN` becomes a cached subvolume.
+- **No port collisions.** Each world gets `<world>.localhost`; each fork gets `<fork>--<world>.localhost`.
+- **No setup script.** PostgreSQL, Redis and S3 are declared resources, booted with the world and snapshotted into every fork.
 
-## Worlds and forks
-
-A **world** is the running stack declared by one `Forkfile`. A **fork** is an atomic copy-on-write
-snapshot of that world and your checkout, with its own dependencies, data pages and URL.
-
-```mermaid
-flowchart LR
-  F["Forkfile"] -->|"slipfork up"| W["World acme-shop\nhttp://acme-shop.localhost"]
-  W -->|"slipfork fork billing-api"| K["Fork billing-api\nhttp://billing-api--acme-shop.localhost"]
-  K -->|"slipfork drop billing-api"| R["snapshots deleted"]
-  W --- DB[("PostgreSQL 18")]
-  K --- DBF[("CoW snapshot")]
-```
-
-Forking reports two tiers: the CoW clone as `snapshot_ms` (`~150–365ms` on the 4-vCPU
-droplet, asserted `< 500ms`) and the full boot as the elapsed (`~5.5s` median, asserted `< 8.0s` for
-the real 8-component FastAPI + SvelteKit stack). The boot, not the clone, takes the
-seconds — `.venv`, `node_modules`, database pages and bucket objects are already on disk, so the
-wait is `uvicorn --reload` and `vite dev` warming their first requests.
-Test a risky migration on the fork; the parent world keeps serving.
-
-## A Forkfile is the whole topology
+## One file, the whole stack
 
 ```forkfile
 # forkfile: 0.1
 
-domain main
 postgres pg { database app_db }
 redis cache
 s3 uploads
 
 env common {
   DATABASE_URL = app_db.url
-  REDIS_URL    = cache.url
+  REDIS_URL = cache.url
 }
 
 image api . {
   use env common
+  on dev: stage dev
   service web {
     port 8000
     route /api
-    run: @uv run uvicorn app.main:app --host 0.0.0.0 --port $port
+    on dev: run: @uv run uvicorn app:api --reload --host 0.0.0.0 --port $port
+  }
+}
+
+image frontend ./front {
+  on dev: stage dev
+  service front {
+    port 3000
+    route /
+    on dev {
+      port 5173
+      run: @pnpm exec vite dev --host 0.0.0.0 --port $port
+    }
   }
 }
 ```
 
-Services live inside the image that runs them. Build-time `arg`s stay separate from runtime `env`,
-and `@uv` / `@pnpm` wire lockfile-watched installs automatically.
+`fork` snapshots both the project and the database pages, then boots the fork through the ordinary `up` path.
 
-| Verb | What it does |
-| :--- | :--- |
-| `slipfork up` | Boot the world and print `✓ Ready -> <url>` |
-| `slipfork fork feat-auth` | Snapshot code and data, boot a fork on its own URL |
-| `slipfork drop feat-auth` | Stop the fork and delete its snapshots |
-| `slipfork status` | One tree of every world and domain, forks included |
-| `slipfork logs -f api` | Stream merged logs with per-service gutters |
-| `slipfork down` | Stop the world, keep the data subvolumes |
+```mermaid
+flowchart LR
+  F["Forkfile"] -->|"slipfork up"| W["hello<br/>hello.localhost"]
+  W -->|"slipfork fork try-it"| K["try-it<br/>try-it--hello.localhost"]
+  K -->|"slipfork drop try-it"| G["snapshots deleted"]
+```
 
-!!! warning "Linux, Btrfs and crun"
-
-    `slipfork` needs a Linux host with a Btrfs filesystem, `crun`, and `slirp4netns` on `PATH`;
-    `slipfork doctor`
-    checks exactly those three things. The editor language server `slipfork-lsp` runs on Linux,
-    macOS and Windows.
-
-## Where next
-
-* [Getting started](getting-started.md) — install, a Forkfile, `up`, `fork`, `drop`, `down`.
-* [Install](install.md) — every distro, the daemon unit and the `:80` ingress.
-* [The Forkfile](forkfile.md) — the complete `# forkfile: 0.1` language.
-* [CLI](cli.md) — daily verbs, trees, progress and `NO_COLOR`.
+The [Forkfile](forkfile.md) reference covers every declaration; [Under the hood](under-the-hood.md) shows the subvolumes, namespaces and `:80` edge behind it.
