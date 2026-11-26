@@ -4617,3 +4617,9 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-26T07:41 [M3.200] (lead) status active -> done
 - 2026-11-26T07:41 [M3.200] (conductor) status done -> done
 - 2026-11-26T07:41 [M3] (conductor) status active -> done
+- 2026-11-26T07:47 [M3] (conductor) status done -> active
+- 2026-11-26T07:47 [M3.201] (conductor) created (task) Tutorial rewrite for humans: code in blocks, breathe, unpack every Forkfile key
+- 2026-11-26T07:47 [M3.201] (conductor) status ready -> active
+- 2026-11-26T07:49 [M3.201] (lead) status active -> done
+- 2026-11-26T07:50 [M3.201] (conductor) status done -> done
+- 2026-11-26T07:50 [M3] (conductor) status active -> done
