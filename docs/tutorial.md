@@ -2,7 +2,7 @@
 
 Four steps, each adding one file or one block. You finish with a Python API, a PostgreSQL database and a SvelteKit front on one `.localhost` domain — then fork the whole running stack.
 
-You need Linux, Btrfs and `crun`; [Install](install.md) has the one-liner and the workspace image for ext4 or XFS hosts.
+You need Linux, with Btrfs and `crun`; on ext4 or XFS, [mount a workspace image](install.md#on-ext4-or-xfs-mount-a-btrfs-workspace-image-in-your-home-folder) first.
 
 ## 1. A Python API
 

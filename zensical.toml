@@ -6,7 +6,7 @@
 [project]
 site_name = "slipfork"
 site_url = "https://offworldnexus.github.io/slipfork/"
-site_description = "A copy-on-write Btrfs environment for polyglot apps and AI coding agents — your cloud locally in a box."
+site_description = "Your cloud environment locally in a box — fork the whole running stack in milliseconds."
 site_author = "Offworld Nexus"
 copyright = "&copy; 2026 Offworld Nexus"
 
