@@ -267,3 +267,11 @@ Post-gate docs pass requested by the owner: tutorial-first docs rewrite (docs/**
 ## 2026-11-26T07:26 [conductor]
 
 status active -> done
+
+## 2026-11-26T07:30 [conductor]
+
+status done -> active
+
+## 2026-11-26T07:30 [conductor]
+
+status active -> done

@@ -4576,3 +4576,8 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-26T07:26 [M3.195] (conductor) status ready -> active
 - 2026-11-26T07:26 [M3.195] (lead) status active -> done
 - 2026-11-26T07:26 [M3] (conductor) status active -> done
+- 2026-11-26T07:30 [M3] (conductor) status done -> active
+- 2026-11-26T07:30 [M3.196] (conductor) created (task) Tutorial: explain that one world domain means no CORS between front and API
+- 2026-11-26T07:30 [M3.196] (conductor) status ready -> active
+- 2026-11-26T07:30 [M3.196] (lead) status active -> done
+- 2026-11-26T07:30 [M3] (conductor) status active -> done
