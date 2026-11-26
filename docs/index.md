@@ -1,79 +1,97 @@
 ---
-description: "Slipfork boots your images, PostgreSQL, Redis and S3 from one Forkfile, then forks the whole running stack — code, dependencies and data — on your own machine."
+description: "Slipfork is a cloud in a box: setup any project and its infrastructure in 5s on your laptop and get your coding agent fork it at will in milliseconds."
 hide:
   - toc
 ---
 
 ![A barn swallow in flat poster colours](brand/mascot.svg){ align=right width=220 }
 
-# Your stack, running locally in a box
+# Your cloud environment, locally in a box
 
-Slipfork is like Docker Compose with opinions, without Docker and on crack. One `Forkfile` boots your images, PostgreSQL, Redis and S3 behind one `.localhost`. `slipfork fork` clones the running world and boots it on its own URL.
+Slipfork is like Docker Compose with opinions, without Docker and on crack. It understands the application's managed dependencies (database, storage, etc) through an environment-agnostic `Forkfile`, and is able to create a *cloud in box* completely automatically. You go from **git checkout** to a **running development environment** in seconds.
 
-- **No Docker daemon** — every `RUN` is a cached copy-on-write subvolume.
-- **No port collisions** — each world owns `<world>.localhost`, each fork `<fork>--<world>.localhost`.
-- **No setup script** — PostgreSQL, Redis and S3 are declared resources, cloned into every fork.
-- **Your agent can fork the running stack** — code, dependencies and data — in milliseconds.
+It's not based on Docker because it tries to circumvent the typical hurdles that you meet when doing development:
 
-## Start here
+- Automatic UID mapping, so that if you execute something inside the container it won't create files as root in your home folder
+- Every project gets their own `.localhost` domain name, you never need to worry about port collision again
+- Supporting infrastructure such as PostgreSQL, Redis or S3 are bootstrapped as needed: all you need is ask
+
+!!! warning "Targeted platform support"
+
+    The project is leveraging advanced features of the Linux kernel and the Btrfs file system. If you're on Linux but don't have Btrfs, [mount a Btrfs workspace image](install.md#on-ext4-or-xfs-mount-a-btrfs-workspace-image-in-your-home-folder). If not, you will need to run it from a VM. The target user runs this on a cloud machine, alongside a coding agent.
+
+!!! warning "Pre-1.0"
+
+    **Pre-1.0.** The Forkfile and CLI can change between releases; report what breaks in the
+    [issue tracker](https://github.com/OffworldNexus/slipfork/issues).
+
+## Getting started
+
+First, let's install slipfork on your local machine:
 
 ```console
 $ curl -fsSL https://offworldnexus.github.io/slipfork/install.sh | sh
-$ git clone --depth 1 https://github.com/OffworldNexus/slipfork
-$ cd slipfork/support/demo && slipfork up
-✓ Ready -> http://demo.localhost
 ```
 
-Linux, with Btrfs and `crun`; on ext4 or XFS [mount a workspace image](install.md#on-ext4-or-xfs-mount-a-btrfs-workspace-image-in-your-home-folder), and `slipfork doctor` names anything else missing.
-
-The demo is the full eight-component stack. The [tutorial](tutorial.md) builds the same shape from scratch in four steps, and [Install](install.md) covers packages and uninstall.
-
-> **Pre-1.0.** The Forkfile and CLI can change between releases; report what breaks in the [issue tracker](https://github.com/OffworldNexus/slipfork/issues).
-
-## One file, the whole stack
+Next, you need a project (with Btrfs — [mount a workspace image](install.md#on-ext4-or-xfs-mount-a-btrfs-workspace-image-in-your-home-folder) on ext4 or XFS). We're going to host a simple Python/WSGI application. The Forkfile looks like this:
 
 ```forkfile
 # forkfile: 0.1
 
 postgres pg { database app_db }
-redis cache
-s3 uploads
 
 env common {
-  DATABASE_URL = app_db.url
-  REDIS_URL = cache.url
+    DATABASE_URL = app_db.url
 }
 
 image api . {
-  use env common
-  on dev: stage dev
-  service web {
-    port 8000
-    route /api
-    on dev: run: @uv run uvicorn app:api --reload --host 0.0.0.0 --port $port
-  }
-}
+    arg port = web.port
+    use env common
 
-image frontend ./front {
-  on dev: stage dev
-  service front {
-    port 3000
-    route /
     on dev {
-      port 5173
-      run: @pnpm exec vite dev --host 0.0.0.0 --port $port
+        stage dev
     }
-  }
+
+    service web {
+        port 4242
+        route /
+
+        on dev {
+            run: @uv run granian --reload --interface wsgi app:app --host 0.0.0.0 --port $port
+        }
+    }
 }
 ```
 
-`fork` snapshots the project and the database pages, then boots the fork through the ordinary `up` path.
+Now create the project and its files:
 
-```mermaid
-flowchart LR
-  F["Forkfile"] -->|"slipfork up"| W["hello<br/>hello.localhost"]
-  W -->|"slipfork fork try-it"| K["try-it<br/>try-it--hello.localhost"]
-  K -->|"slipfork drop try-it"| G["snapshots deleted"]
+```console
+$ uv init get-started
+$ cd get-started
+$ uv add granian
 ```
 
-The [Forkfile](forkfile.md) reference covers every declaration, [Under the hood](under-the-hood.md) shows the subvolumes, namespaces and `:80` edge behind it, and the [CLI](cli.md) page lists every daily verb.
+```python
+# app.py
+def app(environ, start_response):
+    start_response("200 OK", [("Content-Type", "text/plain; charset=utf-8")])
+    return [b"hello from get-started\n"]
+```
+
+```dockerfile
+# Dockerfile
+FROM python:3.13-slim AS dev
+RUN pip install --no-cache-dir uv
+WORKDIR /project
+```
+
+`WORKDIR /project` is where the `dev` stage bind-mounts your checkout. Save the `Dockerfile`, `Forkfile` and `app.py` in `get-started/`, then:
+
+```console
+$ slipfork up
+✓ Ready -> http://get-started.localhost
+```
+
+The project directory name is the world name, so this world answers on `http://get-started.localhost`.
+
+The [tutorial](tutorial.md) continues from here: adding a database, a SvelteKit front, and forking the running world.
