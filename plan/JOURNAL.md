@@ -3915,3 +3915,645 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-24T23:34 [M3.133] (lead) edited fields
 - 2026-11-24T23:34 [M3.133] (lead) paths += world/up.rs (shared --json stream-frame helper)
 - 2026-11-24T23:38 [M3.133] (lead) status review -> done
+- 2026-11-24T23:47 [M3.120] (lead) slice 2: image plan/materialize green — RefResolver (tag->digest, pinned unpack), per-COPY source Merkle, BuildPlanner+expand, serial store reconcile w/ rows, C
+- 2026-11-24T23:47 [M3.120] (lead) slice 2 VM proof (private tree /mnt/sf-m3120, no do_vm sync, as slipfork user w/ XDG_RUNTIME_DIR): critical_dockerfile_live 6/6, critical_snapshot_graph 1/1, bt
+- 2026-11-24T23:49 [M3.120] (lead) addendum: fork checkouts never contain .forks/.slipfork-store (engine owner, one layout::is_managed_entry predicate shared with copy_checkout); real-Btrfs test 
+- 2026-11-24T23:54 [M3.120] (lead) committed slice 2 b209bbc (31 files, +2576/-1066) + addendum a419321; make check rc=0 after both; node stays active for slices 3-4
+- 2026-11-24T23:55 [M3.120] (lead) status active -> active
+- 2026-11-24T23:55 [M3.120] (lead) attempt 3/3 started
+- 2026-11-24T23:55 [M3.120] (lead) slice 3 base a419321
+- 2026-11-25T00:04 [M3.120] (lead) slice 3a landed: image BootState = Cached iff cache_misses==0 (zero executed steps never 'built'; warm rebuild labels cached, Idle prints no image row), unit te
+- 2026-11-25T00:05 [M3.120] (conductor) Split approved by conductor: remaining cutover tracked as children M3.135 (3b daemon image.build/image.pull RPC + thin CLI), M3.136 (3c daemon pre-plans world i
+- 2026-11-25T00:05 [M3.120] (conductor) status active -> done
+- 2026-11-25T00:05 [M3.135] (conductor) created (task) Slice 3b: daemon image.build/image.pull RPCs with streamed frames; CLI is a thin client
+- 2026-11-25T00:05 [M3.136] (conductor) created (task) Slice 3c: daemon pre-plans world images into WorldHeads; supervisor consumes heads; delete ImageCache
+- 2026-11-25T00:05 [M3.137] (conductor) created (task) Slice 3d: reconcile ordering that keeps the old world serving, restart in place, full journeys
+- 2026-11-25T00:05 [M3.135] (conductor) created (task) Slice 3b: daemon image.build/image.pull RPCs with streamed frames; CLI is a thin client
+- 2026-11-25T00:05 [M3.136] (conductor) created (task) Slice 3c: daemon pre-plans world images into WorldHeads; supervisor consumes heads; delete ImageCache
+- 2026-11-25T00:05 [M3.137] (conductor) created (task) Slice 3d: reconcile ordering that keeps the old world serving, restart in place, full journeys
+- 2026-11-25T00:05 [M3.132] (conductor) Superseded by later work: drop's single plan total landed in M3.133 (7ba3512); duplicate-fork refusal and the .forks-in-checkout snapshot leak landed in M3.129/
+- 2026-11-25T00:05 [M3.132] (conductor) status ready -> superseded
+- 2026-11-25T00:05 [M3.135] (conductor) status ready -> active
+- 2026-11-25T00:05 [M3.135] (lead) status active -> active
+- 2026-11-25T00:05 [M3.135] (lead) attempt 1/3 started
+- 2026-11-25T00:05 [M3.135] (lead) base cf5fe25
+- 2026-11-25T00:58 [M3.135] (lead) daemon-owned image.build/image.pull: typed ImageFrame stream, CLI thin relay+printer, image_lock + unique temp names refs/built, forget-ref pull refresh, docs/c
+- 2026-11-25T00:58 [M3.135] (lead) committed 912a0eb (19 files, +1810/-620); deferred: register slipfork/image_rpc in Makefile LIVE_SUITES + TESTING_PLAN (paths owned by M3.137)
+- 2026-11-25T00:58 [M3.135] (lead) status active -> done
+- 2026-11-25T00:58 [M3.135] (lead) status active -> done
+- 2026-11-25T00:58 [M3.136] (conductor) status ready -> active
+- 2026-11-25T00:58 [M3.136] (lead) status active -> active
+- 2026-11-25T00:58 [M3.136] (lead) attempt 1/3 started
+- 2026-11-25T00:58 [M3.136] (lead) base 912a0eb
+- 2026-11-25T01:47 [M3.136] (lead) daemon pre-plans/seals WorldHeads (atomic, only after all images succeed), supervisor boots heads-only (validate world+inputs+sealed rootfs; no builder/puller);
+- 2026-11-25T01:47 [M3.136] (lead) committed 9d3cb71 (28 files, +1732/-1504); node done; 3d remainder: Lease/head Idle, stamps/fingerprints deletion, fork re-key, gc, specs/02+TESTING_PLAN, forma
+- 2026-11-25T01:47 [M3.136] (lead) status active -> done
+- 2026-11-25T01:47 [M3.136] (lead) status active -> done
+- 2026-11-25T01:48 [M3.137] (conductor) status ready -> active
+- 2026-11-25T01:48 [M3.137] (lead) status active -> active
+- 2026-11-25T01:48 [M3.137] (lead) attempt 1/3 started
+- 2026-11-25T01:48 [M3.137] (lead) base 9d3cb71
+- 2026-11-25T01:49 [M3.138] (planner) created (task) ForkLedger store: sea-orm state.db entities, migrations, StateDb writer/reader, pure plan_converge
+- 2026-11-25T01:49 [M3.139] (planner) created (task) Flat fork storage: <root>/.forks flat engine+layout, .forks-free checkouts, parent lineage, plan_converge wired
+- 2026-11-25T01:49 [M3.140] (planner) created (task) __daemon cutover: StateDb writer, ConvergeExecutor, delete worlds.json/registry, single-plan drop, ps lineage field
+- 2026-11-25T01:49 [M3.141] (planner) created (task) ps lineage renderer, broken-row remedies, offline reader, specs/02 sync, live VM ghost-state proof
+- 2026-11-25T01:54 [M3.140] (conductor) Spec resolved (specs/03 §7.2/§7.5/§7.6): no transient worlds.json importer — open_writer unlinks it, registry.rs deleted; pre-upgrade worlds are untracked until
+- 2026-11-25T03:00 [M3.137] (lead) Lease/head Idle: daemon lease.rs prepares (Head, Lease) from sealed image head keys + spec digest, writes verbatim at ready with drift check, pins entry keys fo
+- 2026-11-25T03:00 [M3.137] (lead) committed 8f754ea (29 files, +1348/-781); node done
+- 2026-11-25T03:00 [M3.137] (lead) status active -> done
+- 2026-11-25T03:00 [M3.137] (lead) status active -> done
+- 2026-11-25T03:00 [M3.138] (conductor) status ready -> active
+- 2026-11-25T03:01 [M3.138] (lead) attempt 1/3 started
+- 2026-11-25T03:01 [M3.138] (lead) base 8f754ea047470c0cfa603b3f9fe81a3ed9b2392e
+- 2026-11-25T03:04 [M3.142] (conductor) created (task) Image unpack stamps mtime=now, so apt sees baked lists as fresh and fails on expired Debian metadata
+- 2026-11-25T03:04 [M3.143] (conductor) created (task) Failure path lost the palette: plain error/next, wrong logs remedy, truthful image row, UTC log timestamps, blank-line noise
+- 2026-11-25T03:04 [M3.143] (conductor) status ready -> active
+- 2026-11-25T03:04 [M3.142] (conductor) status ready -> active
+- 2026-11-25T03:05 [M3.143] (lead) attempt 1/3 started
+- 2026-11-25T03:05 [M3.143] (lead) base 8f754ea047470c0cfa603b3f9fe81a3ed9b2392e
+- 2026-11-25T03:05 [M3.143] (lead) edited fields
+- 2026-11-25T03:05 [M3.143] (lead) attempt 2/3 started
+- 2026-11-25T03:05 [M3.143] (lead) base 8f754ea047470c0cfa603b3f9fe81a3ed9b2392e (re-scoped: stored body/paths were M3.142's dup; real scope from parent brief = layer mtime restoration)
+- 2026-11-25T03:06 [M3.142] (lead) edited fields
+- 2026-11-25T03:06 [M3.142] (lead) path locks re-aligned to the palette scope the conductor assigned this id (bodies were created swapped: mtime diagnosis belongs to M3.143)
+- 2026-11-25T03:06 [M3.142] (lead) attempt 1/3 started
+- 2026-11-25T03:06 [M3.142] (lead) base 8f754ea; palette/failure slice dispatched (ID ground truth confirmed)
+- 2026-11-25T03:10 [M3.144] (conductor) created (task) One Report layer: typed outcomes own state and palette, no disjoint prints
+- 2026-11-25T03:11 [M3.138] (lead) status active -> review
+- 2026-11-25T03:13 [M3.138] (unknown) edited fields
+- 2026-11-25T03:13 [M3.138] (lead) status review -> active
+- 2026-11-25T03:13 [M3.138] (lead) attempt 2/3 started
+- 2026-11-25T03:13 [M3.138] (lead) triad: 2 BLOCKER (flock double-acquire vs daemon pre-lock; nested fork-of-fork checkout) + majors (raw SQL gate, async block_on panic, unknown-id as root, ambig
+- 2026-11-25T03:14 [M3.142] (unknown) edited fields
+- 2026-11-25T03:21 [M3.138] (lead) status active -> done
+- 2026-11-25T03:21 [M3.138] (lead) commit 41b0cc5 [M3.138]; fmt/clippy/guard/plan validate green, 12 test binaries ok (ledger_lab 8, converge_lab 2)
+- 2026-11-25T03:21 [M3.139] (conductor) status ready -> active
+- 2026-11-25T03:23 [M3.142] (unknown) edited fields
+- 2026-11-25T03:23 [M3.139] (lead) status active -> active
+- 2026-11-25T03:23 [M3.139] (lead) attempt 1/3 started
+- 2026-11-25T03:23 [M3.139] (lead) base 41b0cc5d6b8fa52080d689cec14cbf366a1f2d33
+- 2026-11-25T03:27 [M3.143] (lead) status active -> review
+- 2026-11-25T03:27 [M3.143] (lead) status review -> done
+- 2026-11-25T03:28 [M3.142] (unknown) status active -> review
+- 2026-11-25T03:28 [M3.142] (unknown) status review -> done
+- 2026-11-25T03:29 HUMAN H-027 [missing-input] opened by lead (node M3.139)
+- 2026-11-25T03:30 [M3.139] (conductor) edited fields
+- 2026-11-25T03:30 [M3.139] (conductor) H-027 resolved as an engine decision (not human input): wire the orphan-pods channel in this slice. Extend ConvergeInput with orphan_pods: Vec<OrphanPods { stor
+- 2026-11-25T03:30 HUMAN H-027 closed by conductor
+- 2026-11-25T03:30 [M3.139] (unknown) edited fields
+- 2026-11-25T03:30 [M3.139] (lead) H-027 resolved as engine decision: paths widened to ledger/** (orphan_pods channel) + runtime_dir.rs canonical worlds_root
+- 2026-11-25T03:38 [M3.139] (unknown) edited fields
+- 2026-11-25T03:38 [M3.139] (lead) triad 3/3: 1 BLOCKER (cross-store orphan pods), 6 MAJOR (runtime pod dirs, 2x 500-LOC splits, legacy-nested compounding, ForeignFamily remedy, suite registratio
+- 2026-11-25T03:42 [M3.145] (planner) created (task) Report core: ui/report/ model + renderer, main/dispatch/handoff, WallZone
+- 2026-11-25T03:42 [M3.146] (planner) created (task) Boot/daemon facts: StepSettlement, FailureFacts, ui/report/live.rs over BootProgress
+- 2026-11-25T03:42 [M3.147] (planner) created (task) Docker/streams/runs/exec on ReportRenderer: inner steps, Stream rows, 12-char digests
+- 2026-11-25T03:42 [M3.148] (planner) created (task) Status/doctor/commands on Report + narrow ui helpers + guard.py no-raw-print gate
+- 2026-11-25T03:42 [M3.145] (conductor) status ready -> active
+- 2026-11-25T03:44 [M3.139] (lead) status active -> done
+- 2026-11-25T03:44 [M3.139] (lead) triad 3/3 pass (1 fix pass): BLOCKER cross-store orphan pods fixed; MAJOR runtime pod dirs, 2x 500-LOC canonical splits, legacy-nested fail-closed + ForeignFami
+- 2026-11-25T03:44 [M3.131] (conductor) edited fields
+- 2026-11-25T03:44 [M3.131] (conductor) status ready -> active
+- 2026-11-25T03:45 [M3.145] (lead) edited fields
+- 2026-11-25T03:45 [M3.145] (lead) status active -> active
+- 2026-11-25T03:45 [M3.145] (lead) attempt 1/3 started
+- 2026-11-25T03:45 [M3.145] (lead) base fd139a08b6127d14d5be70a6ce3484b7ca75b53d
+- 2026-11-25T03:45 [M3.131] (lead) status active -> active
+- 2026-11-25T03:45 [M3.131] (lead) attempt 1/3 started
+- 2026-11-25T03:45 [M3.131] (lead) base fd139a08b6127d14d5be70a6ce3484b7ca75b53d
+- 2026-11-25T03:53 [M3.145] (lead) status active -> review
+- 2026-11-25T03:53 [M3.145] (lead) attempt 1 done: ui/report core + main/dispatch/handoff/timeparse wired; jiff 0.2
+- 2026-11-25T03:57 [M3.145] (lead) status review -> done
+- 2026-11-25T03:57 [M3.145] (lead) slice 1 landed: ui/report core (Report/Row/Outcome/Failure/WallZone/ReportRenderer), Terminal in ui/terminal.rs, jiff 0.2 wall clock, main+dispatch+handoff+time
+- 2026-11-25T03:57 [M3.140] (conductor) status ready -> active
+- 2026-11-25T03:59 [M3.140] (lead) attempt 1/3 started
+- 2026-11-25T03:59 [M3.140] (lead) status active -> active
+- 2026-11-25T03:59 [M3.140] (lead) base e460aca2bc0756cef52a33787aa46e5dce8d908c
+- 2026-11-25T08:57 [M3.149] (conductor) created (task) up resets the terminal at exit: ScrollRegionGuard::drop moves the cursor to the last row, erases it and resets margins after the final output
+- 2026-11-25T08:57 [M3.140] (conductor) edited fields
+- 2026-11-25T08:57 [M3.149] (conductor) edited fields
+- 2026-11-25T08:57 [M3.149] (conductor) status ready -> active
+- 2026-11-25T08:59 [M3.149] (lead) status active -> active
+- 2026-11-25T08:59 [M3.149] (lead) attempt 1/3 started
+- 2026-11-25T08:59 [M3.149] (lead) base e460aca2bc0756cef52a33787aa46e5dce8d908c
+- 2026-11-25T09:15 [M3.149] (lead) status active -> done
+- 2026-11-25T09:15 [M3.149] (lead) commit 40c0fce. Removed from ScrollRegionGuard::drop exactly b'\x1b[{rows};1H' + b'\x1b[2K': they moved to the terminal's last row and erased it. drop/reset now
+- 2026-11-25T09:31 [M3.150] (conductor) created (task) Image steps stall silently after a heavy RUN (seal/record tail): measure, surface a phase row, drop the extra commit
+- 2026-11-25T09:31 [M3.150] (conductor) edited fields
+- 2026-11-25T09:31 [M3.150] (conductor) status ready -> active
+- 2026-11-25T09:33 [M3.151] (conductor) created (task) Replace the absolute-addressed boot pane with an append-only live log and one in-place status line (no scroll regions, no clears)
+- 2026-11-25T09:33 [M3.151] (conductor) status ready -> active
+- 2026-11-25T09:34 [M3.150] (lead) status active -> active
+- 2026-11-25T09:34 [M3.150] (lead) attempt 1/3 started
+- 2026-11-25T09:34 [M3.150] (lead) base 40c0fce98bcde77cb5cc759b0d7743b8324b6c20
+- 2026-11-25T09:34 [M3.150] (unknown) edited fields
+- 2026-11-25T09:35 [M3.149] (lead) status done -> ready
+- 2026-11-25T09:35 [M3.149] (lead) edited fields
+- 2026-11-25T09:35 [M3.149] (lead) status ready -> active
+- 2026-11-25T09:35 [M3.149] (lead) attempt 2/3 started
+- 2026-11-25T09:35 [M3.149] (lead) panic follow-up: owner asciinema shows capacity overflow in <[T]>::repeat (bar cells - filled) at 3/3; base 40c0fce98bcde77cb5cc759b0d7743b8324b6c20
+- 2026-11-25T09:35 [M3.149] (lead) edited fields
+- 2026-11-25T09:43 [M3.149] (lead) panic fix landed as 55fcfab (bar clamp + producer + audit + real-PTY no-panic test; make check green). Append-only rewrite is BLOCKED on a concurrent writer: bo
+- 2026-11-25T09:43 [M3.150] (conductor) edited fields
+- 2026-11-25T09:43 [M3.149] (conductor) status active -> done
+- 2026-11-25T09:43 [M3.152] (conductor) created (task) Append-only boot output: completed rows as normal lines, one in-place status line, no cursor addressing or scroll regions
+- 2026-11-25T09:43 [M3.150] (conductor) edited fields
+- 2026-11-25T09:43 [M3.151] (conductor) status active -> superseded
+- 2026-11-25T09:43 [M3.152] (lead) handover from M3.149 (append-only rewrite contract): keep the TailPhase suffix on the single in-place status line (the phase row is the status line now - tail p
+- 2026-11-25T09:43 [M3.144] (conductor) Design delivered in specs/02-cli-ux.md §9 (committed 298957b) and split into M3.145 (done), M3.146–M3.148 (queued, serialized behind M3.141), M3.152 (append-onl
+- 2026-11-25T09:43 [M3.144] (conductor) status ready -> done
+- 2026-11-25T10:06 [M3.150] (lead) evidence: owner-shape RUN (500MB+4k files) step 4/6 clone 0.02 exec 1.77 seal 1.42 record 0.00 publish 0.00 = 3.21s; real apt install step 4/6 clone 0.03 exec 6
+- 2026-11-25T10:10 [M3.152] (conductor) Owner addenda from the 11-step build: (1) step counters must pad for the plan's widest i/N (e.g. ' 1/11' vs '10/11') for both outer and inner levels, width deri
+- 2026-11-25T10:10 [M3.153] (conductor) created (task) Service pods must run as the image's USER (default root) through the same single-owner userns mapping and Docker caps as build steps
+- 2026-11-25T10:10 [M3.153] (conductor) status ready -> active
+- 2026-11-25T10:13 [M3.154] (conductor) created (task) Build args: bind services (port) in the arg symbol table and fail closed when an arg does not evaluate
+- 2026-11-25T10:14 [M3.153] (lead) edited fields
+- 2026-11-25T10:14 [M3.153] (lead) attempt 1/3 started
+- 2026-11-25T10:14 [M3.153] (lead) attempt 1: widen paths to the identity owner's real call sites (pod_env.rs, resources/**, world lib.rs, image runtime.rs) — no heads/daemon edits (M3.140 lock);
+- 2026-11-25T10:15 [M3.155] (conductor) created (task) fmt must keep one blank line between items (collapse runs, never invent extras)
+- 2026-11-25T10:15 [M3.155] (conductor) status ready -> active
+- 2026-11-25T10:16 [M3.155] (lead) edited fields
+- 2026-11-25T10:17 [M3.155] (lead) attempt 1/3 started
+- 2026-11-25T10:17 [M3.155] (lead) base 55fcfabda0bd9d6f9d2ac090fbe484f3a0989e48; widened paths inside slipfork-forkfile (ast/parser/migrate) because Comment carries no line, so spans alone canno
+- 2026-11-25T10:18 [M3.153] (lead) attempt 2/3 started
+- 2026-11-25T10:18 [M3.153] (lead) attempt 1 partial: identity owner + pod render landed & libs compile; ledger mod became private (regression) and runtime/helpers super::heads import broken; no 
+- 2026-11-25T10:19 [M3.153] (lead) owner addendum: the build/run identity factoring must be explicit and grep-enforced — one cap table + one uid/gid resolver + one /etc/passwd-account owner in sl
+- 2026-11-25T10:23 [M3.150] (lead) VM proof (private tree /home/slipfork/m3150-src @55fcfab + this node, fresh loop-backed Btrfs volume per run, as slipfork, XDG_RUNTIME_DIR=/run/user/1000/m3150-
+- 2026-11-25T10:23 [M3.150] (lead) real apt install (python:3.9-slim, RUN apt-get update && apt-get install -y --no-install-recommends postgresql curl): step 4/6 clone 0.03 exec 63.00 seal 0.07 r
+- 2026-11-25T10:24 [M3.150] (lead) landed: TailPhase/PhaseTiming in the snapshot store (Cloning announced before the slot clone, Sealing/Recording/Publishing before each op; serial observer only,
+- 2026-11-25T10:24 [M3.150] (lead) correction to the previous line (unquoted backticks were eaten by the shell): the phase word for the docker image build command needs a phase field on ImageFram
+- 2026-11-25T10:25 [M3.155] (lead) edited fields
+- 2026-11-25T10:25 [M3.155] (lead) header->first-item blank conflict filed upward: protected critical_forkfile.rs:248 input '# forkfile: 0.1\n\ns3 assets {' HAS a blank, golden at :251 forbids it
+- 2026-11-25T10:26 [M3.155] (lead) edited fields
+- 2026-11-25T10:26 [M3.155] (lead) OWNER AUTHORISED (via conductor): update protected golden critical_forkfile.rs:251 so the authored blank after '# forkfile: 0.1' survives; assertion at :252 sta
+- 2026-11-25T10:27 [M3.150] (lead) gate: make check green (fmt, clippy -D warnings, cargo test --workspace 52 suites ok; js-test/packages-check green after killing a stale local daemon); isolated
+- 2026-11-25T10:27 [M3.150] (lead) status active -> done
+- 2026-11-25T10:28 [M3.140] (conductor) Known gap from M3.150: docker build cannot show the tail phase word until ImageFrame::Step carries phase in daemon/image/mod.rs (up/fork are covered). Add it wh
+- 2026-11-25T10:28 [M3.152] (conductor) status ready -> active
+- 2026-11-25T10:28 [M3.155] (lead) edited fields
+- 2026-11-25T10:28 [M3.155] (lead) Block.blank_lines grows the recursive On<RedisItem> variant past clippy's large_enum_variant threshold, so resources.rs carries a documented #[allow] (widened p
+- 2026-11-25T10:29 [M3.152] (lead) edited fields
+- 2026-11-25T10:29 [M3.152] (lead) status active -> active
+- 2026-11-25T10:29 [M3.152] (lead) attempt 1/3 started
+- 2026-11-25T10:29 [M3.152] (lead) base 09168fa441218b492b21a3971c97325c203a78dd
+- 2026-11-25T10:37 [M3.155] (lead) verified partial work: consecutive inline on-commands in run bodies keep exactly one authored blank (runs collapse, flush stays flush), idempotent; fmt+clippy+f
+- 2026-11-25T10:37 [M3.155] (lead) status active -> done
+- 2026-11-25T10:37 [M3.140] (lead) recovery: no daemon edits existed; base 6b095fa90c6431e21fff7cd80686ed2a6abeea43; re-dispatching the cutover
+- 2026-11-25T10:37 [M3.140] (lead) status active -> active
+- 2026-11-25T10:38 [M3.152] (lead) recovery rescan: live-only critical_status_live.rs:580-989 still asserts DECSTBM/ESC[r/DSR (out of my paths + protected); append-only gate cannot flip it here —
+- 2026-11-25T10:38 [M3.131] (lead) attempt 2/3 started
+- 2026-11-25T10:38 [M3.131] (lead) recovery: partial work present (world/mod.rs resolver+5 unit tests, Makefile build+export, do_vm.py SLIPFORK_WORLD_INIT, TESTING_PLAN paragraph); verifying and 
+- 2026-11-25T10:38 [M3.131] (lead) status active -> active
+- 2026-11-25T11:00 [M3.153] (lead) VM proof (private worktree HEAD 6b095fa + only node files, /mnt/sf-m3153 Btrfs, as slipfork, XDG_RUNTIME_DIR on tmpfs): (a) no-USER image boots uid=0(root) CapE
+- 2026-11-25T11:00 [M3.153] (lead) integration note for the epic gate: crates/slipfork-world/tests/pod_run_live.rs (live feature) must join LIVE_SUITES in Makefile and TESTING_PLAN.md — both are 
+- 2026-11-25T11:02 [M3.131] (lead) edited fields
+- 2026-11-25T11:10 [M3.156] (conductor) created (task) CLI fmt canonical still drops the authored header blank (HEAD red): update critical_fmt_migrate and cover the CLI crate
+- 2026-11-25T11:10 [M3.156] (conductor) status ready -> active
+- 2026-11-25T11:12 [M3.156] (lead) CANONICAL keeps the authored blank after '# forkfile: 0.1'; no other CLI fmt golden encoded blank-eating (grep clean). M3.155 gate missed it because it ran -p s
+- 2026-11-25T11:12 [M3.156] (lead) status active -> done
+- 2026-11-25T11:12 [M3.152] (lead) commit df054e8; five gates green in isolated 6b095fa worktree with separate target (fmt, clippy -D warnings, boot 62, ansi_matrix 7, boot_pty 4+1 ignored fixtur
+- 2026-11-25T11:12 [M3.152] (lead) status active -> done
+- 2026-11-25T11:13 [M3.157] (conductor) created (task) Update critical_status_live to the append-only boot contract (drop DECSTBM/ESC[r/DSR assertions)
+- 2026-11-25T11:13 [M3.157] (conductor) status ready -> active
+- 2026-11-25T11:14 [M3.153] (lead) attempt 2 (recovered): finished compile, hardened sealed-identity lookup to fail closed on a built image with no image record, typed IdentityFailure cause/remed
+- 2026-11-25T11:14 [M3.153] (lead) status active -> done
+- 2026-11-25T11:20 [M3.140] (lead) landed: __daemon opens the ForkLedger writer after flock (Migrator::up before bind, SchemaNewer -> 'next: upgrade slipfork'), unlinks worlds.json, deletes daemo
+- 2026-11-25T11:20 [M3.140] (lead) grep gate: zero fork_checkouts/RegistryEntry/registry::/worlds.json/.slipfork/world.json/store_fingerprint/Fingerprint under crates/slipfork/src/daemon; world_i
+- 2026-11-25T11:20 [M3.140] (lead) gates on isolated df054e8+slice: cargo fmt --all --check 0; cargo clippy --workspace --all-targets -D warnings green; cargo test -p slipfork green except the pr
+- 2026-11-25T11:20 [M3.140] (lead) VM proof (private tree, fresh loop btrfs, as slipfork, XDG_RUNTIME_DIR, never do_vm sync/demo): ghost root+creating merci+untracked bonjour/salut(lease origins)
+- 2026-11-25T11:20 [M3.140] (lead) status active -> done
+- 2026-11-25T11:20 [M3.131] (lead) owner addendum landed: slipfork-world/pod_run_live registered in Makefile LIVE_SUITES + TESTING_PLAN (thirteen Btrfs/VM live suites)
+- 2026-11-25T11:20 [M3.131] (lead) VM proof A (private tree /home/slipfork/m3131 @91ab69a + this node, /usr/bin/slipfork-world-init stamped 1970 = stale): world boots via the fresh init exported 
+- 2026-11-25T11:20 [M3.131] (lead) VM proof B: same checkout binary copied to /var/tmp (no sibling init), SLIPFORK_WORLD_INIT unset, PATH=/usr/bin:/bin => fail closed, one line naming both paths 
+- 2026-11-25T11:20 [M3.131] (lead) checks: fmt clean, clippy --workspace --all-targets -D warnings clean, resolver 7/7 + world 35/35, guard OK, critical_guard clean for this diff. make check stil
+- 2026-11-25T11:20 [M3.131] (lead) Triad APPROVE x3 (arch, tests, ux); 1 fix pass: resolver moved to crates/slipfork/src/world/init.rs with a single INIT_REMEDY and both paths named, mod.rs 638->
+- 2026-11-25T11:20 [M3.131] (lead) status active -> done
+- 2026-11-25T11:21 [M3.141] (conductor) edited fields
+- 2026-11-25T11:21 [M3.141] (conductor) status ready -> active
+- 2026-11-25T11:21 [M3.158] (conductor) created (task) Root registration still reads a stale world record on first launch (residue from M3.140)
+- 2026-11-25T11:22 [M3.141] (lead) attempt 1/3 started
+- 2026-11-25T11:22 [M3.141] (lead) base b7b3aa1b8f43f80ea23fcbb47787d14113913031
+- 2026-11-25T11:24 [M3.141] (lead) edited fields
+- 2026-11-25T11:32 [M3.159] (conductor) created (task) Append-only output prints every step twice and out of instruction order: one row per step, in order
+- 2026-11-25T11:32 [M3.160] (conductor) created (task) Containers inherit an unknown umask: set 0022 explicitly for build steps and pods (blastit refuses group-writable .venv)
+- 2026-11-25T11:32 [M3.159] (conductor) edited fields
+- 2026-11-25T11:32 [M3.159] (conductor) status ready -> active
+- 2026-11-25T11:32 [M3.160] (conductor) status ready -> active
+- 2026-11-25T11:33 [M3.160] (unknown) edited fields
+- 2026-11-25T11:33 [M3.160] (lead) status active -> active
+- 2026-11-25T11:33 [M3.160] (lead) attempt 1/3 started
+- 2026-11-25T11:33 [M3.160] (lead) base 8e5691ae9d9a5aa9678b9a0c8b406da68cbcd507
+- 2026-11-25T11:33 [M3.159] (lead) status active -> active
+- 2026-11-25T11:33 [M3.159] (lead) attempt 1/3 started
+- 2026-11-25T11:33 [M3.159] (lead) base 8e5691ae9d9a5aa9678b9a0c8b406da68cbcd507
+- 2026-11-25T11:35 [M3.160] (lead) status active -> review
+- 2026-11-25T11:36 [M3.160] (unknown) edited fields
+- 2026-11-25T11:36 [M3.160] (lead) status review -> ready
+- 2026-11-25T11:36 [M3.160] (lead) attempt 2/3 started
+- 2026-11-25T11:36 [M3.160] (lead) attempt 2: non-vacuous hostile-umask proof + build-step regression cover
+- 2026-11-25T11:37 [M3.159] (lead) status active -> review
+- 2026-11-25T11:39 [M3.160] (lead) status ready -> review
+- 2026-11-25T11:39 [M3.160] (lead) attempt 2 landed: non-vacuous hostile-umask proofs; Triad re-review + VM proof next
+- 2026-11-25T11:39 [M3.159] (lead) status review -> ready
+- 2026-11-25T11:39 [M3.159] (lead) attempt 2/3 started
+- 2026-11-25T11:39 [M3.159] (lead) review: 1 MAJOR (header re-emit on alternating keys); sibling dirty crates/slipfork-image critical test is M3.160's, not staged
+- 2026-11-25T11:42 [M3.159] (lead) status ready -> ready
+- 2026-11-25T11:42 [M3.159] (lead) attempt 3/3 started
+- 2026-11-25T11:42 [M3.159] (lead) review pass 2: image opener regression vs specs/02:156 + unsettled streaming service fixture
+- 2026-11-25T11:42 [M3.141] (lead) status active -> review
+- 2026-11-25T11:42 [M3.141] (lead) slice: ledger lineage/state render (PsWorld.lineage dim '←', Broken=✗+one '! ' line with one remedy, stopped rows from ledger, stopped/broken rows have no sub-r
+- 2026-11-25T11:43 [M3.141] (lead) edited fields
+- 2026-11-25T11:43 [M3.141] (lead) edited fields
+- 2026-11-25T11:43 [M3.160] (lead) status review -> ready
+- 2026-11-25T11:43 [M3.160] (lead) attempt 3/3 started
+- 2026-11-25T11:43 [M3.160] (lead) attempt 3: serialize critical_dockerfile_live tests around the process-wide umask guard
+- 2026-11-25T11:43 [M3.141] (lead) edited fields
+- 2026-11-25T11:46 [M3.141] (lead) edited fields
+- 2026-11-25T11:48 [M3.159] (lead) status ready -> done
+- 2026-11-25T11:48 [M3.159] (lead) verified make check in isolated base+diff worktree (exit 0); main-tree make check blocked by sibling dirty status/tree.rs
+- 2026-11-25T11:50 [M3.141] (lead) gates: cargo fmt --all --check 0; cargo clippy --workspace --all-targets -D warnings green; cargo test -p slipfork green (status_surface 20/20 incl. 3-deep line
+- 2026-11-25T11:50 [M3.141] (lead) make check green only with an isolated XDG_RUNTIME_DIR: two __daemon processes from another agent's .worktrees/m3159-verify own the shared runtime socket and ma
+- 2026-11-25T11:50 [M3.141] (lead) VM proof (fresh loop btrfs /mnt/sf-m3141, as slipfork, XDG_RUNTIME_DIR, never do_vm sync/demo, private tree m3141): ledger rows root ghostroot + 3-deep bonjour<
+- 2026-11-25T11:50 [M3.141] (lead) hand-off (blocking live gate, not this node's file): crates/slipfork/tests/critical_status_live.rs:822,873,1790 still assert worlds[0].stopped_forks (field+PsSt
+- 2026-11-25T11:50 [M3.141] (lead) status review -> done
+- 2026-11-25T11:53 [M3.160] (unknown) edited fields
+- 2026-11-25T11:53 [M3.160] (lead) status ready -> ready
+- 2026-11-25T11:53 [M3.160] (lead) attempt 4/4 started
+- 2026-11-25T11:53 [M3.160] (lead) attempt 4: the demo fixture rootfs has no mkdir binary; prove build-step umask via shell builtin + redirection
+- 2026-11-25T12:01 [M3.160] (lead) VM proof: RUN /opt/probe 0755, f 0644, /opt/venv 0755; pod-created /code/.venv 0755 (host uid 1000, mode 755); blastit-shaped check clean; service serves ok 0o7
+- 2026-11-25T12:28 [M3.160] (lead) live suites green on VM: pod_run_live ok, critical_dockerfile_live 6/6 ok; make check ok; unrelated critical_world_journey failures from other nodes' WIP in sha
+- 2026-11-25T12:28 [M3.160] (lead) status ready -> done
+- 2026-11-25T12:28 [M3.161] (conductor) created (task) Document the container umask guarantee in specs/03 (§8) and docs
+- 2026-11-25T12:28 [M3.162] (conductor) created (task) Document the container umask guarantee in specs/03 and docs
+- 2026-11-25T12:29 [M3.163] (conductor) created (task) Document the container umask guarantee in specs/03 and docs
+- 2026-11-25T12:29 [M3.161] (conductor) status ready -> superseded
+- 2026-11-25T12:29 [M3.162] (conductor) status ready -> superseded
+- 2026-11-25T12:29 [M3.163] (lead) status ready -> active
+- 2026-11-25T12:29 [M3.163] (lead) attempt 1/3 started
+- 2026-11-25T12:29 [M3.163] (lead) base 767e14ce8badd59a7e090f3fbcb034bf67a6f945
+- 2026-11-25T12:29 [M3.164] (conductor) created (task) Child processes emit colour when asked (env hints, no fake TTY); logs strips colour only at the viewing end
+- 2026-11-25T12:30 [M3.164] (conductor) edited fields
+- 2026-11-25T12:30 [M3.164] (conductor) status ready -> active
+- 2026-11-25T12:30 [M3.164] (lead) attempt 1/3 started
+- 2026-11-25T12:30 [M3.164] (lead) base 767e14ce8badd59a7e090f3fbcb034bf67a6f945
+- 2026-11-25T12:30 [M3.163] (lead) status active -> done
+- 2026-11-25T12:31 [M3.134] (conductor) Epic delivered by M3.138 (ledger), M3.139 (flat forks + lineage), M3.140 (daemon cutover + converge), M3.141 (ps lineage/broken/offline), M3.131 (init hygiene),
+- 2026-11-25T12:31 [M3.134] (conductor) status ready -> done
+- 2026-11-25T12:31 [M3.154] (conductor) status ready -> active
+- 2026-11-25T12:31 [M3.158] (conductor) status ready -> active
+- 2026-11-25T12:31 [M3.158] (lead) attempt 1/3 started
+- 2026-11-25T12:31 [M3.158] (lead) base c752423cf61bdbfbd775307a1c066e3f1386dfef
+- 2026-11-25T12:31 [M3.154] (lead) attempt 1/3 started
+- 2026-11-25T12:31 [M3.154] (lead) base c752423cf61bdbfbd775307a1c066e3f1386dfef
+- 2026-11-25T12:31 [M3.158] (lead) edited fields
+- 2026-11-25T12:31 [M3.158] (lead) edited fields
+- 2026-11-25T12:31 [M3.165] (conductor) created (task) logs --last N; -f implies --last 20
+- 2026-11-25T12:32 [M3.158] (lead) VM proof constraints: tools/do_vm.py sync is BANNED (wiped owner ~/demo twice). Live proof = private VM tree /home/slipfork/m3158 at HEAD, private CARGO_TARGET_
+- 2026-11-25T12:33 [M3.154] (lead) edited fields
+- 2026-11-25T12:33 [M3.154] (lead) status active -> active
+- 2026-11-25T12:34 [M3.154] (lead) edited fields
+- 2026-11-25T12:34 [M3.154] (lead) status active -> active
+- 2026-11-25T12:35 [M3.164] (conductor) edited fields
+- 2026-11-25T12:38 [M3.166] (lead) created (task) Fold resolved build args into image_inputs/plan_epoch so an arg edit invalidates sealed heads
+- 2026-11-25T12:39 [M3.157] (lead) attempt 1/3 started
+- 2026-11-25T12:39 [M3.157] (lead) base 416ea59; rewrite critical_status_live for append-only boot + M3.141 forks[] contract
+- 2026-11-25T12:43 [M3.154] (lead) services bind port/name; flat feature-independent namespace + unconditional-port gate makes arg eval total; arg diagnostics name the arg + next; docs/specs snip
+- 2026-11-25T12:43 [M3.154] (lead) status active -> review
+- 2026-11-25T12:43 [M3.154] (lead) status review -> done
+- 2026-11-25T12:49 [M3.157] (lead) status active -> review
+- 2026-11-25T12:49 [M3.157] (lead) live: critical_status_live 6/6 green on Btrfs VM (private tree /home/slipfork/m3157, project user, private XDG_RUNTIME_DIR); fmt green; clippy has zero findings
+- 2026-11-25T12:49 [M3.157] (lead) commit 3877acb (test file only); triad: review-tests fix items addressed (escape scan A-G/K/S/T/L/M + DECSC, screen scrollback restored, real resize clamp, appe
+- 2026-11-25T12:49 [M3.157] (lead) status review -> done
+- 2026-11-25T12:50 [M3.167] (conductor) created (task) Cached from-only image fails with 'no recorded USER' (M3.153 quirk)
+- 2026-11-25T12:50 [M3.168] (conductor) created (task) No Rust toolchain pin: clippy passes locally but fails on rustc 1.94 (drop_non_drop, nonminimal_bool)
+- 2026-11-25T12:56 [M3.169] (conductor) created (task) Unwritable supervisor.log aborts up with a bare EACCES: actionable diagnosis + rotate when append is denied
+- 2026-11-25T12:56 [M3.170] (conductor) created (task) 13-step build printed step 2 twice, once truncated and once after step 13: verify row release at HEAD
+- 2026-11-25T12:56 [M3.171] (conductor) created (task) Document that dev mounts expose the host checkout's modes to apps (blastit refuses group-writable trees)
+- 2026-11-25T12:56 [M3.170] (conductor) status ready -> active
+- 2026-11-25T12:56 [M3.171] (conductor) status ready -> active
+- 2026-11-25T12:58 [M3.158] (lead) done: WorldIdentities owns identity (requested -> ledger row by checkout_path -> .forks id -> slug); WorldState/state_path/recorded_world/write_state and world_
+- 2026-11-25T12:58 [M3.158] (lead) status active -> done
+- 2026-11-25T12:59 [M3.169] (conductor) edited fields
+- 2026-11-25T12:59 [M3.169] (conductor) status ready -> active
+- 2026-11-25T13:00 [M3.169] (lead) attempt 1/3 started
+- 2026-11-25T13:00 [M3.169] (lead) base e42f6fdd357789e19c5c422bdce08cc4ab78b7b3 (attempt 1: implementer)
+- 2026-11-25T13:01 [M3.164] (lead) status active -> review
+- 2026-11-25T13:01 [M3.164] (lead) env hints: TERM=xterm-256color, CLICOLOR=1, CLICOLOR_FORCE=1, COLORTERM=truecolor for service/resource/boot pods and build RUN; explicit image/Forkfile values w
+- 2026-11-25T13:04 [M3.171] (lead) edited fields
+- 2026-11-25T13:04 [M3.171] (lead) attempt 1/3 started
+- 2026-11-25T13:04 [M3.171] (lead) base e42f6fdd357789e19c5c422bdce08cc4ab78b7b3
+- 2026-11-25T13:07 [M3.171] (lead) status active -> done
+- 2026-11-25T13:10 [M3.169] (lead) edited fields
+- 2026-11-25T13:10 [M3.169] (lead) status active -> review
+- 2026-11-25T13:10 [M3.169] (lead) attempt 1 done; review: widen paths to world/up.rs (same stale remedy is the reported next:)
+- 2026-11-25T13:12 [M3.164] (lead) status review -> done
+- 2026-11-25T13:12 [M3.164] (lead) landed as 49ab85b on release/0.1.1 (parent 3ac92be); re-verified on 3ac92be with CARGO_TARGET_DIR=/var/tmp/m3164-target CARGO_PROFILE_DEV_DEBUG=0: fmt, clippy -
+- 2026-11-25T13:15 [M3.169] (lead) committed 12f6d6e; make check: fmt+clippy+workspace tests green, js-test blocked only by foreign daemon pid 537812 (.worktrees/m3164) owning the status socket
+- 2026-11-25T13:15 [M3.169] (lead) status review -> done
+- 2026-11-25T13:16 [M3.168] (conductor) status ready -> active
+- 2026-11-25T13:19 [M3.168] (lead) attempt 1/3 started
+- 2026-11-25T13:19 [M3.168] (lead) base 12f6d6e; 1.94 diagnostics captured (drop_non_drop reconcile_serial:119, nonminimal_bool terminal.rs:61); host toolchain 1.100.0
+- 2026-11-25T13:26 [M3.168] (lead) status active -> review
+- 2026-11-25T13:26 [M3.168] (lead) verified: fmt+clippy --workspace --all-targets -D warnings + cargo test --workspace + zed check green on pinned 1.100.0 (/var/tmp/m3168-target); cargo +1.94.0 c
+- 2026-11-25T13:26 [M3.168] (lead) status review -> done
+- 2026-11-25T16:27 [M3.170] (lead) attempt 1/3 started
+- 2026-11-25T16:27 [M3.170] (lead) reproduced at HEAD 7a43dba on VM: step 2 printed truncated after 1/13 and full after 13/13; env row shows PORT=$port
+- 2026-11-25T16:27 [M3.170] (lead) edited fields
+- 2026-11-25T16:27 [M3.170] (lead) base 7a43dba4645f735a844d85eb68ed234dbde8860a
+- 2026-11-25T16:39 [M3.170] (lead) status active -> review
+- 2026-11-25T16:39 [M3.170] (lead) VM re-run after fix: one row per index 1..13, full COPY args once, 'arg port=8080', 'env PORT=8080'; review-ux major findings triaged (fixture out-of-order anno
+- 2026-11-25T16:39 [M3.170] (lead) status review -> done
+- 2026-11-25T16:40 [M3.165] (conductor) status ready -> active
+- 2026-11-25T16:40 [M3.167] (conductor) status ready -> active
+- 2026-11-25T16:40 [M3.165] (lead) status active -> active
+- 2026-11-25T16:40 [M3.165] (lead) attempt 1/3 started
+- 2026-11-25T16:40 [M3.165] (lead) base 5a315bd081dfb90046b40350f93cc91d8e795ef5
+- 2026-11-25T16:41 [M3.167] (lead) edited fields
+- 2026-11-25T16:41 [M3.167] (lead) status active -> active
+- 2026-11-25T16:41 [M3.167] (lead) attempt 1/3 started
+- 2026-11-25T16:41 [M3.167] (lead) base 5a315bd081dfb90046b40350f93cc91d8e795ef5; widened paths to the real defect site helpers.rs; cached from-only head falls through because only state=='pulled
+- 2026-11-25T16:49 [M3.167] (lead) VM live: cached from-only got past USER, then failed: cannot list sealed snapshots (snapshots dir never exists for a pure pull) — second fix needed: missing sna
+- 2026-11-25T16:51 [M3.167] (lead) VM live pass 2: ghost Dockerfile (metadata-only, head key == alpine base key) wrote an image child record parented at the base; from-only pub picked up USER gho
+- 2026-11-25T16:52 [M3.165] (lead) status active -> review
+- 2026-11-25T16:52 [M3.165] (lead) Triad-light review-ux PASS; live VM: -f 20+live, -r last --last 5, --last 25
+- 2026-11-25T16:53 [M3.165] (lead) status review -> done
+- 2026-11-25T16:53 [M3.166] (conductor) edited fields
+- 2026-11-25T16:56 [M3.167] (lead) status active -> review
+- 2026-11-25T16:56 [M3.167] (lead) status review -> done
+- 2026-11-25T16:57 [M3.166] (conductor) status ready -> active
+- 2026-11-25T16:57 [M3.166] (lead) status active -> active
+- 2026-11-25T16:57 [M3.166] (lead) attempt 1/3 started
+- 2026-11-25T16:57 [M3.166] (lead) base 1b3c991168cf997e5ebdfe176e68b3318a9f9c43
+- 2026-11-25T17:00 [M3.166] (lead) status active -> review
+- 2026-11-25T17:04 [M3.166] (lead) Fix: build_inputs_digest folds resolved BuildArgs fingerprint; world/inputs.rs owns image_inputs+build_args+INGRESS_SCHEME (single digest owner); plan_epoch/hea
+- 2026-11-25T17:04 [M3.166] (lead) status review -> done
+- 2026-11-25T17:05 [M3.146] (conductor) status ready -> active
+- 2026-11-25T17:06 HUMAN H-028 [direction-challenge] opened by lead (node M3.146)
+- 2026-11-25T17:06 [M3.146] (lead) status active -> blocked: split proposal filed as H-028 (2b daemon-facts -> 2c boot-pane; needs path expansion + ConnectNotice sink decision)
+- 2026-11-25T17:06 [M3.146] (conductor) Split approved (conductor): 2b daemon-facts (typed StepSettlement/FailureFacts/ConnectNotice on every boot frame, supervise zero Palette, delete world::fail) th
+- 2026-11-25T17:06 HUMAN H-028 closed by conductor
+- 2026-11-25T17:06 [M3.146] (conductor) status blocked -> superseded
+- 2026-11-25T17:06 [M3.172] (conductor) created (task) Slice 2b: typed daemon boot facts (StepSettlement/FailureFacts/ConnectNotice), supervise without Palette
+- 2026-11-25T17:06 [M3.173] (conductor) created (task) Slice 2c: boot pane on ui/report/live.rs (one status line, rows from Report), delete the bespoke renderer
+- 2026-11-25T17:06 [M3.172] (conductor) status ready -> active
+- 2026-11-25T17:07 [M3.172] (lead) edited fields
+- 2026-11-25T17:07 [M3.172] (lead) status active -> active
+- 2026-11-25T17:07 [M3.172] (lead) attempt 1/3 started
+- 2026-11-25T17:07 [M3.172] (lead) base a37be24f11b0e42a5e6f0cd16d8065c76899dc0d
+- 2026-11-25T17:11 [M3.172] (lead) status active -> review
+- 2026-11-25T17:12 [M3.172] (lead) status review -> ready
+- 2026-11-25T17:12 [M3.172] (lead) edited fields
+- 2026-11-25T17:12 [M3.172] (lead) status ready -> active
+- 2026-11-25T17:12 [M3.172] (lead) attempt 2/3 started
+- 2026-11-25T17:12 [M3.172] (lead) fix pass 1: arch triad findings (single failure owner, splitter reuse, no fabricated counts, typed facts, one connect sink)
+- 2026-11-25T17:13 [M3.172] (lead) edited fields
+- 2026-11-25T17:13 [M3.172] (lead) status active -> active
+- 2026-11-25T17:16 [M3.172] (lead) edited fields
+- 2026-11-25T17:16 [M3.172] (lead) status active -> active
+- 2026-11-25T17:16 [M3.172] (lead) attempt 3/3 started
+- 2026-11-25T17:16 [M3.172] (lead) fix pass 2: typed at from supervise plan, delete Session::fail, split row tests under 500 LOC
+- 2026-11-25T17:21 [M3.172] (lead) status active -> done
+- 2026-11-25T17:21 [M3.173] (conductor) status ready -> active
+- 2026-11-25T17:23 [M3.173] (lead) edited fields
+- 2026-11-25T17:23 [M3.173] (lead) status active -> active
+- 2026-11-25T17:23 [M3.173] (lead) attempt 1/3 started
+- 2026-11-25T17:23 [M3.173] (lead) base ce575731eaba88eaee80096ab8117c0364498cf7
+- 2026-11-25T17:24 [M3.173] (lead) edited fields
+- 2026-11-25T17:24 [M3.173] (lead) split required (verified): S1 Pane move (ui/report/live.rs + boot/status*, boot.rs); S2 typed failure owner (add world/supervise.rs + world/runtime/frames.rs pa
+- 2026-11-25T17:24 [M3.173] (lead) status active -> ready: needs split: S1 Pane, S2 typed failure producer+owner, S3 typed rows/status_surface
+- 2026-11-25T17:25 [M3.173] (conductor) Split approved (conductor): S1 Pane mechanics (ui/report/live.rs, boot/status*, boot.rs wiring); S2 typed failure (world/supervise.rs + runtime/frames.rs real F
+- 2026-11-25T17:25 [M3.173] (conductor) status ready -> superseded
+- 2026-11-25T17:25 [M3.174] (conductor) created (task) Slice 2c/S1: Pane mechanics on ui/report/live.rs (byte-identical boot pane)
+- 2026-11-25T17:25 [M3.175] (conductor) created (task) Slice 2c/S2: typed failure frames and one Failure projection for the boot pane
+- 2026-11-25T17:25 [M3.176] (conductor) created (task) Slice 2c/S3: boot rows from Report/Row, ImageTally cleanup, typed boot tests
+- 2026-11-25T17:25 [M3.174] (conductor) status ready -> active
+- 2026-11-25T17:27 [M3.174] (lead) attempt 1/3 started
+- 2026-11-25T17:27 [M3.174] (lead) base ce575731eaba88eaee80096ab8117c0364498cf7
+- 2026-11-25T17:27 [M3.174] (lead) S1 brief dispatched: Pane extraction to ui/report/live.rs; HEAD PTY baselines captured (cached/fresh/failing/resize x 110x30/80x24)
+- 2026-11-25T17:35 [M3.174] (lead) status active -> review
+- 2026-11-25T17:35 [M3.174] (lead) status review -> done
+- 2026-11-25T17:35 [M3.175] (conductor) status ready -> active
+- 2026-11-25T17:35 [M3.175] (lead) status active -> active
+- 2026-11-25T17:35 [M3.175] (lead) attempt 1/3 started
+- 2026-11-25T17:35 [M3.175] (lead) base 8ebc4cf8a7753575507cea76e304cf393d4a0c96
+- 2026-11-25T17:41 [M3.175] (lead) status active -> review
+- 2026-11-25T17:44 [M3.175] (lead) status review -> ready: arch: dedupe facts re-derivation + wire real runtime plumbing (1 fix pass)
+- 2026-11-25T17:44 [M3.175] (lead) attempt 2/3 started
+- 2026-11-25T17:45 [M3.175] (lead) status ready -> review
+- 2026-11-25T17:46 [M3.175] (lead) status review -> done
+- 2026-11-25T17:46 [M3.176] (conductor) status ready -> active
+- 2026-11-25T17:46 [M3.176] (lead) attempt 1/3 started
+- 2026-11-25T17:46 [M3.176] (lead) base 098c7393aa151119228c6738bf36adc534f31c09
+- 2026-11-25T17:55 [M3.176] (lead) status active -> review
+- 2026-11-25T17:55 [M3.176] (lead) S3 slice green: boot 63, boot_pty 4+1, ansi_matrix 7, status_surface 20; PTY parity SAME x7; rg clean; build.rs 490 + rows.rs 115; guard/critical_guard OK. Tria
+- 2026-11-25T18:02 [M3.176] (lead) status review -> done
+- 2026-11-25T18:02 [M3.176] (lead) done: Triad (arch BLOCKER restarted/stopped fixed via canonical Outcome::from_state; tests/malformed pin + prep row + styled Partial/Finished; ux trim) -> make 
+- 2026-11-25T18:03 [M3.147] (conductor) status ready -> active
+- 2026-11-25T18:03 [M3.147] (lead) attempt 1/3 started
+- 2026-11-25T18:03 [M3.147] (lead) base 5da2228c8a50f7a43e54f2b2ab5a64ad286debff
+- 2026-11-25T18:13 [M3.147] (lead) status active -> review
+- 2026-11-25T18:17 [M3.147] (lead) status review -> ready: triad: docker build --json drops step frames (BLOCKER); CR-strip drift; duplicate digest helpers; note/param-bag ownership; dead runs di
+- 2026-11-25T18:17 [M3.147] (lead) attempt 2/3 started
+- 2026-11-25T18:17 [M3.147] (lead) status ready -> active
+- 2026-11-25T18:21 [M3.147] (lead) attempt 3/3 started
+- 2026-11-25T18:21 [M3.147] (lead) triad fix pass 2: close arch Note stdout bypass + tests Build-final/Note/TZ replay
+- 2026-11-25T18:23 [M3.147] (lead) status active -> done
+- 2026-11-25T18:24 [M3.148] (conductor) status ready -> active
+- 2026-11-25T18:26 [M3.148] (lead) SCOPE SPLIT REQUIRED — as written M3.148 crosses 4 out-of-path subsystems. Evidence: (1) Palette pub(super) impossible: Palette::new remains in boot.rs:123, boo
+- 2026-11-25T18:26 [M3.148] (lead) status active -> ready: needs split into M3.148a/b/c; see LOG for exact ownership (Palette/LocalClock/ui::failure/RawPrint cross out-of-path modules)
+- 2026-11-25T18:26 [M3.148] (conductor) Split approved (conductor) after the lead proved the acceptance crosses 4 out-of-path subsystems: 148a status/doctor/commands on Report + RawPrint gate; 148b ru
+- 2026-11-25T18:26 [M3.148] (conductor) status ready -> superseded
+- 2026-11-25T18:26 [M3.177] (conductor) created (task) M3.148a: status/doctor/commands on Report; enable the RawPrint gate
+- 2026-11-25T18:26 [M3.178] (conductor) created (task) M3.148b: runs/streams on ReportRenderer; delete LocalClock and ui/failure.rs
+- 2026-11-25T18:26 [M3.179] (conductor) created (task) M3.148c: narrow Palette/paint/table to pub(super)
+- 2026-11-25T18:26 [M3.177] (conductor) status ready -> active
+- 2026-11-25T18:26 [M3.177] (lead) status active -> active
+- 2026-11-25T18:26 [M3.177] (lead) attempt 1/3 started
+- 2026-11-25T18:26 [M3.177] (lead) base 65c819a98f64289129d7e28e6174b4fdb98758cd
+- 2026-11-25T18:28 [M3.177] (lead) lead: widened paths with world/up.rs (route --json failure) and tools/tests/test_tools.py (guard rule test); baseline snapshots at /var/tmp/m3177-baseline/befor
+- 2026-11-25T18:28 [M3.177] (unknown) edited fields
+- 2026-11-25T18:28 [M3.177] (lead) lead: widened paths with world/up.rs (route --json failure) and tools/tests/test_tools.py (guard rule test); baseline snapshots at /var/tmp/m3177-baseline/befor
+- 2026-11-25T18:33 [M3.177] (lead) status active -> review
+- 2026-11-25T18:35 [M3.177] (lead) Triad: ux pass; arch+tests major on (a) fabricated Terminal/WallZone in status/doctor, (b) dead report() json flag, (c) Report::lines third mechanism, (d) guard
+- 2026-11-25T18:38 [M3.177] (lead) status review -> done
+- 2026-11-25T18:38 [M3.178] (conductor) status ready -> active
+- 2026-11-25T18:39 [M3.178] (lead) attempt 1/3 started
+- 2026-11-25T18:39 [M3.178] (lead) base 6a216435a122f5115e569f8998b9794eed21e969
+- 2026-11-25T18:40 [M3.178] (lead) edited fields
+- 2026-11-25T18:43 [M3.178] (lead) status active -> review
+- 2026-11-25T18:45 [M3.178] (lead) status review -> ready
+- 2026-11-25T18:45 [M3.178] (lead) attempt 2/3 started
+- 2026-11-25T18:45 [M3.178] (lead) Triad: ux pass (1 doc nit), arch MAJOR move runs layout into ui/report/runs.rs, tests MAJOR capture claim + byte pins; 1 consolidated fix pass
+- 2026-11-25T18:47 [M3.178] (lead) edited fields
+- 2026-11-25T18:47 [M3.178] (lead) fix pass: also remove duplicate boot::elapsed_text doorway (test imports slipfork::ui) instead of an allow
+- 2026-11-25T18:51 [M3.178] (lead) status ready -> done
+- 2026-11-25T18:51 [M3.179] (conductor) status ready -> active
+- 2026-11-25T18:53 [M3.179] (lead) edited fields
+- 2026-11-25T18:53 [M3.179] (lead) attempt 1/3 started
+- 2026-11-25T18:53 [M3.179] (lead) base 18728312a80ec9dd8a6898c18efc929a00e1f336
+- 2026-11-25T18:56 [M3.179] (lead) status active -> review
+- 2026-11-25T18:58 [M3.179] (lead) status review -> ready: arch MAJOR: duplicate report::table::visible_width forks ansi::visible_width
+- 2026-11-25T18:58 [M3.179] (lead) status ready -> active
+- 2026-11-25T18:58 [M3.179] (lead) attempt 2/3 started
+- 2026-11-25T18:58 [M3.179] (lead) fix pass 1: single visible_width owner (ansi)
+- 2026-11-25T18:59 [M3.179] (lead) status active -> done
+- 2026-11-25T19:00 ESCALATION #38 -> strategist for M3 by unknown: milestone gate: all M3 slices done (M3.134/M3.146-148/M3.170-179 chains closed), Report layer migrated, ledger + identit
+- 2026-11-25T19:21 [M4.1] (strategist) superseded: slipfork-edge and UnavailableTunnelRegistrar were deleted in M3.28.15/M3.37 clean-sheet rebuild
+- 2026-11-25T19:21 [M4.1] (strategist) status blocked -> superseded
+- 2026-11-25T19:21 [M3] (strategist) edited fields
+- 2026-11-25T19:21 [M4] (strategist) edited fields
+- 2026-11-25T19:21 [M5] (strategist) edited fields
+- 2026-11-25T19:21 [M5.1] (strategist) edited fields
+- 2026-11-25T19:22 [M3.180] (strategist) created (task) Fix PR #8 CI reds: silent cached image rows on up, padded counter match, and Windows LF Forkfile checkout
+- 2026-11-25T19:22 [M3.181] (strategist) created (task) Wire critical_snapshot_graph + logs_last_live into LIVE_SUITES, isolate opencode e2e runtime dir, and bump 0.1.1 package defaults
+- 2026-11-25T19:22 [M3.182] (strategist) created (task) Law 1 & Report doorway cleanup: split >500 LOC modules, close raw-SGR Palette::tint, and drop pty AtomicBool + dead auth field
+- 2026-11-25T19:22 [M3.183] (strategist) created (task) Sync specs/02-04, TESTING_PLAN.md & CHANGELOG.md [0.1.1] with append-only Report CLI, image-USER pods, ForkLedger & 16 live suites
+- 2026-11-25T19:22 [M3] (strategist) status active -> active
+- 2026-11-25T19:22 [M3] (strategist) M3 gate FAIL at 4a20e55: GHA CI 45670641396 red (critical_world_journey cached-image inner rows + Windows CRLF format test), 2 live suites missing from LIVE_SUI
+- 2026-11-25T19:24 [M3.180] (conductor) status ready -> active
+- 2026-11-25T19:24 [M3.181] (conductor) status ready -> active
+- 2026-11-25T19:24 [M3.180] (lead) attempt 1/3 started
+- 2026-11-25T19:24 [M3.180] (lead) base 4a20e5513791772c415342bf0f99a0fc17f784de
+- 2026-11-25T19:25 [M3.181] (lead) edited fields
+- 2026-11-25T19:25 [M3.181] (lead) attempt 1/3 started
+- 2026-11-25T19:25 [M3.181] (lead) base 4a20e5513791772c415342bf0f99a0fc17f784de
+- 2026-11-25T19:28 [M3.180] (lead) edited fields
+- 2026-11-25T19:30 [M3.181] (lead) status active -> review
+- 2026-11-25T19:34 [M3.181] (lead) attempt 2/3 started
+- 2026-11-25T19:34 [M3.181] (lead) fix pass 1: TESTING_PLAN 9 host critical suites + exercise foreign-daemon refusal
+- 2026-11-25T19:48 [M3.184] (lead) created (task) Restore critical_fork_live: merged plan positions, drop rows, adopted-image stamp, unwritable-registry refusal
+- 2026-11-25T19:48 [M3.181] (lead) live run 14/16: critical_snapshot_graph + logs_last_live PASS; critical_world_journey red owned by M3.180; critical_fork_live 4 red -> M3.184
+- 2026-11-25T19:48 [M3.181] (lead) status review -> done
+- 2026-11-25T19:48 [M3.180] (lead) edited fields
+- 2026-11-25T19:59 [M3.180] (lead) edited fields
+- 2026-11-25T20:01 [M3.180] (lead) edited fields
+- 2026-11-25T20:24 [M3.180] (lead) edited fields
+- 2026-11-25T20:26 [M3.180] (lead) edited fields
+- 2026-11-25T20:47 [M3.180] (lead) Cached image attempts withhold all inner frames (no -> opener, no n/N rows) until a Tail/child line proves work, so a cache hit settles as one cached row and mi
+- 2026-11-25T20:47 [M3.180] (lead) status active -> done
+- 2026-11-25T20:48 [M3.184] (conductor) status ready -> active
+- 2026-11-25T20:48 [M3.184] (lead) status active -> active
+- 2026-11-25T20:48 [M3.184] (lead) attempt 1/3 started
+- 2026-11-25T20:48 [M3.184] (lead) base cd459f80f6a81c64756479b71a17318b33c8b88e
+- 2026-11-25T20:58 [M3.184] (lead) edited fields
+- 2026-11-25T21:39 [M3.185] (conductor) created (task) live-test lab must be CI-shaped: test root IS the Btrfs mount, cold store, fresh init (no ambient warmth)
+- 2026-11-25T21:43 [M3.184] (lead) status active -> review
+- 2026-11-25T21:43 [M3.184] (lead) status review -> done
+- 2026-11-25T21:44 [M3.182] (conductor) status ready -> active
+- 2026-11-25T21:44 [M3.183] (conductor) status ready -> active
+- 2026-11-25T21:45 [M3.183] (lead) attempt 1/3 started
+- 2026-11-25T21:45 [M3.183] (lead) base 4173bd79c4975a03e358934f2b33883b16995422
+- 2026-11-25T21:45 [M3.182] (lead) edited fields
+- 2026-11-25T21:45 [M3.182] (lead) split out M3.186 (world crate + puller)
+- 2026-11-25T21:45 [M3.182.1] (lead) created (task) Split slipfork-world pod_log/puller and route supervisor teardown failures to the journal
+- 2026-11-25T21:45 [M3.182.2] (lead) created (task) Split the CLI world supervise/runtime/up modules and delete dead hostname
+- 2026-11-25T21:45 [M3.182.3] (lead) created (task) Split the daemon fork/client/mod modules
+- 2026-11-25T21:45 [M3.182.4] (lead) created (task) Close Palette::tint to typed roles, drop boot raw prints, pty static and dead code
+- 2026-11-25T21:45 [M3.182] (lead) split into M3.186 (world crate+puller), M3.187 (CLI world), M3.188 (daemon), M3.189 (SGR/prints/statics); 4 atomic slices, serialized on one cargo build lock
+- 2026-11-25T21:45 [M3.182.2] (lead) edited fields
+- 2026-11-25T21:46 [M3.182.3] (lead) edited fields
+- 2026-11-25T21:46 [M3.182.4] (lead) edited fields
+- 2026-11-25T21:46 [M3.182] (lead) stopped after split: 8 files >500 LOC (fork 816, supervise 846, pod_log 645, client 606, runtime 566, up 543, mod 523, puller 524) + palette/prints/static is >1
+- 2026-11-25T21:46 [M3.182.1] (conductor) status ready -> active
+- 2026-11-25T21:46 [M3.183] (lead) edited fields
+- 2026-11-25T21:46 [M3.182.1] (lead) status active -> active
+- 2026-11-25T21:46 [M3.182.1] (lead) attempt 1/3 started
+- 2026-11-25T21:46 [M3.182.1] (lead) base 4173bd79c4975a03e358934f2b33883b16995422
+- 2026-11-25T21:50 [M3.182.1] (lead) status active -> review
+- 2026-11-25T21:50 [M3.183] (lead) status active -> review
+- 2026-11-25T21:51 [M3.182.1] (lead) review-arch: 1 MAJOR (journal row at <logs_root>/<world>.log escaped world capture dir/pruning/ replay). Decided <logs_root>/<world>/supervisor.log via append_s
+- 2026-11-25T21:51 [M3.182.1] (lead) scope deviations: crates/slipfork-image/src/builder/mod.rs = 524 LOC already at base 4173bd7 (outside puller** paths); remaining eprintln! in crates/slipfork-wo
+- 2026-11-25T21:51 [M3.182.1] (lead) review-arch: 1 MAJOR (journal row at <logs_root>/<world>.log escaped the world capture dir used by capture_ids/pruning/logs replay). Decided <logs_root>/<world>
+- 2026-11-25T21:51 [M3.182.1] (lead) scope deviations: crates/slipfork-image/src/builder/mod.rs = 524 LOC already at base 4173bd7 (outside puller** paths); remaining eprintln! in crates/slipfork-wo
+- 2026-11-25T21:53 [M3.183] (lead) status review -> done
+- 2026-11-25T21:53 [M3.182.1] (lead) green: fmt+clippy --workspace -D warnings + cargo test --workspace EXIT=0 (54 suites, 0 failures); guard OK; critical_guard clean; LOC scan clean in scope.
+- 2026-11-25T21:53 [M3.182.1] (lead) status review -> done
+- 2026-11-25T21:54 [M3.182.2] (conductor) status ready -> active
+- 2026-11-25T21:55 [M3.182.2] (lead) attempt 1/3 started
+- 2026-11-25T21:55 [M3.182.2] (lead) base 3f8b4e4650950cbaeae79b07551e086ce3b20082
+- 2026-11-25T21:55 [M3.182.2] (lead) edited fields
+- 2026-11-25T22:00 [M3.182.2] (lead) status active -> review
+- 2026-11-25T22:01 [M3.182.2] (lead) review-arch: 2 MAJOR both pre-existing at base 3f8b4e4 (fork.rs already reached super::up::{emit_json,emit_stream}+Session helpers; runtime.rs elapsed_ms alread
+- 2026-11-25T22:01 [M3.182.2] (lead) green: fmt + clippy -p slipfork -D warnings + cargo test -p slipfork EXIT=0 (19 suites, boot_pty/ansi_matrix/critical_cli_surface/status_surface included); guar
+- 2026-11-25T22:01 [M3.182.2] (lead) status review -> done
+- 2026-11-25T22:01 [M3.182.3] (conductor) status ready -> active
+- 2026-11-25T22:01 [M3.182.3] (lead) status active -> active
+- 2026-11-25T22:01 [M3.182.3] (lead) attempt 1/3 started
+- 2026-11-25T22:01 [M3.182.3] (lead) base 8afbad9713f669b041c189c9d2756d7879f7ca09
+- 2026-11-25T22:02 [M3.182.3] (lead) edited fields
+- 2026-11-25T22:12 [M3.182.3] (lead) review-arch FIX: 3 MAJOR (clamped elapsed_ms in serving dispatch_fork, dead parse_response 'method' param + stray doc, fork seam pub(crate)->pub(in crate::daemo
+- 2026-11-25T22:12 [M3.182.3] (lead) status active -> review
+- 2026-11-25T22:12 [M3.182.3] (lead) status review -> done
+- 2026-11-25T22:12 [M3.186] (conductor) created (task) Makefile hardcodes target/debug/slipfork: make check breaks when CARGO_TARGET_DIR is redirected
+- 2026-11-25T22:12 [M3.182.4] (conductor) status ready -> active
+- 2026-11-25T22:13 [M3.182.4] (lead) status active -> active
+- 2026-11-25T22:13 [M3.182.4] (lead) attempt 1/3 started
+- 2026-11-25T22:13 [M3.182.4] (lead) base 343f09da4af021a76d2f4352147a1f9e4db0dfec
+- 2026-11-25T22:20 [M3.182.4] (lead) status active -> review
+- 2026-11-25T22:23 [M3.182.4] (lead) status review -> done
+- 2026-11-25T22:23 [M3.185] (conductor) status ready -> active
+- 2026-11-25T22:25 [M3.185] (lead) edited fields
+- 2026-11-25T22:25 [M3.185] (lead) attempt 1/3 started
+- 2026-11-25T22:25 [M3.185] (lead) base cfb73c01a1ec79944deb8126fa4b9d89433a5866
+- 2026-11-25T22:32 [M3.185] (lead) edited fields
+- 2026-11-25T22:32 [M3.185] (lead) edited fields
+- 2026-11-25T22:35 [M3.185] (lead) status active -> review
+- 2026-11-25T22:35 [M3.185] (lead) review-tests: pass; make check rc=0; fake-cargo loop proved per-cold-suite purge order; warm store refused with LIVE_RESET remedy
+- 2026-11-25T22:35 [M3.185] (lead) status review -> done
+- 2026-11-25T22:35 [M3.187] (conductor) created (task) tools/tests guard test still expects the boot.rs raw print that M3.182.4 removed
+- 2026-11-25T22:35 [M3.186] (conductor) status ready -> active
+- 2026-11-25T22:35 [M3.187] (conductor) status ready -> active
+- 2026-11-25T22:36 [M3.186] (lead) status active -> active
+- 2026-11-25T22:36 [M3.186] (lead) attempt 1/3 started
+- 2026-11-25T22:36 [M3.186] (lead) base feffb187b2dd10d3a084161c4514312c906b8ec4
+- 2026-11-25T22:43 [M3.187] (lead) status active -> active
+- 2026-11-25T22:43 [M3.187] (lead) attempt 1/3 started
+- 2026-11-25T22:43 [M3.187] (lead) base feffb187b2dd10d3a084161c4514312c906b8ec4
+- 2026-11-25T22:43 [M3.187] (lead) status active -> done
+- 2026-11-25T22:43 [M3.186] (lead) attempt 2/3 started
+- 2026-11-25T22:45 [M3.186] (lead) committed a7c9cb6 [M3.186]; redirected CARGO_TARGET_DIR=/var/tmp/m3186-target make check EXIT=0 pre-fix-pass; post-fix js-test green both modes; env-hijack igno
+- 2026-11-25T22:45 [M3.186] (lead) status active -> done
+- 2026-11-25T22:45 [M3.182] (conductor) Epic closed: 182.1 pod_log/supervisor/puller split; 182.2 world split + dead hostname; 182.3 daemon split + elapsed_ms/emitter dedupe; 182.4 Palette::tint close
+- 2026-11-25T22:45 [M3.182] (conductor) status active -> done
+- 2026-11-25T22:45 ESCALATION #39 -> strategist for M3 by conductor: milestone gate re-run: M3.180-187 closed (PR reds, live-suite wiring, Law-1 cleanup, spec sync, CI-shaped lab, CARGO_TAR
+- 2026-11-25T23:33 [M3.188] (conductor) created (task) fork from a fork fails 'root world has no ledger row' even after up: Idle up never registers the row
+- 2026-11-25T23:33 [M3.188] (conductor) status ready -> active
+- 2026-11-25T23:34 [M3.188] (lead) attempt 1/3 started
+- 2026-11-25T23:34 [M3.188] (lead) base a7c9cb6
+- 2026-11-25T23:36 [M3.188] (lead) edited fields
+- 2026-11-25T23:38 [M3] (strategist) M3 gate pass 2 FAIL at a7c9cb6: all 16 live suites pass individually on cold Btrfs (53/53), but unmodified make live-test exits 2 before suite 11/16 (purge_stor
+- 2026-11-25T23:40 [M3.189] (conductor) created (task) live-test purge aborts with BTRFS_SUBVOL_RDONLY subvolumes: CI exit 2 before suite 11
+- 2026-11-25T23:40 [M3.190] (conductor) created (task) Law 1 finish: progress.rs/builder-mod splits, inline test extraction, dead code, terminal env
+- 2026-11-25T23:40 [M3.191] (conductor) created (task) Doctor Storage row copy, version stamps 0.1.1, ARCHITECTURE/specs drift
+- 2026-11-25T23:40 [M3.189] (conductor) status ready -> active
+- 2026-11-25T23:40 [M3.189] (lead) status active -> active
+- 2026-11-25T23:40 [M3.189] (lead) attempt 1/3 started
+- 2026-11-25T23:40 [M3.189] (lead) base a7c9cb6a83623bc5a3313b550f154d370d11c41e
+- 2026-11-25T23:40 [M3.188] (lead) status active -> review
+- 2026-11-25T23:40 [M3.188] (lead) implementer done: ledger ensure_chain + up/fork wiring; fmt/clippy/ledger_lab/lib green; starting Triad (arch+tests) and VM proof
+- 2026-11-25T23:47 [M3.188] (lead) edited fields
+- 2026-11-25T23:47 [M3.188] (lead) attempt 2/3 started
+- 2026-11-25T23:47 [M3.188] (lead) Triad: arch BLOCKER (ensure_chain flattens a fork-of-fork edge to the root); fix pass 2: repair only dangling refs, register_root refuses .forks, layout::checko
+- 2026-11-25T23:54 [M3.188] (lead) status review -> done
+- 2026-11-25T23:54 [M3.188] (lead) VM proof: full critical_fork_live 6/6 green (incl. live Idle root-row repair + fork-of-fork parent edge); owner sequence twice in a fresh Btrfs tree, up-to-date
+- 2026-11-26T02:26 [M3.189] (lead) reproduced the CI shape: purge_store()/LIVE_RESET rm -rf a store whose children are sealed BTRFS_SUBVOL_RDONLY -> ~344k EROFS lines + exit 2 before slipfork/cri
+- 2026-11-26T02:26 [M3.189] (lead) fix: scripts/purge-store.sh enumerates -xdev -depth -inum 256, unseals then deletes deepest-first, rm -rf remainder; silent success, one diagnosing line on fail
+- 2026-11-26T02:26 [M3.189] (lead) VM cold 12G loop btrfs, unprivileged, CARGO_TARGET_DIR=/var/tmp/m3189-target: single make live-test exit 0 16/16 suites 0 EROFS lines; LIVE_RESET=1 exit 0 16/16
+- 2026-11-26T02:26 [M3.189] (lead) status active -> review
+- 2026-11-26T02:26 [M3.189] (lead) status review -> done
+- 2026-11-26T02:27 [M3.190] (conductor) status ready -> active
+- 2026-11-26T02:27 [M3.191] (conductor) status ready -> active
+- 2026-11-26T02:27 [M3.191] (lead) attempt 1/3 started
+- 2026-11-26T02:27 [M3.191] (lead) base e3a70ba06b8846d629e9a96a279fe162702678df
+- 2026-11-26T02:27 [M3.190] (lead) edited fields
+- 2026-11-26T02:27 [M3.190] (lead) attempt 1/3 started
+- 2026-11-26T02:27 [M3.190] (lead) base e3a70ba06b8846d629e9a96a279fe162702678df; widened paths to all gate-listed src files
+- 2026-11-26T02:34 [M3.190] (lead) edited fields
+- 2026-11-26T02:39 [M3.190] (lead) status active -> review
+- 2026-11-26T02:39 [M3.190] (lead) make check green; src all <=500; triad dispatched
+- 2026-11-26T02:43 [M3.190] (lead) status review -> done
+- 2026-11-26T02:43 [M3.190] (lead) Triad pass (arch/tests); commit follows
+- 2026-11-26T03:01 [M3.191] (lead) doctor Storage row is one bold verdict phrase (Path · on Btrfs · consequence), pinned in src unit test + real-PTY/--json; version stamps 0.1.1 incl. .SRCINFO sl
+- 2026-11-26T03:01 [M3.191] (lead) status active -> done
+- 2026-11-26T03:01 ESCALATION #40 -> strategist for M3 by conductor: milestone gate third pass: M3.188 (Idle up registers ancestry), M3.189 (cold-store purge, 16/16 live), M3.190 (src <=500
+- 2026-11-26T03:28 [M3] (strategist) M3 milestone gate third pass @ 3aef2ca PASS: make check green, single cold make live-test 16/16 (54 tests, 0 EROFS, warm refusal rc=2, purge-store 77 subvols ->
+- 2026-11-26T03:28 [M3] (strategist) status active -> done

@@ -2,7 +2,7 @@
 id: M3.184
 title: "Restore critical_fork_live: merged plan positions, drop rows, adopted-image stamp, unwritable-registry refusal"
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 2
 depends_on: [M3.180]
@@ -10,14 +10,18 @@ paths:
   - crates/slipfork/tests/critical_fork_live.rs
   - "crates/slipfork/src/daemon/lifecycle/**"
   - "crates/slipfork/src/daemon/image/**"
+  - "crates/slipfork/src/daemon/reconcile/**"
   - "crates/slipfork/src/world/**"
+  - crates/slipfork/src/boot.rs
+  - "crates/slipfork/src/boot/**"
+  - "crates/slipfork/src/ui/report/**"
   - "crates/slipfork-world/src/boot/stamp/**"
   - "crates/slipfork-world/src/ledger/**"
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-25T19:48"
-updated: "2026-11-25T19:48"
+updated: "2026-11-25T21:43"
 ---
 
 # Goal

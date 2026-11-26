@@ -55,3 +55,11 @@ landed: TailPhase/PhaseTiming in the snapshot store (Cloning announced before th
 ## 2026-11-25T10:24 [lead]
 
 correction to the previous line (unquoted backticks were eaten by the shell): the phase word for the docker image build command needs a phase field on ImageFrame::Step in crates/slipfork/src/daemon/image/mod.rs (M3.140's path), so it is a follow-up for the daemon cutover; up/fork are fully covered by this node.
+
+## 2026-11-25T10:27 [lead]
+
+gate: make check green (fmt, clippy -D warnings, cargo test --workspace 52 suites ok; js-test/packages-check green after killing a stale local daemon); isolated worktree at HEAD+this change: fmt/clippy/image+world/bins all ok; guard OK; critical_guard clean for 55fcfab..09168fa (the two flagged protected tests in the shared worktree are other nodes' in-flight edits, not in this commit). Triad: arch FAIL + tests PASS + ux FAIL -> 1 consolidated fix pass (layout helpers moved to boot/layout.rs, StageRows extracted, single TailPhase label table, wire labels in frames.rs, append-only tail line, redundant tests deleted); re-verified green. Committed 09168fa [M3.150] (15 files incl. node LOG), no push.
+
+## 2026-11-25T10:27 [lead]
+
+status active -> done

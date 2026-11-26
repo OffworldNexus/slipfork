@@ -25,16 +25,17 @@ Everything lives natively on one Btrfs mount — your checkout (`~/projects/demo
 ├── home/you/projects/demo/                       # Project subvolume (code + .venv + node_modules + .slipfork/)
 │   └── .forks/feat-auth/                         # CoW project snapshot (one ioctl)
 └── .slipfork-store/
-    ├── snapshots/<key>/ + <key>.json             # Sealed content-addressed nodes: bases, Dockerfile steps, PG seed (§6)
+    ├── snapshots/<key>/ + <key>.json             # Sealed content-addressed nodes: bases, Dockerfile steps (§6)
+    ├── templates/postgres-18 + postgres-18.lock  # Golden initdb cluster (PostgresTemplate + InitLock, RDONLY)
     ├── images/{oci,refs,cache-mounts}/           # OCI blobs, remembered tag digests, RUN --mount=type=cache dirs
     ├── logs/<world>/<id>.log                     # Persistent pod/resource/service logs (survives failed up & down)
     ├── logs/<world>/runs/index.jsonl             # One catalog record per executed run (survives failed up & down)
     ├── logs/<world>/runs/<run_id>.log            # That run's captured stdout/stderr (`logs -r <id>`)
     ├── pods/<world>/                             # Ephemeral writable pod rootfs clones (deleted on down & drop)
     └── worlds/
-        ├── demo/                                 # World subvolume: s3/ + redis/ + .slipfork-lease.json
+        ├── demo/                                 # World subvolume: s3/ + redis/ + .slipfork-{lease,world-stamp}.json
         ├── demo.pg.pg/                           # Sibling PGDATA subvolume + .slipfork-pg-stamp.json
-        ├── feat-auth--demo/                      # CoW snapshot of world subvolume + its lease
+        ├── feat-auth--demo/                      # CoW snapshot of world subvolume + its lease & world stamp
         └── feat-auth--demo.pg.pg/                # Crash-consistent CoW snapshot of live PGDATA + PG stamp
 ```
 
@@ -42,14 +43,14 @@ A project, world, or `PGDATA` clone is one `BTRFS_IOC_SNAP_CREATE_V2` ioctl (`~0
 
 ```mermaid
 flowchart LR
-  Seed["snapshots/&lt;seed key&gt;\n(golden initdb, RDONLY)"] -.->|"up (one CoW ioctl)"| Pg["worlds/demo.pg.pg\n(+ world_epoch)"]
+  Seed["templates/postgres-18\n(golden initdb, RDONLY)"] -.->|"up (one CoW ioctl)"| Pg["worlds/demo.pg.pg\n(+ world_epoch)"]
   Proj["~/projects/demo\n(code + deps + .slipfork/)"] ==>|"fork (one CoW ioctl; plain checkout is copied)"| FProj[".forks/feat-auth"]
-  World["worlds/demo\n(s3 + redis + .slipfork-lease.json)"] ==>|"fork (one CoW ioctl)"| FWorld["worlds/feat-auth--demo"]
+  World["worlds/demo\n(s3 + redis + lease + world stamp)"] ==>|"fork (one CoW ioctl)"| FWorld["worlds/feat-auth--demo"]
   Pg ==>|"fork (CHECKPOINT + syncfs, then CoW)"| FPg["worlds/feat-auth--demo.pg.pg"]
 ```
 
-!!! info "Epoch-paired leases, run catalog & persistent logs"
-    When a world finishes booting, its supervisor writes one `world_epoch` into **both** `<world>/.slipfork-lease.json` and `worlds/<world>.pg.<id>/.slipfork-pg-stamp.json`, so `fork` reuses image heads and hook effects in `0ms` when epochs match (§6).
+!!! info "Epoch-paired stamps, leases, run catalog & persistent logs"
+    When a world finishes booting, `__daemon` writes `<world>/.slipfork-lease.json` (`Lease`) while `__supervise` pairs one `world_epoch` across `<world>/.slipfork-world-stamp.json` (`WorldStampStore`) and `worlds/<world>.pg.<id>/.slipfork-pg-stamp.json`, so `fork` reuses image heads and hook effects in `0ms` when epochs match (§6).
 
     Every executed image pull/build, setup, hook, resource, and service start mints a six-character `run_id` and appends one record (`run_id, kind, target, command, state, started_ms, finished_ms, duration_ms, project, world`) to `<store>/logs/<world>/runs/index.jsonl` **before** the step runs. The step's output lands in `runs/<run_id>.log`, while a live pod also keeps `<store>/logs/<world>/<id>.log`; so `slipfork logs <image>` replays a failed build and `slipfork logs -r <id>|last|failed` replays one record even after a failed cold `up` or `down`.
 
@@ -150,7 +151,7 @@ Slipfork has **five explicit composition roots** and **zero** ambient OS/env pro
 | `slipfork-vcs` | `GitWorkspace` | `VcsWorkspace` → `GitWorkspace` |
 | `slipfork-lsp` | `LspServer` | — |
 
-The canonical port set is strictly `WorldEngine`, `BaseImageBuilder`, `SecretVault`, `OsppClient`, and `VcsWorkspace` — zero single-impl mock traits sit beside them.
+The canonical port set is strictly `WorldEngine`, `BaseImageBuilder`, `SecretVault`, `OsppClient`, and `VcsWorkspace` — zero single-impl mock traits sit beside them. The `<= 500`-line ceiling applies strictly to production modules (`crates/*/src/**/*.rs`); cohesive integration journeys under `crates/*/tests/**` (including the protected `critical_*` suites) are exempt so each workflow runs in one lab lifecycle.
 
 `OciPuller` receives one injected `RegistryCredentials` store handle whose paths the composition root
 resolves once (`<config>/slipfork/registries.json` at mode `0600`, plus Docker's read-only per-host
@@ -308,11 +309,11 @@ A `Lease` is the durable record of what one world runs; it lives inside the worl
 
 `head` is always the `world` key derived from the lease's own `spec` and entries. It therefore equals the desired head exactly when every entry is current, and any partial update recomputes it.
 
-| Who | Does what with the lease |
+| Who | Does what with the lease & world stamps |
 | :--- | :--- |
-| `__daemon` | Computes every key and hands them to the supervisor in `WorldHeads`; reads `head` for the Idle check. |
-| `__supervise` | Writes the keys it was handed verbatim (tmp + rename) at the ready checkpoint, pairing `world_epoch` with every `.slipfork-pg-stamp.json`; it never derives a key. |
-| `BootScheduler` | Skips an effect iff `world_epoch` matches and `effects[slot].key` equals the handed effect key. |
+| `__daemon` | Computes every key, hands `WorldHeads` to `__supervise`, writes `<world>/.slipfork-lease.json` atomically at `ready`, and reads `lease.head` for the Idle check. |
+| `__supervise` | Writes `<world>/.slipfork-world-stamp.json` (`WorldStampStore`) paired with every `worlds/<world>.pg.<id>/.slipfork-pg-stamp.json` (`world_epoch`) at the ready checkpoint. |
+| `BootScheduler` | Validates the conditional DAG via `BootGraph::with_gated` and skips `@<tool>` / `before-start` / `pre-deploy` via `StampStore` (`.slipfork/setup-*.stamp` + `WorldStamp`) iff `world_epoch` pairs match. |
 | `SnapshotStore::gc` | Reads every `worlds/*/.slipfork-lease.json` to mark. |
 
 A `Pin` is the in-memory twin, registered before the first wave: a failed reconcile drops it on return, and a successful one hands it to the daemon, which drops it once the supervisor wrote the lease or the boot ended.
@@ -372,11 +373,9 @@ sequenceDiagram
 | `state_key`, whole-context `BuildContext::hash`, `base-`/`external-` keys inside `NativeImageBuilder::build` | `BuildPlanner` keys computed before execution; the builder exposes `materialize(step, slot)` and never looks up a cache. |
 | Digest-named sealed rootfs directories | `SnapshotStore` `<store>/snapshots/<key>/` nodes; `OciPuller` keeps blobs and `images/refs.json`, unpacks into a snapshot slot, and TTL-sweeps `.partial-*` staging under `<images>/oci`. |
 | `ImageCache` + `images/{flight,pull,log,record}.rs` | Deleted; singleflight moves into `SnapshotStore`, run notes and build logs into `Reconciler`. |
-| Stamp-file lookups spread across `up_plan` and `.slipfork-world-stamp.json` | `Lease` (`.slipfork-lease.json`) + `PgStamp`; `matches_hook` becomes the lease effect check. |
-| `StampStore` + `.slipfork/setup-*.stamp` | Deleted; setup digests are lease `effects` (a dropped world re-runs setup once). |
-| `StepStamp`, `stamp_key`, `step_digest`, `BootGraph::with_gated` | Deleted; `BootStep` carries its `NodeKey` and `BootGraph` indexes the world nodes of `BuildGraph`. |
-| PG `run_pod_once` initdb | The `seed` node (`PgSeed`/`PostgresTemplate`) under `<store>/templates/`, materialized through `StepHost`; only the `initdb` argv survives. |
-| `up_plan` `fingerprint`, `Fingerprint`, registry fingerprints, `inputs_predate`, `services_bundled` | Deleted; `up_plan` compares `graph.head()` with `lease.head`. |
+| World currentness (`up` Idle) vs conditional hook skip | `Lease` (`.slipfork-lease.json`, written by `__daemon`) owns `head` currentness and `gc` image pinning; `WorldStampStore` (`.slipfork-world-stamp.json`) + `.slipfork-pg-stamp.json` + `StampStore` (`.slipfork/setup-*.stamp`, `StepStamp`, `step_digest`, `BootGraph::with_gated`) gate `0ms` `@<tool>` and hook skips when `world_epoch` pairs match. |
+| PG `initdb` golden cluster | `PostgresTemplate` + `InitLock` seal `<store>/templates/postgres-18` (`PgSeed` owns the canonical `initdb` argv). |
+| `up_plan` `fingerprint`, `Fingerprint`, registry fingerprints, `inputs_predate`, `services_bundled` | Deleted; `up_plan` compares the planned world `head` with `lease.head`. |
 | `BtrfsEngine`, `StoreLayout` | Unchanged primitives; `StoreLayout` owns `snapshots_root()` and the `worlds/`/`templates/` layout. |
 
 ### 6.7 Shipped subsystems & delivery proof
@@ -544,7 +543,7 @@ Every runtime question has **one** canonical owner after §6 slice 4 and §7 lan
 | :--- | :--- | :--- | :--- |
 | Which worlds & forks exist, their parent lineage, checkout path, branch, and state? | `ForkLedger` (`StateDb`) | `<state_dir>/state.db` (`worlds`, `forks`) | `<state_dir>/worlds.json`, `RegistryEntry`, `daemon/registry.rs`, `WorldState`, `PrepFrame::fixed`, `world_id_for_project` |
 | Which sealed image/seed nodes exist and what are their parent edges & OCI facts? | `SnapshotStore` (§6.2) | `<store>/snapshots/<key>/` + `<key>.json`, `images/refs` | `StepCache`, `ImageCache`, `StepRecord`, digest-named sealed rootfs directories (§6.6) |
-| What `head`, images, and hook effects did a world commit, and is `PGDATA` paired? | `Lease` + `PgStamp` (§6.3) | `worlds/<world>/.slipfork-lease.json` + `.slipfork-pg-stamp.json` | `.slipfork/worlds-fingerprints.json`, `.slipfork/setup-*.stamp`, `Fingerprint` |
+| What `head`, images, and hook effects did a world commit, and is `PGDATA` paired? | `Lease` (`__daemon`) + `WorldStampStore` & `StampStore` (`__supervise`) (§6.3) | `worlds/<world>/.slipfork-{lease,world-stamp}.json`, `.slipfork-pg-stamp.json`, `<project>/.slipfork/setup-*.stamp` | `.slipfork/worlds-fingerprints.json`, `Fingerprint` |
 | Is snapshot `<key>` alive or eligible for GC? | `SnapshotStore::gc` (§6.3) | `worlds/*/.slipfork-lease.json` + in-memory `Pin` closure | — |
 | Is world `<world>` healthy right now? | `Daemon` live probe (`ConvergeExecutor`) | `ForkLedger` `live` row + `/proc/<supervisor_pid>` + `control.sock` `List` | Stale `worlds.json` entries posing as live |
 | Which step runs executed and where is their output? | `LogStore` + `RunCapture` (§1) | `<store>/logs/<world>/runs/index.jsonl` + `<run_id>.{log,idx}` | — |

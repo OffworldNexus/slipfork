@@ -2,7 +2,7 @@
 id: M3.185
 title: "live-test lab must be CI-shaped: test root IS the Btrfs mount, cold store, fresh init (no ambient warmth)"
 kind: task
-status: review
+status: done
 owner: implementer
 priority: 3
 depends_on: []

@@ -51,3 +51,7 @@ edited fields
 ## 2026-11-24T19:03 [lead]
 
 fix: canonical build-input digest (Dockerfile bytes + .dockerignore context via BuildContext::for_walk) folded into plan_epoch/trusted_stamp and the daemon fingerprint; ImageNode::paths + fingerprint computed outside every core() lock; restart shares world_stale and reconciles on a changed head; reconcile reply tagged so the CLI never prints a false 'Restarted (0 pods)'. Live VM: failing RUN edit after down rebuilt and failed (exit 9), repaired RUN/context edits rebuilt, Forkfile add-service restart converged to 2 pods, unchanged up idle, unchanged restart in place; make check, critical_world_journey, Triad clean (arch/tests/ux).
+
+## 2026-11-24T19:03 [lead]
+
+status active -> done

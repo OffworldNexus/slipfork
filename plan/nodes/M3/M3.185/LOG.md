@@ -35,3 +35,7 @@ status active -> review
 ## 2026-11-25T22:35 [lead]
 
 review-tests: pass; make check rc=0; fake-cargo loop proved per-cold-suite purge order; warm store refused with LIVE_RESET remedy
+
+## 2026-11-25T22:35 [lead]
+
+status review -> done

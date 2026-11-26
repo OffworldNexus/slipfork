@@ -2,7 +2,7 @@
 id: M3.137
 title: "Slice 3d: reconcile ordering that keeps the old world serving, restart in place, full journeys"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.136]
@@ -11,7 +11,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-25T00:05"
-updated: "2026-11-25T01:48"
+updated: "2026-11-25T03:00"
 ---
 
 # Goal

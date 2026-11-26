@@ -2,21 +2,21 @@
 id: M3.166
 title: Fold resolved build args into image_inputs/plan_epoch so an arg edit invalidates sealed heads
 kind: task
-status: ready
+status: done
 owner: implementer
 priority: 3
-depends_on: [M3.158]
+depends_on: [M3.167]
 paths:
   - "crates/slipfork/src/daemon/reconcile/**"
   - "crates/slipfork/src/world/**"
   - crates/slipfork/src/daemon/lease.rs
   - "crates/slipfork-image/src/inputs.rs"
   - "crates/slipfork-image/tests/**"
-attempts: 0
+attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-25T12:38"
-updated: "2026-11-25T12:38"
+updated: "2026-11-25T17:04"
 ---
 
 # Problem (found while landing M3.154)

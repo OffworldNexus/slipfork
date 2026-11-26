@@ -91,3 +91,11 @@ slice 3 base a419321
 ## 2026-11-25T00:04 [lead]
 
 slice 3a landed: image BootState = Cached iff cache_misses==0 (zero executed steps never 'built'; warm rebuild labels cached, Idle prints no image row), unit test zero_executed_steps_is_cached_not_built; specs/03 §6.1 COPY --from=source-key rule, §6.2 planned-digest unpack + externals pre-pull note, §6.7 row 3 daemon owns pulls; make check rc=0; say nothing about a cutover that is not committed
+
+## 2026-11-25T00:05 [conductor]
+
+Split approved by conductor: remaining cutover tracked as children M3.135 (3b daemon image.build/image.pull RPC + thin CLI), M3.136 (3c daemon pre-plans world images -> WorldHeads handoff, __supervise consumes heads, delete ImageCache + world/runtime/images/*), M3.137 (3d old-world-keeps-serving ordering, restart in place, journeys). Dependencies 3b -> 3c -> 3d. Slices 1, 2, 3a landed and pushed.
+
+## 2026-11-25T00:05 [conductor]
+
+status active -> done

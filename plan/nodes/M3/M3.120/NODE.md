@@ -2,7 +2,7 @@
 id: M3.120
 title: "BuildGraph + SnapshotStore refactor (4 slices): reconcile, lease, GC"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.117, M3.115, M3.118, M3.114, M3.111]
@@ -11,7 +11,7 @@ attempts: 3
 max_attempts: 3
 escalation: none
 created: "2026-11-24T17:09"
-updated: "2026-11-24T23:55"
+updated: "2026-11-25T00:05"
 ---
 
 # Goal

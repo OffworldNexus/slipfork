@@ -2,7 +2,7 @@
 id: M3.135
 title: "Slice 3b: daemon image.build/image.pull RPCs with streamed frames; CLI is a thin client"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.120]
@@ -15,7 +15,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-25T00:05"
-updated: "2026-11-25T00:05"
+updated: "2026-11-25T00:58"
 ---
 
 # Goal

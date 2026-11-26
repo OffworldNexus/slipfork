@@ -39,3 +39,7 @@ status active -> review
 ## 2026-11-25T18:35 [lead]
 
 Triad: ux pass; arch+tests major on (a) fabricated Terminal/WallZone in status/doctor, (b) dead report() json flag, (c) Report::lines third mechanism, (d) guard allowlist too coarse (whole ui/report dir, whole commands/secret.rs), (e) status round-trip swallowing errors, (f) untested starting/broken-pipe arms. One consolidated fix pass dispatched. Filtered as out-of-scope follow-up: dropping report()'s json param across exec.rs/20+ call sites and deleting the emit alias (touches commands outside this node's paths).
+
+## 2026-11-25T18:38 [lead]
+
+status review -> done

@@ -2,7 +2,7 @@
 id: M3.136
 title: "Slice 3c: daemon pre-plans world images into WorldHeads; supervisor consumes heads; delete ImageCache"
 kind: task
-status: active
+status: done
 owner: implementer
 priority: 3
 depends_on: [M3.135]
@@ -11,7 +11,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-25T00:05"
-updated: "2026-11-25T00:58"
+updated: "2026-11-25T01:47"
 ---
 
 # Goal

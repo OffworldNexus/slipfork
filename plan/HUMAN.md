@@ -216,3 +216,27 @@ Slipfork 0.1.0 (VERY EXPERIMENTAL) is green on release/0.1.0 @ 58bf25d — PR #2
 
 **Answer:**
 
+## H-027 [closed] [missing-input] (node M3.139)
+
+- asked: 2026-11-25T03:29 by lead
+
+specs/03 §7.4 row 6 (pods alive with no live row) has no ledger channel: ConvergeInput carries only per-row WorldFacts.pod_dirs (needs world_id) + orphan_worlds (subvolume, no pods), and ConvergeAction::SweepPods requires world_id: i64, so a pod dir whose <world> has no worlds row cannot be planned. Exact missing fact: converge.rs (slice 1, outside M3.139 paths) needs (a) ConvergeInput.orphan_pods: Vec<OrphanPods { store_root, world_name, pod_dirs }> populated by BtrfsEngine::observe from <runtime_dir>/pods/<world> + <store>/pods/<world> dirs absent from rows, and (b) ConvergeAction::SweepOrphanPods { world_name, pod_dirs } applied by ConvergeExecutor as Request::Shutdown-if-answering + reap_world_tree + remove both dirs. M3.139 wires every other row (creating/deleting rollback, booting/stopping, missing checkout, broken, restored, missing lease, untracked adopt/delete, orphan subvolume).
+
+**Answer:**
+
+## H-028 [closed] [direction-challenge] (node M3.146)
+
+- asked: 2026-11-25T17:06 by lead
+
+M3.146 cannot land in one pass without a half-migrated renderer: boot/** is a bespoke Palette renderer with ~2,357 LOC of byte-exact unit tests and zero Report usage, and the typed-frame producers (world/runtime/frames.rs, daemon/lifecycle/up/**) plus 9 ConnectNotice call sites (commands/{env,secret,docker/build}.rs) sit outside the node's path globs.
+
+Proposed serialized split (each compiles, PTY byte-identical, no critical_*.rs edits):
+2b daemon-facts (implementer): typed StepSettlement/FailureFacts on all boot frames (reconcile + supervisor), ConnectNotice, supervise zero Palette, delete world::fail. Paths: daemon/reconcile/**, daemon/client.rs, world/runtime/frames.rs, daemon/lifecycle/up/{heal,mod}.rs, world/{mod,supervise}.rs, commands/{env,secret,docker/build}.rs, tests/daemon_skew_live.rs. Boot untouched -> all renderer tests stay green.
+2c boot-pane (depends 2b): new ui/report/live.rs (Pane + one status line, O(active+8)), boot.rs + boot/** emit Report/Row/Entry from StepSettlement, delete boot/failure.rs, Node, ImageEnd/ImageState and the ImageTally planned-count settle(), world/{up,fork}.rs string rows; rewrite boot unit tests on Report values; VM PTY cached/fresh/failing/streaming captures.
+
+Decision A: approve expanding M3.146 paths to the two producers + commands notice call sites? Without them boot keeps parsing legacy Value strings and 2c repeats the work.
+Decision B (ConnectNotice sink): (A) connect(host, emit: &mut dyn FnMut(ConnectNotice)) - all 13 call sites, hint byte-identical incl. daemon_skew_live.rs:519; (B) client-owned notices drained by TUI callers - 9 command sites silently drop the hint (behaviour regression). Recommend A.
+Note: node anchors are stale (no boot/pane.rs; boot.rs is 370 LOC not 490; Pane is new API) - re-bake before dispatch.
+
+**Answer:**
+

@@ -2,7 +2,7 @@
 id: M3.177
 title: "M3.148a: status/doctor/commands on Report; enable the RawPrint gate"
 kind: task
-status: review
+status: done
 owner: implementer
 priority: 3
 depends_on: []
@@ -24,7 +24,7 @@ attempts: 1
 max_attempts: 3
 escalation: none
 created: "2026-11-25T18:26"
-updated: "2026-11-25T18:33"
+updated: "2026-11-25T18:38"
 ---
 
 # Goal
