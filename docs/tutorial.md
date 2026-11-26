@@ -14,8 +14,6 @@ $ cd hello
 $ uv add fastapi uvicorn
 ```
 
-Save both files in `hello/`.
-
 ```dockerfile
 # Dockerfile
 FROM python:3.13-slim AS dev
@@ -117,8 +115,7 @@ image hello . {
 - `DATABASE_URL` is the variable your app will read.
 - `use env common` attaches that group to the image for the service.
 
-The Dockerfile does not change: `env` values are runtime only, so they arrive
-after the pod starts, never during a build.
+The Dockerfile does not change: `env` is runtime only, never a build input.
 
 ```python
 # app.py (append)
@@ -211,9 +208,8 @@ image hello . {
 - `route /api` claims that prefix and forwards it unchanged to the API.
 
 The ingress picks the longest match, so `/` still reaches the front. Each image
-mounts its own checkout at its `WORKDIR`, so both servers see your edits.
-
-Both share one origin: no CORS, proxy or absolute API URL is needed.
+mounts its live context at its `WORKDIR`, so both servers see your edits, and
+both share one origin: no CORS, proxy or absolute API URL is needed.
 
 ```console
 $ slipfork up
@@ -235,16 +231,18 @@ of the other.
 $ slipfork status
 ```
 
-The down verb stops a world but keeps its data. Delete the fork when done:
+```console
+$ slipfork down
+```
+This stops the parent world and keeps its data for the next boot.
 
 ```console
 $ slipfork drop try-it
 ```
-
-`drop` stops the fork and deletes its snapshots; the parent keeps running.
+This deletes the fork and its snapshots; the parent's data stays.
 
 ## Where next
 
 * [Install](install.md) — packages, the Btrfs workspace image and uninstall.
 * [The Forkfile](forkfile.md) — resources, routes, hooks and secrets.
-* [CLI](cli.md) — every verb, `--json` and the terminal contract.
+* [CLI](cli.md) — every verb and the terminal contract.
