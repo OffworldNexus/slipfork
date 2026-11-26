@@ -290,12 +290,13 @@ A `Report` is `{ sections: Vec<Section>, verdict: Option<Verdict>, remedy: Optio
 
 | `Outcome` variant | Icon & SGR | State word & SGR | Contract |
 | :--- | :--- | :--- | :--- |
-| `Ok(Done)` | `✓` green (`32`); `●` (`32`) on live world headers | `Done::{Built { steps }, Pulled, Ready, Running, Settled, Step}` → `built N step(s)` (`built` `32`, `N: NonZeroUsize` plain), `pulled`, `ready`, `running`, `done` (`32`), or empty (`Step`) | Executed work succeeded (`Ok` and `Cached` are the **only** producers of `✓`) |
+| `Ok(Done)` | `✓` green (`32`) for `Built`/`Partial`/`Pulled`/`Ready`/`Running`/`Starting`/`Settled`/`Restarted`/`Stopped`/`Step`; dim `•` (`38;5;244`) for `Declined`; cyan `•` (`36`) for `Finished`; `●` (`32`) on live world headers | `Done::{Built { steps }, Partial { cached, built }, Pulled, Ready, Running, Starting, Settled, Restarted, Stopped, Declined, Finished, Step}` → `built N step(s)`, `cached N · built N`, `pulled`, `ready`, `running`, `starting`, `done`, `restarted`, `stopped`, `up to date`, `finished`, or empty (`Step`) (state words `32`, `stopped` `33`) | Executed work succeeded (`Ok` and `Cached` are the **only** producers of `✓`) |
 | `Cached` | `✓` green (`32`) | `cached` green (`32`) | Completed cache hit (`0` steps executed, never `built N`, no `#run_id`) |
 | `Skipped` | `•` neutral (`38;5;244`) | `up to date` green (`32`) | Lease/effect key matched (`0` commands run, no `#run_id`) |
 | `Running` | `⠋..⠏` TTY / 4-frame ASCII spinner / `→` pipe (unstyled) | `running` green (`32`); `starting` yellow (`33`) on booting `ps` pods | In-flight phase row prior to settlement |
 | `Failed { at }` | `✗` red (`31`) | `failed` or `failed at i/n` red (`31`) | Started work failed at optional inner step `(i, n)` |
-| `Refused` | `✗` red (`31`); `!` (`31`) on `ps` problem rows | `refused` red (`31`) | Rejected before execution (`Forkfile`, dirty fork, target, TTY) |
+| `Refused` | `✗` red (`31`) | `refused` red (`31`) | Rejected before execution (`Forkfile`, dirty fork, target, TTY) |
+| `Problem` | `!` red (`31`) | no state word; the reason lives in `target`/`command` | A `ps`/`status` health row the caller explains in place |
 | `Stopped` | `○` neutral (`38;5;244`) | `stopped` yellow (`33`) | Inactive world/fork or `○ No worlds running` in `ps`/`status` |
 | `Orphaned` | `•` yellow (`33`; omitted on indented `ps` rows) | `orphaned` yellow (`33`) | Live pod removed from `Forkfile`, awaiting next `up` |
 
@@ -305,7 +306,7 @@ A `Report` is `{ sections: Vec<Section>, verdict: Option<Verdict>, remedy: Optio
 
 !!! warning "Impossible states enforced by types"
 
-    `Row` has no `icon` or `state: String` field, and `Done::built_or_cached(executed)` maps `0` executed steps (`cache_misses == 0`) to `Outcome::Cached` (`✓ … cached`) and `n >= 1` to `Outcome::Ok(Done::Built { steps: NonZeroUsize })` (`✓ … built N step(s)`). Each step settles through `StepSettlement` (`Completed { done, duration, run_id } | Cached { duration } | Skipped { duration } | Failed(FailureFacts)`), and `FailureFacts { code, kind, phase, target, at, exit_code, run_id, reason, runtime, next }` constructs one CLI `Failure` that drives **both** the `Palette`-styled stderr failure lines (`✗ <VERB> <target> failed (exit N)` / `error: <reason>`, `-v` `  runtime: …`, and one `next: <cyan command>`) **and** `--json`'s `{"error":{code,message,next}}`.
+    `Row` has no `icon` or `state: String` field, and `Done::built_or_cached(executed)` maps `0` executed steps (`cache_misses == 0`) to `Outcome::Cached` (`✓ … cached`) and `n >= 1` to `Outcome::Ok(Done::Built { steps: NonZeroUsize })` (`✓ … built N step(s)`). A mixed image settles as `Outcome::Ok(Done::Partial { cached, built })` and renders `cached N · built M`; a `ps`/`status` health row uses `Outcome::Problem` (`!`). Each step settles through `StepSettlement` (`Completed { done, duration, run_id } | Cached { duration } | Skipped { duration } | Failed(FailureFacts)`), and `FailureFacts { code, kind, phase, target, at, exit_code, run_id, reason, runtime, next }` constructs one CLI `Failure` that drives **both** the `Palette`-styled stderr failure lines (`✗ <VERB> <target> failed (exit N)` / `error: <reason>`, `-v` `  runtime: …`, and one `next: <cyan command>`) **and** `--json`'s `{"error":{code,message,next}}`.
 
 ### 9.3 Injected local wall clock (`WallZone`)
 
@@ -323,9 +324,9 @@ Unit tests pin `WallZone::from_time_zone`, `named`, and `fixed` against fixed ep
 
 | Shipped surface | Owning module (`ui/report/`) | Deleted legacy |
 | :--- | :--- | :--- |
-| Live `up`/`restart`/`fork`/`down`/`drop` boot narrative | `boot.rs` `BootTui` (the one append-only narrative) over `Pane` (sole owner of the `\r\x1b[2K` status line) + `BootProgress`, `StepSettlement`, `FailureFacts`, `ConnectNotice::Ephemeral { color }` | `boot/failure.rs`, `boot.rs` `Palette`/`println!`, `Node { success, state }`, `ImageEnd`, `ImageTally` `self.total` bug, `world::fail` |
+| Live `up`/`restart`/`fork`/`down`/`drop` boot narrative | `boot/` `BootTui` (the one append-only narrative) over `Pane` (sole owner of the `\r\x1b[2K` status line) + `BootProgress`, `StepSettlement`, `FailureFacts`, `ConnectNotice::Ephemeral { color }` | `boot/failure.rs`, `BootTui` `Palette`/`println!`, `Node { success, state }`, `ImageEnd`, `ImageTally` `self.total` bug, `world::fail` |
 | `docker build`/`pull`, `logs`, `logs -r`, `--runs` | `ReportRenderer` inner-step + `Stream` rows, `StreamRenderer`, 12-char digest `Table`/`Column`/`ColumnWidths` | `commands/docker/printer.rs` (`EventPrinter`), `commands/streams/render.rs`, SGR-`2` `paint` in `runs.rs`, raw `eprintln!` in `exec.rs` |
 | `status`/`ps` trees, `doctor`, `env`/`secret`/`features`/`open`/`fmt`/`migrate`, `main`/usage errors | `Report`, `Section`, `Entry`, `Row`, `Outcome`, `Done`, `Counter`, `Verdict`; public re-exports `Palette`, `Table`, `Failure` from `ui/report/mod.rs`; only the `paint`, `table`, `failure` helpers are `pub(super)` | `commands/auth.rs` (dormant), `ui/failure.rs` (`split_remedy`, `failure_block`), hand-rolled clock types, `status::rows::State`, `Session::{fail,report,report_details}` |
 | Wall clock | `WallZone` (`from_time_zone`/`named`/`fixed`) injected into `ReportRenderer` | `unsafe` `tzset`/`localtime_r` |
 
-**Grep gate (`tools/guard.py`):** zero `println!`, `eprintln!`, `print!`, or `eprint!` under `crates/slipfork/src/**`, with exactly five allowlisted sinks — `ui/report/render.rs`, `ui/report/exit.rs`, `boot.rs`, `daemon/**`, and `world/supervise.rs` — so no CLI module prints raw and every byte flows through the typed `Report` layer.
+**Grep gate (`tools/guard.py`):** zero `println!`, `eprintln!`, `print!`, or `eprint!` under `crates/slipfork/src/**`, with exactly four allowlisted sinks — `ui/report/render.rs`, `ui/report/exit.rs`, `daemon/**`, and `world/supervise.rs` — so no CLI module prints raw and every byte flows through the typed `Report` layer.

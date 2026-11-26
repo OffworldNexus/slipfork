@@ -4,16 +4,13 @@ Slipfork runs your cloud environment locally in a box; CI is the clutch. From on
 
 ```console
 $ slipfork up
-• image     backend   cached                     1ms
+• image     api       cached                     1ms
 ✓ resource  pg        postgres 18 ready         38ms
-✓ resource  assets    s3 public-read -> cdn      1ms
-✓ service   api       listening :8000 -> /api   1.4s
-✓ service   front     listening :5173 -> /      2.3s
+✓ resource  cache     redis 7 ready              7ms
+✓ resource  uploads   s3 (private) ready         1ms
+✓ setup     api       uv sync (up to date)       0ms
+✓ service   web       running -> /api           1.4s
 ✓ Ready -> http://demo.localhost
-
-$ slipfork fork feat-auth
-✓ feat-auth (4.8s) -> http://feat-auth--demo.localhost
-  path  ~/projects/demo/.forks/feat-auth
 ```
 
 Snapshotting is `~150–365ms` (asserted `< 500ms`); the full cold 8-component boot first responds at `~5.5s` on 4 vCPU, asserted `< 8.0s` on 2-vCPU CI.

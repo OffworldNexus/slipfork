@@ -370,14 +370,14 @@ sequenceDiagram
 | :--- | :--- |
 | `StepCache`, `StepLayout`, `StepRecord` (`slipfork-image/src/steps.rs`) | `SnapshotStore` + node records; `cache_mount` dirs stay in `slipfork-image` as `CacheMounts`. |
 | `state_key`, whole-context `BuildContext::hash`, `base-`/`external-` keys inside `NativeImageBuilder::build` | `BuildPlanner` keys computed before execution; the builder exposes `materialize(step, slot)` and never looks up a cache. |
-| `images/oci/<digest>` sealed rootfses + `.partial-*` staging | `base`/`external` nodes; `OciPuller` keeps blobs and `refs` and unpacks into a slot. |
+| Digest-named sealed rootfs directories | `SnapshotStore` `<store>/snapshots/<key>/` nodes; `OciPuller` keeps blobs and `images/refs.json`, unpacks into a snapshot slot, and TTL-sweeps `.partial-*` staging under `<images>/oci`. |
 | `ImageCache` + `images/{flight,pull,log,record}.rs` | Deleted; singleflight moves into `SnapshotStore`, run notes and build logs into `Reconciler`. |
-| `WorldStamp`, `ImageStamp`, `WorldStampStore`, `EpochState`, `.slipfork-world-stamp.json` | `Lease` (`.slipfork-lease.json`); `matches_hook` becomes the lease effect check. |
+| Stamp-file lookups spread across `up_plan` and `.slipfork-world-stamp.json` | `Lease` (`.slipfork-lease.json`) + `PgStamp`; `matches_hook` becomes the lease effect check. |
 | `StampStore` + `.slipfork/setup-*.stamp` | Deleted; setup digests are lease `effects` (a dropped world re-runs setup once). |
 | `StepStamp`, `stamp_key`, `step_digest`, `BootGraph::with_gated` | Deleted; `BootStep` carries its `NodeKey` and `BootGraph` indexes the world nodes of `BuildGraph`. |
-| PG `templates/`, `InitLock`, `TemplateState`, `TEMPLATE_STAMP`, `run_pod_once` initdb | The `seed` node, materialized through `StepHost`; only the `initdb` argv survives. |
+| PG `run_pod_once` initdb | The `seed` node (`PgSeed`/`PostgresTemplate`) under `<store>/templates/`, materialized through `StepHost`; only the `initdb` argv survives. |
 | `up_plan` `fingerprint`, `Fingerprint`, registry fingerprints, `inputs_predate`, `services_bundled` | Deleted; `up_plan` compares `graph.head()` with `lease.head`. |
-| `BtrfsEngine`, `StoreLayout` | Unchanged primitives; `StoreLayout` gains `snapshots_root()` and drops `templates`. |
+| `BtrfsEngine`, `StoreLayout` | Unchanged primitives; `StoreLayout` owns `snapshots_root()` and the `worlds/`/`templates/` layout. |
 
 ### 6.7 Shipped subsystems & delivery proof
 
@@ -542,9 +542,9 @@ Every runtime question has **one** canonical owner after §6 slice 4 and §7 lan
 
 | Question | Sole Owner | Backing Store | Deleted Legacy Files / Types |
 | :--- | :--- | :--- | :--- |
-| Which worlds & forks exist, their parent lineage, checkout path, branch, and state? | `ForkLedger` (`StateDb`) | `<state_dir>/state.db` (`worlds`, `forks`) | `<state_dir>/worlds.json`, `RegistryEntry`, `daemon/registry.rs`, `.slipfork/world.json`, `WorldState`, `PrepFrame::fixed`, `fork_checkouts`, `world_id_for_project` |
-| Which sealed image/seed nodes exist and what are their parent edges & OCI facts? | `SnapshotStore` (§6.2) | `<store>/snapshots/<key>/` + `<key>.json`, `images/refs` | `StepCache`, `ImageCache`, `StepRecord`, `images/oci/<digest>` rootfses (§6.6) |
-| What `head`, images, and hook effects did a world commit, and is `PGDATA` paired? | `Lease` + `PgStamp` (§6.3) | `worlds/<world>/.slipfork-lease.json` + `.slipfork-pg-stamp.json` | `WorldStamp`, `ImageStamp`, `WorldStampStore`, `.slipfork-world-stamp.json`, `.slipfork/setup-*.stamp`, `worlds-fingerprints.json`, `Fingerprint` |
+| Which worlds & forks exist, their parent lineage, checkout path, branch, and state? | `ForkLedger` (`StateDb`) | `<state_dir>/state.db` (`worlds`, `forks`) | `<state_dir>/worlds.json`, `RegistryEntry`, `daemon/registry.rs`, `WorldState`, `PrepFrame::fixed`, `world_id_for_project` |
+| Which sealed image/seed nodes exist and what are their parent edges & OCI facts? | `SnapshotStore` (§6.2) | `<store>/snapshots/<key>/` + `<key>.json`, `images/refs` | `StepCache`, `ImageCache`, `StepRecord`, digest-named sealed rootfs directories (§6.6) |
+| What `head`, images, and hook effects did a world commit, and is `PGDATA` paired? | `Lease` + `PgStamp` (§6.3) | `worlds/<world>/.slipfork-lease.json` + `.slipfork-pg-stamp.json` | `.slipfork/worlds-fingerprints.json`, `.slipfork/setup-*.stamp`, `Fingerprint` |
 | Is snapshot `<key>` alive or eligible for GC? | `SnapshotStore::gc` (§6.3) | `worlds/*/.slipfork-lease.json` + in-memory `Pin` closure | — |
 | Is world `<world>` healthy right now? | `Daemon` live probe (`ConvergeExecutor`) | `ForkLedger` `live` row + `/proc/<supervisor_pid>` + `control.sock` `List` | Stale `worlds.json` entries posing as live |
 | Which step runs executed and where is their output? | `LogStore` + `RunCapture` (§1) | `<store>/logs/<world>/runs/index.jsonl` + `<run_id>.{log,idx}` | — |
@@ -553,7 +553,7 @@ Every runtime question has **one** canonical owner after §6 slice 4 and §7 lan
 | :--- | :--- | :--- | :--- |
 | 1 | `Cargo.toml` (`sea-orm`, `sea-orm-migration`) + `slipfork-world` `ledger/{mod,db,resolve}.rs`, `ledger/entity/{mod,worlds,forks}.rs`, `ledger/migrations/{mod,m0001_create_ledger}.rs` | §6.7 #4 | Real-disk `/var/tmp` WAL suite: `Migrator::up`, concurrent read-only `open_reader`, unknown/pending migration fail-closed refusal, rollback on drop, `delete_world_row` splice, lineage & resolution. |
 | 2 | `slipfork-world` `ledger/converge.rs`, `engine.rs`, `layout.rs`: flat `<root>/.forks/<name>` + `<name>--<root>` (deleting nested id compounding), `.forks` checkout-free invariant, pure `plan_converge` | 1 | Unit: `plan_converge` state matrix. Real-Btrfs lab: 3-deep fork (`salut ← bonjour ← test1`) lands flat with zero `.forks` inside checkouts and length bounds enforced. |
-| 3 | `slipfork` `daemon/lifecycle/{converge,core,fork,down,ps,plan}.rs` + `daemon/mod.rs`: wire `ForkLedger` + `ConvergeExecutor`, unlink stale `worlds.json`, single-plan `drop`; delete `daemon/registry.rs`, `WorldState`, `PrepFrame::fixed`, `fork_checkouts`, `world_id_for_project` | 2 | Lab journey: `drop` emits one `plan` frame (`[1/N]..[N/N]`), `SIGKILL` mid-`fork` leaves zero ghosts on next `ps`, and `rm -rf .forks/<name>` reaps live pods immediately. |
+| 3 | `slipfork` `daemon/lifecycle/{converge,core,fork,down,ps,plan}.rs` + `daemon/mod.rs`: wire `ForkLedger` + `ConvergeExecutor`, unlink stale `worlds.json`, single-plan `drop`; delete `daemon/registry.rs`, `WorldState`, `PrepFrame::fixed`, `world_id_for_project` | 2 | Lab journey: `drop` emits one `plan` frame (`[1/N]..[N/N]`), `SIGKILL` mid-`fork` leaves zero ghosts on next `ps`, and `rm -rf .forks/<name>` reaps live pods immediately. |
 | 4 | `slipfork` `status/{tree,rows,model}.rs`, `world/target.rs`, `commands/mod.rs` + `specs/02-cli-ux.md` (§3 `ps`/`status` lineage samples, §7 `drop` `plan`-frame & `--json` stream) + `TESTING_PLAN.md`: `← parent ← root` column, offline `StateDb::open_reader`, unified `Targets` | 3 | Full live Btrfs VM journey below (`tools/do_vm.py test`), zero ghosts remaining. |
 
 Live Btrfs VM acceptance journey (Slice 4):

@@ -1,6 +1,6 @@
 {
   "name": "tree-sitter-forkfile",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Tree-sitter grammar for the Slipfork Forkfile language",
   "license": "MIT",
   "keywords": ["tree-sitter", "forkfile", "slipfork"],

@@ -176,7 +176,6 @@ fn doctor_has_four_plain_rows_and_styled_roles_on_a_terminal() {
 
     for (needle, styled) in [
         ("~/demo", "\u{1b}[38;5;244m~/demo"),
-        ("Btrfs", "\u{1b}[1mBtrfs"),
         ("crun ", "\u{1b}[1mcrun "),
         ("http://*.localhost", "\u{1b}[1;4;36mhttp://*.localhost"),
     ] {
@@ -186,6 +185,21 @@ fn doctor_has_four_plain_rows_and_styled_roles_on_a_terminal() {
             "{needle} must carry its SGR role: {raw:?}"
         );
     }
+
+    // The Storage verdict is one bold phrase, so each seam carries exactly one separator.
+    let storage = rows[0].as_str();
+    assert!(
+        storage.contains(" · on Btrfs · ") || storage.contains(" · not on Btrfs · "),
+        "Storage joins its verdict into one phrase: {storage:?}"
+    );
+    assert!(
+        !storage.contains(" · on · ") && !storage.contains(" · not on · "),
+        "Storage never splits the verdict across separators: {storage:?}"
+    );
+    assert!(
+        raw.contains("\u{1b}[1mon Btrfs") || raw.contains("\u{1b}[1mnot on Btrfs"),
+        "the verdict phrase must be bold on a terminal: {raw:?}"
+    );
     // The package name and unit name are strings a user must copy verbatim; the jargon guard
     // still covers every other occurrence of `netns` and `ingress`.
     let readable = plain
@@ -226,6 +240,23 @@ fn doctor_has_four_plain_rows_and_styled_roles_on_a_terminal() {
         .map(|check| check["name"].as_str().expect("check name"))
         .collect();
     assert_eq!(names, ["Storage", "Containers", "Daemon", "Domains"]);
+
+    let storage_detail = value["checks"][0]["detail"]
+        .as_str()
+        .expect("storage detail is a string");
+    assert!(
+        storage_detail.contains("on Btrfs"),
+        "the JSON verdict reads as one phrase: {storage_detail:?}"
+    );
+    assert!(
+        !storage_detail.contains(" · on · ") && !storage_detail.contains(" · not on · "),
+        "the JSON detail never doubles a separator: {storage_detail:?}"
+    );
+    assert_eq!(
+        storage_detail.matches(" · ").count(),
+        2,
+        "one separator per seam in `--json`: {storage_detail:?}"
+    );
 }
 
 #[test]

@@ -10,7 +10,7 @@
 
 **Your cloud environment locally in a box; CI is the clutch.**
 
-> **0.1.0 is a very experimental release.** Expect breaking changes, and file what breaks in the
+> **0.1.1 is a very experimental release.** Expect breaking changes, and file what breaks in the
 > [issue tracker](https://github.com/OffworldNexus/slipfork/issues).
 
 Slipfork turns one `Forkfile` into your whole stack — container images, PostgreSQL, Redis, S3
