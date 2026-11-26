@@ -222,15 +222,16 @@ impl BtrfsEngine {
 
 impl WorldEngine for BtrfsEngine {
     fn ensure_store(&self) -> Result<()> {
-        let anchor = self.store_anchor();
-        let dir = Self::open_dir(&anchor)?;
-        Self::require_btrfs(&dir, &anchor)?;
+        // The data-home fallback (`<data_home>/slipfork/store`) and a fresh project mount both
+        // start absent, so the resolved root is created before it is opened. Validation targets
+        // that root itself (not the mount parent), which pins the failure to the path the user
+        // must fix instead of surfacing an `ENOENT` on a directory Slipfork never made.
+        let root = self.layout.store_root();
+        fs::create_dir_all(&root).map_err(|source| Error::io("create", &root, source))?;
+        let dir = Self::open_dir(&root)?;
+        Self::require_btrfs(&dir, &root)?;
         drop(dir);
-        for path in [
-            self.layout.store_root(),
-            self.layout.images_root(),
-            self.layout.worlds_root(),
-        ] {
+        for path in [self.layout.images_root(), self.layout.worlds_root()] {
             fs::create_dir_all(&path).map_err(|source| Error::io("create", &path, source))?;
         }
         Ok(())

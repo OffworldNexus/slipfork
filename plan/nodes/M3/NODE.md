@@ -2,7 +2,7 @@
 id: M3
 title: "Clean-Sheet Slipfork 0.1.x: Snapshot-Graph Btrfs Engine, ForkLedger, Image-Identity Pods, Report CLI, Docs & All-Distro Packaging"
 kind: milestone
-status: done
+status: active
 priority: 3
 depends_on: [M2]
 paths: []
@@ -10,7 +10,7 @@ attempts: 0
 max_attempts: 3
 escalation: strategist
 created: "2026-11-14T22:03"
-updated: "2026-11-26T07:50"
+updated: "2026-11-26T15:36"
 ---
 
 # Goal

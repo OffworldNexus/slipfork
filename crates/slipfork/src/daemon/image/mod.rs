@@ -7,6 +7,7 @@
 
 mod build;
 mod pull;
+mod store_failure;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -26,6 +27,7 @@ use slipfork_world::{BtrfsEngine, StoreLayout, WorldEngine};
 use super::frames::write_frame;
 use super::{Daemon, Failure, wire};
 use crate::world::HostEnv;
+use store_failure::{cache_failure, store_failure};
 
 /// One typed build/pull event; the CLI rebuilds a `BuildEvent` and renders every row itself.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -165,15 +167,12 @@ pub(super) struct ImageLab {
 impl ImageLab {
     /// Prepares this project's store and derives the host architecture.
     pub(super) fn for_project(host: &HostEnv, project: &Path) -> Result<Self, Failure> {
-        let store = StoreLayout::at(host.store_root_for(project));
+        let store_root = host.store_root_for(project);
+        let store = StoreLayout::at(&store_root);
         let engine = BtrfsEngine::new(store.clone());
-        engine.ensure_store().map_err(|error| {
-            failure(
-                "image-store",
-                format!("cannot prepare the image store: {error}"),
-                "check that this project's Btrfs store is writable and retry",
-            )
-        })?;
+        engine
+            .ensure_store()
+            .map_err(|error| store_failure(&store_root, &error))?;
         let architecture = Architecture::from_oci(host.arch).ok_or_else(|| {
             failure(
                 "image-store",
@@ -182,13 +181,9 @@ impl ImageLab {
             )
         })?;
         let images = ImageLayout::new(store.images_root());
-        images.ensure().map_err(|error| {
-            failure(
-                "image-store",
-                format!("cannot prepare the image cache: {error}"),
-                "check that this project's Btrfs store is writable and retry",
-            )
-        })?;
+        images
+            .ensure()
+            .map_err(|error| cache_failure(&store_root, &error))?;
         Ok(Self {
             store,
             engine: Arc::new(engine),
