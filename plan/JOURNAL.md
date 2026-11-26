@@ -4581,3 +4581,22 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-26T07:30 [M3.196] (conductor) status ready -> active
 - 2026-11-26T07:30 [M3.196] (lead) status active -> done
 - 2026-11-26T07:30 [M3] (conductor) status active -> done
+- 2026-11-26T07:35 [M3] (conductor) status done -> active
+- 2026-11-26T07:35 [M3.197] (conductor) created (task) install.md: Btrfs first and a single WS mount-point variable (owner rejected the buried/hardcoded recipe)
+- 2026-11-26T07:35 [M3.197] (conductor) status ready -> active
+- 2026-11-26T07:35 [M3.197] (lead) status active -> active
+- 2026-11-26T07:35 [M3.197] (lead) attempt 1/3 started
+- 2026-11-26T07:35 [M3.197] (lead) base 0632f5b8993f1145764094aecec4e63877ee0b5a
+- 2026-11-26T07:36 [M3.198] (conductor) created (task) Docs voice: restore the 'Docker Compose on crack' edge on the home page
+- 2026-11-26T07:36 [M3.198] (conductor) status ready -> active
+- 2026-11-26T07:36 [M3.198] (lead) attempt 1/3 started
+- 2026-11-26T07:36 [M3.198] (lead) base 0632f5b8993f1145764094aecec4e63877ee0b5a
+- 2026-11-26T07:37 [M3.198] (lead) edited fields
+- 2026-11-26T07:37 [M3.198] (lead) owner addendum: demote Btrfs below the pitch (drop top warning, one plain requirement sentence after install snippet; tutorial stays one sentence; retune zensic
+- 2026-11-26T07:38 [M3.198] (lead) status active -> review
+- 2026-11-26T07:38 [M3.198] (lead) status review -> done
+- 2026-11-26T07:38 [M3.197] (lead) status active -> review
+- 2026-11-26T07:38 [M3.197] (lead) status review -> done
+- 2026-11-26T07:38 [M3.197] (conductor) status done -> done
+- 2026-11-26T07:38 [M3.198] (conductor) status done -> done
+- 2026-11-26T07:38 [M3] (conductor) status active -> done
