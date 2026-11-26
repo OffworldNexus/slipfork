@@ -101,11 +101,10 @@ image frontend ./front {
   on dev: stage dev
 
   service front {
-    port 3000
+    port 5173
     route /
 
     on dev {
-      port 5173
       run: @pnpm exec vite dev --host 0.0.0.0 --port $port
     }
   }
