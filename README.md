@@ -10,8 +10,7 @@
 
 **Your cloud environment locally in a box; CI is the clutch.**
 
-> **0.1.1 is a very experimental release.** Expect breaking changes, and file what breaks in the
-> [issue tracker](https://github.com/OffworldNexus/slipfork/issues).
+> **Pre-1.0.** The Forkfile and CLI can change between releases; report what breaks in the [issue tracker](https://github.com/OffworldNexus/slipfork/issues).
 
 Slipfork turns one `Forkfile` into your whole stack — container images, PostgreSQL, Redis, S3
 buckets and background workers — behind one `.localhost` URL. It runs natively on Btrfs with

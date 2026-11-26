@@ -28,9 +28,7 @@ Linux, with Btrfs and `crun`; on ext4 or XFS [mount a workspace image](install.m
 
 The demo is the full eight-component stack. The [tutorial](tutorial.md) builds the same shape from scratch in four steps, and [Install](install.md) covers packages and uninstall.
 
-!!! warning "Very experimental release"
-
-    0.1.1 breaks things on purpose. Report what breaks in the [issue tracker](https://github.com/OffworldNexus/slipfork/issues).
+> **Pre-1.0.** The Forkfile and CLI can change between releases; report what breaks in the [issue tracker](https://github.com/OffworldNexus/slipfork/issues).
 
 ## One file, the whole stack
 
