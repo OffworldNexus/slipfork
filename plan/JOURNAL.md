@@ -4557,3 +4557,22 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-26T03:01 ESCALATION #40 -> strategist for M3 by conductor: milestone gate third pass: M3.188 (Idle up registers ancestry), M3.189 (cold-store purge, 16/16 live), M3.190 (src <=500
 - 2026-11-26T03:28 [M3] (strategist) M3 milestone gate third pass @ 3aef2ca PASS: make check green, single cold make live-test 16/16 (54 tests, 0 EROFS, warm refusal rc=2, purge-store 77 subvols ->
 - 2026-11-26T03:28 [M3] (strategist) status active -> done
+- 2026-11-26T03:30 HUMAN H-029 [release-gate] opened by conductor (node M3)
+- 2026-11-26T07:19 [M3.192] (conductor) created (task) Docs: tutorial-first rewrite, install page, index polish (owner-edited drafts)
+- 2026-11-26T07:19 [M3] (conductor) status done -> active
+- 2026-11-26T07:19 [M3] (conductor) Post-gate docs pass requested by the owner: tutorial-first docs rewrite (docs/**, zensical.toml, README). M3 reopened only to host this child; gate evidence unc
+- 2026-11-26T07:19 [M3.193] (conductor) created (task) Docs: tutorial-first rewrite, install page, index polish (owner-edited drafts)
+- 2026-11-26T07:19 [M3.192] (conductor) status ready -> active
+- 2026-11-26T07:23 [M3.192] (lead) status active -> active
+- 2026-11-26T07:23 [M3.192] (lead) attempt 1/3 started
+- 2026-11-26T07:23 [M3.192] (lead) base 09ad4d426439e2a20006bc8e3f842e78cd283753
+- 2026-11-26T07:25 [M3.192] (lead) status active -> review
+- 2026-11-26T07:25 [M3.192] (lead) docs rewritten: tutorial (4 steps), install page + ext4/XFS recipe, index/nav/links; make docs-check green
+- 2026-11-26T07:25 [M3.192] (lead) status review -> done
+- 2026-11-26T07:25 [M3.194] (conductor) created (task) docs/tutorial: don't rely on an unproven  override inside
+- 2026-11-26T07:26 [M3.193] (conductor) status ready -> superseded
+- 2026-11-26T07:26 [M3.194] (conductor) status ready -> superseded
+- 2026-11-26T07:26 [M3.195] (conductor) created (task) docs/tutorial: declare the front port unconditionally (no on-dev port override)
+- 2026-11-26T07:26 [M3.195] (conductor) status ready -> active
+- 2026-11-26T07:26 [M3.195] (lead) status active -> done
+- 2026-11-26T07:26 [M3] (conductor) status active -> done

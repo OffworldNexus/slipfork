@@ -255,3 +255,15 @@ M3 milestone gate third pass @ 3aef2ca PASS: make check green, single cold make 
 ## 2026-11-26T03:28 [strategist]
 
 status active -> done
+
+## 2026-11-26T07:19 [conductor]
+
+status done -> active
+
+## 2026-11-26T07:19 [conductor]
+
+Post-gate docs pass requested by the owner: tutorial-first docs rewrite (docs/**, zensical.toml, README). M3 reopened only to host this child; gate evidence unchanged.
+
+## 2026-11-26T07:26 [conductor]
+
+status active -> done

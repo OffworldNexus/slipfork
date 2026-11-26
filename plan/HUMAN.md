@@ -240,3 +240,11 @@ Note: node anchors are stale (no boot/pane.rs; boot.rs is 370 LOC not 490; Pane 
 
 **Answer:**
 
+## H-029 [open] [release-gate] (node M3)
+
+- asked: 2026-11-26T03:30 by conductor
+
+M3 gate PASSED (16/16 cold live matrix, make check, guards, laws). release/0.1.1 is at 09ad4d4, draft PR #8 into develop. DECISION NEEDED first: v0.1.1 was already tagged and published before this iteration, so shipping these commits means either (a) re-publishing 0.1.1 artifacts (overwrites the existing release), or (b) cutting a new patch version. Owner said no new version numbers, so choose. Then: finish docs/index.md + docs/install.md, run make docs-check (zensical strict flags 3 broken #on-ext4-or-xfs anchors at docs/getting-started.md:26, docs/troubleshooting.md:42,49), confirm GHA + 15-distro packages.yml green, mark PR #8 ready, merge release/0.1.1 -> develop -> main, tag, publish, update AUR sha256sums_* post-release. Autopilot is off; no agent will tag, merge, or push docs.
+
+**Answer:**
+
