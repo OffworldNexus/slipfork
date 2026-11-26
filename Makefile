@@ -16,6 +16,7 @@ LIVE_PROFILE ?= debug
 LIVE_CARGO_PROFILE := $(if $(filter release,$(LIVE_PROFILE)),--release,)
 LIVE_WORLD_INIT ?= $(TARGET_DIR)/$(LIVE_PROFILE)/slipfork-world-init
 LIVE_SUITES := \
+	slipfork/critical_status_live \
 	slipfork-world/critical_btrfs_live \
 	slipfork-world/fork_flat_live \
 	slipfork-image/critical_oci_live \
@@ -26,7 +27,6 @@ LIVE_SUITES := \
 	slipfork-world/pod_run_live \
 	slipfork/critical_world_journey \
 	slipfork/critical_heads_live \
-	slipfork/critical_status_live \
 	slipfork/critical_fork_live \
 	slipfork/critical_registry_live \
 	slipfork/logs_colour_live \
@@ -34,7 +34,8 @@ LIVE_SUITES := \
 	slipfork/image_rpc
 
 # Suites that expect a `from:` image pull: a warm `.slipfork-store` settles it `cached`, so
-# `live-test` refuses to start warm unless `LIVE_RESET=1` provisions the cold store.
+# `live-test` refuses to start warm unless `LIVE_RESET=1` provisions the cold store. The cold
+# suite runs first so CI pulls the cold base image once, before the warm suites.
 LIVE_COLD_SUITES := slipfork/critical_status_live
 LIVE_RESET ?=
 
@@ -156,37 +157,54 @@ live-test:
 	if [ -d "$$store/images" ] && [ -n "$$(ls -A "$$store/images" 2>/dev/null)" ] && [ -n "$$cold" ] && [ "$(LIVE_RESET)" != 1 ]; then \
 		echo "live-test: $$store already holds a warm image cache; next: LIVE_RESET=1 make live-test (cold suites:$$cold)" >&2; exit 2; fi; \
 	if [ "$(LIVE_RESET)" = 1 ]; then \
-		rm -rf "$$store"; \
-		if [ -e "$$store" ]; then btrfs subvolume delete -R "$$store" >/dev/null 2>&1 || true; rm -rf "$$store"; fi; \
-		[ ! -e "$$store" ] || { echo "live-test: cannot delete the warm store $$store; next: sudo btrfs subvolume delete -R $$store && LIVE_RESET=1 make live-test" >&2; exit 2; }; \
+		sh "$(abspath scripts/purge-store.sh)" "$$store" || { \
+			echo "live-test: cannot delete the warm store $$store; next: stop stale slipfork daemons (pkill -f \"slipfork __daemon\") and retry" >&2; \
+			exit 2; }; \
 		echo "live-test: cold store $$store"; fi
 	@root=$$(readlink -f "$(SLIPFORK_TEST_ROOT)"); \
 	rm -rf "$$root/.live"; install -d -m 700 "$$root" "$$root/.live" "$$root/.live/home" "$$root/.live/tmp" || { echo "live-test: cannot create $$root/.live/home; next: sudo chown \"$$(id -u):$$(id -g)\" $$root" >&2; exit 2; }; \
 	chmod 700 "$$root/.live/home" "$$root/.live/tmp"; \
-	rm -rf "$(LIVE_RUNTIME_DIR)" && install -d -m 700 "$(LIVE_RUNTIME_DIR)"
+	rm -rf "$(LIVE_RUNTIME_DIR)" && install -d -m 700 "$(LIVE_RUNTIME_DIR)"; \
+	reaped=0; \
+	for envf in /proc/[0-9]*/environ; do \
+		[ -r "$$envf" ] || continue; \
+		tr '\0' '\n' < "$$envf" 2>/dev/null | grep -q "^XDG_RUNTIME_DIR=$(LIVE_RUNTIME_DIR)/" || continue; \
+		pid=$${envf#/proc/}; pid=$${pid%/environ}; \
+		cmd=$$(tr '\0' ' ' < "/proc/$$pid/cmdline" 2>/dev/null) || continue; \
+		case " $$cmd " in \
+			*" __daemon "*|*" __supervise "*|*" slipfork-world-init "*) ;; \
+			*) continue ;; \
+		esac; \
+		kill -9 "$$pid" 2>/dev/null && reaped=$$((reaped + 1)); \
+	done; \
+	[ "$$reaped" -eq 0 ] || printf 'live-test: reaped %s stale slipfork process(es) from a previous run\n' "$$reaped"
 	@case "$(LIVE_PROFILE)" in debug|release) ;; *) \
 		echo "live-test: unknown LIVE_PROFILE=$(LIVE_PROFILE); next: LIVE_PROFILE=debug make live-test" >&2; exit 2 ;; esac
 	@$(CARGO) build $(LIVE_CARGO_PROFILE) --target-dir "$(TARGET_DIR)" -p slipfork-world --bin slipfork-world-init
 	@test -x "$(LIVE_WORLD_INIT)" || { \
 		echo "live-test: $(LIVE_WORLD_INIT) is missing; next: $(CARGO) build $(LIVE_CARGO_PROFILE) --target-dir \"$(TARGET_DIR)\" -p slipfork-world --bin slipfork-world-init" >&2; exit 2; }
+	@# Each suite gets the shortest possible numbered runtime slot (1…16) because pod control.sock
+	@# paths sit close to the 108-byte sun_path limit; the reap above clears a crashed run's __daemon.
 	@root=$$(readlink -f "$(SLIPFORK_TEST_ROOT)"); \
 	live_cargo_home="$${CARGO_HOME:-$$HOME/.cargo}"; \
 	live_rustup_home="$${RUSTUP_HOME:-$$HOME/.rustup}"; \
 	passed=0; failed=0; total=0; \
 	store="$$root/.slipfork-store"; \
 	purge_store() { \
-		rm -rf "$$store"; \
-		if [ -e "$$store" ]; then command -v btrfs >/dev/null 2>&1 && btrfs subvolume delete -R "$$store" >/dev/null 2>&1; rm -rf "$$store"; fi; \
-		[ ! -e "$$store" ] || { echo "live-test: cannot purge the warm store $$store before $$suite; next: sudo btrfs subvolume delete -R $$store" >&2; exit 2; }; \
+		sh "$(abspath scripts/purge-store.sh)" "$$store" || { \
+			echo "live-test: cannot purge the warm store $$store before $$suite; next: stop stale slipfork daemons (pkill -f \"slipfork __daemon\") and retry" >&2; \
+			exit 2; }; \
 		echo "live-test: cold store $$store (before $$suite)"; \
 	}; \
 	for suite in $(LIVE_SUITES); do \
 		pkg=$${suite%%/*}; test=$${suite##*/}; total=$$((total + 1)); \
+		slot=$$total; \
 		case " $(LIVE_COLD_SUITES) " in *" $$suite "*) purge_store;; esac; \
+		install -d -m 700 "$(LIVE_RUNTIME_DIR)/$$slot"; \
 		printf '[live] RUN %s %s\n' "$$pkg" "$$test"; \
 		HOME="$$root/.live/home" TMPDIR="$$root/.live/tmp" \
 			CARGO_HOME="$$live_cargo_home" RUSTUP_HOME="$$live_rustup_home" \
-			XDG_RUNTIME_DIR="$(LIVE_RUNTIME_DIR)" SLIPFORK_TEST_ROOT="$$root" \
+			XDG_RUNTIME_DIR="$(LIVE_RUNTIME_DIR)/$$slot" SLIPFORK_TEST_ROOT="$$root" \
 			SLIPFORK_WORLD_INIT="$(abspath $(LIVE_WORLD_INIT))" \
 			$(CARGO) test $(LIVE_CARGO_PROFILE) --target-dir "$(TARGET_DIR)" -p "$$pkg" --features "$$pkg/live" --test "$$test" -- --test-threads=1; \
 		rc=$$?; \
