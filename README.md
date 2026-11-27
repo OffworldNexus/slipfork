@@ -10,7 +10,7 @@
 
 **Your cloud environment locally in a box; CI is the clutch.**
 
-> **Pre-1.0.** The Forkfile and CLI can change between releases; report what breaks in the [issue tracker](https://github.com/OffworldNexus/slipfork/issues).
+> **Pre-1.0.** The Forkfile and CLI can change between releases; report what breaks in the [issue tracker](https://github.com/OffworldNexus/slipfork/issues). There is no support plan yet: the infrastructure is managed by DigitalOcean and we only intervene manually for an absolute emergency.
 
 Slipfork turns one `Forkfile` into your whole stack — container images, PostgreSQL, Redis, S3
 buckets and background workers — behind one `.localhost` URL. It runs natively on Btrfs with

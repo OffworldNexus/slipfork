@@ -25,6 +25,10 @@ It's not based on Docker because it tries to circumvent the typical hurdles that
     The Forkfile and CLI can change between releases; report what breaks in the
     [issue tracker](https://github.com/OffworldNexus/slipfork/issues).
 
+## Support
+
+The infrastructure runs on DigitalOcean, which we do not operate. We step in manually only for an absolute emergency — a third-party failure we can work around, or a blocking edge case in one of our own processes — and that is rare. At this stage there is no support plan: everything else is best-effort through the [issue tracker](https://github.com/OffworldNexus/slipfork/issues).
+
 ## Getting started
 
 First, let's install slipfork on your local machine:
