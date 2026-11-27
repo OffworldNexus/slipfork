@@ -4636,3 +4636,9 @@ Append-only one-line event log managed by `tools/plan.py`.
 - 2026-11-26T15:44 [M3.202] (lead) status ready -> done
 - 2026-11-26T15:45 [M3.202] (conductor) status done -> done
 - 2026-11-26T15:45 [M3] (conductor) status active -> done
+- 2026-11-27T14:19 [M3] (conductor) status done -> active
+- 2026-11-27T14:19 [M3.203] (conductor) created (task) Docs: support scope statement (no tiers/SLAs; DigitalOcean infra; manual only for absolute emergencies)
+- 2026-11-27T14:19 [M3.203] (conductor) status ready -> active
+- 2026-11-27T14:19 [M3.203] (lead) status active -> done
+- 2026-11-27T14:19 [M3.203] (conductor) status done -> done
+- 2026-11-27T14:19 [M3] (conductor) status active -> done
