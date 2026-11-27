@@ -10,6 +10,12 @@ follow Semantic Versioning while the `# forkfile: 0.1` format is pre-`1.0`.
 - `ADD http(s)://…` in the native Dockerfile builder, fetched and hashed like local build context.
 - `make install` / `make uninstall` put a branch build in a user PATH prefix without touching
   packaged binaries.
+- `slipfork docker login|logout|list|images|pull|build` — a Docker-shaped surface over the daemon's
+  puller and native builder, with no `dockerd` and no socket.
+- `arg` expressions can read a running service's `port` (for example `arg PORT = web.port`) when
+  that service is declared unconditionally.
+- `slipfork logs --last N` tails the last N rendered lines; a followed `-f` implies `20` unless you
+  pass one.
 
 ### Changed
 
@@ -18,7 +24,18 @@ follow Semantic Versioning while the `# forkfile: 0.1` format is pre-`1.0`.
 - `slipfork up` never adopts or rewrites your checkout; `fork` copies a plain checkout before
   snapshotting it.
 - `up` verifies service health and refuses `✓ Ready` while a service is dead.
-- `slipfork fmt` defaults to 4-space indents, and the Zed extension manifest is fixed.
+- Image builds and boots share one content-addressed snapshot graph (`BuildGraph` + `SnapshotStore`
+  with `Lease` heads): an unchanged world is Idle, an edit rebuilds only the affected steps, and
+  `up --no-cache` rebuilds every step from `FROM`.
+- Worlds and forks are tracked in one SQLite ledger (`state.db`): checkouts are always flat under
+  `<root>/.forks/<name>`, `drop` re-parents the children it splices out, and `ps` shows the `←`
+  lineage.
+- Runtime pods run as the image's resolved `USER` (container root by default) mapped 1:1 onto your
+  uid, so tools behave as they would in a container; every step and pod pins `umask 0022`.
+- Boot output is append-only scrollback plus one in-place status line (`\r\x1b[2K`) carrying the
+  spinner, counter, and clock, with no fixed bottom panel or scroll region.
+- `slipfork fmt` preserves exactly one authored blank line between declarations and body items, and
+  defaults to 4-space indents; the Zed extension manifest is fixed.
 - Logs come from one durable run catalog: failed runs survive, `slipfork logs <image>` reads an
   image build, `-r <id>` selects a run, `--runs` lists them, and each failure ends with one `next:`
   command. The store stays user-writable on a Btrfs-root host.

@@ -6,18 +6,22 @@
 //! [`Table`], so each column has a single start index across the whole tree.
 
 use serde_json::Value;
-use slipfork_world::{FORKS_DIR, ProjectScope};
+use slipfork_world::ProjectScope;
 
-use crate::ps::{PsReply, PsStoppedFork, PsWorld, PsWorldState};
-use crate::ui::Palette;
-use crate::ui::table::{Column, ColumnWidths, Table};
+use std::collections::BTreeSet;
+
+use crate::ps::{PsReply, PsWorld, PsWorldState};
+use crate::ui::report::Outcome;
+use crate::ui::report::Palette;
+use crate::ui::report::{Column, ColumnWidths, Table};
 
 use super::model::{Options, display_name, display_path, parse as decode};
 use super::rows::{DomainRows, RoutedRow, SupportRow, WorldRows, project};
 
 pub use super::model::no_world_line;
 
-const HEADER: [Column; 4] = [
+const HEADER: [Column; 5] = [
+    Column::left(),
     Column::left(),
     Column::left(),
     Column::left(),
@@ -30,7 +34,12 @@ const ROUTE: [Column; 5] = [
     Column::left(),
     Column::left(),
 ];
-const SUPPORT: [Column; 3] = [Column::left(), Column::left(), Column::left()];
+const SUPPORT: [Column; 4] = [
+    Column::left(),
+    Column::left(),
+    Column::left(),
+    Column::left(),
+];
 
 /// Every precomputed column grid for one render.
 struct Widths {
@@ -47,9 +56,6 @@ impl Widths {
         let mut support = Vec::new();
         for rows in worlds {
             header.push(header_cells(rows.world, options));
-            for fork in &rows.world.stopped_forks {
-                header.push(fork_cells(fork, options));
-            }
             for domain in &rows.domains {
                 for row in &domain.rows {
                     route.push(route_cells(row));
@@ -57,9 +63,10 @@ impl Widths {
             }
             for row in &rows.support {
                 support.push(vec![
-                    row.id.clone(),
-                    row.descriptor.clone(),
-                    row.state.word.to_owned(),
+                    row.keyword.clone(),
+                    row.target.clone(),
+                    row.state.plain(),
+                    row.command.clone().unwrap_or_default(),
                 ]);
             }
         }
@@ -73,9 +80,9 @@ impl Widths {
 
 fn header_cells(world: &PsWorld, options: &Options) -> Vec<String> {
     let state = if world.state == PsWorldState::Stopped {
-        "stopped"
+        Outcome::Stopped.plain()
     } else {
-        ""
+        String::new()
     };
     let pid = match world.supervisor_pid {
         Some(pid) if options.verbose && state.is_empty() => format!("pid {pid}"),
@@ -85,17 +92,19 @@ fn header_cells(world: &PsWorld, options: &Options) -> Vec<String> {
         display_name(world).to_owned(),
         display_path(&world.path, options.home.as_deref()),
         state.to_owned(),
+        lineage_text(world),
         pid,
     ]
 }
 
-fn fork_cells(fork: &PsStoppedFork, options: &Options) -> Vec<String> {
-    vec![
-        fork.name.clone(),
-        display_path(&fork.path, options.home.as_deref()),
-        "stopped".to_owned(),
-        String::new(),
-    ]
+/// The dim `← parent ← root` ancestry suffix; a root has none and an absent column collapses.
+fn lineage_text(world: &PsWorld) -> String {
+    world
+        .lineage
+        .iter()
+        .map(|name| format!("← {name}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn route_cells(row: &RoutedRow) -> Vec<String> {
@@ -104,7 +113,7 @@ fn route_cells(row: &RoutedRow) -> Vec<String> {
         "->".to_owned(),
         row.target.clone(),
         row.kind.clone().unwrap_or_default(),
-        row.state.word.to_owned(),
+        row.state.plain(),
     ]
 }
 
@@ -122,28 +131,25 @@ pub fn parse(value: &Value) -> Result<PsReply, String> {
 pub fn render(reply: &PsReply, options: &Options) -> String {
     let mut worlds = Vec::new();
     flatten(&reply.worlds, &mut worlds);
-    if worlds.is_empty() {
-        return format!(
-            "{}\n",
-            Palette::new(options.color).dim("○ No worlds running")
-        );
-    }
-    let projected: Vec<WorldRows<'_>> = worlds.iter().map(|world| project(world)).collect();
-    let widths = Widths::measure(&projected, options);
     let palette = Palette::new(options.color);
-    let mut out = String::new();
-    for (index, rows) in projected.iter().enumerate() {
-        if index > 0 {
-            out.push('\n');
+    let mut lines = Vec::new();
+    if worlds.is_empty() {
+        lines.push(palette.meta("○ No worlds running"));
+    } else {
+        let projected: Vec<WorldRows<'_>> = worlds.iter().map(|world| project(world)).collect();
+        let widths = Widths::measure(&projected, options);
+        for (index, rows) in projected.iter().enumerate() {
+            if index > 0 {
+                lines.push(String::new());
+            }
+            render_world(&mut lines, rows, options, palette, &widths);
         }
-        render_world(&mut out, rows, options, palette, &widths);
     }
-    let stopped: Vec<&PsStoppedFork> = projected
-        .iter()
-        .flat_map(|rows| rows.world.stopped_forks.iter())
-        .collect();
-    render_stopped_forks(&mut out, &stopped, options, palette, &widths);
-    out
+    let mut text = lines.join("\n");
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    text
 }
 
 /// Keeps the canonical project or the one fork that contains the caller's cwd.
@@ -171,9 +177,10 @@ fn scope_fork(reply: &PsReply, fork_path: &std::path::Path, name: &str, world: &
     let mut worlds = Vec::new();
     flatten(&reply.worlds, &mut worlds);
     if let Some(found) = worlds.iter().find(|world| world.project == fork_path) {
-        return PsReply {
-            worlds: vec![(*found).clone()],
-        };
+        // Strictly one fork: its descendants stay out of this view.
+        let mut row = (*found).clone();
+        row.forks.clear();
+        return PsReply { worlds: vec![row] };
     }
     // The scope already proved the checkout exists, so no second disk probe happens here.
     PsReply {
@@ -191,27 +198,30 @@ fn scope_project(
 ) -> PsReply {
     let mut live = Vec::new();
     flatten(&reply.worlds, &mut live);
-    let forks_dir = root.join(FORKS_DIR);
-    let mut rows: Vec<PsWorld> = live
+    let mut rows: Vec<PsWorld> = Vec::new();
+    retain_family(&reply.worlds, &mut rows);
+    let known: BTreeSet<&std::path::Path> = live
         .iter()
-        .filter(|world| world.project.starts_with(&forks_dir))
-        .map(|world| (*world).clone())
+        .filter(|row| row.fork.is_some())
+        .map(|row| row.project.as_path())
         .collect();
-    rows.sort_by(|left, right| left.project.cmp(&right.project));
-    let stopped: Vec<PsStoppedFork> = forks
+    let mut stopped: Vec<PsWorld> = forks
         .iter()
-        .filter(|fork| !rows.iter().any(|row| row.project == fork.path))
-        .map(|fork| PsStoppedFork {
-            name: fork.name.clone(),
-            path: fork.path.clone(),
+        .filter(|fork| !known.contains(fork.path.as_path()))
+        .filter_map(|fork| {
+            let fork_world = slipfork_world::fork_world_id(world, &fork.name)?;
+            let mut row = PsWorld::stopped(&fork.path, fork_world.as_str(), Some(&fork.name));
+            // A flat `.forks/<name>` checkout is a child of this root world by construction.
+            row.lineage = vec![world.to_owned()];
+            Some(row)
         })
         .collect();
     let mut root_row = live
         .iter()
         .find(|row| row.project == root)
         .map_or_else(|| PsWorld::stopped(root, world, None), |row| (*row).clone());
+    rows.append(&mut stopped);
     root_row.forks = rows;
-    root_row.stopped_forks = stopped;
     if let Some(problem) = problem {
         root_row.problem = Some(match root_row.problem.take() {
             Some(existing) => format!("{existing}; {problem}"),
@@ -223,15 +233,41 @@ fn scope_project(
     }
 }
 
-fn flatten<'a>(worlds: &'a [PsWorld], out: &mut Vec<&'a PsWorld>) {
+/// Retains every fork subtree from the reply in its ledger order, skipping the root row.
+///
+/// A fork keeps its own nested children, so `ps` inside the project root shows the same
+/// `(depth, name)` tree the daemon sent instead of re-flattening it at the root.
+fn retain_family(worlds: &[PsWorld], out: &mut Vec<PsWorld>) {
     for world in worlds {
+        if world.fork.is_some() {
+            out.push(world.clone());
+        } else {
+            retain_family(&world.forks, out);
+        }
+    }
+}
+
+/// Flattens every world in display order: at each sibling level the live and broken rows come
+/// first, then the dim `○` stopped rows, so a live fork never renders below a stopped one.
+fn flatten<'a>(worlds: &'a [PsWorld], out: &mut Vec<&'a PsWorld>) {
+    for world in worlds
+        .iter()
+        .filter(|world| world.state != PsWorldState::Stopped)
+    {
+        out.push(world);
+        flatten(&world.forks, out);
+    }
+    for world in worlds
+        .iter()
+        .filter(|world| world.state == PsWorldState::Stopped)
+    {
         out.push(world);
         flatten(&world.forks, out);
     }
 }
 
 fn render_world(
-    out: &mut String,
+    lines: &mut Vec<String>,
     rows: &WorldRows<'_>,
     options: &Options,
     palette: Palette,
@@ -239,128 +275,126 @@ fn render_world(
 ) {
     let world = rows.world;
     let table = Table::new(&HEADER);
-    if world.state == PsWorldState::Stopped {
-        out.push_str(&palette.dim("○ "));
-        let cells = vec![
-            palette.dim(display_name(world)),
-            palette.dim(&display_path(&world.path, options.home.as_deref())),
-            palette.dim("stopped"),
-            String::new(),
-        ];
-        out.push_str(&table.line(&widths.header, &cells));
-        out.push('\n');
-    } else {
-        out.push_str(&palette.tint("●", "32"));
-        out.push(' ');
-        let pid = match world.supervisor_pid {
-            Some(pid) if options.verbose => palette.dim(&format!("pid {pid}")),
-            _ => String::new(),
-        };
-        let cells = vec![
-            palette.value(display_name(world)),
-            palette.path(&display_path(&world.path, options.home.as_deref())),
-            String::new(),
-            pid,
-        ];
-        out.push_str(&table.line(&widths.header, &cells));
-        out.push('\n');
+    let lineage = palette.meta(&lineage_text(world));
+    let path = display_path(&world.path, options.home.as_deref());
+    let mut line = String::new();
+    match world.state {
+        PsWorldState::Stopped => {
+            line.push_str(&palette.meta("○ "));
+            let cells = vec![
+                palette.meta(display_name(world)),
+                palette.meta(&path),
+                Outcome::Stopped.state(palette),
+                lineage,
+                String::new(),
+            ];
+            line.push_str(&table.line(&widths.header, &cells));
+        }
+        PsWorldState::Broken => {
+            line.push_str(&palette.error("✗"));
+            line.push(' ');
+            let cells = vec![
+                palette.value(display_name(world)),
+                palette.path(&path),
+                String::new(),
+                lineage,
+                String::new(),
+            ];
+            line.push_str(&table.line(&widths.header, &cells));
+        }
+        PsWorldState::Live => {
+            line.push_str(&palette.ok("●"));
+            line.push(' ');
+            let pid = match world.supervisor_pid {
+                Some(pid) if options.verbose => palette.meta(&format!("pid {pid}")),
+                _ => String::new(),
+            };
+            let cells = vec![
+                palette.value(display_name(world)),
+                palette.path(&path),
+                String::new(),
+                lineage,
+                pid,
+            ];
+            line.push_str(&table.line(&widths.header, &cells));
+        }
     }
+    lines.push(line);
 
     if let Some(problem) = &world.problem {
-        out.push_str(&palette.error(&format!("! {problem}")));
-        out.push('\n');
+        lines.push(palette.error(&format!("! {problem}")));
+    }
+
+    // A stopped or broken row is honest by itself: nothing runs, so no domain, support, or
+    // fabricated `orphaned` child prints below it.
+    if matches!(world.state, PsWorldState::Broken | PsWorldState::Stopped) {
+        return;
     }
 
     let support = !rows.support.is_empty();
     let groups = rows.domains.len() + usize::from(support);
     for (index, domain) in rows.domains.iter().enumerate() {
         let last = index + 1 == groups;
-        render_domain(out, domain, last, palette, widths);
+        render_domain(lines, domain, last, palette, widths);
     }
     if support {
-        render_support(out, &rows.support, palette, widths);
-    }
-}
-
-/// Every world's stopped `.forks/<name>` checkouts render in one trailing block after all live
-/// world trees, on the shared header grid, so a live fork never renders below a stopped one.
-fn render_stopped_forks(
-    out: &mut String,
-    forks: &[&PsStoppedFork],
-    options: &Options,
-    palette: Palette,
-    widths: &Widths,
-) {
-    if forks.is_empty() {
-        return;
-    }
-    out.push('\n');
-    let table = Table::new(&HEADER);
-    for fork in forks {
-        out.push_str(&palette.dim("○ "));
-        let cells = vec![
-            palette.dim(&fork.name),
-            palette.dim(&display_path(&fork.path, options.home.as_deref())),
-            palette.dim("stopped"),
-            String::new(),
-        ];
-        out.push_str(&table.line(&widths.header, &cells));
-        out.push('\n');
+        render_support(lines, &rows.support, palette, widths);
     }
 }
 
 fn render_domain(
-    out: &mut String,
+    lines: &mut Vec<String>,
     domain: &DomainRows,
     last: bool,
     palette: Palette,
     widths: &Widths,
 ) {
-    out.push_str("  ");
-    out.push_str(&palette.dim(if last { "└─ " } else { "├─ " }));
-    out.push_str(&palette.url(&format!("http://{}", domain.host)));
-    out.push('\n');
+    let mut header = String::from("  ");
+    header.push_str(&palette.meta(if last { "└─ " } else { "├─ " }));
+    header.push_str(&palette.url(&format!("http://{}", domain.host)));
+    lines.push(header);
     let branch = if last { "   " } else { "│  " };
     let table = Table::new(&ROUTE);
     for (index, row) in domain.rows.iter().enumerate() {
-        out.push_str("  ");
-        out.push_str(&palette.dim(branch));
+        let mut line = String::from("  ");
+        line.push_str(&palette.meta(branch));
         let last_row = index + 1 == domain.rows.len();
-        out.push_str(&palette.dim(if last_row { "└─ " } else { "├─ " }));
+        line.push_str(&palette.meta(if last_row { "└─ " } else { "├─ " }));
         let cells = [
-            palette.tint(&row.path, "1;33"),
-            palette.dim("->"),
+            palette.meta(&row.path),
+            palette.meta("->"),
             palette.value(&row.target),
             match &row.kind {
                 Some(kind) => palette.kind(kind),
                 None => String::new(),
             },
-            palette.status(row.state.word),
+            row.state.state(palette),
         ];
-        out.push_str(&table.line(&widths.route, &cells));
-        out.push('\n');
+        line.push_str(&table.line(&widths.route, &cells));
+        lines.push(line);
     }
 }
 
-fn render_support(out: &mut String, rows: &[SupportRow], palette: Palette, widths: &Widths) {
-    out.push_str("  ");
-    out.push_str(&palette.dim("└─ "));
-    out.push_str(&palette.dim("support"));
-    out.push('\n');
+fn render_support(lines: &mut Vec<String>, rows: &[SupportRow], palette: Palette, widths: &Widths) {
+    let mut header = String::from("  ");
+    header.push_str(&palette.meta("└─ "));
+    header.push_str(&palette.meta("support"));
+    lines.push(header);
     let table = Table::new(&SUPPORT);
     for (index, row) in rows.iter().enumerate() {
-        out.push_str("     ");
-        out.push_str(&palette.dim(if index + 1 == rows.len() {
+        let mut line = String::from("     ");
+        line.push_str(&palette.meta(if index + 1 == rows.len() {
             "└─ "
         } else {
             "├─ "
         }));
         let cells = [
-            row.id.clone(),
-            row.descriptor.clone(),
-            palette.status(row.state.word),
+            palette.verb(&row.keyword),
+            palette.value(&row.target),
+            row.state.state(palette),
+            row.command.clone().unwrap_or_default(),
         ];
-        out.push_str(&table.line(&widths.support, &cells));
-        out.push('\n');
+        line.push_str(&table.line(&widths.support, &cells));
+        lines.push(line);
     }
 }

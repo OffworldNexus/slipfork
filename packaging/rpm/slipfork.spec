@@ -1,6 +1,6 @@
 %global debug_package %{nil}
 
-%define _slipfork_version %{?slipfork_version}%{!?slipfork_version:0.1.0}
+%define _slipfork_version %{?slipfork_version}%{!?slipfork_version:0.1.1}
 %define _slipfork_release %{?slipfork_release}%{!?slipfork_release:1}
 %define _slipfork_arch %{?slipfork_arch}%{!?slipfork_arch:x86_64}
 %define _slipfork_glibc %{?slipfork_glibc}%{!?slipfork_glibc:%{error:slipfork_glibc must come from check-portable-elf.sh}}
@@ -41,7 +41,8 @@ if command -v apparmor_parser >/dev/null 2>&1 && [ -f /etc/apparmor.d/slipfork ]
 fi
 systemctl --system daemon-reload >/dev/null 2>&1 || true
 # The package ships both units; enable and start them for the installing user.
-# Rootless or container installs (no SUDO_USER) stay silent.
+# A container/chroot with no systemd stays silent; on systemd a missing SUDO_USER
+# prints one hint.
 if [ -d /run/systemd/system ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
     runuser=$(command -v runuser 2>/dev/null || true)
     if [ -z "$runuser" ] && [ -x /usr/sbin/runuser ]; then runuser=/usr/sbin/runuser; fi
@@ -55,18 +56,60 @@ if [ -d /run/systemd/system ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != ro
             XDG_RUNTIME_DIR="/run/user/$uid" \
             DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
             systemctl --user enable --now slipfork.service >/dev/null 2>&1 || true
-        if [ -f /usr/lib/systemd/system/slipfork-ingress@.service ]; then
-            install -m 0644 /usr/lib/systemd/system/slipfork-ingress@.service \
-                /etc/systemd/system/slipfork-ingress@.service 2>/dev/null || true
-            printf 'User=%s\nEnvironment=XDG_RUNTIME_DIR=/run/user/%s\n' \
-                "$SUDO_USER" "$uid" >>/etc/systemd/system/slipfork-ingress@.service 2>/dev/null || true
-            systemctl daemon-reload >/dev/null 2>&1 || true
-            systemctl enable --now slipfork-ingress.socket >/dev/null 2>&1 || true
-        fi
     else
         echo "next: loginctl enable-linger $SUDO_USER && sudo -iu $SUDO_USER systemctl --user enable --now slipfork.service" >&2
     fi
 fi
+
+# The :80 socket is independent of the user daemon: it needs only the name and
+# uid of the installing user. Render the template for them, enable the socket,
+# and report a real failure once instead of swallowing it.
+ingress_setup() {
+    [ -d /run/systemd/system ] || return 0
+    command -v systemctl >/dev/null 2>&1 || return 0
+    src=/usr/lib/systemd/system/slipfork-ingress@.service
+    dst=/etc/systemd/system/slipfork-ingress@.service
+    if [ ! -f "$src" ]; then
+        echo "! slipfork: the ingress unit template is missing ($src)" >&2
+        echo "next: reinstall the slipfork package" >&2
+        return 0
+    fi
+    if [ -z "${SUDO_USER:-}" ] || [ "$SUDO_USER" = root ]; then
+        echo "next: install with sudo from your user session, or set User=<you> in $dst and run: systemctl enable --now slipfork-ingress.socket" >&2
+        return 0
+    fi
+    uid=$(id -u "$SUDO_USER" 2>/dev/null) || uid=${SUDO_UID:-}
+    if [ -z "$uid" ]; then
+        echo "next: install with sudo from your user session, or set User=<you> in $dst and run: systemctl enable --now slipfork-ingress.socket" >&2
+        return 0
+    fi
+    if ! install -Dm 0644 "$src" "$dst" 2>/dev/null; then
+        echo "! slipfork: could not write $dst" >&2
+        echo "next: check that /etc/systemd/system is writable and has free space, then reinstall the package" >&2
+        return 0
+    fi
+    if ! printf 'User=%s\nEnvironment=XDG_RUNTIME_DIR=/run/user/%s\n' "$SUDO_USER" "$uid" >>"$dst" 2>/dev/null; then
+        echo "! slipfork: could not write $dst" >&2
+        echo "next: check that /etc/systemd/system is writable and has free space, then reinstall the package" >&2
+        return 0
+    fi
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable --now slipfork-ingress.socket >/dev/null 2>&1 || true
+    systemctl is-active --quiet slipfork-ingress.socket 2>/dev/null && return 0
+    if [ "$(systemctl is-enabled slipfork-ingress.socket 2>/dev/null)" = masked ]; then
+        echo "! slipfork: slipfork-ingress.socket is masked" >&2
+        echo "next: systemctl unmask slipfork-ingress.socket && systemctl enable --now slipfork-ingress.socket" >&2
+    elif command -v ss >/dev/null 2>&1 && [ -n "$(ss -Hltn 'sport = :80' 2>/dev/null)" ]; then
+        echo "! slipfork: the :80 ingress did not start; another process already listens on port 80" >&2
+        echo "next: ss -ltn 'sport = :80' then free the port and run: systemctl restart slipfork-ingress.socket" >&2
+    else
+        echo "! slipfork: the :80 ingress did not start" >&2
+        echo "next: journalctl -u slipfork-ingress.socket" >&2
+    fi
+    return 0
+}
+
+ingress_setup
 
 %preun
 if [ "$1" = 0 ] && command -v systemctl >/dev/null 2>&1; then

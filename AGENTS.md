@@ -67,8 +67,8 @@ When `plan/AUTOPILOT` is `on`, `deepseek-v4.1-flash` executes coarse vertical sl
      or `pull -q`: `spawn()` and stream live lines with `[step/total]` phase headers, spinners, and
      elapsed time. Pin `GIT_AUTHOR_*`/`GIT_COMMITTER_*` on internal git plumbing, format errors as
      `1 line + next:` remedy, lead `doctor` with `✓ Ready` / `✗ N issue(s)`, omit `:80` on port-80
-     URLs, warn on stderr when ephemeral (`slipfork daemon install` for the user unit;
-     `sudo slipfork daemon install --ingress` for the system `:80` socket + AppArmor), and gate
+     URLs, warn on stderr when ephemeral (the package enables the user service and the system
+     `:80` socket for `SUDO_USER`; headless installs run `docs/install.sh`), and gate
      `[resources]` jargon behind `-v`.
    - Docs & specs: lead with user value + a working copy-pasteable snippet in the first 25 lines,
      use Mermaid diagrams + Zensical `!!!` admonitions + `<= 2`-sentence paragraphs, and ban
@@ -104,6 +104,11 @@ When `plan/AUTOPILOT` is `on`, `deepseek-v4.1-flash` executes coarse vertical sl
 - **Disk, Never `/tmp` `tmpfs`, for Heavy State:** `/tmp` on Linux runners is RAM-backed `tmpfs`.
   Keep worktrees under `.worktrees/`, CoW snapshots/volumes under `~/.cache/slipfork`,
   `.slipfork/`, or `/var/tmp`, and use `/tmp/opencode/` only for tiny short-lived files.
+  Build caches are scratch: point one `CARGO_TARGET_DIR` outside the repo/`.worktrees` (e.g.
+  `/var/tmp/<node>-target`), reuse it across verification runs, and `rm -rf` it plus any temporary
+  worktree the moment the slice is committed. Never leave a `target/debug` or `target/release`
+  inside a worktree or the repo root — `tools/coverage_report.py`'s fixed `target/cov` is the one
+  exception, deleted after the run — and keep per-agent scratch under ~5 GB.
 - **Python & Rust Execution:** Bare `python`, `python3`, and `pip` are denied. Use
   `uv run --no-project` for `tools/*.py`, `uvx --offline` for linters, and `cargo` for the
   workspace. Coverage runs through `uv run --no-project tools/coverage_report.py` into

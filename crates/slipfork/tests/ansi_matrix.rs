@@ -17,6 +17,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 use slipfork::surface::VERBS;
+use slipfork::ui::report::{Failure, Report, ReportRenderer, WallZone};
+use slipfork::ui::{Terminal, UiMode};
 
 const ESCAPE: char = '\u{1b}';
 
@@ -98,6 +100,7 @@ fn json_probe(verb: &str) -> Option<Vec<&'static str>> {
         "env" => vec!["env", "--json"],
         "features" => vec!["features", "--json"],
         "secret" => vec!["secret", "list", "--json"],
+        "docker" => vec!["docker", "logout", "docker.io", "--json"],
         "open" => vec!["open", "--json"],
         "fmt" => vec!["fmt", "--check", "--json"],
         "migrate" => vec!["migrate", "--json"],
@@ -324,7 +327,8 @@ const PROMPT: &str = "slipfork@slipfork-dev-vm:~/demo$ slipfork up";
 /// The same line after the user pressed Enter: the cursor starts on the row below the prompt.
 const SEED: &str = "slipfork@slipfork-dev-vm:~/demo$ slipfork up\r\n";
 
-/// `NO_COLOR` is removed so the shipped boot pane (and its `DECSTBM` region) really runs.
+/// `NO_COLOR` is removed so the shipped append-only boot pane (completed rows plus one
+/// `\r`-rewritten status line) really runs.
 fn tty_command(root: &Path) -> Command {
     let mut command = command(root);
     command.env_remove("NO_COLOR").env("TERM", "xterm-256color");
@@ -332,33 +336,100 @@ fn tty_command(root: &Path) -> Command {
 }
 
 #[test]
-fn vt_grid_tracks_region_clear_and_save_restore() {
+fn vt_grid_scrolls_completed_lines_without_cursor_addressing() {
     let mut screen = pty::Screen::new(6, 20);
-    screen.place(5, 0, "prompt");
-    screen.feed(b"\r\n");
+    screen.place(0, 0, "prompt");
+    screen.feed(b"\r\nline one\r\nline two\r\n");
+    assert_eq!(screen.find_row("prompt"), Some(0), "{}", screen.text());
+    assert_eq!(screen.find_row("line one"), Some(1), "{}", screen.text());
+    assert_eq!(screen.row_text(2), "line two");
     assert_eq!(
-        screen.find_row("prompt"),
-        Some(4),
-        "a line feed at the bottom scrolls the full screen: {}",
-        screen.text()
+        screen.dsr_requests(),
+        0,
+        "append-only output never asks the terminal for its cursor"
     );
-    assert_eq!(screen.dsr_requests(), 0);
+}
 
-    screen.feed(b"\x1b[1;5r\x1b[4;1H\r\x1b[2Ktask one\r\n");
-    assert_eq!(screen.row_text(3), "task one");
-    screen.feed("\x1b7\x1b[6;1H\x1b[2K⠋ panel\x1b8".as_bytes());
-    assert_eq!(screen.row_text(5), "⠋ panel");
-    assert_eq!(
-        screen.cursor(),
-        (4, 0),
-        "the panel must not move the flow cursor: {}",
-        screen.text()
-    );
-    assert_eq!(screen.row_text(4), "prompt");
+/// Scans raw PTY bytes for the absolutely forbidden cursor/region/screen-control sequences.
+fn assert_append_only(output: &str, cols: usize) {
+    for forbidden in [
+        "\x1b[r",
+        "\x1b[2J",
+        "\x1b[J",
+        "\x1bc",
+        "\x1b[?1049",
+        "\x1b[?47",
+        "\x1b[?1047",
+        "\x1b[6n",
+    ] {
+        assert!(
+            !output.contains(forbidden),
+            "append-only boot output carried {forbidden:?}: {output:?}"
+        );
+    }
+    let bytes = output.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\r' {
+            if output[index + 1..].starts_with('\n') {
+                index += 2;
+                continue;
+            }
+            if output[index + 1..].starts_with("\x1b[2K") {
+                let start = index + 5;
+                let rest = &output[start..];
+                let end = rest.find(['\r', '\n']).unwrap_or(rest.len());
+                let line = &rest[..end];
+                if !rest[end..].starts_with("\r\x1b[2K") && !rest[end..].is_empty() {
+                    // A completed row reuses the clear prefix; only true status frames are sized.
+                    index = start;
+                    continue;
+                }
+                let width = console::measure_text_width(&strip_ansi(line));
+                assert!(
+                    width <= cols,
+                    "a status frame must fit the {cols}-column terminal ({width}): {line:?}"
+                );
+                index = start + end;
+                continue;
+            }
+            panic!(
+                "a bare carriage return that is not a `\\r\\x1b[2K` status frame: {:?}",
+                &output[index.saturating_sub(24)..]
+            );
+        }
+        if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'[') {
+            let mut end = index + 2;
+            while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b';') {
+                end += 1;
+            }
+            if end < bytes.len() && matches!(bytes[end], b'H' | b'f' | b'r' | b'J') {
+                panic!("append-only boot output addressed a screen cell: {output:?}");
+            }
+            index = end;
+            continue;
+        }
+        index += 1;
+    }
+}
 
-    screen.feed(b"\x1b[6n");
-    assert_eq!(screen.dsr_requests(), 1);
-    assert_eq!(screen.cursor(), (4, 0));
+/// Visible width after dropping every CSI/SGR sequence.
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for ch in chars.by_ref() {
+                if ('@'..='~').contains(&ch) {
+                    break;
+                }
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 #[test]
@@ -395,7 +466,7 @@ fn vt_grid_prompt_survives_up_restart_down_and_fork() {
         );
         assert!(
             row <= 38,
-            "`slipfork {args:?}` left the prompt on the panel row: {}",
+            "`slipfork {args:?}` left the prompt inside the status line: {}",
             run.screen.text()
         );
         if seed_row == 2 {
@@ -406,18 +477,26 @@ fn vt_grid_prompt_survives_up_restart_down_and_fork() {
                 run.screen.text()
             );
         }
-        // The anchored pane must really have asked the terminal and applied the region; a pane
-        // that never ran would let the prompt assertions pass with nothing on screen.
-        if args[0] != "down" {
+        // The shipped renderer must be append-only: no region, cursor probe, clear, or park.
+        assert_append_only(&run.output, usize::from(pty::COLS));
+        assert!(
+            run.output.ends_with('\n'),
+            "exit writes nothing after the final newline-terminated row: {:?}",
+            run.output
+        );
+        if args[0] == "up" {
+            let plain = strip_ansi(&run.output).replace('\r', "");
             assert!(
-                run.screen.dsr_requests() > 0,
-                "`slipfork {args:?}` never probed the cursor: {:?}",
-                run.output
+                plain.contains("error:"),
+                "`slipfork up` must reach a typed error: {plain:?}"
             );
-            assert!(
-                run.output.contains("\x1b[1;39r"),
-                "`slipfork {args:?}` never installed the DECSTBM region: {:?}",
-                run.output
+            assert_eq!(
+                plain
+                    .lines()
+                    .filter(|line| line.starts_with("next:"))
+                    .count(),
+                1,
+                "the typed error carries exactly one next: remedy: {plain:?}"
             );
         }
         // Off-Btrfs with no live world every verb must fail; a success here means the lab stopped
@@ -430,4 +509,111 @@ fn vt_grid_prompt_survives_up_restart_down_and_fork() {
             run.output
         );
     }
+}
+
+/// M3.149: the real `up` boot pane must reach a typed failure, never `capacity overflow` from a
+/// full `[3/3]` bar. Reuses the seeded prompt PTY harness so the append-only status line really
+/// runs.
+#[test]
+fn up_never_panics_the_progress_bar_and_ends_with_a_typed_failure() {
+    let lab = Lab::new();
+    let root = lab.root.as_path();
+    std::fs::write(
+        root.join("Forkfile"),
+        "# forkfile: 0.1\nimage box from python:3.13-slim {\n  service api {\n    run: sleep 3600\n  }\n}\n",
+    )
+    .expect("write the progress Forkfile");
+
+    let mut command = tty_command(root);
+    command.args(["up"]);
+    let run = pty::run(command, Some((39, SEED)), None);
+    assert!(
+        !run.output.contains("panicked at"),
+        "`slipfork up` panicked instead of failing typed: {:?}",
+        run.output
+    );
+    assert!(
+        !run.status.success(),
+        "`slipfork up` must fail typed off-Btrfs:\n{}\nbytes: {:?}",
+        run.screen.text(),
+        run.output
+    );
+    let text = run.output.replace('\r', "");
+    assert!(
+        text.contains("error:"),
+        "the run ends with a typed error line: {text:?}"
+    );
+    assert!(
+        text.contains("next:"),
+        "the typed error carries its next: remedy: {text:?}"
+    );
+}
+
+/// `__ingress --listen` on an already-bound port emits one plain `error:` + `next:` pair whose
+/// strings are exactly the `--json` `{"error":{code,message,next}}` projection.
+#[test]
+fn an_ingress_bind_failure_is_plain_and_matches_its_json_projection() {
+    let root = scratch();
+    let holder = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a throwaway port");
+    let port = holder.local_addr().expect("read the throwaway port").port();
+    let address = format!("127.0.0.1:{port}");
+    let mut command = command(root.as_path());
+    command.args(["__ingress", "--listen", &address]);
+    let run = pty::run(command, None, None);
+    let text = run.output.replace('\r', "");
+    assert!(
+        !text.contains(ESCAPE),
+        "a NO_COLOR PTY must stay pure: {text:?}"
+    );
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    assert_eq!(lines.len(), 2, "one error line and one remedy: {text:?}");
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.starts_with("next:"))
+            .count(),
+        1,
+        "exactly one next: line: {text:?}"
+    );
+    let error_line = lines[0];
+    assert!(
+        error_line.starts_with(&format!("error: cannot bind {address}: ")),
+        "the bind error names the blocked address: {text:?}"
+    );
+    let next = "next: choose a free address or stop the process holding this port";
+    assert_eq!(lines[1], next, "{text:?}");
+    let message = error_line
+        .strip_prefix("error: ")
+        .expect("the human line carries the error prefix");
+    let remedy = next.strip_prefix("next: ").expect("the remedy prefix");
+    let terminal = Terminal {
+        cols: 80,
+        rows: 0,
+        mode: UiMode::Json,
+        stdin_tty: false,
+    };
+    let renderer = ReportRenderer::new(terminal, WallZone::fixed(0).expect("a utc fixture zone"));
+    let mut json = Vec::new();
+    let mut json_err = Vec::new();
+    renderer
+        .emit_to(
+            &Report::failure(Failure::new("ingress-bind", message, remedy)),
+            &mut json,
+            &mut json_err,
+        )
+        .expect("render the error projection");
+    assert!(json_err.is_empty(), "a json failure stays on stdout");
+    let projection: Value = serde_json::from_slice(&json).expect("one json object");
+    assert_eq!(projection["error"]["code"], "ingress-bind");
+    assert_eq!(projection["error"]["message"], message);
+    assert_eq!(projection["error"]["next"], remedy);
+    assert!(
+        !run.status.success(),
+        "a bind failure exits non-zero: {text:?}"
+    );
+    drop(holder);
+    std::fs::remove_dir_all(&root).expect("remove the scratch lab tree");
 }

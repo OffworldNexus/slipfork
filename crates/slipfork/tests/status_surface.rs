@@ -3,16 +3,24 @@
 //! The renderer journey feeds real `ps` JSON through the public typed renderer; the CLI cases run
 //! the real binary against a daemon-free `/var/tmp` runtime.
 
+#![recursion_limit = "256"]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use slipfork::boot::{Node, boot_widths, completed_row, elapsed_text, pane_geometry, status_line};
+use slipfork::boot::{
+    BarProgress, completed_row, outer_verb, outer_widths, pane_geometry, panel_line,
+};
 use slipfork::status::{self, Options};
-use slipfork::ui::table::{ColumnWidths, visible_width};
-use slipfork_world::LogStore;
+use slipfork::ui::elapsed_text;
+use slipfork::ui::report::visible_width;
+use slipfork::ui::report::{Counter, Done, Outcome, Row};
+use slipfork_world::{
+    ForkLedger, ForkName, ForkRequest, LogStore, RootRequest, StatePaths, WorldName,
+};
 
 #[test]
 fn mountinfo_unescapes_octal_and_picks_the_longest_containing_mount() {
@@ -84,20 +92,18 @@ fn mountinfo_unescapes_octal_and_picks_the_longest_containing_mount() {
 
 const ANSI: &str = "\u{1b}[";
 
-/// Measures the six boot columns over the same four leading cells the live plan carries.
-fn plan_widths(nodes: &[&Node<'_>]) -> ColumnWidths {
-    let rows: Vec<Vec<String>> = nodes
+/// Measures the outer kind and target columns over the complete planned row set.
+fn plan_widths(rows: &[&Row]) -> slipfork::boot::OuterWidths {
+    let rows: Vec<(String, String)> = rows
         .iter()
-        .map(|node| {
-            vec![
-                String::new(),
-                node.kind.to_owned(),
-                node.name.to_owned(),
-                node.state.to_lowercase(),
-            ]
+        .map(|row| {
+            (
+                row.keyword.clone().unwrap_or_default(),
+                row.target.clone().unwrap_or_default(),
+            )
         })
         .collect();
-    boot_widths(&rows)
+    outer_widths(&rows)
 }
 
 /// Removes every `ESC[ … m` sequence, leaving the visible cells.
@@ -128,94 +134,86 @@ fn column_start(line: &str, needle: &str) -> usize {
 }
 
 #[test]
-fn every_boot_row_keeps_one_start_per_role_and_one_right_edge() {
+fn every_boot_row_keeps_one_start_per_role_and_carries_its_plan_counter() {
     let long = format!("service-{}", "x".repeat(20));
     assert_eq!(long.chars().count(), 28);
-    let nodes = vec![
-        Node {
-            kind: "pg",
-            name: "db",
-            state: "running",
-            millis: 7_300,
-            run_id: None,
-            success: true,
-        },
-        Node {
-            kind: "image",
-            name: "base",
-            state: "cached",
-            millis: 812,
-            run_id: None,
-            success: true,
-        },
-        Node {
-            kind: "service",
-            name: "api",
-            state: "running",
-            millis: 3,
-            run_id: None,
-            success: true,
-        },
-        Node {
-            kind: "service",
-            name: "web",
-            state: "starting",
-            millis: 12,
-            run_id: None,
-            success: true,
-        },
-        Node {
-            kind: "redis",
-            name: "cache",
-            state: "running",
-            millis: 45,
-            run_id: None,
-            success: true,
-        },
-        Node {
-            kind: "postgres",
-            name: "pg",
-            state: "running",
-            millis: 900,
-            run_id: None,
-            success: true,
-        },
-        Node {
-            kind: "service",
-            name: "worker",
-            state: "cached",
-            millis: 1,
-            run_id: None,
-            success: false,
-        },
-        Node {
-            kind: "service",
-            name: long.as_str(),
-            state: "running",
-            millis: 7_300,
-            run_id: None,
-            success: true,
-        },
-        Node {
-            kind: "service",
-            name: "docs",
-            state: "up to date",
-            millis: 3,
-            run_id: None,
-            success: false,
-        },
+    let rows = vec![
+        Row::settled(
+            Some(Counter { index: 1, total: 9 }),
+            "pg",
+            "db",
+            Outcome::Ok(Done::Running),
+            Some(7_300),
+        ),
+        Row::settled(
+            Some(Counter { index: 2, total: 9 }),
+            "image",
+            "base",
+            Outcome::Cached,
+            Some(812),
+        ),
+        Row::settled(
+            Some(Counter { index: 3, total: 9 }),
+            "service",
+            "api",
+            Outcome::Ok(Done::Running),
+            Some(3),
+        ),
+        Row::settled(
+            Some(Counter { index: 4, total: 9 }),
+            "service",
+            "web",
+            Outcome::Ok(Done::Running),
+            Some(12),
+        ),
+        Row::settled(
+            Some(Counter { index: 5, total: 9 }),
+            "redis",
+            "cache",
+            Outcome::Ok(Done::Running),
+            Some(45),
+        ),
+        Row::settled(
+            Some(Counter { index: 6, total: 9 }),
+            "postgres",
+            "pg",
+            Outcome::Ok(Done::Running),
+            Some(900),
+        ),
+        Row::settled(
+            Some(Counter { index: 7, total: 9 }),
+            "hook",
+            "worker:pre-deploy",
+            Outcome::Ok(Done::Declined),
+            Some(1),
+        ),
+        Row::settled(
+            Some(Counter { index: 8, total: 9 }),
+            "service",
+            &long,
+            Outcome::Ok(Done::Running),
+            Some(7_300),
+        ),
+        Row::settled(
+            Some(Counter { index: 9, total: 9 }),
+            "setup",
+            "docs",
+            Outcome::Ok(Done::Declined),
+            Some(3),
+        ),
     ];
-    let widths = plan_widths(&nodes.iter().collect::<Vec<_>>());
-    let plain: Vec<String> = nodes
+    let total = rows.len();
+    let widths = plan_widths(&rows.iter().collect::<Vec<_>>());
+    let plain: Vec<String> = rows
         .iter()
-        .map(|node| completed_row(node, &widths, false))
+        .map(|row| completed_row(row, &widths, slipfork::ui::report::Palette::new(false)))
         .collect();
-    let styled: Vec<String> = nodes
+    let styled: Vec<String> = rows
         .iter()
-        .map(|node| completed_row(node, &widths, true))
+        .map(|row| completed_row(row, &widths, slipfork::ui::report::Palette::new(true)))
         .collect();
 
-    for (index, node) in nodes.iter().enumerate() {
+    for (index, row) in rows.iter().enumerate() {
         assert!(
             !plain[index].contains(ANSI),
             "row {index} is plain: {:?}",
@@ -231,26 +229,26 @@ fn every_boot_row_keeps_one_start_per_role_and_one_right_edge() {
             visible, plain[index],
             "row {index} styles without moving a cell"
         );
+        let counter = format!("[{}/{total}]", index + 1);
+        let verb = outer_verb(row.keyword.as_deref().expect("a planned keyword"));
+        let name = row.target.as_deref().expect("a planned target");
+        let state = row.state.plain();
         for line in [&plain[index], &visible] {
+            assert!(line.contains(&counter), "missing `{counter}` on `{line}`");
             assert_eq!(
-                column_start(line, node.kind),
+                column_start(line, verb),
                 column_start(&plain[0], "pg"),
                 "kind start drifts on `{line}`"
             );
             assert_eq!(
-                column_start(line, node.name),
+                column_start(line, name),
                 column_start(&plain[1], "base"),
                 "name start drifts on `{line}`"
             );
             assert_eq!(
-                column_start(line, node.state),
+                column_start(line, &state),
                 column_start(&plain[1], "cached"),
                 "state start drifts on `{line}`"
-            );
-            assert_eq!(
-                visible_width(line.trim_end()),
-                visible_width(plain[1].trim_end()),
-                "duration right edge drifts on `{line}`"
             );
         }
     }
@@ -260,53 +258,49 @@ fn every_boot_row_keeps_one_start_per_role_and_one_right_edge() {
 
 #[test]
 fn the_live_boot_pane_renders_exact_rows_and_bars() {
-    let node = Node {
-        kind: "image",
-        name: "base",
-        state: "Cached",
-        millis: 420,
-        run_id: None,
-        success: true,
-    };
-    let widths = plan_widths(&[&node]);
+    let row = Row::settled(
+        Some(Counter { index: 1, total: 3 }),
+        "image",
+        "base",
+        Outcome::Cached,
+        Some(420),
+    );
+    let widths = plan_widths(&[&row]);
     assert_eq!(
-        completed_row(&node, &widths, true),
-        "\u{1b}[32m✓\u{1b}[0m  \u{1b}[2mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  \u{1b}[36mcached\u{1b}[0m   \u{1b}[2m420ms\u{1b}[0m"
+        completed_row(&row, &widths, slipfork::ui::report::Palette::new(true)),
+        "\u{1b}[32m✓\u{1b}[0m \u{1b}[38;5;244m[1/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  \u{1b}[32mcached\u{1b}[0m  \u{1b}[38;5;244m420ms\u{1b}[0m"
     );
     assert_eq!(
-        completed_row(&node, &widths, false),
-        "✓  image  base  cached   420ms"
+        completed_row(&row, &widths, slipfork::ui::report::Palette::new(false)),
+        "✓ [1/3] image  base  cached  420ms"
     );
-    assert!(!completed_row(&node, &widths, false).contains(ANSI));
-    assert!(!completed_row(&node, &widths, false).contains('\r'));
-
-    let cached = Node {
-        state: "Up-to-date",
-        run_id: None,
-        success: false,
-        ..node
-    };
-    let widths = plan_widths(&[&cached]);
-    assert_eq!(
-        completed_row(&cached, &widths, true),
-        "\u{1b}[2m•\u{1b}[0m  \u{1b}[2mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  \u{1b}[36mup-to-date\u{1b}[0m   \u{1b}[2m420ms\u{1b}[0m"
-    );
-    assert_eq!(
-        completed_row(&cached, &widths, false),
-        "•  image  base  up-to-date   420ms"
-    );
-
-    // A malformed frame fails closed instead of inventing `step`/`ready`/`0` fiction.
     assert!(
-        Node::from_event(&json!({ "event": "finished" })).is_none(),
-        "a frame without kind/name/duration must not render a row"
+        !completed_row(&row, &widths, slipfork::ui::report::Palette::new(false)).contains(ANSI)
     );
-    let real_frame = json!({
-        "event": "finished", "kind": "image", "name": "base",
-        "state": "Cached", "duration_ms": 420,
-    });
-    let real = Node::from_event(&real_frame).expect("a complete frame parses");
-    assert_eq!(real, node);
+    assert!(
+        !completed_row(&row, &widths, slipfork::ui::report::Palette::new(false)).contains('\r')
+    );
+
+    let declined = Row::settled(
+        Some(Counter { index: 2, total: 3 }),
+        "image",
+        "base",
+        Outcome::Ok(Done::Declined),
+        Some(420),
+    );
+    let widths = plan_widths(&[&declined]);
+    assert_eq!(
+        completed_row(&declined, &widths, slipfork::ui::report::Palette::new(true)),
+        "\u{1b}[38;5;244m•\u{1b}[0m \u{1b}[38;5;244m[2/3]\u{1b}[0m \u{1b}[35mimage\u{1b}[0m  \u{1b}[1mbase\u{1b}[0m  \u{1b}[32mup to date\u{1b}[0m  \u{1b}[38;5;244m420ms\u{1b}[0m"
+    );
+    assert_eq!(
+        completed_row(
+            &declined,
+            &widths,
+            slipfork::ui::report::Palette::new(false)
+        ),
+        "• [2/3] image  base  up to date  420ms"
+    );
 
     assert_eq!(elapsed_text(0), "<1ms");
     assert_eq!(elapsed_text(420), "420ms");
@@ -317,10 +311,13 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
     assert_eq!(pane_geometry(79), None);
 
     let elapsed = Duration::from_millis(1_200);
-    let panel = status_line('-', 6, 10, "Starting api…", elapsed, 120);
+    let six_of_ten = BarProgress::outer(6, 10);
+    let panel =
+        console::strip_ansi_codes(&panel_line('-', six_of_ten, "Starting api…", elapsed, 120))
+            .into_owned();
     assert_eq!(
         panel,
-        "- [##############..........]  6/10  60% · Starting api… · 1.2s"
+        "- [██████████████░░░░░░░░░░]   6/10  60% · Starting api… · 1.2s"
     );
     let cells = panel
         .split_once('[')
@@ -328,36 +325,60 @@ fn the_live_boot_pane_renders_exact_rows_and_bars() {
         .map(|(cells, _)| cells)
         .expect("the panel keeps its bar");
     assert_eq!(cells.chars().count(), 24, "{panel}");
-    assert_eq!(cells.matches('#').count(), 14, "{panel}");
+    assert_eq!(cells.matches('█').count(), 14, "{panel}");
     assert_eq!(
-        status_line('-', 6, 10, "Starting api…", elapsed, 40),
-        "- 6/10  60% · Starting api… · 1.2s"
+        console::strip_ansi_codes(&panel_line('-', six_of_ten, "Starting api…", elapsed, 40))
+            .into_owned(),
+        "-  6/10  60% · Starting api… · 1.2s"
     );
     assert_eq!(
-        status_line('-', 6, 10, "Starting api…", elapsed, 79),
-        "- 6/10  60% · Starting api… · 1.2s"
+        console::strip_ansi_codes(&panel_line('-', six_of_ten, "Starting api…", elapsed, 79))
+            .into_owned(),
+        "-  6/10  60% · Starting api… · 1.2s"
     );
     assert!(!panel.contains(ANSI), "{panel}");
     assert!(!panel.contains('\r'), "{panel}");
 
+    let mid_build = console::strip_ansi_codes(&panel_line(
+        '⠸',
+        BarProgress {
+            done: 0,
+            total: 2,
+            num: 2,
+            den: 8,
+        },
+        "[1/2] image api · step 3/4 RUN",
+        Duration::from_millis(200),
+        110,
+    ))
+    .into_owned();
+    assert_eq!(
+        mid_build,
+        "⠸ [██████░░░░░░░░░░░░░░░░░░]  0/2  25% · [1/2] image api · step 3/4 RUN · 0.2s"
+    );
+
     for spinner in ['|', '/', '-', '\\'] {
-        let line = status_line(
+        let raw = panel_line(
             spinner,
-            3,
-            10,
+            BarProgress::outer(3, 10),
             "Restarting api…",
             Duration::from_millis(50),
             80,
         );
+        assert!(
+            raw.contains('\u{1b}'),
+            "the styled build keeps its SGR: {raw:?}"
+        );
+        let line = console::strip_ansi_codes(&raw).into_owned();
         assert!(line.starts_with(spinner), "{line}");
-        assert!(!line.contains(ANSI) && !line.contains('\r'), "{line}");
+        assert!(!line.contains('\u{1b}') && !line.contains('\r'), "{line}");
         let cells = line
             .split_once('[')
             .and_then(|(_, rest)| rest.split_once(']'))
             .map(|(bar, _)| bar)
-            .unwrap_or_else(|| panic!("the ASCII line keeps its bar: {line}"));
+            .unwrap_or_else(|| panic!("the plain line keeps its bar: {line}"));
         assert_eq!(
-            cells.matches('#').count() + cells.matches('.').count(),
+            cells.matches('█').count() + cells.matches('░').count(),
             24,
             "{line}"
         );
@@ -381,7 +402,7 @@ fn orphaned_pods_render_yellow_and_serialize() {
     assert!(plain.contains("orphaned"), "{plain}");
     let coloured = status::render(&orphaned, &Options::new(true));
     assert!(
-        coloured.contains("\u{1b}[1;33morphaned\u{1b}[0m"),
+        coloured.contains("\u{1b}[33morphaned\u{1b}[0m"),
         "orphaned must be bold yellow: {coloured}"
     );
     let value = serde_json::to_value(&orphaned).expect("ps reply serializes");
@@ -489,9 +510,9 @@ fn the_tree_contract_holds_for_every_row_shape() {
         ("  ├─ http://assets.demo.localhost", ""),
         ("  │  └─ /     ->  assets   s3 (public-read)", "running"),
         ("  └─ support", ""),
-        ("     ├─ worker  service", "running"),
-        ("     ├─ pg      postgres 18", "running"),
-        ("     └─ cache   redis 7", "running"),
+        ("     ├─ service      worker", "running"),
+        ("     ├─ postgres 18  pg", "running"),
+        ("     └─ redis 7      cache", "running"),
     ] {
         let line = text
             .lines()
@@ -531,10 +552,10 @@ fn crashed_rows_render_a_bold_red_failed_state() {
         }]
     }));
     let plain = status::render(&reply, &Options::new(false));
-    assert!(plain.contains("postgres 18  failed"), "{plain}");
-    assert!(plain.contains("s3 (private)  failed"), "{plain}");
+    assert!(plain.contains("postgres 18  pg  failed"), "{plain}");
+    assert!(plain.contains("uploads  s3 (private)  failed"), "{plain}");
     let colored = status::render(&reply, &Options::new(true));
-    assert!(colored.contains("\u{1b}[1;31mfailed\u{1b}[0m"), "{colored}");
+    assert!(colored.contains("\u{1b}[31mfailed\u{1b}[0m"), "{colored}");
 }
 
 #[test]
@@ -558,7 +579,7 @@ fn mixed_short_and_long_names_keep_the_columns_aligned() {
             .unwrap_or_else(|| panic!("no running row for {needle}: {text}"))
     };
     assert_eq!(
-        state_column("─ api"),
+        state_column("service  api "),
         state_column("an-extremely-long-service-name"),
         "{text}"
     );
@@ -580,12 +601,8 @@ fn a_forty_character_fork_name_never_shears() {
                 "world": format!("{long}--demo"),
                 "fork": long,
                 "url": format!("http://{long}--demo.localhost"),
-                "supervisor_pid": 2, "alive": true, "booting": false,
-                "services": [{ "id": "api", "kind": "service", "running": true, "port": 8000 }]
-            }],
-            "stopped_forks": [{
-                "name": long,
-                "path": format!("/home/me/demo/.forks/{long}")
+                "state": "stopped", "alive": false, "booting": false,
+                "services": []
             }]
         }]
     }));
@@ -612,6 +629,316 @@ fn a_forty_character_fork_name_never_shears() {
         column_start(live, "~/demo"),
         "a long stopped fork keeps the world path column: {text}"
     );
+}
+
+#[test]
+fn scoping_the_project_root_keeps_the_three_deep_tree_once() {
+    let root = scratch("scope-lineage");
+    let demo = root.join("demo");
+    let forks = demo.join(".forks");
+    for path in [
+        &demo,
+        &forks.join("bonjour"),
+        &forks.join("salut"),
+        &forks.join("merci"),
+    ] {
+        fs::create_dir_all(path).expect("create the lab project");
+        fs::write(path.join("Forkfile"), "# forkfile: 0.1\n").expect("write the Forkfile");
+    }
+    let mut bonjour = slipfork::ps::PsWorld {
+        project: forks.join("bonjour"),
+        path: forks.join("bonjour"),
+        world: "bonjour--demo".to_owned(),
+        fork: Some("bonjour".to_owned()),
+        state: slipfork::ps::PsWorldState::Stopped,
+        lineage: vec!["demo".to_owned()],
+        ..slipfork::ps::PsWorld::default()
+    };
+    let mut salut = slipfork::ps::PsWorld {
+        project: forks.join("salut"),
+        path: forks.join("salut"),
+        world: "salut--demo".to_owned(),
+        fork: Some("salut".to_owned()),
+        lineage: vec!["bonjour".to_owned(), "demo".to_owned()],
+        ..slipfork::ps::PsWorld::default()
+    };
+    let merci = slipfork::ps::PsWorld {
+        project: forks.join("merci"),
+        path: forks.join("merci"),
+        world: "merci--demo".to_owned(),
+        fork: Some("merci".to_owned()),
+        lineage: vec!["salut".to_owned(), "bonjour".to_owned(), "demo".to_owned()],
+        ..slipfork::ps::PsWorld::default()
+    };
+    salut.forks.push(merci);
+    bonjour.forks.push(salut);
+    let mut reply = slipfork::ps::PsReply::default();
+    let mut root_row = slipfork::ps::PsWorld {
+        project: demo.clone(),
+        path: demo.clone(),
+        world: "demo".to_owned(),
+        ..slipfork::ps::PsWorld::default()
+    };
+    root_row.forks.push(bonjour);
+    reply.worlds.push(root_row);
+
+    let scoped = status::scope(&reply, &slipfork_world::ProjectScope::resolve(&demo));
+    let names: Vec<&str> = scoped.worlds[0]
+        .forks
+        .iter()
+        .map(|fork| fork.fork.as_deref().unwrap_or("root"))
+        .collect();
+    assert_eq!(
+        names,
+        vec!["bonjour"],
+        "the tree keeps its shape: {scoped:?}"
+    );
+    assert_eq!(scoped.worlds[0].forks[0].forks.len(), 1);
+    let inside = status::scope(
+        &reply,
+        &slipfork_world::ProjectScope::resolve(&forks.join("salut")),
+    );
+    assert!(
+        inside.worlds[0].forks.is_empty(),
+        "one fork only: {inside:?}"
+    );
+    assert_eq!(inside.worlds[0].fork.as_deref(), Some("salut"));
+    let text = status::render(&scoped, &Options::new(false).with_home(Some(root.clone())));
+    let headers = |name: &str| {
+        text.lines()
+            .filter(|line| {
+                line.starts_with(&format!("● {name} ")) || line.starts_with(&format!("○ {name} "))
+            })
+            .count()
+    };
+    for name in ["bonjour", "salut", "merci"] {
+        assert_eq!(headers(name), 1, "{name} renders exactly once: {text}");
+    }
+    fs::remove_dir_all(&root).expect("remove the scratch lab");
+}
+
+#[test]
+fn a_three_deep_lineage_prints_dim_left_arrows() {
+    let reply = reply(json!({
+        "worlds": [{
+            "project": "/home/me/test1", "path": "/home/me/test1", "world": "test1",
+            "url": "http://test1.localhost", "supervisor_pid": 1, "alive": true,
+            "booting": false,
+            "services": [],
+            "forks": [{
+                "project": "/home/me/test1/.forks/bonjour",
+                "path": "/home/me/test1/.forks/bonjour",
+                "world": "bonjour--test1", "fork": "bonjour",
+                "url": "http://bonjour--test1.localhost",
+                "supervisor_pid": 2, "alive": true, "booting": false,
+                "lineage": ["test1"],
+                "services": [],
+                "forks": [{
+                    "project": "/home/me/test1/.forks/salut",
+                    "path": "/home/me/test1/.forks/salut",
+                    "world": "salut--test1", "fork": "salut",
+                    "url": "http://salut--test1.localhost",
+                    "supervisor_pid": 3, "alive": true, "booting": false,
+                    "lineage": ["bonjour", "test1"],
+                    "services": [],
+                    "forks": [{
+                        "project": "/home/me/test1/.forks/merci",
+                        "path": "/home/me/test1/.forks/merci",
+                        "world": "merci--test1", "fork": "merci",
+                        "url": "http://merci--test1.localhost",
+                        "supervisor_pid": 4, "alive": true, "booting": false,
+                        "lineage": ["salut", "bonjour", "test1"],
+                        "services": []
+                    }]
+                }]
+            }]
+        }]
+    }));
+    let home = Some(PathBuf::from("/home/me"));
+    let text = status::render(&reply, &Options::new(false).with_home(home.clone()));
+    for (name, lineage) in [
+        ("bonjour", "← test1"),
+        ("salut", "← bonjour ← test1"),
+        ("merci", "← salut ← bonjour ← test1"),
+    ] {
+        let line = text
+            .lines()
+            .find(|line| line.starts_with(&format!("● {name} ")))
+            .unwrap_or_else(|| panic!("missing the {name} header: {text}"));
+        assert!(line.ends_with(lineage), "{name} lineage: {line}");
+    }
+    assert!(
+        !text.contains(ANSI),
+        "lineage is plain without colour: {text}"
+    );
+    let root = text
+        .lines()
+        .find(|line| line.starts_with("● test1"))
+        .expect("the root header");
+    assert!(!root.contains('←'), "a root has no lineage: {root}");
+    let coloured = status::render(&reply, &Options::new(true).with_home(home));
+    assert!(
+        coloured.contains("\u{1b}[38;5;244m← bonjour ← test1\u{1b}[0m"),
+        "lineage must be dim: {coloured}"
+    );
+}
+
+#[test]
+fn the_offline_reader_renders_the_ledger_and_splices_a_dropped_parent() {
+    let root = scratch("offline-ledger");
+    let project = root.join("test1");
+    for name in ["bonjour", "salut", "merci", "ghost"] {
+        let checkout = project.join(".forks").join(name);
+        fs::create_dir_all(&checkout).expect("create the fork checkout");
+        fs::write(
+            checkout.join("Forkfile"),
+            format!("# forkfile: 0.1\n# {name}\n"),
+        )
+        .expect("write the fork Forkfile");
+    }
+    fs::write(project.join("Forkfile"), "# forkfile: 0.1\n# test1\n")
+        .expect("write the root Forkfile");
+    let state = root.join("state/slipfork");
+    fs::create_dir_all(&state).expect("create the state directory");
+    // `sun_path` is 108 bytes: the pods socket needs a short runtime directory.
+    let runtime = tempfile::Builder::new()
+        .prefix("sf")
+        .tempdir_in("/var/tmp")
+        .expect("create the runtime directory");
+    let paths = StatePaths::new(state.clone());
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(state.join("daemon.lock"))
+        .expect("open the daemon lock");
+    let ledger = ForkLedger::open_writer(paths, lock).expect("open the ledger writer");
+    let test1 = ledger
+        .register_root(RootRequest {
+            name: WorldName::parse("test1").expect("valid world name"),
+            checkout_path: project.clone(),
+            store_root: root.join("store"),
+            now_ms: 1,
+        })
+        .expect("register the root");
+    ledger.mark_stopped(test1.id, 2).expect("stop the root");
+    let mut parent = test1.id;
+    let mut bonjour_id = 0;
+    let now = |step: i64| 10 + step;
+    let fork = |name: &str, parent_id: i64, step: i64| {
+        ledger
+            .begin_fork(ForkRequest {
+                root_id: test1.id,
+                name: ForkName::parse(name).expect("valid fork name"),
+                parent_id,
+                runtime_dir: runtime.path().to_path_buf(),
+                branch: name.to_owned(),
+                now_ms: now(step),
+            })
+            .expect("begin the fork")
+    };
+    for (step, name) in ["bonjour", "salut", "merci"].into_iter().enumerate() {
+        let row = fork(name, parent, step as i64);
+        if name == "bonjour" {
+            bonjour_id = row.world_id;
+        }
+        ledger
+            .mark_stopped(row.world_id, now(step as i64 + 1))
+            .expect("stop the fork");
+        parent = row.world_id;
+    }
+    // A vanished checkout is the one `!` row; a `creating` row is not a world yet.
+    let ghost = fork("ghost", test1.id, 8);
+    ledger
+        .mark_stopped(ghost.world_id, now(9))
+        .expect("stop ghost");
+    ledger
+        .mark_broken(
+            ghost.world_id,
+            "checkout missing — run `slipfork drop ghost`",
+            now(10),
+        )
+        .expect("mark ghost broken");
+    fs::remove_dir_all(project.join(".forks/ghost")).expect("remove the ghost checkout");
+    let wip = fork("wip", test1.id, 11);
+    assert_eq!(wip.name, "wip", "the half-created fork stays `creating`");
+
+    // The pure reader: root first, lineage immediate-parent-first, and no phantom rows.
+    let reply = status::offline(&state).expect("read the ledger");
+    assert_eq!(reply.worlds.len(), 1, "one root: {reply:?}");
+    let salut = reply.worlds[0].forks[0].forks[0].clone();
+    assert_eq!(salut.fork.as_deref(), Some("salut"));
+    assert_eq!(
+        salut.lineage,
+        vec!["bonjour".to_owned(), "test1".to_owned()]
+    );
+    let merci = salut.forks[0].clone();
+    assert_eq!(
+        merci.lineage,
+        vec!["salut".to_owned(), "bonjour".to_owned(), "test1".to_owned()]
+    );
+    let home = Some(root.clone());
+    let text = status::render(&reply, &Options::new(false).with_home(home.clone()));
+    assert!(
+        text.contains("○ salut") && text.contains("stopped  ← bonjour ← test1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("✗ ghost") && text.contains("! checkout missing — run `slipfork drop ghost`"),
+        "{text}"
+    );
+    assert_eq!(text.matches("! checkout missing").count(), 1, "{text}");
+    assert!(!text.contains("wip") && !text.contains(ANSI), "{text}");
+    assert!(
+        reply.worlds[0]
+            .forks
+            .iter()
+            .all(|fork| fork.fork.as_deref() != Some("wip")),
+        "a creating row is not a world yet: {reply:?}"
+    );
+
+    // The CLI with no daemon reads the same rows; `--json` keeps the typed schema unchanged.
+    let output = isolated(&root, &["status"]);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("status is UTF-8");
+    assert!(
+        stdout.contains("○ test1") && stdout.contains("← bonjour ← test1"),
+        "{stdout}"
+    );
+    let json = isolated(&root, &["status", "--json"]);
+    let parsed: Value = serde_json::from_slice(&json.stdout).expect("status --json parses");
+    assert_eq!(parsed["worlds"][0]["world"], "test1");
+    assert_eq!(parsed["worlds"][0]["forks"][0]["fork"], "bonjour");
+    assert!(parsed["worlds"][0].get("stopped_forks").is_none());
+
+    // Dropping `bonjour` splices `salut` to the root; `merci` keeps re-parented lineage.
+    ledger
+        .delete_world_row(bonjour_id)
+        .expect("drop bonjour splices its child");
+    let spliced = status::offline(&state).expect("read the spliced ledger");
+    let salut = spliced.worlds[0]
+        .forks
+        .iter()
+        .find(|fork| fork.fork.as_deref() == Some("salut"))
+        .expect("salut is reparented onto the root")
+        .clone();
+    assert_eq!(salut.fork.as_deref(), Some("salut"));
+    assert_eq!(
+        salut.lineage,
+        vec!["test1".to_owned()],
+        "salut is re-parented"
+    );
+    assert_eq!(
+        salut.forks[0].lineage,
+        vec!["salut".to_owned(), "test1".to_owned()],
+        "merci follows the splice"
+    );
+    let text = status::render(&spliced, &Options::new(false).with_home(home));
+    assert!(text.contains("stopped  ← test1"), "{text}");
+
+    drop(ledger);
+    fs::remove_dir_all(&root).expect("remove the scratch lab");
 }
 
 #[test]
@@ -659,6 +986,26 @@ fn the_empty_state_is_dim_and_exits_zero() {
             "○ No worlds running\n"
         );
     }
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_unreadable_ledger_fails_closed_with_one_remedy() {
+    let root = scratch("bad-ledger");
+    // `state.db` exists but is not a database: the reader must name it, never print an empty tree.
+    fs::create_dir_all(root.join("state/slipfork/state.db"))
+        .expect("plant a directory at the path");
+    let output = isolated(&root, &["status"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stderr.matches("error:").count(), 1, "{stderr}");
+    assert_eq!(stderr.matches("next:").count(), 1, "{stderr}");
+    assert!(stderr.contains("state.db"), "{stderr}");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("No worlds running"));
+    let json = isolated(&root, &["status", "--json"]);
+    let parsed: Value = serde_json::from_slice(&json.stdout).expect("the error object parses");
+    assert_eq!(parsed["error"]["code"], "status-ledger");
+    assert!(parsed["error"]["next"].is_string(), "{parsed}");
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -862,16 +1209,22 @@ fn stopped_forks_and_honest_problems_render_without_fabrication() {
             "url": "http://demo.localhost", "supervisor_pid": 11, "alive": true,
             "booting": false,
             "services": [{ "id": "api", "kind": "service", "running": true }],
-            "stopped_forks": [{
-                "name": "feat-auth",
-                "path": "/home/me/demo/.forks/feat-auth"
+            "forks": [{
+                "project": "/home/me/demo/.forks/feat-auth",
+                "path": "/home/me/demo/.forks/feat-auth",
+                "world": "feat-auth--demo",
+                "fork": "feat-auth",
+                "url": "http://feat-auth--demo.localhost",
+                "state": "stopped", "alive": false, "booting": false,
+                "lineage": ["demo"],
+                "services": []
             }]
         }]
     }));
     let plain = status::render(&stopped, &Options::new(false).with_home(home.clone()));
     assert!(
-        plain.contains("○ feat-auth  ~/demo/.forks/feat-auth  stopped"),
-        "a stopped fork renders one dim row with its shortened path: {plain}"
+        plain.contains("○ feat-auth  ~/demo/.forks/feat-auth  stopped  ← demo"),
+        "a stopped ledger row renders dim with its lineage: {plain}"
     );
     assert!(
         plain.contains("api") && plain.contains("running"),
@@ -882,8 +1235,11 @@ fn stopped_forks_and_honest_problems_render_without_fabrication() {
         "plain renders emit zero ANSI: {plain}"
     );
     let coloured = status::render(&stopped, &Options::new(true).with_home(home.clone()));
-    assert!(coloured.contains("\u{1b}[2m○ "), "{coloured}");
-    assert!(coloured.contains("\u{1b}[2mstopped\u{1b}[0m"), "{coloured}");
+    assert!(coloured.contains("\u{1b}[38;5;244m○ "), "{coloured}");
+    assert!(
+        coloured.contains("\u{1b}[33mstopped\u{1b}[0m"),
+        "{coloured}"
+    );
     // A cwd outside any project root fails closed: no legacy path match resurrects a row.
     assert!(
         status::scope(
@@ -914,24 +1270,86 @@ fn stopped_forks_and_honest_problems_render_without_fabrication() {
         "a live pod must stay running under an invalid Forkfile: {text}"
     );
 
+    // A broken row is one `!` line and one remedy: no `✗` sub-rows, no fabricated `orphaned`.
     let missing = reply(json!({
         "worlds": [{
-            "project": "/home/me/demo", "path": "/home/me/demo", "world": "demo",
-            "url": "http://demo.localhost", "supervisor_pid": 11, "alive": true,
-            "booting": false,
+            "project": "/home/me/demo/.forks/feat-auth",
+            "path": "/home/me/demo/.forks/feat-auth",
+            "world": "feat-auth--demo", "fork": "feat-auth",
+            "url": "http://feat-auth--demo.localhost",
+            "state": "broken", "alive": false, "booting": false,
+            "lineage": ["demo"],
             "problem": "checkout missing — run `slipfork drop feat-auth`",
-            "services": []
+            "services": [
+                { "id": "api", "kind": "service", "running": true },
+                { "id": "worker", "kind": "service", "running": true, "orphaned": true }
+            ]
         }]
     }));
-    let text = status::render(&missing, &Options::new(false));
+    let text = status::render(&missing, &Options::new(false).with_home(home.clone()));
+    assert_eq!(
+        text.lines().count(),
+        2,
+        "one header plus one problem: {text}"
+    );
     assert!(
         text.contains("! checkout missing — run `slipfork drop feat-auth`"),
         "{text}"
     );
-    assert!(!text.contains("orphaned"), "no fabricated rows: {text}");
+    assert_eq!(text.matches("checkout missing").count(), 1, "{text}");
+    assert!(
+        !text.contains("api") && !text.contains("orphaned"),
+        "{text}"
+    );
+    let coloured = status::render(&missing, &Options::new(true).with_home(home));
+    assert!(coloured.contains("\u{1b}[31m✗\u{1b}[0m"), "{coloured}");
+    assert!(coloured.contains("\u{1b}[31m! checkout"), "{coloured}");
+
+    // The wire owner stamps exactly one remedy; the renderer prints it verbatim.
+    assert_eq!(
+        slipfork::ps::with_remedy(
+            "checkout `/home/me/demo/.forks/feat-auth` is missing",
+            Some("feat-auth"),
+            "feat-auth--demo"
+        ),
+        "checkout `/home/me/demo/.forks/feat-auth` is missing — run `slipfork drop feat-auth`"
+    );
+    assert_eq!(
+        slipfork::ps::with_remedy(
+            "checkout missing — run `slipfork drop feat-auth`",
+            Some("feat-auth"),
+            "feat-auth--demo"
+        ),
+        "checkout missing — run `slipfork drop feat-auth`",
+        "an embedded remedy is never doubled"
+    );
+    assert_eq!(
+        slipfork::ps::with_remedy("ledger and disk disagree", None, "demo"),
+        "ledger and disk disagree — restore it or run `slipfork down demo`"
+    );
+    let bare = reply(json!({
+        "worlds": [{
+            "project": "/home/me/demo/.forks/feat-auth",
+            "path": "/home/me/demo/.forks/feat-auth",
+            "world": "feat-auth--demo", "fork": "feat-auth",
+            "url": "http://feat-auth--demo.localhost",
+            "state": "broken", "alive": false, "booting": false,
+            "problem": "checkout `/home/me/demo/.forks/feat-auth` is missing — run `slipfork drop feat-auth`",
+            "services": []
+        }]
+    }));
+    let text = status::render(&bare, &Options::new(false));
+    assert!(
+        text.contains(
+            "! checkout `/home/me/demo/.forks/feat-auth` is missing — run `slipfork drop feat-auth`"
+        ),
+        "{text}"
+    );
+    assert_eq!(text.matches("slipfork drop").count(), 1, "{text}");
 
     let value = serde_json::to_value(&stopped).expect("ps reply serializes");
-    assert_eq!(value["worlds"][0]["stopped_forks"][0]["name"], "feat-auth");
+    assert_eq!(value["worlds"][0]["forks"][0]["state"], "stopped");
+    assert_eq!(value["worlds"][0]["forks"][0]["lineage"][0], "demo");
     assert_eq!(
         value["worlds"][0]["services"][0]["running"], true,
         "JSON keeps the live service"
@@ -960,6 +1378,14 @@ fn a_stopped_fork_renders_after_every_live_world_tree() {
                 { "id": "worker", "kind": "service", "running": true }
             ],
             "forks": [{
+                "project": "/home/me/demo/.forks/tralala",
+                "path": "/home/me/demo/.forks/tralala",
+                "world": "tralala--demo",
+                "fork": "tralala",
+                "url": "http://tralala--demo.localhost",
+                "state": "stopped", "alive": false, "booting": false,
+                "services": []
+            }, {
                 "project": "/home/me/demo/.forks/feat-auth",
                 "path": "/home/me/demo/.forks/feat-auth",
                 "world": "feat-auth--demo",
@@ -968,8 +1394,7 @@ fn a_stopped_fork_renders_after_every_live_world_tree() {
                 "supervisor_pid": 12, "alive": true, "booting": false,
                 "services": [{ "id": "api", "kind": "service", "running": true, "port": 8000,
                                "routes": [{ "prefix": "/api", "port": 8000, "mode": "preserve" }] }]
-            }],
-            "stopped_forks": [{ "name": "tralala", "path": "/home/me/demo/.forks/tralala" }]
+            }]
         }]
     }));
     let text = status::render(
@@ -981,7 +1406,7 @@ fn a_stopped_fork_renders_after_every_live_world_tree() {
         "  ├─ http://demo.localhost\n",
         "  │  └─ /api  ->  api  running\n",
         "  └─ support\n",
-        "     └─ worker  service  running\n",
+        "     └─ service  worker  running\n",
         "\n",
         "● feat-auth  ~/demo/.forks/feat-auth\n",
         "  └─ http://feat-auth--demo.localhost\n",
@@ -1052,14 +1477,29 @@ fn a_down_root_still_scopes_running_forks_and_stopped_siblings_from_disk() {
         "the down root renders stopped"
     );
     assert_eq!(scoped.worlds[0].world, "demo");
-    assert_eq!(scoped.worlds[0].forks.len(), 1);
-    assert_eq!(scoped.worlds[0].forks[0].fork.as_deref(), Some("feat-auth"));
-    assert_eq!(
-        scoped.worlds[0].stopped_forks.len(),
-        1,
-        "a copied plain checkout is a stopped fork: {scoped:?}"
+    assert_eq!(scoped.worlds[0].forks.len(), 2);
+    assert!(
+        scoped.worlds[0]
+            .forks
+            .iter()
+            .any(|fork| fork.fork.as_deref() == Some("feat-auth")),
+        "the live fork stays a row: {scoped:?}"
     );
-    assert_eq!(scoped.worlds[0].stopped_forks[0].name, "youpi");
+    let stopped_fork = scoped.worlds[0]
+        .forks
+        .iter()
+        .find(|fork| fork.fork.as_deref() == Some("youpi"))
+        .expect("a copied plain checkout is a stopped fork row");
+    assert_eq!(
+        stopped_fork.state,
+        slipfork::ps::PsWorldState::Stopped,
+        "a disk-only fork is a stopped ledger row"
+    );
+    assert_eq!(
+        stopped_fork.lineage,
+        vec!["demo".to_owned()],
+        "a flat .forks checkout is a child of the root world"
+    );
     let text = status::render(&scoped, &options);
     assert!(text.contains("○ demo"), "{text}");
     assert!(text.contains("● feat-auth"), "{text}");

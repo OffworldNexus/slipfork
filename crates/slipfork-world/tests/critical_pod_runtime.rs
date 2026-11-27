@@ -15,7 +15,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use slipfork_image::{Architecture, Credentials, ImageLayout, ImageReference, OciPuller};
+use slipfork_image::{Architecture, ImageLayout, ImageReference, OciPuller, RegistryCredentials};
 use slipfork_world::{
     Bind, BindSource, BtrfsEngine, Dirtiness, ImageFacts, OutputKind, PodEnv, PodHost, PodSpec,
     PostgresLauncher, PostgresTemplate, RedisLauncher, ResourceKind, StoreLayout, Stream,
@@ -281,7 +281,7 @@ fn require_images(engine: &BtrfsEngine, run: &Path) -> Images {
     let puller = OciPuller::new(
         Arc::new(BtrfsEngine::new(StoreLayout::new(&cache))),
         ImageLayout::new(store.images_root()),
-        Credentials::Anonymous,
+        RegistryCredentials::default(),
         Architecture::from_oci(std::env::consts::ARCH)
             .unwrap_or_else(|| fail_closed("this host architecture has no OCI platform mapping")),
         format!("slipfork-tests/{}", env!("CARGO_PKG_VERSION")),
@@ -418,6 +418,7 @@ fn client_pod(
         env,
         binds: vec![project_bind(project)],
         files: Vec::new(),
+        identity: None,
     }
 }
 
@@ -441,12 +442,15 @@ fn wait_json(path: &Path, timeout: Duration) -> serde_json::Value {
     serde_json::from_slice(&bytes).expect("parse pod result")
 }
 
-fn collect_logs(supervisor: &WorldSupervisor, service: &str) -> (Vec<String>, Vec<String>) {
+fn collect_logs(
+    supervisor: &WorldSupervisor,
+    service: &str,
+) -> (Vec<(String, Stream)>, Vec<String>) {
     let mut lines = Vec::new();
     let mut dividers = Vec::new();
     let mut on_output = |event: slipfork_world::control::OutputEvent| match event.kind {
         OutputKind::Divider => dividers.push(event.line),
-        OutputKind::Line => lines.push(event.line),
+        OutputKind::Line => lines.push((event.line, event.stream)),
         OutputKind::Eof => {}
     };
     supervisor
@@ -606,6 +610,7 @@ fn world_pod_lifecycle() {
         env: Vec::new(),
         binds: Vec::new(),
         files: Vec::new(),
+        identity: None,
     };
     let mut out_lines = Vec::new();
     let mut err_lines = Vec::new();
@@ -640,6 +645,7 @@ fn world_pod_lifecycle() {
         env: Vec::new(),
         binds: vec![project_bind(&world_a.project)],
         files: Vec::new(),
+        identity: None,
     };
     supervisor_a
         .launch(&server)
@@ -688,31 +694,42 @@ fn world_pod_lifecycle() {
             "python3".to_owned(),
             "-u".to_owned(),
             "-c".to_owned(),
-            "print('printed', flush=True)\nimport time\ntime.sleep(120)".to_owned(),
+            "print('printed', flush=True)\nimport sys\nprint('printed-err', file=sys.stderr, flush=True)\nimport time\ntime.sleep(120)".to_owned(),
         ],
         inherited_env: images.toolbox_facts.env.clone(),
         env: Vec::new(),
         binds: vec![project_bind(&world_a.project)],
         files: Vec::new(),
+        identity: None,
     };
     supervisor_a
         .launch(&printer)
         .expect("launch the printer pod");
     let deadline = Instant::now() + Duration::from_secs(30);
-    let mut printed = false;
+    let mut printed = Vec::new();
     let mut dividers = Vec::new();
     while Instant::now() < deadline {
         let (lines, seen) = collect_logs(&supervisor_a, "m339print");
         dividers = seen;
-        if lines.iter().any(|line| line == "printed") {
-            printed = true;
+        if lines.iter().any(|(line, _)| line == "printed")
+            && lines.iter().any(|(line, _)| line == "printed-err")
+        {
+            printed = lines;
             break;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
     assert!(
-        printed,
-        "the detached pod's stdout must land in <pods>/logs/m339print.log"
+        printed
+            .iter()
+            .any(|(line, stream)| line == "printed" && *stream == Stream::Stdout),
+        "the detached pod's stdout must land in <pods>/logs/m339print.log as Stream::Stdout: {printed:?}"
+    );
+    assert!(
+        printed
+            .iter()
+            .any(|(line, stream)| line == "printed-err" && *stream == Stream::Stderr),
+        "the detached pod's stderr must replay as Stream::Stderr: {printed:?}"
     );
     assert!(
         dividers

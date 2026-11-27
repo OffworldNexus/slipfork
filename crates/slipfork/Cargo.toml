@@ -28,11 +28,27 @@ name = "critical_fork_live"
 path = "tests/critical_fork_live.rs"
 required-features = ["live"]
 
+[[test]]
+name = "critical_registry_live"
+path = "tests/critical_registry_live.rs"
+required-features = ["live"]
+
+[[test]]
+name = "critical_heads_live"
+path = "tests/critical_heads_live.rs"
+required-features = ["live"]
+
+[[test]]
+name = "image_rpc"
+path = "tests/image_rpc/main.rs"
+required-features = ["live"]
+
 [dependencies]
 base64.workspace = true
 clap.workspace = true
 getrandom.workspace = true
 hex.workspace = true
+jiff.workspace = true
 clap_complete.workspace = true
 clap_mangen.workspace = true
 console.workspace = true
@@ -40,6 +56,7 @@ crossterm.workspace = true
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 slipfork-forkfile = { path = "../slipfork-forkfile" }
 slipfork-image = { path = "../slipfork-image" }
 slipfork-ingress = { path = "../slipfork-ingress" }
@@ -49,10 +66,13 @@ slipfork-world = { path = "../slipfork-world" }
 tokio.workspace = true
 
 [dev-dependencies]
+flate2.workspace = true
 hmac.workspace = true
 hpke.workspace = true
 libc.workspace = true
 p256.workspace = true
+sea-orm.workspace = true
 sha2.workspace = true
+tar.workspace = true
 tempfile.workspace = true
 tungstenite.workspace = true

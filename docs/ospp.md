@@ -1,10 +1,10 @@
 # OSPP v1
 
-!!! warning "Pairing ships after 0.1.0"
+!!! warning "Pairing is not available in 0.1.1"
 
-    The pairing CLI returns in a later release; the wire contract below is unchanged.
+    The pairing CLI is not part of this release; the wire contract below is unchanged.
 
-This is the OSPP v1 wire contract that OSPP pairing uses once it returns; 0.1.0 ships local
+This is the OSPP v1 wire contract that OSPP pairing uses once it returns; 0.1.1 ships local
 `secret()` values only. A paired world receives the same `vars`, secrets and resources CI has —
 without `.env` files, pasted tokens, or a secret written to disk in the clear.
 

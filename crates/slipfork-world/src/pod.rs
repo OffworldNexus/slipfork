@@ -13,8 +13,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::error::{Error, NameKind, Result};
+use crate::identity::Identity;
 use crate::layout::validate_name;
-use crate::pod_env::{POD_HOME, materialise_home, merged_env, passwd_contents};
+use crate::pod_env::{
+    PodIdentityMapping, group_contents, materialise_home, merged_env, needs_home, passwd_contents,
+};
 use crate::secure_file::{ensure_private_dir, touch_private, write_private};
 
 /// OCI ids and hostnames share one lowercase bounded alphabet.
@@ -119,6 +122,9 @@ pub struct PodSpec {
     /// Files written into the bundle for [`BindSource::Bundle`].
     #[serde(default)]
     pub files: Vec<PodFile>,
+    /// Container identity to run as; `None` keeps the historical invoking-host identity.
+    #[serde(default)]
+    pub identity: Option<Identity>,
 }
 
 impl PodSpec {
@@ -220,8 +226,19 @@ pub fn write_bundle(spec: &PodSpec, host: &PodHost, dir: &Path) -> Result<PodBun
     for file in &spec.files {
         write_private(&dir.join(&file.name), file.contents.as_bytes())?;
     }
-    let passwd = dir.join("passwd");
-    write_private(&passwd, passwd_contents(host.uid, host.gid).as_bytes())?;
+    let pod = PodIdentityMapping::resolve(spec, host);
+    let passwd = pod.synthetic.then(|| dir.join("passwd"));
+    if let Some(passwd) = &passwd {
+        write_private(
+            passwd,
+            passwd_contents(&pod.account, pod.identity.uid, pod.identity.gid).as_bytes(),
+        )?;
+        let group = dir.join("group");
+        write_private(
+            &group,
+            group_contents(&pod.account, pod.identity.gid).as_bytes(),
+        )?;
+    }
     let hosts = dir.join("hosts");
     write_private(&hosts, hosts_contents(&spec.id).as_bytes())?;
     if spec.rootfs.join("etc").is_dir() && !spec.rootfs.join("etc/hosts").exists() {
@@ -233,10 +250,10 @@ pub fn write_bundle(spec: &PodSpec, host: &PodHost, dir: &Path) -> Result<PodBun
     if !workdir.is_dir() {
         fs::create_dir_all(&workdir).map_err(|source| Error::io("create", &workdir, source))?;
     }
-    // Unprivileged pods get a real home inside their writable rootfs; without it `HOME` falls
-    // back to `/root` (`0700`, uid 0), so `uv`, `git`, and `pnpm` fail with permission denied.
-    if host.uid != 0 {
-        materialise_home(&rooted(&spec.rootfs, POD_HOME))?;
+    // The identity's home must be writable inside its own rootfs; without it `HOME` points at an
+    // image path the mapped user cannot create (`uv`, `git`, and `pnpm` then fail).
+    if needs_home(spec, &pod, host.uid) {
+        materialise_home(&rooted(&spec.rootfs, &pod.account.home))?;
     }
     for bind in &spec.binds {
         let destination = rooted(&spec.rootfs, &bind.destination);
@@ -260,8 +277,9 @@ pub fn write_bundle(spec: &PodSpec, host: &PodHost, dir: &Path) -> Result<PodBun
     let rendered = serde_json::to_vec_pretty(&oci_config(
         spec,
         host,
+        &pod,
         dir,
-        &passwd,
+        passwd.as_deref(),
         &hosts,
         Path::new(&spec.workdir),
     ))
@@ -280,12 +298,13 @@ pub fn write_bundle(spec: &PodSpec, host: &PodHost, dir: &Path) -> Result<PodBun
 fn oci_config(
     spec: &PodSpec,
     host: &PodHost,
+    pod: &PodIdentityMapping,
     bundle: &Path,
-    passwd: &Path,
+    passwd: Option<&Path>,
     hosts: &Path,
     workdir: &Path,
 ) -> serde_json::Value {
-    let env = merged_env(spec, host);
+    let env = merged_env(spec, pod, host.uid);
     let mut mounts = vec![
         json!({"destination": "/proc", "type": "proc", "source": "proc"}),
         json!({
@@ -310,18 +329,28 @@ fn oci_config(
             "options": ["nosuid", "noexec", "nodev", "mode=1777", "size=65536k"]
         }),
         json!({
-            "destination": "/etc/passwd",
-            "type": "bind",
-            "source": passwd,
-            "options": ["ro", "rbind"]
-        }),
-        json!({
             "destination": "/etc/hosts",
             "type": "bind",
             "source": hosts,
             "options": ["ro", "rbind"]
         }),
     ];
+    // Only a synthetic identity shadows the image's account database; a real account keeps the
+    // image's own `/etc/passwd` and `/etc/group` untouched.
+    if let Some(passwd) = passwd {
+        mounts.push(json!({
+            "destination": "/etc/passwd",
+            "type": "bind",
+            "source": passwd,
+            "options": ["ro", "rbind"]
+        }));
+        mounts.push(json!({
+            "destination": "/etc/group",
+            "type": "bind",
+            "source": bundle.join("group"),
+            "options": ["ro", "rbind"]
+        }));
+    }
     if let Some(resolv_conf) = &host.resolv_conf {
         mounts.push(json!({
             "destination": "/etc/resolv.conf",
@@ -346,15 +375,28 @@ fn oci_config(
             "options": options
         }));
     }
+    let capabilities = pod.identity.capabilities();
     json!({
         "ociVersion": "1.0.2",
         "process": {
             "terminal": false,
-            "user": {"uid": host.uid, "gid": host.gid},
+            "user": {"uid": pod.identity.uid, "gid": pod.identity.gid},
             "args": spec.argv,
             "env": env,
+            // Deterministic 0022 creation modes, exactly like Docker/podman: never inherit the
+            // daemon's umask, and never express it as an `env` entry.
+            "umask": crate::identity::PROCESS_UMASK,
             "cwd": workdir,
-            "noNewPrivileges": false
+            "capabilities": {
+                "bounding": capabilities,
+                "effective": capabilities,
+                "permitted": capabilities,
+                "inheritable": [],
+                "ambient": []
+            },
+            // The same always-on rule as build steps: a service never escalates through a setuid
+            // binary, while the capability set above still applies.
+            "noNewPrivileges": true
         },
         "root": {"path": spec.rootfs, "readonly": false},
         "hostname": spec.id,
@@ -367,8 +409,8 @@ fn oci_config(
                 {"type": "ipc"},
                 {"type": "uts"}
             ],
-            "uidMappings": [{"containerID": host.uid, "hostID": host.uid, "size": 1}],
-            "gidMappings": [{"containerID": host.gid, "hostID": host.gid, "size": 1}],
+            "uidMappings": [{"containerID": pod.identity.uid, "hostID": host.uid, "size": 1}],
+            "gidMappings": [{"containerID": pod.identity.gid, "hostID": host.gid, "size": 1}],
             "maskedPaths": [],
             "readonlyPaths": []
         },

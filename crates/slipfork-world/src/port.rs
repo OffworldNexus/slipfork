@@ -26,10 +26,14 @@ impl Dirtiness {
 /// Both snapshots created by a fork.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForkPaths {
-    /// `<project>/.forks/<fork>` project snapshot.
+    /// `<family_root>/.forks/<fork>` project snapshot.
     pub project: PathBuf,
-    /// `<mount>/.slipfork-store/worlds/<fork>--<world>` world data snapshot.
+    /// `<mount>/.slipfork-store/worlds/<fork>--<root_world>` world data snapshot.
     pub world: PathBuf,
+    /// Immediate parent world id: `<fork>--<root>` when forking a fork, else the root world.
+    pub parent: WorldName,
+    /// The family root world id every fork world id is suffixed with.
+    pub root: WorldName,
 }
 
 /// Canonical Btrfs port (`specs/03-under-the-hood.md` §5).

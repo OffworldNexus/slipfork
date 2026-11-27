@@ -15,7 +15,7 @@ use crate::eval::FeatureSet;
 use crate::gate::each_enabled;
 use crate::{Expr, ExprKind};
 
-/// One service declaration with the port, routes, and enclosing image that apply to it.
+/// One service declaration with the port, routes, run command, and enclosing image.
 #[derive(Debug, Clone)]
 pub struct ServiceDecl<'a> {
     /// Service id.
@@ -26,6 +26,8 @@ pub struct ServiceDecl<'a> {
     pub routes: Vec<&'a Route>,
     /// The `image <id>` block the service was declared inside.
     pub image: Option<&'a str>,
+    /// The active `run:` command's source text, for read-only status surfaces.
+    pub command: Option<String>,
 }
 
 /// Which backing resource an id declares.
@@ -211,9 +213,14 @@ fn service_decl<'a>(
 ) -> ServiceDecl<'a> {
     let mut port = None;
     let mut routes = Vec::new();
+    let mut command = None;
     each_enabled(&service.body.items, features, &mut |item| match item {
         ServiceItem::Port(value) => port = Some(*value),
         ServiceItem::Route(route) => routes.push(route),
+        // The last active `run:` hook is the command the service boots with.
+        ServiceItem::Run(hook) => {
+            command = hook.commands(features).last().map(|command| command.text());
+        }
         _ => {}
     });
     ServiceDecl {
@@ -221,6 +228,7 @@ fn service_decl<'a>(
         port,
         routes,
         image: Some(image),
+        command,
     }
 }
 

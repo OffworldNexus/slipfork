@@ -15,8 +15,9 @@ mod mounts;
 mod ps;
 mod secrets;
 mod status;
-mod ui;
 mod world;
+
+use slipfork::ui;
 
 use std::ffi::OsString;
 use std::net::{SocketAddr, TcpListener};
@@ -25,24 +26,33 @@ use std::sync::Arc;
 
 use slipfork_vcs::GitWorkspace;
 
+use crate::ui::report::{Failure, Report, ReportRenderer};
+
 fn main() -> ExitCode {
     let argv: Vec<OsString> = std::env::args_os().collect();
     let args = argv.get(1..).unwrap_or_default();
     let terminal = compose::terminal(args);
+    let renderer = ReportRenderer::new(terminal, compose::wall_zone());
     let cwd = match std::env::current_dir() {
         Ok(cwd) => cwd,
         Err(error) => {
-            eprintln!("error: cannot determine the working directory: {error}");
-            eprintln!("next: cd into a readable directory and run `slipfork --help`.");
-            return ExitCode::from(2);
+            let message = format!("cannot determine the working directory: {error}");
+            return fail(
+                &renderer,
+                "cwd",
+                message,
+                "cd into a readable directory and run `slipfork --help`.",
+                2,
+            );
         }
     };
     let host = match compose::host(args, &cwd, terminal) {
         Ok(host) => host,
         Err(error) => {
-            eprintln!("error: {error}");
-            eprintln!("next: run `slipfork` from an installed binary.");
-            return ExitCode::from(2);
+            let (message, next) = ui::report::split_remedy(&error);
+            let next =
+                next.unwrap_or_else(|| "run `slipfork` from an installed binary.".to_owned());
+            return fail(&renderer, "host", message, next, 2);
         }
     };
 
@@ -61,38 +71,53 @@ fn main() -> ExitCode {
         let mode = match daemon::IngressMode::parse(&args[1..]) {
             Ok(mode) => mode,
             Err(message) => {
-                eprintln!("error: {message}");
-                eprintln!(
-                    "next: run `slipfork __ingress --listen 127.0.0.1:80`, or let systemd pass the socket on stdin."
+                return fail(
+                    &renderer,
+                    "ingress-usage",
+                    message,
+                    "run `slipfork __ingress --listen 127.0.0.1:80`, or let systemd pass the socket on stdin.",
+                    2,
                 );
-                return ExitCode::from(2);
             }
         };
         let listener = match mode {
             daemon::IngressMode::Listen(address) if host.uid != 0 => match bind_ingress(address) {
                 Ok((listener, bound)) => {
-                    println!("slipfork: ingress listening on {bound}");
+                    let _ = renderer.emit(&Report::notice(format!(
+                        "slipfork: ingress listening on {bound}"
+                    )));
                     Some(listener)
                 }
                 Err(error) => {
-                    eprintln!("error: cannot bind {address}: {error}");
-                    if error.kind() == std::io::ErrorKind::PermissionDenied {
-                        eprintln!(
-                            "next: sudo systemctl enable --now slipfork-ingress.socket  # or set net.ipv4.ip_unprivileged_port_start=0"
-                        );
+                    let message = format!("cannot bind {address}: {error}");
+                    let next = if error.kind() == std::io::ErrorKind::PermissionDenied {
+                        "sudo systemctl enable --now slipfork-ingress.socket  # or set net.ipv4.ip_unprivileged_port_start=0"
                     } else {
-                        eprintln!(
-                            "next: choose a free address or stop the process holding {address}"
-                        );
-                    }
-                    return ExitCode::FAILURE;
+                        "choose a free address or stop the process holding this port"
+                    };
+                    return fail(&renderer, "ingress-bind", message, next, 1);
                 }
             },
             _ => None,
         };
-        return daemon::run_handoff(&host, mode, listener);
+        return daemon::run_handoff(&host, mode, listener, &renderer);
     }
-    cli::run(argv, commands::Session::new(cwd, terminal, host))
+    cli::run(
+        argv,
+        commands::Session::new(cwd, terminal, host, renderer.wall().clone()),
+    )
+}
+
+/// Emits one typed failure and returns its exit status.
+fn fail(
+    renderer: &ReportRenderer,
+    code: &str,
+    message: impl Into<String>,
+    next: impl Into<String>,
+    status: u8,
+) -> ExitCode {
+    let _ = renderer.emit(&Report::failure(Failure::new(code, message, next)));
+    ExitCode::from(status)
 }
 
 /// Binds the `--listen` ingress and reports the address the kernel actually assigned.

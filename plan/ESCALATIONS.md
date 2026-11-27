@@ -39,3 +39,8 @@ Every call to an expensive-tier agent (`strategist`, `architect`, `expert`) is r
 | 2026-11-22T12:11 | M3.49 | architect | lead | spec/ARCHITECTURE lock-in: unified PTY shell, DECSTBM bottom bar, <1s fork |
 | 2026-11-23T14:21 | M3.70.2 | expert | lead | prod-shape runtime defects: image ENV not applied to pods (venv symlink resolution), suspected fork feature/stamp leak, stale crun container |
 | 2026-11-24T02:18 | M3.100 | expert | conductor | leaked slipfork-world-init after a healed/restarted service; needs process-group/namespace tracing |
+| 2026-11-24T13:04 | M3.107.3 | expert | lead | 3 cheap attempts exhausted on budget; live narrative/pane registry + engine-note channel + PTY proofs; tree mid-edit not compiling |
+| 2026-11-24T16:51 | M3.117 | expert | lead | 2 cheap attempts exhausted; finish tests/goldens/live assertions for two-level boot progress |
+| 2026-11-25T19:00 | M3 | strategist | unknown | milestone gate: all M3 slices done (M3.134/M3.146-148/M3.170-179 chains closed), Report layer migrated, ledger + identity + append-only CLI shipped on release/0.1.1 |
+| 2026-11-25T22:45 | M3 | strategist | conductor | milestone gate re-run: M3.180-187 closed (PR reds, live-suite wiring, Law-1 cleanup, spec sync, CI-shaped lab, CARGO_TARGET_DIR, guard test) |
+| 2026-11-26T03:01 | M3 | strategist | conductor | milestone gate third pass: M3.188 (Idle up registers ancestry), M3.189 (cold-store purge, 16/16 live), M3.190 (src <=500, TerminalEnv), M3.191 (doctor copy, stamps, architecture/spec accuracy) all pushed |

@@ -51,7 +51,7 @@ emits `{ready, checks:[{name, ok, detail, next?}]}` with the same words.
 | Rootless containers blocked by AppArmor | `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` |
 | `rootless container sandboxing unavailable` | `sudo sysctl -w user.max_user_namespaces=2147483647` |
 | `Forkfile:<line>` with one `next:` | Fix that line, then `slipfork up` again |
-| A build failed | `slipfork logs <image>` (or `slipfork logs -r failed`), fix the Dockerfile, then `slipfork up` |
+| A build failed | `slipfork logs <image>` (or bare `slipfork logs -r`), fix the Dockerfile, then `slipfork up` |
 | Lost the run id from a failure line | `slipfork logs --runs` lists every recorded run with its id, state and duration |
 | A row shows `orphaned` after a `Forkfile` edit | `slipfork up` stops undeclared pods and boots the new ones |
 
@@ -94,7 +94,7 @@ running.
 
 ## Remote pairing
 
-0.1.0 has no remote pairing: local `secret()` values do the work, and `slipfork secret list` plus
+0.1.1 has no remote pairing: local `secret()` values do the work, and `slipfork secret list` plus
 `slipfork env <component>` show exactly what this world resolved.
 
 The full OSPP v1 wire contract, with every error code and the frame that produced it, lives in

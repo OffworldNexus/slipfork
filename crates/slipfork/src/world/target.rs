@@ -5,9 +5,11 @@
 
 use std::path::{Path, PathBuf};
 
-use slipfork_world::WorldName;
+use slipfork_world::{ForkLedger, WorldName};
 
 use crate::ps::{PsReply, PsWorld};
+
+use super::WorldIdentities;
 
 /// One resolved verb target: the project to act on and the world it records.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,13 +45,15 @@ impl TargetError {
 pub struct Targets<'a> {
     cwd: &'a Path,
     reply: &'a PsReply,
+    /// The daemonless ledger reader; identity never comes from a stale record on disk.
+    ledger: Option<&'a ForkLedger>,
 }
 
 impl<'a> Targets<'a> {
-    /// Builds a resolver from the injected working directory and typed `ps` reply.
+    /// Builds a resolver from the injected working directory, typed `ps` reply, and ledger.
     #[must_use]
-    pub fn new(cwd: &'a Path, reply: &'a PsReply) -> Self {
-        Self { cwd, reply }
+    pub fn new(cwd: &'a Path, reply: &'a PsReply, ledger: Option<&'a ForkLedger>) -> Self {
+        Self { cwd, reply, ledger }
     }
 
     /// Resolves a target that lives entirely under this directory: `None` means `cwd`, and
@@ -140,9 +144,11 @@ impl<'a> Targets<'a> {
         Ok(resolved)
     }
 
-    /// The world this directory records, derives from its `.forks` layout, or slugs to.
+    /// The world this directory's ledger row owns, or the layout/slug derivation before a row.
     fn world_for(&self, project: &Path) -> Result<WorldName, TargetError> {
-        super::world_name(project, None).map_err(TargetError::new)
+        WorldIdentities::new(self.ledger)
+            .name(project, None)
+            .map_err(TargetError::new)
     }
 
     /// The registered world or fork whose project is exactly `cwd`.
@@ -224,6 +230,7 @@ mod tests {
             routes: Vec::new(),
             orphaned: false,
             image: None,
+            command: None,
         }
     }
 
@@ -240,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_target_is_this_directorys_recorded_or_derived_world() {
+    fn a_missing_target_ignores_a_stale_record_and_uses_the_directory() {
         let root = temp("slipfork-target-cwd");
         let demo = root.path().join("demo");
         fs::create_dir_all(demo.join(".slipfork")).expect("create demo");
@@ -253,12 +260,20 @@ mod tests {
         )
         .expect("write world record");
         let reply = PsReply::default();
-        let resolved = Targets::new(&demo, &reply)
+        let resolved = Targets::new(&demo, &reply, None)
             .resolve(None)
-            .expect("a recorded world resolves without a daemon row");
+            .expect("a daemonless directory resolves without a ledger row");
         assert_eq!(resolved.project, demo);
-        assert_eq!(resolved.world.as_str(), "feat-auth--demo");
+        assert_eq!(
+            resolved.world.as_str(),
+            "demo",
+            "a stale record never overrides the directory's own world"
+        );
         assert_eq!(resolved.service, None);
+        assert!(
+            !demo.join(".slipfork/world.json").exists(),
+            "resolving settles the stale record"
+        );
     }
 
     #[test]
@@ -268,7 +283,7 @@ mod tests {
         let fork = parent.join(".forks").join("feat-auth");
         fs::create_dir_all(&fork).expect("create the fork checkout");
         let reply = PsReply::default();
-        let resolved = Targets::new(&parent, &reply)
+        let resolved = Targets::new(&parent, &reply, None)
             .resolve(Some("feat-auth"))
             .expect("a .forks checkout resolves without a daemon row");
         assert_eq!(resolved.project, fork);
@@ -287,7 +302,7 @@ mod tests {
             .forks
             .push(world(&fork, "feat-auth--demo", Some("feat-auth")));
         reply.worlds.push(parent);
-        let targets = Targets::new(root.path(), &reply);
+        let targets = Targets::new(root.path(), &reply, None);
         let by_world = targets.resolve(Some("demo")).expect("registered world");
         assert_eq!(by_world.project, demo);
         assert_eq!(by_world.world.as_str(), "demo");
@@ -306,7 +321,7 @@ mod tests {
         let mut reply = PsReply::default();
         reply.worlds.push(world(&demo, "demo", None));
         reply.worlds.push(world(&fork, "other", None));
-        let targets = Targets::new(&demo, &reply);
+        let targets = Targets::new(&demo, &reply, None);
         let inferred = targets
             .resolve_restart(Some("api"), None)
             .expect("a service id of the live world resolves");
@@ -336,7 +351,7 @@ mod tests {
             ));
             reply.worlds.push(parent_row);
         }
-        let error = Targets::new(root.path(), &reply)
+        let error = Targets::new(root.path(), &reply, None)
             .resolve(Some("feat-auth"))
             .expect_err("two same-named forks must be refused");
         assert!(error.message.contains("is ambiguous"), "{}", error.message);
@@ -361,13 +376,13 @@ mod tests {
     fn an_unknown_target_names_the_missing_world_and_the_one_remedy() {
         let root = temp("slipfork-target-missing");
         let reply = PsReply::default();
-        let error = Targets::new(root.path(), &reply)
+        let error = Targets::new(root.path(), &reply, None)
             .resolve(Some("ghost"))
             .expect_err("an unknown target must fail closed");
         assert_eq!(error.message, "no world or fork named `ghost` here");
         assert_eq!(error.next, "run `slipfork ps`");
         assert!(
-            Targets::new(root.path(), &reply)
+            Targets::new(root.path(), &reply, None)
                 .resolve(Some("../escape"))
                 .is_err(),
             "a path-escaping target must never resolve a directory"

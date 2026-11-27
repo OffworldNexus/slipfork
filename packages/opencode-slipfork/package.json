@@ -1,6 +1,6 @@
 {
   "name": "@slipfork/opencode",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "OpenCode V2 plugin: every agent session gets its own copy-on-write Slipfork world",
   "license": "Apache-2.0",
   "type": "module",

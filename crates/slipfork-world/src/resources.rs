@@ -8,8 +8,8 @@ use std::path::Path;
 
 pub use cache::RedisLauncher;
 pub use pg::{
-    DatabaseBootstrap, DatabaseFault, DatabaseName, PostgresClone, PostgresLauncher,
-    PostgresTemplate, TemplateState,
+    DatabaseBootstrap, DatabaseFault, DatabaseName, PgSeed, PostgresClone, PostgresLauncher,
+    PostgresTemplate, SeedSpec, TemplateState,
 };
 pub use s3::{S3Bucket, S3Credentials, S3Server};
 

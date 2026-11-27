@@ -1162,13 +1162,18 @@ class HarnessTests(unittest.TestCase):
         assert "HOME=/var/lib/slipfork/home" in suites[0]
         assert "TMPDIR=/var/lib/slipfork/home/tmp" in suites[0]
         assert "XDG_RUNTIME_DIR=/dev/shm/slipfork-runtime" in suites[0]
-        assert "SLIPFORK_TEST_ROOT=/var/lib/slipfork/t" in suites[0]
+        assert "SLIPFORK_TEST_ROOT=/var/lib/slipfork" in suites[0]
+        assert "SLIPFORK_TEST_ROOT=/var/lib/slipfork/t" not in suites[0]
         assert "runuser -u slipfork" in suites[0]
         assert any("command -v docker" in call for call in harness.ssh_calls())
 
         (harness.state / "suites.log").unlink()
         ok = harness.run("test")
         assert ok.code == 0, ok.stderr
+        reset = (harness.state / "store-reset.sh").read_text(encoding="utf-8")
+        assert "/var/lib/slipfork/.slipfork-store" in reset
+        assert "/var/lib/slipfork/t" in reset
+        assert "btrfs subvolume delete -R" in reset
         suites = _lines(harness.state / "suites.log")
         assert len(suites) == len(do_vm_mod.SUITES) > 0
         expected = [
@@ -1350,6 +1355,7 @@ class HarnessTests(unittest.TestCase):
             do_vm_mod.render_volume_signature_step,
             do_vm_mod.render_install_authorized_keys,
             do_vm_mod.render_product_install,
+            do_vm_mod.render_store_reset,
             do_vm_mod.render_demo_seed,
             do_vm_mod.render_login_banner,
         ):

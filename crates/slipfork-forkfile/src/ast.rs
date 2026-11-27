@@ -19,12 +19,20 @@ pub struct Forkfile {
 ast_eq!(Forkfile { version, items });
 
 /// An ordered list of declarations plus comments anchored to item positions.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Block<T> {
     /// Declarations in declared order.
     pub items: Vec<T>,
     /// Comments anchored to declarations.
     pub comments: Vec<Comment>,
+    /// Authored blank-line boundaries, aligned with leading comments then items in render order.
+    pub blank_lines: Vec<bool>,
+}
+
+impl<T: PartialEq> PartialEq for Block<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.items == other.items && self.comments == other.comments
+    }
 }
 
 impl<T> Default for Block<T> {
@@ -32,6 +40,7 @@ impl<T> Default for Block<T> {
         Self {
             items: Vec::new(),
             comments: Vec::new(),
+            blank_lines: Vec::new(),
         }
     }
 }

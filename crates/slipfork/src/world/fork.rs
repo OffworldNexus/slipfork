@@ -8,14 +8,12 @@ use std::process::ExitCode;
 
 use serde_json::json;
 
-use crate::boot::BootTui;
-use crate::boot::elapsed_text;
+use crate::boot::{BootTui, dropped_row};
 use crate::commands::Session;
-use crate::daemon::DaemonClient;
-use crate::ui::paint;
+use crate::ui::report::Failure;
 
+use super::emit::{emit_json, emit_stream};
 use super::features::WorldFeatures;
-use super::up::emit_json;
 use super::{DropArgs, ForkArgs};
 
 impl Session {
@@ -37,21 +35,28 @@ impl Session {
         } else {
             json!({ "project": self.cwd(), "name": args.name })
         };
-        let mut client = match DaemonClient::connect(self.host()) {
+        let mut client = match self.connect() {
             Ok(client) => client,
             Err(error) => {
-                return self.lifecycle_failure(&error, "run `slipfork up` first", args.json, false);
+                return self.lifecycle_failure(
+                    Failure::remedied(
+                        error.code.clone(),
+                        error.message.clone(),
+                        "run `slipfork up` first",
+                    ),
+                    args.json,
+                    false,
+                );
             }
         };
         let mut tui = BootTui::boot(
             self.ui(),
-            self.terminal().width,
+            self.terminal().cols,
             &format!("Forking {}", args.name.as_deref().unwrap_or("fork")),
+            args.verbose,
         );
         let outcome = client.call_streaming("fork", params, &mut |event| {
-            if args.json {
-                let _ = emit_json(event);
-            }
+            emit_stream(args.json, args.verbose, event);
             tui.observe(event);
         });
         match outcome {
@@ -100,23 +105,31 @@ impl Session {
                     }
                     "forkfile" => "restore the file, then retry `slipfork fork`".to_owned(),
                     "boot-failed" => {
-                        "read `.slipfork/supervisor.log`, then run `slipfork up`".to_owned()
+                        "run `slipfork logs` for the failing step, then retry `slipfork up`"
+                            .to_owned()
                     }
                     _ => "run `slipfork status` to inspect the world".to_owned(),
                 };
-                self.lifecycle_failure(&error, &next, args.json, tui.failed())
+                self.lifecycle_failure(
+                    Failure::remedied(error.code.clone(), error.message.clone(), next),
+                    args.json,
+                    tui.failed(),
+                )
             }
         }
     }
 
     /// Stops a fork and deletes both of its snapshots.
     pub fn drop(&self, args: &DropArgs) -> ExitCode {
-        let mut client = match DaemonClient::connect(self.host()) {
+        let mut client = match self.connect() {
             Ok(client) => client,
             Err(error) => {
                 return self.lifecycle_failure(
-                    &error,
-                    "run `slipfork status` to inspect the world",
+                    Failure::remedied(
+                        error.code.clone(),
+                        error.message.clone(),
+                        "run `slipfork status` to inspect the world",
+                    ),
                     args.json,
                     false,
                 );
@@ -124,13 +137,16 @@ impl Session {
         };
         let mut tui = BootTui::rows(
             self.ui(),
-            self.terminal().width,
+            self.terminal().cols,
             &format!("Dropping {}", args.name),
         );
         let outcome = client.call_streaming(
             "drop",
             json!({ "project": self.cwd(), "name": args.name, "force": args.force }),
-            &mut |event| tui.observe(event),
+            &mut |event| {
+                emit_stream(args.json, false, event);
+                tui.observe(event);
+            },
         );
         match outcome {
             Ok(reply) => {
@@ -141,13 +157,7 @@ impl Session {
                         &json!({ "dropped": reply["dropped"], "elapsed_ms": elapsed }),
                     );
                 }
-                let color = self.color();
-                tui.line(&format!(
-                    "{} Dropped {} {}",
-                    paint("✓", "32", color),
-                    paint(&args.name, "1", color),
-                    paint(&format!("({})", elapsed_text(elapsed)), "2", color)
-                ));
+                tui.line(&dropped_row(&args.name, elapsed, self.color()));
                 tui.finish();
                 ExitCode::SUCCESS
             }
@@ -161,7 +171,11 @@ impl Session {
                     "no-fork" => "run `slipfork ps` to list this world's forks".to_owned(),
                     _ => "run `slipfork status` to inspect the world".to_owned(),
                 };
-                self.lifecycle_failure(&error, &next, args.json, tui.failed())
+                self.lifecycle_failure(
+                    Failure::remedied(error.code.clone(), error.message.clone(), next),
+                    args.json,
+                    tui.failed(),
+                )
             }
         }
     }

@@ -6,7 +6,6 @@
 
 use std::collections::VecDeque;
 use std::fs;
-use std::io::Write;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -82,11 +81,16 @@ pub(super) fn start_resource(
         .resource
         .image()
         .ok_or_else(|| format!("resource `{id}` has no OCI image"))?;
-    let image = runtime.images.pull(reference, log)?;
-    let rootfs = runtime.clone_rootfs(&image.rootfs, &format!("res-{id}"), true)?;
+    let head = runtime.head_for(reference)?;
+    let rootfs = runtime.clone_rootfs(&head.rootfs, &format!("res-{id}"), true)?;
+    let facts = ImageFacts {
+        env: head.inherited_env.clone(),
+        entrypoint: head.argv.clone(),
+        cmd: Vec::new(),
+    };
     let ready = match node.resource {
-        ResourceKind::Postgres => stage_postgres(runtime, &node, &rootfs, &image.facts, log)?,
-        ResourceKind::Redis => stage_redis(runtime, &node, &rootfs, &image.facts)?,
+        ResourceKind::Postgres => stage_postgres(runtime, &node, &rootfs, &facts, log)?,
+        ResourceKind::Redis => stage_redis(runtime, &node, &rootfs, &facts)?,
         ResourceKind::S3 => unreachable!("the native S3 server has no pod"),
     };
     Ok(Staged {
@@ -126,8 +130,7 @@ fn stage_postgres(
                             tail.pop_front();
                         }
                         tail.push_back(line.to_owned());
-                        let _ = writeln!(init_log, "{line}");
-                        let _ = init_log.flush();
+                        init_log.engine_note(line);
                     })?;
                     if code == 0 {
                         Ok(())
@@ -145,12 +148,10 @@ fn stage_postgres(
                         return;
                     }
                     last_report = Some(Instant::now());
-                    let _ = writeln!(
-                        wait_log,
+                    wait_log.engine_note(&format!(
                         "waiting {:.1}s for another `slipfork up` to finish the golden postgres template",
                         waited.as_secs_f64()
-                    );
-                    let _ = wait_log.flush();
+                    ));
                 },
             )
             .map_err(|error| error.to_string())?;

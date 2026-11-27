@@ -79,14 +79,14 @@ pub(crate) fn serve_exec_pty(
     let spec = match TempProcessSpec::write_pty(&info, seq, &argv) {
         Ok(file) => file,
         Err(fault) => {
-            eprintln!("slipfork-world-init: {fault}");
+            eprintln!("world init: {fault}");
             return refuse(&mut stream, &request_id, "exec-failed", fault.summary());
         }
     };
     let console = match ConsoleSocket::bind(shared.pods_root(), seq) {
         Ok(socket) => socket,
         Err(fault) => {
-            eprintln!("slipfork-world-init: {fault}");
+            eprintln!("world init: {fault}");
             return refuse(&mut stream, &request_id, "exec-failed", fault.summary());
         }
     };
@@ -109,7 +109,7 @@ pub(crate) fn serve_exec_pty(
                 REMEDY_CRUN,
                 source,
             );
-            eprintln!("slipfork-world-init: {fault}");
+            eprintln!("world init: {fault}");
             return refuse(&mut stream, &request_id, "exec-failed", fault.summary());
         }
     };
@@ -121,7 +121,7 @@ pub(crate) fn serve_exec_pty(
             master
         }
         Err(fault) => {
-            eprintln!("slipfork-world-init: {fault}");
+            eprintln!("world init: {fault}");
             abort(&shared, &mut child, child_pid);
             return refuse(&mut stream, &request_id, "exec-failed", fault.summary());
         }
@@ -129,7 +129,7 @@ pub(crate) fn serve_exec_pty(
     // The initial size must be set before the caller reads `stty size` through its descriptor.
     if let Err(source) = set_size(master.as_raw_fd(), cols, rows) {
         let fault = Fault::cause("PTY initial window size", REMEDY_RUNTIME, source);
-        eprintln!("slipfork-world-init: {fault}");
+        eprintln!("world init: {fault}");
         abort(&shared, &mut child, child_pid);
         return refuse(&mut stream, &request_id, "exec-failed", fault.summary());
     }
@@ -150,7 +150,7 @@ pub(crate) fn serve_exec_pty(
         Ok(outcome) => outcome,
         Err(fault) => {
             // The control socket failed mid-session: never leave the exec child orphaned.
-            eprintln!("slipfork-world-init: {fault}");
+            eprintln!("world init: {fault}");
             abort(&shared, &mut child, child_pid);
             return Err(fault);
         }

@@ -9,6 +9,7 @@ Protects:
 - `crates/*/tests/critical_*.rs`
 - `**/tests/critical/**`
 - `**/*.critical.test.ts`
+- `packages/opencode-slipfork/tests/**/*.test.ts` and `*.spec.ts`
 
 Adding new critical test files (including untracked files) is always allowed.
 Modifying or deleting an existing critical test requires an explicit covering glob
@@ -33,6 +34,7 @@ EXIT_VIOLATIONS: Final = 1
 EXIT_GUARD_FAILED: Final = 2
 
 PROTECTED_DIR: Final = ("tests", "critical")
+PLUGIN_TESTS_PREFIX: Final = ("packages", "opencode-slipfork", "tests")
 BREAKING_STATUSES: Final = frozenset({"M", "D", "T"})
 
 
@@ -105,6 +107,12 @@ def is_protected(path: str) -> bool:
     ):
         return True
     name = parts[-1] if parts else ""
+    if (
+        len(parts) > len(PLUGIN_TESTS_PREFIX)
+        and parts[: len(PLUGIN_TESTS_PREFIX)] == PLUGIN_TESTS_PREFIX
+        and name.endswith((".test.ts", ".spec.ts"))
+    ):
+        return True
     return name.endswith((".critical.test.ts", ".critical.spec.ts"))
 
 

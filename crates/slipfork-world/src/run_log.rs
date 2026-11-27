@@ -21,9 +21,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::control::Stream;
 use crate::error::{Error, Result};
 use crate::log_store::LogStore;
-use crate::pod_log::{self, LogKind, LogSink, now_ms};
+use crate::pod_log::{self, LogSink, now_ms};
 
 /// Width of one minted run id (`#b7f2a1`).
 pub const RUN_ID_LEN: usize = 6;
@@ -47,6 +48,22 @@ pub struct RunRecord {
     pub target: String,
     /// The command the step ran (`uv sync`), or the image id for a build.
     pub command: String,
+    /// Phase of the last instruction that ran (`run`, `pull`, or the Dockerfile path).
+    #[serde(default)]
+    pub phase: String,
+    /// Rendered command of that instruction (`sh -c "…"`); empty when none executed.
+    #[serde(default)]
+    pub instruction: String,
+    /// Source location of that instruction (`Dockerfile:12`); empty when none applies.
+    #[serde(default)]
+    pub source: String,
+    /// Child process exit code when the step knows it.
+    #[serde(default)]
+    pub exit_code: Option<i32>,
+    /// The engine's raw one-line cause of a non-success, so a comment-less replay still explains
+    /// itself; omitted from the wire when the step succeeded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     /// Final state (`built`, `pulled`, `ready`, `failed`).
     pub state: String,
     /// Epoch milliseconds when the step started.
@@ -59,6 +76,36 @@ pub struct RunRecord {
     pub project: String,
     /// World id the step ran in.
     pub world: String,
+}
+
+/// The instruction a step executed, patched onto its [`RunRecord`] once the run settles.
+///
+/// Every field is optional: [`crate::LogStore::annotate_run`] writes only what the step actually
+/// knows, so a later annotation can never blank an earlier fact with an empty-string sentinel.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunNote {
+    /// Instruction keyword (`run`, `copy`, `pull`, or the Dockerfile path).
+    pub phase: Option<String>,
+    /// Command text as the author wrote it (`sh -c 'echo hi'`), never re-wrapped.
+    pub instruction: Option<String>,
+    /// Source location (`Dockerfile:12`).
+    pub source: Option<String>,
+    /// Child process exit code when the step carried one.
+    pub exit_code: Option<i32>,
+    /// The engine's raw one-line cause of a non-success.
+    pub reason: Option<String>,
+}
+
+impl RunNote {
+    /// Whether the note would write anything at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.phase.is_none()
+            && self.instruction.is_none()
+            && self.source.is_none()
+            && self.exit_code.is_none()
+            && self.reason.is_none()
+    }
 }
 
 /// One catalog read: every valid record plus how many lines were skipped.
@@ -136,6 +183,11 @@ impl RunCapture {
                 kind: kind.to_owned(),
                 target: target.to_owned(),
                 command: command.to_owned(),
+                phase: String::new(),
+                instruction: String::new(),
+                source: String::new(),
+                exit_code: None,
+                reason: None,
                 state: "running".to_owned(),
                 started_ms,
                 finished_ms: None,
@@ -169,9 +221,18 @@ impl RunCapture {
         &self.run_id
     }
 
-    /// Appends one cleaned output line to the capture.
-    pub fn append(&mut self, text: &str) -> Result<()> {
-        self.sink.append(LogKind::Line, text)
+    /// Appends one cleaned output line, keeping the stream that produced it.
+    pub fn append_stream(&mut self, stream: Stream, text: &str) -> Result<()> {
+        self.sink.append_stream(now_ms(), stream, text)
+    }
+
+    /// Appends one build instruction row through the capture's single open sink.
+    ///
+    /// The row must go through [`RunCapture`] itself: opening a second [`LogSink`] on the same
+    /// capture would advance the file without advancing this sink's cached offset, leaving every
+    /// later `.idx` entry pointing into the middle of a row.
+    pub fn append_step(&mut self, text: &str) -> Result<()> {
+        self.sink.append(crate::pod_log::LogKind::Step, text)
     }
 
     /// Appends the catalog line, then `last` (and `last-failed`) pointers. Idempotent.
@@ -188,6 +249,11 @@ impl RunCapture {
                 kind: self.kind.clone(),
                 target: self.target.clone(),
                 command: self.command.clone(),
+                phase: String::new(),
+                instruction: String::new(),
+                source: String::new(),
+                exit_code: None,
+                reason: None,
                 state: state.to_owned(),
                 started_ms: self.started_ms,
                 finished_ms: Some(finished_ms),

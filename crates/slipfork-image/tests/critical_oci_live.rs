@@ -14,7 +14,8 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use slipfork_image::{
-    Credentials, Error, ImageLayout, ImageReference, OciPuller, RegistryClient, RegistryScheme,
+    Error, ImageLayout, ImageReference, OciPuller, RegistryClient, RegistryCredentials,
+    RegistryScheme,
 };
 use slipfork_world::{BtrfsEngine, Dirtiness, StoreLayout, WorldEngine};
 use support::{Fixture, GZIP, OCI_MANIFEST, read_text, sha256_hex};
@@ -32,7 +33,7 @@ fn real_docker_hub_pull() {
     let puller = OciPuller::new(
         Arc::clone(&engine) as Arc<dyn WorldEngine>,
         images,
-        Credentials::Anonymous,
+        RegistryCredentials::default(),
         arch,
         "slipfork-tests/0.1".to_owned(),
     );
@@ -78,10 +79,13 @@ fn native_oci_pull_lifecycle() {
 
     let fixture = Fixture::start();
     let arch = support::host_architecture();
+    let registry = fixture.reference("library/demo").registry().to_owned();
+    let credentials =
+        RegistryCredentials::default().with_host(&registry, "slipfork", "test-secret");
     let puller = OciPuller::new(
         Arc::clone(&engine) as Arc<dyn WorldEngine>,
         images.clone(),
-        Credentials::basic("slipfork", "test-secret"),
+        credentials,
         arch,
         "slipfork-tests/0.1".to_owned(),
     )
@@ -160,7 +164,7 @@ fn native_oci_pull_lifecycle() {
     let anonymous = OciPuller::new(
         Arc::clone(&engine) as Arc<dyn WorldEngine>,
         images.clone(),
-        Credentials::Anonymous,
+        RegistryCredentials::default(),
         arch,
         "slipfork-tests/0.1".to_owned(),
     )
@@ -260,11 +264,11 @@ fn oci_wire_protocol_reference_registry() {
     std::fs::create_dir_all(&scratch).expect("create the wire scratch root");
     let fixture = Fixture::start();
     let arch = support::host_architecture();
-    let client = RegistryClient::new(
-        Credentials::basic("slipfork", "test-secret"),
-        "slipfork-tests/0.1".to_owned(),
-    )
-    .with_scheme(RegistryScheme::Http);
+    let registry = fixture.reference("library/demo").registry().to_owned();
+    let credentials =
+        RegistryCredentials::default().with_host(&registry, "slipfork", "test-secret");
+    let client = RegistryClient::new(credentials, "slipfork-tests/0.1".to_owned())
+        .with_scheme(RegistryScheme::Http);
 
     let demo = fixture.reference("library/demo");
     let mut session = client.session(&demo);

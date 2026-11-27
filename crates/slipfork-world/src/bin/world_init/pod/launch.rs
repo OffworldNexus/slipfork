@@ -1,7 +1,7 @@
 //! Pod launch and run-to-completion: `crun run`, log pumps, and abort-safe teardown.
 
 use std::fs;
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::{self, Read};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Stdio;
@@ -11,7 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use slipfork_world::control::FrameLines;
-use slipfork_world::pod_log::{CHUNK, LogKind, LogSink};
+use slipfork_world::pod_log::{CHUNK, LogSink, now_ms};
 use slipfork_world::{PodSpec, StoreLayout};
 
 use crate::shared::{LaunchClaim, PodInfo, WorldShared, exit_code, reap_zombies, wait_child};
@@ -151,22 +151,13 @@ pub(crate) fn run_once_on_shared(
     let child_pid = i32::try_from(child.id()).unwrap_or_default();
     shared.register_exec(child_pid);
     let (sender, receiver) = mpsc::channel::<(slipfork_world::Stream, String)>();
-    let mut readers = Vec::new();
-    if let Some(stdout) = child.stdout.take() {
-        readers.push(spawn_line_reader(
-            stdout,
-            slipfork_world::Stream::Stdout,
-            sender.clone(),
-        ));
-    }
-    if let Some(stderr) = child.stderr.take() {
-        readers.push(spawn_line_reader(
-            stderr,
-            slipfork_world::Stream::Stderr,
-            sender.clone(),
-        ));
-    }
-    drop(sender);
+    // One reader owns both pipes: two threads racing separate pipes reorder a single child's
+    // stdout/stderr (the PTY regression), so the merged reader drains them deterministically.
+    let mut readers = vec![spawn_merged_reader(
+        child.stdout.take(),
+        child.stderr.take(),
+        sender,
+    )];
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -298,12 +289,13 @@ pub(super) fn crun_run(
         .spawn()
         .map_err(|source| Fault::cause(action.clone(), REMEDY_CRUN, source))?;
     let launcher_pid = i32::try_from(child.id()).unwrap_or_default();
-    if let Some(stdout) = child.stdout.take() {
-        spawn_pump(stdout, Arc::clone(&sink));
-    }
-    if let Some(stderr) = child.stderr.take() {
-        spawn_pump(stderr, Arc::clone(&sink));
-    }
+    // One reader polls both pipes on a single thread and drains stdout before stderr when both are
+    // ready simultaneously, matching `run_once_on_shared` so sequential `echo` order stays intact.
+    let _ = spawn_merged_pump(
+        child.stdout.take(),
+        child.stderr.take(),
+        move |stream, raw| append(&sink, raw, stream),
+    );
     let code = wait_child(&mut child, shared, launcher_pid);
     if code != 0 {
         return Err(Fault::new(
@@ -318,44 +310,180 @@ pub(super) fn crun_run(
         .map_err(|source| Fault::cause(action, REMEDY_CRUN, source))
 }
 
-fn spawn_line_reader<R: Read + Send + 'static>(
-    pipe: R,
-    kind: slipfork_world::Stream,
+/// Reads both child pipes from one thread, in one deterministic order.
+///
+/// Two byte streams on separate pipes carry no global order, and two reader threads make the
+/// interleaving depend on scheduler luck. Polling both descriptors in one thread and draining
+/// stdout first when both are ready keeps a sequential child's `echo` order intact.
+fn spawn_merged_reader(
+    stdout: Option<std::process::ChildStdout>,
+    stderr: Option<std::process::ChildStderr>,
     sender: mpsc::Sender<(slipfork_world::Stream, String)>,
 ) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        for line in BufReader::new(pipe).lines().map_while(Result::ok) {
-            let _ = sender.send((kind, line));
-        }
+    spawn_merged_pump(stdout, stderr, move |stream, raw| {
+        let text = String::from_utf8_lossy(raw)
+            .trim_end_matches('\r')
+            .to_owned();
+        let _ = sender.send((stream, text));
     })
 }
 
-fn spawn_pump<R: Read + Send + 'static>(mut reader: R, sink: Arc<Mutex<LogSink>>) {
-    thread::spawn(move || {
-        let mut lines = FrameLines::new();
-        let mut chunk = [0_u8; 8192];
-        loop {
-            match reader.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(read) => {
-                    for raw in lines.feed(&chunk[..read], CHUNK) {
-                        append(&sink, &raw);
-                    }
-                }
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Err(_) => break,
-            }
-        }
-        if let Some(raw) = lines.take_partial() {
-            append(&sink, &raw);
-        }
-    });
+fn spawn_merged_pump<O, E, F>(
+    stdout: Option<O>,
+    stderr: Option<E>,
+    on_line: F,
+) -> thread::JoinHandle<()>
+where
+    O: Read + std::os::fd::AsRawFd + Send + 'static,
+    E: Read + std::os::fd::AsRawFd + Send + 'static,
+    F: FnMut(slipfork_world::Stream, &[u8]) + Send + 'static,
+{
+    thread::spawn(move || merged_pump(stdout, stderr, on_line))
 }
 
-fn append(sink: &Mutex<LogSink>, raw: &[u8]) {
+fn merged_pump<O, E, F>(mut stdout: Option<O>, mut stderr: Option<E>, mut on_line: F)
+where
+    O: Read + std::os::fd::AsRawFd,
+    E: Read + std::os::fd::AsRawFd,
+    F: FnMut(slipfork_world::Stream, &[u8]),
+{
+    use std::os::fd::RawFd;
+
+    fn poll_fd(fd: Option<RawFd>) -> libc::pollfd {
+        libc::pollfd {
+            fd: fd.unwrap_or(-1),
+            events: libc::POLLIN,
+            revents: 0,
+        }
+    }
+
+    fn has_unread_bytes(fd: RawFd) -> bool {
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one valid `pollfd` with zero timeout probes buffered bytes without blocking.
+        unsafe { libc::poll(&mut pfd, 1, 0) > 0 && (pfd.revents & libc::POLLIN) != 0 }
+    }
+
+    let mut out_lines = FrameLines::new();
+    let mut err_lines = FrameLines::new();
+    loop {
+        if stdout.is_none() && stderr.is_none() {
+            break;
+        }
+        let mut fds = [
+            poll_fd(stdout.as_ref().map(std::os::fd::AsRawFd::as_raw_fd)),
+            poll_fd(stderr.as_ref().map(std::os::fd::AsRawFd::as_raw_fd)),
+        ];
+        // SAFETY: both descriptors in `fds` are valid for the call, and the 100ms bound keeps
+        // this thread responsive to teardown while the child stays quiet.
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, 100) };
+        if ready < 0 {
+            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            break;
+        }
+        if ready == 0 {
+            continue;
+        }
+        if fds[0].revents != 0 {
+            for _ in 0..8 {
+                pump_pipe(
+                    &mut stdout,
+                    &mut out_lines,
+                    slipfork_world::Stream::Stdout,
+                    &mut on_line,
+                );
+                if stdout
+                    .as_ref()
+                    .is_none_or(|pipe| !has_unread_bytes(pipe.as_raw_fd()))
+                {
+                    break;
+                }
+            }
+        }
+        if fds[1].revents != 0 {
+            pump_pipe(
+                &mut stderr,
+                &mut err_lines,
+                slipfork_world::Stream::Stderr,
+                &mut on_line,
+            );
+        }
+    }
+}
+
+fn pump_pipe<R, F>(
+    pipe: &mut Option<R>,
+    lines: &mut FrameLines,
+    stream: slipfork_world::Stream,
+    on_line: &mut F,
+) where
+    R: Read,
+    F: FnMut(slipfork_world::Stream, &[u8]),
+{
+    let Some(reader) = pipe.as_mut() else {
+        return;
+    };
+    let mut chunk = [0_u8; 8192];
+    match reader.read(&mut chunk) {
+        Ok(0) => {
+            *pipe = None;
+            if let Some(raw) = lines.take_partial() {
+                on_line(stream, &raw);
+            }
+        }
+        Ok(read) => {
+            for raw in lines.feed(&chunk[..read], CHUNK) {
+                on_line(stream, &raw);
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+        Err(_) => *pipe = None,
+    }
+}
+
+fn append(sink: &Mutex<LogSink>, raw: &[u8], stream: slipfork_world::Stream) {
     let text = String::from_utf8_lossy(raw);
     let text = text.trim_end_matches('\r');
     if let Ok(mut sink) = sink.lock() {
-        let _ = sink.append(LogKind::Line, text);
+        let _ = sink.append_stream(now_ms(), stream, text);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use super::merged_pump;
+    use slipfork_world::Stream;
+
+    #[test]
+    fn simultaneous_stdout_and_stderr_readiness_drains_stdout_before_stderr() {
+        let (out_read, mut out_write) = std::io::pipe().expect("stdout pipe");
+        let (err_read, mut err_write) = std::io::pipe().expect("stderr pipe");
+        out_write
+            .write_all(b"starting web\n")
+            .expect("write stdout");
+        err_write
+            .write_all(b"boom: missing DATABASE_URL\n")
+            .expect("write stderr");
+        drop(out_write);
+        drop(err_write);
+
+        let mut seen = Vec::new();
+        merged_pump(Some(out_read), Some(err_read), |stream, raw| {
+            seen.push((stream, String::from_utf8_lossy(raw).into_owned()));
+        });
+        assert_eq!(
+            seen,
+            vec![
+                (Stream::Stdout, "starting web".to_owned()),
+                (Stream::Stderr, "boom: missing DATABASE_URL".to_owned()),
+            ]
+        );
     }
 }

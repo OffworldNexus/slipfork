@@ -16,14 +16,14 @@ Two architectures only — `x86_64`/`amd64` and `aarch64`/`arm64` — and every 
 
 | Family | Formats | Runtime contract | Manager |
 | :--- | :--- | :--- | :--- |
-| Debian / Ubuntu | `.deb` | `libc6 (>= <measured>)`, `libgcc-s1` when `DT_NEEDED` names it, `crun`, `btrfs-progs` | `dpkg-deb --root-owner-group` |
-| Fedora / RHEL / Rocky / Alma / openSUSE | `.rpm` | `glibc >= <measured>`, `crun`, `btrfs-progs` | `rpmbuild` |
-| Arch Linux | `.pkg.tar.zst` + AUR `PKGBUILD`/`.SRCINFO` | `glibc`, `crun`, `btrfs-progs` | `makepkg` |
-| Alpine / musl | `.apk` + dynamic-musl `.tar.gz` | `libgcc`, `crun`, `btrfs-progs` | `abuild` / `apk` |
+| Debian / Ubuntu | `.deb` | `libc6 (>= <measured>)`, `libgcc-s1` when `DT_NEEDED` names it, `crun`, `btrfs-progs`, `slirp4netns` | `dpkg-deb --root-owner-group` |
+| Fedora / RHEL / Rocky / Alma / openSUSE | `.rpm` | `glibc >= <measured>`, `crun`, `btrfs-progs`, `slirp4netns` | `rpmbuild` |
+| Arch Linux | `.pkg.tar.zst` + AUR `PKGBUILD`/`.SRCINFO` | `glibc`, `crun`, `btrfs-progs`, `slirp4netns` | `makepkg` |
+| Alpine / musl | `.apk` + dynamic-musl `.tar.gz` | `libgcc`, `crun`, `btrfs-progs`, `slirp4netns` | `abuild` / `apk` |
 | Any glibc host | `slipfork-<target>-gnu.tar.gz` | glibc floor, no `RUNPATH` | `install.sh` |
 | Any musl host | `slipfork-<target>-musl.tar.gz` | `libgcc`, dynamic (not static-pie) | `install.sh` |
 
-`slipfork` needs `crun` and a Btrfs filesystem; both are declared, never bundled. The binary itself links only libc, libm, libgcc_s, and the dynamic loader — language runtimes are `dlopen`ed or containerized, never `NEEDED`.
+`slipfork` needs `crun`, `slirp4netns` for rootless world egress, and a Btrfs filesystem; all are declared, never bundled. The binary itself links only libc, libm, libgcc_s, and the dynamic loader — language runtimes are `dlopen`ed or containerized, never `NEEDED`.
 
 ---
 
@@ -64,11 +64,11 @@ The package enables the **user** unit and the system socket only for the install
 
 | Requirement | Contract |
 | :--- | :--- |
-| Spec | `scripts/rpm/slipfork.spec` is checked in and only moves the staged tree into `%{buildroot}` |
+| Spec | `packaging/rpm/slipfork.spec` is checked in and only moves the staged tree into `%{buildroot}` |
 | Builder | Host `rpmbuild` when present, else a `rockylinux:9` container; the builder is not the supported floor |
-| Requires | `glibc >= <measured>` plus `crun`/`btrfs-progs`; measured by the same ELF check as `.deb` |
+| Requires | `glibc >= <measured>` plus `crun` and `slirp4netns`; `btrfs-progs` is a `Recommends` because Rocky 9 dropped it from base repos; the glibc floor is measured by the same ELF check as `.deb` |
 | Layout | Same paths as the `.deb` under `/usr`, with the systemd units in `/usr/lib/systemd/system` |
-| Nightly stamp | `0.1.0-0.nightly.YYYYMMDD.rN.gSHA` — the `-0.` prefix sorts below the release |
+| Nightly stamp | `0.1.1-0.nightly.YYYYMMDD.rN.gSHA` — the `-0.` prefix sorts below the release |
 | Verify | `rpm -qpl`, then install and boot one world inside a disposable root |
 
 ---
@@ -78,7 +78,7 @@ The package enables the **user** unit and the system socket only for the install
 - **Repository package:** `slipfork-<ver>-<rel>-x86_64.pkg.tar.zst` built by `makepkg` from the checked-in `PKGBUILD`; install with `pacman -U`.
 - **AUR:** the same `PKGBUILD` plus a generated `.SRCINFO` and the release `sha256sums`, so `yay -S slipfork-bin` and `paru -S slipfork-bin` work.
 - **Units:** a `slipfork-ingress.socket` + `slipfork-ingress@.service` pair on `127.0.0.1:80`, and a user `slipfork.service` — systemd, exactly as Debian. The package's `.INSTALL` hook enables both for the installing user and loads the AppArmor profile.
-- **Dependencies:** `glibc`, `crun`, `btrfs-progs`; `btrfs-progs` is required because `mkfs`/subvolume flags matter, not just the kernel module.
+- **Dependencies:** `glibc`, `crun`, `btrfs-progs`, `slirp4netns`; `btrfs-progs` is required because `mkfs`/subvolume flags matter, and `slirp4netns` provides rootless pod egress.
 
 ---
 
@@ -87,7 +87,7 @@ The package enables the **user** unit and the system socket only for the install
 | Requirement | Contract |
 | :--- | :--- |
 | Build | `abuild` in an `alpine:3.21` container, `x86_64` and `aarch64` |
-| Runtime | `crun`, `btrfs-progs`, `libgcc`; the binary is **dynamically** linked musl (a static musl binary cannot `dlopen`) |
+| Runtime | `crun`, `btrfs-progs`, `slirp4netns`, `libgcc`; the binary is **dynamically** linked musl (a static musl binary cannot `dlopen`) |
 | `:80` ingress | OpenRC service `slipfork-ingress` binds `127.0.0.1:80`; the per-user daemon connects over its Unix socket |
 | Paths | `/usr/bin/slipfork`, `/usr/share/slipfork/**`, `/usr/share/vim/vimfiles/**`, `/etc/conf.d/slipfork-ingress` |
 | Verify | `apk add ./slipfork-*.apk`, `printf 'SLIPFORK_INGRESS_USER=%s\n' "$(id -un)" \| sudo tee /etc/conf.d/slipfork-ingress`, `rc-update add slipfork-ingress default`, `rc-service slipfork-ingress start`, boot one world, `slipfork down` |

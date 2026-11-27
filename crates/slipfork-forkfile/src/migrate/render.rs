@@ -27,6 +27,7 @@ fn document(model: &Model) -> Forkfile {
             groups: Block {
                 items: groups,
                 comments: Vec::new(),
+                blank_lines: Vec::new(),
             },
             span: at,
         }));
@@ -49,6 +50,7 @@ fn document(model: &Model) -> Forkfile {
             body: Block {
                 items: body,
                 comments: Vec::new(),
+                blank_lines: Vec::new(),
             },
             span: at,
         }));
@@ -58,6 +60,7 @@ fn document(model: &Model) -> Forkfile {
             Some(version) => Block {
                 items: vec![RedisItem::Version(version.clone())],
                 comments: Vec::new(),
+                blank_lines: Vec::new(),
             },
             None => Block::default(),
         };
@@ -92,6 +95,7 @@ fn document(model: &Model) -> Forkfile {
             body: OnBody::Block(Block {
                 items: vec![TopItem::Env(env(&mode.group, &mode.entries, at))],
                 comments: Vec::new(),
+                blank_lines: Vec::new(),
             }),
             else_body: None,
             span: at,
@@ -99,6 +103,12 @@ fn document(model: &Model) -> Forkfile {
     }
     for image in &model.images {
         items.push(TopItem::Image(image_ast(image, at)));
+    }
+    // The single leading comment renders first, then every top-level block keeps
+    // exactly one blank line between it and the previous block.
+    let mut blank_lines = vec![false; items.len() + 1];
+    for blank in blank_lines.iter_mut().skip(2) {
+        *blank = true;
     }
     Forkfile {
         version: "0.1".to_string(),
@@ -110,6 +120,7 @@ fn document(model: &Model) -> Forkfile {
                 text: "# migrated from snow.yml".to_string(),
                 trailing: false,
             }],
+            blank_lines,
         },
     }
 }
@@ -129,6 +140,7 @@ fn env(group: &str, entries: &EnvEntries, at: Span) -> Env {
                 })
                 .collect(),
             comments: Vec::new(),
+            blank_lines: Vec::new(),
         },
         span: at,
     }
@@ -165,6 +177,7 @@ fn image_ast(image: &ImageOut, at: Span) -> Image {
         body: Block {
             items: body,
             comments: Vec::new(),
+            blank_lines: Vec::new(),
         },
         span: at,
     }
@@ -202,6 +215,7 @@ fn service_ast(service: &ServiceOut, at: Span) -> Service {
         body: Block {
             items,
             comments: Vec::new(),
+            blank_lines: Vec::new(),
         },
         span: at,
     }

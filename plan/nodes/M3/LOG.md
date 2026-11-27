@@ -227,3 +227,99 @@ status done -> active
 ## 2026-11-24T03:14 [conductor]
 
 status active -> done
+
+## 2026-11-24T11:34 [conductor]
+
+status done -> active
+
+## 2026-11-25T19:21 [strategist]
+
+edited fields
+
+## 2026-11-25T19:22 [strategist]
+
+status active -> active
+
+## 2026-11-25T19:22 [strategist]
+
+M3 gate FAIL at 4a20e55: GHA CI 45670641396 red (critical_world_journey cached-image inner rows + Windows CRLF format test), 2 live suites missing from LIVE_SUITES, Law 1 >500 LOC/Palette::tint/pty AtomicBool gaps, and specs/02-04 + CHANGELOG drift; filed M3.180-M3.183, superseded M4.1, refreshed ROADMAP (M4=0.2.0, M5=0.3.0); docs/ untouched
+
+## 2026-11-25T23:38 [strategist]
+
+M3 gate pass 2 FAIL at a7c9cb6: all 16 live suites pass individually on cold Btrfs (53/53), but unmodified make live-test exits 2 before suite 11/16 (purge_store cannot delete BTRFS_SUBVOL_RDONLY subvolumes); 2 prod files >500 non-test LOC (progress.rs 619, builder/mod.rs 524); version/spec/ARCHITECTURE/.SRCINFO drift + doctor copy defect remain
+
+## 2026-11-26T03:28 [strategist]
+
+M3 milestone gate third pass @ 3aef2ca PASS: make check green, single cold make live-test 16/16 (54 tests, 0 EROFS, warm refusal rc=2, purge-store 77 subvols -> absent), Five Laws verified (max src 500 LOC, tests/** exemption documented in specs/03), guard.py + plan.py validate OK
+
+## 2026-11-26T03:28 [strategist]
+
+status active -> done
+
+## 2026-11-26T07:19 [conductor]
+
+status done -> active
+
+## 2026-11-26T07:19 [conductor]
+
+Post-gate docs pass requested by the owner: tutorial-first docs rewrite (docs/**, zensical.toml, README). M3 reopened only to host this child; gate evidence unchanged.
+
+## 2026-11-26T07:26 [conductor]
+
+status active -> done
+
+## 2026-11-26T07:30 [conductor]
+
+status done -> active
+
+## 2026-11-26T07:30 [conductor]
+
+status active -> done
+
+## 2026-11-26T07:35 [conductor]
+
+status done -> active
+
+## 2026-11-26T07:38 [conductor]
+
+status active -> done
+
+## 2026-11-26T07:39 [conductor]
+
+status done -> active
+
+## 2026-11-26T07:39 [conductor]
+
+status active -> done
+
+## 2026-11-26T07:40 [conductor]
+
+status done -> active
+
+## 2026-11-26T07:41 [conductor]
+
+status active -> done
+
+## 2026-11-26T07:47 [conductor]
+
+status done -> active
+
+## 2026-11-26T07:50 [conductor]
+
+status active -> done
+
+## 2026-11-26T15:36 [conductor]
+
+status done -> active
+
+## 2026-11-26T15:45 [conductor]
+
+status active -> done
+
+## 2026-11-27T14:19 [conductor]
+
+status done -> active
+
+## 2026-11-27T14:19 [conductor]
+
+status active -> done

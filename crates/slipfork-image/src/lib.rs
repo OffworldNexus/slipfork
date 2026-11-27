@@ -7,9 +7,9 @@
 //! [`NativeImageBuilder`] evaluates multi-stage `Dockerfile`s natively: `FROM … AS`, non-secret
 //! `ARG`, `ENV`, `WORKDIR`, `COPY [--from] [--chown]`, `ADD`, `RUN` (heredocs and
 //! `--mount=type=cache`), `USER`, `EXPOSE`, `CMD`/`ENTRYPOINT`, and `.dockerignore`. Every
-//! filesystem instruction is a writable Btrfs CoW snapshot sealed into `images/steps/<key>`, so a
-//! repeat build is a cache hit instead of a rebuild. `RUN` executes through `crun` in an
-//! unprivileged user namespace, never an external builder daemon.
+//! filesystem instruction becomes one content-addressed node in `snapshots/<key>` reconciled by
+//! the world's `SnapshotStore`, so a repeat build is a cache hit instead of a rebuild. `RUN`
+//! executes through `crun` in an unprivileged user namespace, never an external builder daemon.
 //!
 //! Every root, credential, architecture, and host fact is injected by the composition root, so
 //! this crate never reads the environment and never binds a socket.
@@ -18,8 +18,8 @@
 //! use std::sync::Arc;
 //!
 //! use slipfork_image::{
-//!     Architecture, BuildArgs, BuildRequest, Credentials, ImageLayout, NativeImageBuilder,
-//!     OciPuller, StepHost, StepLayout,
+//!     Architecture, BuildArgs, BuildRequest, ImageLayout, NativeImageBuilder, OciPuller,
+//!     RegistryCredentials, StepHost, StepLog,
 //! };
 //! use slipfork_world::{BtrfsEngine, StoreLayout, WorldEngine};
 //!
@@ -31,7 +31,7 @@
 //! let puller = OciPuller::new(
 //!     Arc::clone(&engine) as Arc<dyn WorldEngine>,
 //!     images.clone(),
-//!     Credentials::Anonymous,
+//!     RegistryCredentials::default(),
 //!     Architecture::X86_64,
 //!     "slipfork/0.1".to_owned(),
 //! );
@@ -39,55 +39,71 @@
 //! let builder = NativeImageBuilder::new(
 //!     Arc::clone(&engine) as Arc<dyn WorldEngine>,
 //!     puller,
-//!     StepLayout::new(store.images_root()),
+//!     store.clone(),
 //!     Architecture::X86_64,
 //!     host,
 //! );
+//! let mut events = |_: slipfork_image::BuildEvent<'_>| {};
+//! let mut log = StepLog::with_events(&mut events);
 //! let report = builder.build(&BuildRequest {
 //!     context: "/mnt/btrfs/projects/demo".into(),
 //!     dockerfile: "/mnt/btrfs/projects/demo/Dockerfile".into(),
 //!     args: BuildArgs::new(),
 //!     target: None,
-//! }, &mut std::io::sink())?;
+//!     externals: std::collections::BTreeMap::new(),
+//! }, &mut log, 0)?;
 //! println!("{} {}", report.key, report.rootfs.display());
 //! # Ok(())
 //! # }
 //! ```
 
 mod builder;
+mod cache_mounts;
 mod context;
 mod copy;
+mod credentials;
 mod digest;
 mod dockerfile;
 mod error;
 mod fetch;
+mod identity;
 mod ignore;
+mod inputs;
 mod layout;
 mod manifest;
+mod metadata;
+mod plan;
 mod puller;
 mod reference;
 mod registry;
 mod runtime;
-mod steps;
+mod step_log;
 mod unpack;
 
 use std::fmt;
 
-pub use builder::{BuildReport, BuildRequest, NativeImageBuilder, StageWalk, stage_walk};
+pub use builder::{
+    BuildReport, BuildRequest, ExternalFrom, ExternalImage, NativeImageBuilder, StageWalk,
+    StepTrace, external_references, instruction_width, planned_instruction_width, stage_walk,
+};
+pub use cache_mounts::CacheMounts;
 pub use context::{BuildContext, ContextEntry};
+pub use credentials::RegistryCredentials;
 pub use dockerfile::{
     BuildArgs, CacheMount, Command, CopySpec, DockerfileParser, ImageConfig, Instruction, Owner,
     ParsedInstruction, Port, Protocol, RunSpec, Stage, StageBase, Variables,
 };
 pub use error::{Error, Result};
 pub use ignore::Dockerignore;
+pub use inputs::build_inputs_digest;
 pub use layout::ImageLayout;
 pub use manifest::{Descriptor, ImageIndex, ImageManifest, Platform};
 pub use puller::{OciPuller, PulledImage};
-pub use reference::ImageReference;
+pub use reference::{ImageReference, canonical_host};
 pub use registry::{Credentials, RegistryClient, RegistryScheme};
-pub use runtime::{CrunStepRuntime, StepHost};
-pub use steps::{StepCache, StepLayout, StepRecord};
+pub use runtime::{CrunStepRuntime, StepHost, Stream};
+pub use slipfork_world::Cache;
+pub use step_log::{BuildEvent, StepEvent, StepLog, StepPlace, StepState, exit_detail};
 pub use unpack::LayerUnpacker;
 
 /// Container architecture the caller wants a multi-arch manifest resolved for.

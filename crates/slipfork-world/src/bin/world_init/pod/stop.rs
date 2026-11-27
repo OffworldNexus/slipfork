@@ -114,7 +114,7 @@ impl InitWorld {
         });
         for fault in faults {
             eprintln!(
-                "slipfork-world-init: pod `{}` teardown: {}",
+                "world init: pod `{}` teardown: {}",
                 fault.pod, fault.message
             );
         }

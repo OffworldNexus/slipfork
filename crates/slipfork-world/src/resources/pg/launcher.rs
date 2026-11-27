@@ -126,6 +126,7 @@ impl PostgresLauncher {
                 },
             ],
             files: Vec::new(),
+            identity: None,
         })
     }
 

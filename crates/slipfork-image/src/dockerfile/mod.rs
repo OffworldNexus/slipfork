@@ -4,11 +4,13 @@
 //! [`Instruction`] values, so no downstream module re-scans `$`, `<<`, or flag text.
 
 mod config;
+mod dev;
 mod instruction;
 mod parse;
 mod variables;
 
 pub use config::ImageConfig;
+pub(crate) use instruction::CopyOptions;
 pub use instruction::{
     CacheMount, Command, CopySpec, Instruction, Owner, ParsedInstruction, Port, Protocol, RunSpec,
     Stage, StageBase,
@@ -75,6 +77,7 @@ impl DockerfileParser {
             let instruction = parse_instruction(&text, line, &heredocs, &bodies, &aliases)?;
             if let Instruction::From { base, alias } = &instruction {
                 stages.push(Stage {
+                    line,
                     alias: alias.clone(),
                     base: base.clone(),
                     instructions: Vec::new(),

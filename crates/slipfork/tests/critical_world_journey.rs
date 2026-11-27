@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::fs;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
@@ -22,8 +22,8 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use slipfork_world::{
-    BtrfsEngine, Dirtiness, LogStore, STORE_DIR, StoreLayout, WorldEngine, WorldName,
-    is_subvolume_path,
+    BtrfsEngine, Dirtiness, LEASE_FILE, Lease, LogStore, STORE_DIR, StoreLayout, WorldEngine,
+    WorldName, is_subvolume_path,
 };
 
 const BTRFS_SUPER_MAGIC: u64 = 0x9123_683E;
@@ -109,13 +109,33 @@ image app . {
 }
 "#;
 
-// The run-catalog journey: one image whose `RUN` fails before any pod can start.
-const FAIL_BUILD_DOCKERFILE: &str = "\
-FROM python:3.13-slim
-RUN sh -c 'echo failed-run-marker; echo failed-run-error >&2; exit 9'
-WORKDIR /project
-CMD [\"python3\", \"--version\"]
-";
+// A service whose own stderr marker must survive into `logs -r`, and whose exit code must name
+// the verdict, without waiting out the 10s readiness window.
+const CRASH_FORKFILE: &str = r#"# forkfile: 0.1
+image app . {
+  dockerfile Dockerfile
+  service web {
+    port 8000
+    route /
+    run: @uv run python crash.py
+  }
+}
+"#;
+
+const CRASH_PY: &str = r#"import sys
+print("crash-marker", file=sys.stderr, flush=True)
+raise SystemExit(1)
+"#;
+
+// The run-catalog journey: one image whose `RUN` fails before any pod can start. Exactly three
+// instructions, so the replay is a real `1/4`, `2/4`, `3/4`, `4/4` build sequence. The `RUN` prints more
+// than a pipe buffer before failing, so a `| head` reader provably closes a still-blocked writer.
+const FAIL_BUILD_RUN: &str = "\
+sh -c 'i=1; while [ $i -le 6000 ]; do echo \"bulk-$i-xxxxxxxxxxxxxxxxxxxxxxxxxxxx\"; i=$((i+1)); done; echo out-line; echo err-line >&2; exit 3'";
+
+fn fail_build_dockerfile() -> String {
+    format!("FROM python:3.13-slim\nCOPY . /app\nWORKDIR /app\nRUN {FAIL_BUILD_RUN}\n")
+}
 
 const CATALOG_FORKFILE: &str = r#"# forkfile: 0.1
 image app . {
@@ -127,6 +147,83 @@ image app . {
   }
 }
 "#;
+
+// Engine-executed instruction failures: the instruction and its one-line cause must survive.
+const MISSING_STAGE_DOCKERFILE: &str = "\
+FROM python:3.13-slim
+COPY --from=Missing-Stage /x /y
+WORKDIR /project
+";
+// A `FROM` the engine cannot pull: the pull, not a child process, is the failing command.
+const UNPULLABLE_FROM_DOCKERFILE: &str = "\
+FROM 127.0.0.1:1/nope:latest
+WORKDIR /project
+CMD [\"true\"]
+";
+
+// An invalid `from:` reference: the Forkfile's pull is the failing step, and its record is `FROM`.
+const INVALID_FROM_FORKFILE: &str = r#"# forkfile: 0.1
+image app from /bad:latest {
+  service api {
+    port 8000
+    route /
+    run: @uv run python app.py
+  }
+}
+"#;
+
+// A failure before any instruction ran: no step row exists, so the verdict carries the reason.
+const PARSE_FAIL_DOCKERFILE: &str = "\
+COPY /x /y
+FROM scratch
+";
+
+// M3.115: every image build input (the `Dockerfile`, a copied context file) must change the head
+// so `up`/`restart` rebuild instead of serving a stale image.
+const CONVERGE_FORKFILE: &str = r#"# forkfile: 0.1
+image app . {
+  dockerfile Dockerfile
+  service web {
+    run: sleep 3600
+  }
+}
+"#;
+
+const CONVERGE_FORKFILE_TWO: &str = r#"# forkfile: 0.1
+image app . {
+  dockerfile Dockerfile
+  service web {
+    run: sleep 3600
+  }
+  service worker {
+    run: sleep 3600
+  }
+}
+"#;
+
+const CONVERGE_DOCKERFILE_ONE: &str = "\
+FROM python:3.13-slim
+COPY seed.txt /seed.txt
+RUN sh -c 'cat /seed.txt; echo built-one'
+WORKDIR /project
+CMD [\"python3\", \"--version\"]
+";
+
+const CONVERGE_DOCKERFILE_FAIL: &str = "\
+FROM python:3.13-slim
+COPY seed.txt /seed.txt
+RUN sh -c 'cat /seed.txt; echo built-two; exit 9'
+WORKDIR /project
+CMD [\"python3\", \"--version\"]
+";
+
+const CONVERGE_DOCKERFILE_THREE: &str = "\
+FROM python:3.13-slim
+COPY seed.txt /seed.txt
+RUN sh -c 'cat /seed.txt; echo built-three'
+WORKDIR /project
+CMD [\"python3\", \"--version\"]
+";
 
 fn fail_closed(message: &str) -> ! {
     panic!("fail closed: {message}");
@@ -318,7 +415,25 @@ impl Journey {
         let data_home = run.join("data");
         let store_root = expected_store_root(&run, &data_home);
         let engine = BtrfsEngine::new(StoreLayout::at(&store_root));
-        for world in ["good", "baked", "broken", "logs", "buildfail"] {
+        for world in [
+            "good",
+            "baked",
+            "broken",
+            "logs",
+            "buildfail",
+            "stagefail",
+            "fromfail",
+            "parsefail",
+            "badfrom",
+            "crash",
+            "converge",
+            "devroot",
+            "devcode",
+            "devkeep",
+            "devbaked",
+            "devbakedroot",
+            "legacy",
+        ] {
             if let Ok(world) = WorldName::parse(world) {
                 let _ = engine.drop_world(&world);
             }
@@ -335,12 +450,16 @@ impl Journey {
     fn project(&self, name: &str, forkfile: &str) -> PathBuf {
         let dir = self.run.join(name);
         fs::create_dir_all(&dir).expect("create project directory");
+        // Every journey shares one image store, so the content salt must be unique per journey
+        // *and* project: a process-wide salt let an earlier journey seal this exact image and
+        // serve a later `up` as `cached`, hiding the cold-build contract the journey asserts.
+        let journey = self.run.file_name().map_or_else(
+            || std::process::id().to_string(),
+            |token| token.to_string_lossy().into_owned(),
+        );
         let dockerfile = DOCKERFILE.replace(
             "WORKDIR /project",
-            &format!(
-                "RUN echo slipfork-build-{}\nWORKDIR /project",
-                std::process::id()
-            ),
+            &format!("RUN echo slipfork-build-{journey}-{name}\nWORKDIR /project"),
         );
         fs::write(dir.join("Dockerfile"), dockerfile).expect("write Dockerfile");
         fs::write(dir.join("Forkfile"), forkfile).expect("write Forkfile");
@@ -349,6 +468,7 @@ impl Journey {
         fs::write(dir.join(".dockerignore"), ".venv/\n__pycache__/\n")
             .expect("write .dockerignore");
         fs::write(dir.join("app.py"), APP_PY).expect("write app.py");
+        fs::write(dir.join("crash.py"), CRASH_PY).expect("write crash.py");
         fs::write(dir.join("worker.py"), WORKER_PY).expect("write worker.py");
         self.projects.borrow_mut().push(dir.clone());
         dir
@@ -388,6 +508,50 @@ impl Journey {
             .expect("write the piped input");
         drop(child.stdin.take());
         child.wait_with_output().expect("collect the piped run")
+    }
+
+    /// Spawns one verb with a piped stdout, reads exactly one line, then closes the pipe and reaps
+    /// the child: a `| head` reader proves a closed stdout exits quietly.
+    ///
+    /// `blocked` asserts the writer is still parked on a full pipe after that one line, which only
+    /// a capture replay (thousands of output rows) can guarantee; a catalog listing is smaller than
+    /// the pipe buffer and may already have exited cleanly.
+    fn slipfork_head(&self, project: &Path, args: &[&str], blocked: bool) -> (Option<i32>, String) {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+            .args(args)
+            .current_dir(project)
+            .env("NO_COLOR", "1")
+            .env("XDG_RUNTIME_DIR", &self.runtime)
+            .env("XDG_STATE_HOME", self.run.join("state"))
+            .env("XDG_DATA_HOME", &self.data_home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the slipfork binary must be runnable");
+        {
+            let stdout = child.stdout.take().expect("piped stdout");
+            let mut reader = BufReader::new(stdout);
+            let mut first = String::new();
+            reader
+                .read_line(&mut first)
+                .expect("read one record from the piped stream");
+            assert!(
+                !first.trim().is_empty(),
+                "a `--json` stream must print its first record"
+            );
+            if blocked {
+                assert!(
+                    child.try_wait().expect("poll the piped child").is_none(),
+                    "the writer must still be blocked on the full pipe after one line"
+                );
+            }
+        }
+        let output = child.wait_with_output().expect("reap the closed-pipe run");
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
     }
 
     /// Spawns `slipfork` on a real kernel PTY owned by the test harness.
@@ -682,7 +846,25 @@ impl Drop for Journey {
             }
         }
         let store_engine = BtrfsEngine::new(StoreLayout::at(&self.store_root));
-        for world in ["good", "baked", "broken", "logs", "buildfail"] {
+        for world in [
+            "good",
+            "baked",
+            "broken",
+            "logs",
+            "buildfail",
+            "stagefail",
+            "fromfail",
+            "parsefail",
+            "badfrom",
+            "crash",
+            "converge",
+            "devroot",
+            "devcode",
+            "devkeep",
+            "devbaked",
+            "devbakedroot",
+            "legacy",
+        ] {
             if let Ok(world) = WorldName::parse(world) {
                 let _ = store_engine.drop_world(&world);
             }
@@ -817,6 +999,50 @@ fn stdout(output: &Output) -> String {
 
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+/// The one run id a pre-plan image failure's `next:` remedy names (`slipfork logs -r <id>`).
+fn failed_build_run(block: &str) -> String {
+    block
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("next: "))
+        .find_map(|remedy| {
+            remedy
+                .rsplit_once("slipfork logs -r ")
+                .map(|(_, id)| id.trim().trim_end_matches('`').to_owned())
+        })
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| panic!("the failure must name its recorded run:\n{block}"))
+}
+
+/// The shipped pre-plan image failure copy: one `error: … failed:` envelope and one `next:`
+/// remedy. The typed `✗ RUN … failed` verdict belongs to the run's replay.
+fn assert_image_failure_envelope(block: &str, cause: &str) {
+    assert!(
+        block
+            .lines()
+            .any(|line| line.trim_start().starts_with("error: ")
+                && line.contains("failed:")
+                && line.contains(cause)),
+        "`up` carries the image failure envelope naming `{cause}`:\n{block}"
+    );
+}
+
+/// The newest image-build run id recorded for `project`, or a panic naming the failed listing.
+fn latest_image_run(journey: &Journey, project: &Path) -> String {
+    let runs = journey.slipfork(project, &["logs", "--runs", "--json"]);
+    let text = stdout(&runs);
+    assert!(
+        runs.status.success(),
+        "`logs --runs --json` failed: {}",
+        stderr(&runs)
+    );
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|record| record["kind"] == "image" && record["target"] == "app")
+        .max_by_key(|record| record["started_ms"].as_u64())
+        .and_then(|record| record["run_id"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| panic!("no image build run recorded:\n{text}"))
 }
 
 fn crun_list(crun: &Path) -> String {
@@ -1032,9 +1258,70 @@ fn world_up_restart_down_journey() {
         "ready line missing:\n{first_out}"
     );
     assert_ingress(&journey.runtime, "good");
+
+    // A clean, successfully booted world has no failed record: bare `-r` refuses with exactly
+    // one `✗` verdict plus one `next:` remedy, and `--json` mirrors that as `no-failed-run`.
+    let no_failed = journey.slipfork(&good, &["logs", "-r"]);
     assert!(
-        first_out.contains("→ [1/"),
-        "progress lines must carry a real `→ [i/n]` prefix:\n{first_out}"
+        !no_failed.status.success(),
+        "bare `logs -r` in a clean world must exit non-zero"
+    );
+    assert!(
+        stdout(&no_failed).is_empty(),
+        "a refusal must not replay a header:\n{}",
+        stdout(&no_failed)
+    );
+    let no_failed_err = stderr(&no_failed);
+    let lines: Vec<&str> = no_failed_err.lines().collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "a refusal is exactly one verdict + one remedy:\n{no_failed_err}"
+    );
+    assert!(
+        lines[0].starts_with("✗ no failed run in this world"),
+        "the verdict names the missing failed run:\n{no_failed_err}"
+    );
+    assert_eq!(lines[1], "next: slipfork up", "{no_failed_err}");
+    let no_failed_json = journey.slipfork(&good, &["logs", "-r", "--json"]);
+    assert!(!no_failed_json.status.success());
+    let no_failed_json_text = stdout(&no_failed_json);
+    let error: serde_json::Value =
+        serde_json::from_str(no_failed_json_text.trim()).unwrap_or_else(|err| {
+            panic!("clean-world `--json` is one object ({err}):\n{no_failed_json_text}")
+        });
+    assert_eq!(error["error"]["code"], "no-failed-run", "{error}");
+    assert_eq!(
+        error["error"]["message"], "no failed run in this world (see slipfork logs --runs)",
+        "{error}"
+    );
+    assert_eq!(error["error"]["next"], "slipfork up", "{error}");
+    assert!(
+        !no_failed_json_text.contains('\u{1b}'),
+        "clean-world `--json` stays ANSI-free"
+    );
+
+    assert!(
+        first_out.lines().any(|line| {
+            line.strip_prefix("→ [")
+                .is_some_and(|rest| rest.trim_start().starts_with("1/") && rest.contains("] image"))
+        }),
+        "progress lines must carry a real `→ [i/n]` prefix (the index pads to the plan width):\n{first_out}"
+    );
+    assert!(
+        first_out
+            .lines()
+            .any(|line| line.starts_with("  ✓ 1/") && line.contains("from") && !line.contains('[')),
+        "inner Dockerfile steps render indented `n/N` without brackets:\n{first_out}"
+    );
+    assert!(
+        first_out.lines().any(|line| {
+            line.starts_with("✓ [")
+                && line.contains("image")
+                && line.contains("app")
+                && line.contains("built ")
+        }),
+        "settled image builds render the outer `✓ [i/n] image app built N steps` row:\n{first_out}"
     );
     assert!(
         !first_err.contains("error:"),
@@ -1473,17 +1760,25 @@ fn world_up_restart_down_journey() {
         stdout(&piped)
     );
 
-    // 1d. Image build logs replay straight from `<store>/logs/<world>/<image>.log`.
-    let image_log = journey.store_root.join("logs").join("good").join("app.log");
+    // 1d. Image build output replays from the run catalog: the daemon seals every executed
+    // build as one run capture (`<store>/logs/<world>/runs/<run_id>.log`) and `logs <image>`
+    // resolves that newest record, so nothing is written to a pod-shaped `<image>.log` path.
+    let image_run = latest_image_run(&journey, &good);
+    let image_log = journey
+        .store_root
+        .join("logs")
+        .join("good")
+        .join("runs")
+        .join(format!("{image_run}.log"));
     assert!(
         wait_until(|| image_log.is_file(), Duration::from_secs(20)),
-        "the image builder must record `{}`",
+        "the image builder must record its run capture `{}`",
         image_log.display()
     );
     let image_logs = journey.slipfork(&good, &["logs", "app"]);
     assert!(
         image_logs.status.success(),
-        "`logs app` must read the capture file: {}",
+        "`logs app` must read the run capture: {}",
         stderr(&image_logs)
     );
     assert!(
@@ -1523,18 +1818,45 @@ fn world_up_restart_down_journey() {
         failed_out.contains("→ [") || failed_out.contains('✗'),
         "failure must keep a phase header or the ✗ tail:\nstdout={failed_out}\nstderr={failed_err}"
     );
-    // A service failure prints its crisp sentence on `stderr` plus exactly one catalog-derived
-    // remedy (`boot::render::failure_sentence`) on the stream that carries the boot rows: no
-    // `error:`, no numbered `Forkfile:` line, no second hint.
+    // v3 splits the failure copy: the narrative (`✗ start broken …` phase row and its gutter
+    // output) stays on stdout, while the verdict and the one catalog-derived remedy go to stderr.
+    // `BROKEN_FORKFILE` exits 7, so the verdict carries that exact code.
     let stderr_lines: Vec<&str> = failed_err
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .collect();
     assert_eq!(
-        stderr_lines,
-        ["✗ Failed to start service broken"],
-        "a service failure prints exactly one sentence on stderr:\nstdout={failed_out}\nstderr={failed_err}"
+        stderr_lines.len(),
+        2,
+        "a service failure prints one verdict and one remedy on stderr:\nstdout={failed_out}\nstderr={failed_err}"
+    );
+    assert_eq!(
+        stderr_lines[0], "✗ start broken failed (exit 7)",
+        "the verdict names the phase verb, target, and exit code:\nstderr={failed_err}"
+    );
+    assert!(
+        stderr_lines[1].starts_with("next: slipfork logs -r ")
+            && stderr_lines[1].len() > "next: slipfork logs -r ".len(),
+        "the one remedy replays a catalog run:\nstderr={failed_err}"
+    );
+    let has_start_broken = failed_out.lines().any(|line| {
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        tokens.len() >= 4
+            && matches!(tokens[0], "→" | "✗")
+            && tokens[1].starts_with('[')
+            && tokens[2] == "start"
+            && tokens[3] == "broken"
+    });
+    assert!(
+        has_start_broken && !failed_out.contains("failed (exit 7)"),
+        "the narrative stays on stdout and the verdict does not repeat there:\nstdout={failed_out}"
+    );
+    assert!(
+        !failed_out
+            .lines()
+            .any(|line| line.matches("uv sync").count() > 1),
+        "a `setup` row whose command equals its target must never repeat `uv sync`:\nstdout={failed_out}"
     );
     let failure_copy = format!("{failed_out}\n{failed_err}");
     let remedies: Vec<&str> = failure_copy
@@ -1565,15 +1887,30 @@ fn world_up_restart_down_journey() {
         "the printed `-r {run_id}` must replay the failed service run: {}",
         stderr(&replay)
     );
+    // A non-image run keeps its own command in the header: `#<id>  service  broken  <command>  <when>`.
+    let replay_text = stdout(&replay);
+    let header = replay_text
+        .lines()
+        .find(|line| line.starts_with(&format!("#{run_id}")))
+        .unwrap_or_else(|| {
+            panic!("`logs -r {run_id}` must print a `#<id>` header:\n{replay_text}")
+        });
+    let fields: Vec<&str> = header.split("  ").collect();
+    assert!(
+        fields.len() == 5
+            && fields[0] == format!("#{run_id}")
+            && fields[1] == "service"
+            && fields[2] == "broken"
+            && fields[3] == "@uv run python -c \"raise SystemExit(7)\""
+            && fields[4].contains('-')
+            && fields[4].contains(':'),
+        "the service replay header must be `#<id>  service  broken  <command>  <started>`:\n{header:?}"
+    );
     let by_target = journey.slipfork(&broken, &["logs", "broken"]);
     assert!(
         by_target.status.success(),
         "`logs broken` must read the failed service capture: {}",
         stderr(&by_target)
-    );
-    assert!(
-        broken.join(".slipfork/world.json").is_file(),
-        "the world must stay up after a failed service"
     );
     let listed = journey.slipfork(&broken, &["status"]);
     let listed_text = stdout(&listed);
@@ -1584,9 +1921,15 @@ fn world_up_restart_down_journey() {
     assert!(
         listed_text.lines().any(|line| {
             let row = line.trim_end();
-            row.contains("broken") && row.ends_with("failed")
+            let Some(state) = row.find(" failed ") else {
+                return false;
+            };
+            let Some(command) = row.find("@uv run python -c \"raise SystemExit(7)\"") else {
+                return false;
+            };
+            row.contains("broken") && state < command
         }),
-        "the failed service row must render `broken` with `failed` as its last column:\n{listed_text}"
+        "the failed service row must carry `broken`, its own `failed` state, then the run command:\n{listed_text}"
     );
     // Re-running `up` on the live failed world takes `Heal` (`Request::Restart`), refuses `Ready`
     // when `broken` exits again, and leaves `down` able to reap the restarted pod cleanly.
@@ -1610,8 +1953,12 @@ fn world_up_restart_down_journey() {
         stderr(&down)
     );
     assert!(
-        stdout(&down).contains("→ [1/1] stopping broken"),
-        "down must stream its phase header:\n{}",
+        stdout(&down).lines().any(|line| line.starts_with('✓')
+            && line.contains("pod")
+            && line.contains("broken")
+            && line.contains("stopped"))
+            && stdout(&down).contains("✓ Stopped broken ("),
+        "down must settle the pod it stopped, then its verdict:\n{}",
         stdout(&down)
     );
 
@@ -1638,10 +1985,151 @@ fn world_up_restart_down_journey() {
         stdout(&catalog)
     );
 
+    // 3a2. A service that dies while starting must fail fast (never poll the full 10s), record the
+    // child exit on the run, and tee the service's own stderr into `logs -r` with its gutter.
+    let crash = journey.project("crash", CRASH_FORKFILE);
+    let crash_started = Instant::now();
+    let crashed = journey.slipfork(&crash, &["up"]);
+    let crash_elapsed = crash_started.elapsed();
+    assert_eq!(
+        crashed.status.code(),
+        Some(1),
+        "{}",
+        up_failure("a crashing service must fail `up`", &crash, &crashed)
+    );
+    assert!(
+        crash_elapsed < Duration::from_secs(10),
+        "a crash during start must fail fast, not wait out the 10s readiness window (took {crash_elapsed:?}):\n{}",
+        up_failure("the crashing service was slow to fail", &crash, &crashed)
+    );
+    let crash_err = stderr(&crashed);
+    assert!(
+        !crash_err.contains("never opened :8000 within 10s"),
+        "a crash is detected as an exit, never a readiness timeout:\n{crash_err}"
+    );
+    let crash_lines: Vec<&str> = crash_err
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    assert_eq!(
+        crash_lines.len(),
+        2,
+        "a crash prints one verdict and one remedy on stderr:\nstdout={}\nstderr={crash_err}",
+        stdout(&crashed)
+    );
+    assert_eq!(
+        crash_lines[0], "✗ start web failed (exit 1)",
+        "the verdict carries the service's own exit code:\nstderr={crash_err}"
+    );
+    assert_eq!(
+        crash_err.matches("next:").count(),
+        1,
+        "a crash prints exactly one remedy:\nstderr={crash_err}"
+    );
+    let crash_run = crash_lines[1]
+        .strip_prefix("next: slipfork logs -r ")
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| panic!("the crash must name one `-r` run remedy:\nstderr={crash_err}"))
+        .to_owned();
+    let crash_replay = journey.slipfork(&crash, &["logs", "-r", &crash_run]);
+    assert!(
+        crash_replay.status.success(),
+        "`logs -r {crash_run}`: {}",
+        stderr(&crash_replay)
+    );
+    let crash_text = stdout(&crash_replay);
+    assert!(
+        crash_text.contains("crash-marker"),
+        "the service's own stderr must reach the run capture:\n{crash_text}"
+    );
+    // The replay glyph follows the recorded wire stream: `│` for stdout/combined (a merged pod
+    // capture) and `┃` for a real stderr. Ask `--json` which stream the tee recorded, then prove
+    // the human row carries exactly that one gutter.
+    let crash_json = journey.slipfork(&crash, &["logs", "-r", &crash_run, "--json"]);
+    assert!(
+        crash_json.status.success(),
+        "`logs -r {crash_run} --json`: {}",
+        stderr(&crash_json)
+    );
+    let marker_stream = stdout(&crash_json)
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("log JSON"))
+        .find(|frame| frame["line"] == "crash-marker")
+        .and_then(|frame| frame["stream"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| {
+            panic!(
+                "`logs -r {crash_run} --json` must carry the crash-marker stream:\n{}",
+                stdout(&crash_json)
+            )
+        });
+    let glyph = match marker_stream.as_str() {
+        "stderr" => '┃',
+        "stdout" | "combined" => '│',
+        other => panic!("off-contract wire stream {other:?}"),
+    };
+    let marker_row = crash_text
+        .lines()
+        .find(|line| line.trim_end().ends_with("crash-marker"))
+        .unwrap_or_else(|| panic!("the crash-marker row is missing:\n{crash_text}"));
+    assert!(
+        marker_row.contains(glyph)
+            && marker_row.matches('│').count() + marker_row.matches('┃').count() == 1,
+        "the captured `{marker_stream}` line must carry exactly one `{glyph}` gutter:\n{crash_text}"
+    );
+    assert!(
+        !crash_text.contains('\u{1b}'),
+        "NO_COLOR keeps the crash replay escape-free:\n{crash_text}"
+    );
+    assert!(
+        crash_text.contains("(exit 1)"),
+        "the replay verdict carries the child's exit code:\n{crash_text}"
+    );
+    let crash_store = LogStore::at(
+        journey.store_root.clone(),
+        WorldName::parse("crash").expect("world"),
+    );
+    let crash_record = crash_store
+        .records()
+        .expect("read the crash catalog")
+        .records
+        .into_iter()
+        .find(|record| record.run_id == crash_run)
+        .unwrap_or_else(|| panic!("the crash must leave a catalog record for {crash_run}"));
+    assert_eq!(
+        crash_record.exit_code,
+        Some(1),
+        "the catalog records the child exit: {crash_record:?}"
+    );
+    assert!(
+        crash_record
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("exited (exit 1)")),
+        "the catalog reason names the exit: {crash_record:?}"
+    );
+    assert!(
+        crash_record.duration_ms < 10_000,
+        "fail-fast must beat the 10s readiness window: {crash_record:?}"
+    );
+    let crash_target = journey.slipfork(&crash, &["logs", "web"]);
+    assert!(
+        crash_target.status.success() && stdout(&crash_target).contains("crash-marker"),
+        "`logs web` must still read the pod capture: {}",
+        stderr(&crash_target)
+    );
+    let crash_down = journey.slipfork(&crash, &["down"]);
+    assert!(
+        crash_down.status.success(),
+        "crash down: {}",
+        stderr(&crash_down)
+    );
+
     // 3b. A failing image `RUN` is a durable catalog run: `logs <image>` and `logs -r <id>` replay
     // the build output, `--runs` lists it, and a later successful boot plus `down` keeps all three.
     let buildfail = journey.project("buildfail", CATALOG_FORKFILE);
-    fs::write(buildfail.join("Dockerfile"), FAIL_BUILD_DOCKERFILE)
+    fs::write(buildfail.join("Dockerfile"), fail_build_dockerfile())
         .expect("write the failing Dockerfile");
     let failed_build = journey.slipfork(&buildfail, &["up"]);
     assert_eq!(
@@ -1660,26 +2148,17 @@ fn world_up_restart_down_journey() {
         1,
         "an image failure prints exactly one `next:`:\n{build_failure}"
     );
-    let build_run = build_failure
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("next: slipfork logs -r "))
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| panic!("the image failure must name its run:\n{build_failure}"))
-        .to_owned();
+    let build_run = failed_build_run(&build_failure);
     let image_log = journey
         .store_root
         .join("logs")
         .join("buildfail")
-        .join("app.log");
+        .join("runs")
+        .join(format!("{build_run}.log"));
     assert!(
         image_log.is_file(),
-        "the failed build must leave `{}`",
+        "the failed build must leave its run capture `{}`",
         image_log.display()
-    );
-    assert!(
-        !buildfail.join(".slipfork/world.json").exists(),
-        "a cold image build failure with zero pods must tear its empty world down immediately"
     );
     let by_image = journey.slipfork(&buildfail, &["logs", "app"]);
     assert!(
@@ -1688,7 +2167,7 @@ fn world_up_restart_down_journey() {
         stderr(&by_image)
     );
     assert!(
-        stdout(&by_image).contains("failed-run-marker"),
+        stdout(&by_image).contains("out-line"),
         "`logs app` must replay the failed RUN output:\n{}",
         stdout(&by_image)
     );
@@ -1699,9 +2178,335 @@ fn world_up_restart_down_journey() {
         stderr(&by_run)
     );
     assert!(
-        stdout(&by_run).contains("failed-run-marker"),
+        stdout(&by_run).contains("out-line"),
         "`logs -r {build_run}` must replay the failed RUN output:\n{}",
         stdout(&by_run)
+    );
+    // The replay is a real capture view: a `#<id>  RUN  app  sh -c …  <started>` header, then the
+    // v3 stream gutter (`│` stdout, `┃` stderr) with a UTC clock, then the record's verdict.
+    let is_clock = |text: &str| {
+        let bytes = text.as_bytes();
+        bytes.len() == 12
+            && bytes[2] == b':'
+            && bytes[5] == b':'
+            && bytes[8] == b'.'
+            && [0, 1, 3, 4, 6, 7, 9, 10, 11]
+                .iter()
+                .all(|index| bytes[*index].is_ascii_digit())
+    };
+    // Every instruction is exactly one clocked replay row, in build order, before the verdict.
+    let step_needles = [
+        "1/4 FROM python:3.13-slim".to_owned(),
+        "2/4 COPY . /app".to_owned(),
+        "3/4 WORKDIR /app".to_owned(),
+        format!("4/4 RUN {FAIL_BUILD_RUN}"),
+    ];
+    for (label, output) in [
+        ("logs app", stdout(&by_image)),
+        ("logs -r <id>", stdout(&by_run)),
+    ] {
+        let header = output
+            .lines()
+            .find(|line| line.starts_with(&format!("#{build_run}")))
+            .unwrap_or_else(|| panic!("`{label}` must print a `#<id>` run header:\n{output}"));
+        let fields: Vec<&str> = header.split("  ").collect();
+        assert!(
+            fields.len() == 4
+                && fields[0] == format!("#{build_run}")
+                && fields[1] == "image"
+                && fields[2] == "app",
+            "`{label}` header must name the run identity only (`#<id>  image  app  <started>`):\n{header:?}"
+        );
+        assert!(
+            !header.contains("RUN") && !header.contains("sh -c"),
+            "`{label}` header must not repeat an instruction:\n{header:?}"
+        );
+        assert_eq!(
+            header.matches("app").count(),
+            1,
+            "`{label}` must never print the image id twice:\n{header:?}"
+        );
+        let started = fields.last().copied().unwrap_or_default();
+        assert!(
+            started.contains('-') && started.contains(':'),
+            "`{label}` header must end with a date+time, saw {started:?}:\n{header:?}"
+        );
+        let gutter_clock = |needle: &str, glyph: char| {
+            output.lines().find_map(|line| {
+                let (clock, rest) = line.trim_start().split_once(' ')?;
+                (rest.starts_with(glyph) && rest.contains(needle)).then_some(clock)
+            })
+        };
+        let out_clock = gutter_clock("out-line", '│').unwrap_or_else(|| {
+            panic!("`{label}` must replay stdout under the `│` gutter:\n{output}")
+        });
+        let err_clock = gutter_clock("err-line", '┃').unwrap_or_else(|| {
+            panic!("`{label}` must replay stderr under the `┃` gutter:\n{output}")
+        });
+        for clock in [out_clock, err_clock] {
+            assert!(
+                is_clock(clock),
+                "`{label}` timestamps each replay row, saw {clock:?}:\n{output}"
+            );
+        }
+        // Every instruction is exactly one clocked row, in build order, ahead of the verdict.
+        let verdict_at = output
+            .find("✗ RUN app failed (exit 3)")
+            .unwrap_or_else(|| panic!("`{label}` must print the final verdict:\n{output}"));
+        let mut last_seen = 0;
+        for needle in &step_needles {
+            let rows: Vec<&str> = output
+                .lines()
+                .filter(|line| line.trim_end().ends_with(needle.as_str()))
+                .collect();
+            assert_eq!(
+                rows.len(),
+                1,
+                "`{label}` must replay `{needle}` exactly once:\n{output}"
+            );
+            let row = rows[0];
+            let at = output
+                .find(needle.as_str())
+                .unwrap_or_else(|| panic!("`{label}` must replay `{needle}`:\n{output}"));
+            assert!(
+                at >= last_seen && at < verdict_at,
+                "`{label}` replays instructions in build order before the verdict:\n{output}"
+            );
+            last_seen = at;
+            let (clock, _) = row.trim_start().split_once("  ").unwrap_or_default();
+            assert!(
+                is_clock(clock),
+                "`{label}` clocks the `{needle}` step row, saw {row:?}:\n{output}"
+            );
+        }
+        assert!(
+            !output.contains('\u{1b}'),
+            "`{label}` stays ANSI-free:\n{output}"
+        );
+        assert!(
+            !output.contains("out out-line") && !output.contains("err err-line"),
+            "`{label}` never prints the removed `out`/`err` words:\n{output}"
+        );
+        assert!(
+            !output.contains("build `app` failed")
+                && !output.contains("failed:")
+                && !output.contains("next:")
+                && !output.contains("✗ Failed")
+                && !output.contains("Failed to "),
+            "the failure summary stays outside the capture:\n{output}"
+        );
+        assert!(
+            output.trim_end().ends_with("✗ RUN app failed (exit 3)"),
+            "`{label}` must end with the record's verdict:\n{output}"
+        );
+        assert_eq!(
+            output
+                .lines()
+                .filter(|line| line.trim_end() == "✗ RUN app failed (exit 3)")
+                .count(),
+            1,
+            "`{label}` prints exactly one final verdict line:\n{output}"
+        );
+    }
+
+    let replay_json = journey.slipfork(&buildfail, &["logs", "-r", &build_run, "--json"]);
+    assert!(
+        replay_json.status.success(),
+        "`logs -r {build_run} --json`: {}",
+        stderr(&replay_json)
+    );
+    let replay_json_text = stdout(&replay_json);
+    let replay_events: Vec<serde_json::Value> = replay_json_text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            serde_json::from_str(line).unwrap_or_else(|error| {
+                panic!("`logs -r --json` must emit one JSON object per line ({error}): {line:?}")
+            })
+        })
+        .collect();
+    assert!(
+        !replay_json_text.contains('\u{1b}'),
+        "`logs -r --json` stays ANSI-free:\n{replay_json_text}"
+    );
+    assert!(
+        replay_events.iter().any(|event| {
+            event["line"] == "out-line" && event["stream"] == "stdout" && event["ts_ms"].is_u64()
+        }),
+        "`--json` must carry the stdout stream and its timestamp: {replay_events:?}"
+    );
+    assert!(
+        replay_events.iter().any(|event| {
+            event["line"] == "err-line" && event["stream"] == "stderr" && event["ts_ms"].is_u64()
+        }),
+        "`--json` must carry the stderr stream and its timestamp: {replay_events:?}"
+    );
+    assert!(
+        replay_json_text.contains("\"stream\":\"stderr\""),
+        "`logs -r --json` must carry the stderr stream: {replay_json_text}"
+    );
+    let mut last_step = None;
+    for needle in &step_needles {
+        let rows: Vec<usize> = replay_events
+            .iter()
+            .enumerate()
+            .filter(|(_, event)| event["line"].as_str() == Some(needle.as_str()))
+            .map(|(position, _)| position)
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "`logs -r --json` must carry `{needle}` exactly once: {replay_events:?}"
+        );
+        let position = rows[0];
+        assert!(
+            last_step.is_none_or(|last| position > last),
+            "`logs -r --json` orders the instruction rows in build order: {replay_events:?}"
+        );
+        last_step = Some(position);
+        let event = &replay_events[position];
+        assert_eq!(
+            event["kind"], "step",
+            "`{needle}` must be a `step` row: {event}"
+        );
+        assert!(
+            event["ts_ms"].is_u64(),
+            "`{needle}` must carry a numeric timestamp: {event}"
+        );
+    }
+    let replay_run = replay_events
+        .iter()
+        .find(|event| event["run_id"].as_str() == Some(build_run.as_str()))
+        .unwrap_or_else(|| {
+            panic!("`logs -r --json` must emit the run record bare: {replay_events:?}")
+        });
+    assert_eq!(
+        replay_events
+            .first()
+            .and_then(|event| event["run_id"].as_str()),
+        Some(build_run.as_str()),
+        "`logs -r --json` emits the record bare as its first line: {replay_events:?}"
+    );
+    assert_eq!(replay_run["phase"], "run", "{replay_run}");
+    assert_eq!(replay_run["instruction"], FAIL_BUILD_RUN, "{replay_run}");
+    assert_eq!(replay_run["source"], "Dockerfile:4", "{replay_run}");
+    assert_eq!(replay_run["exit_code"], 3, "{replay_run}");
+
+    // A reader that stops early (`| head`) closes stdout: both catalog streams must exit 0 with an
+    // empty, ANSI-free stderr instead of printing `error: failed to write output: Broken pipe`.
+    for (args, blocked) in [
+        (vec!["logs", "-r", build_run.as_str(), "--json"], true),
+        (vec!["logs", "--runs", "--json"], false),
+    ] {
+        let (code, head_stderr) = journey.slipfork_head(&buildfail, &args, blocked);
+        assert_eq!(
+            code,
+            Some(0),
+            "`{}` must exit 0 on a closed pipe: {head_stderr:?}",
+            args.join(" ")
+        );
+        assert!(
+            head_stderr.is_empty(),
+            "`{}` must stay silent on a closed pipe: {head_stderr:?}",
+            args.join(" ")
+        );
+    }
+
+    // 3c. Bare `-r` answers "what just broke"; `last` names the newest record, and `--json`
+    // mirrors every form with the same run id.
+    let bare_replay = journey.slipfork(&buildfail, &["logs", "-r"]);
+    assert!(
+        bare_replay.status.success(),
+        "bare `logs -r` must replay the failing RUN: {}",
+        stderr(&bare_replay)
+    );
+    let bare_text = stdout(&bare_replay);
+    assert!(
+        bare_text.contains(&format!("#{build_run}"))
+            && bare_text.contains(FAIL_BUILD_RUN)
+            && bare_text.trim_end().ends_with("✗ RUN app failed (exit 3)"),
+        "bare `logs -r` must replay the failed RUN header, command and verdict:\n{bare_text}"
+    );
+    // A newer successful boot moves `last`; the failed exit-3 RUN stays the `failed` selector.
+    fs::write(buildfail.join("Dockerfile"), DOCKERFILE).expect("write the succeeding Dockerfile");
+    let rebuilt = journey.slipfork(&buildfail, &["up"]);
+    assert!(
+        rebuilt.status.success(),
+        "{}",
+        up_failure("the fixed Dockerfile must boot", &buildfail, &rebuilt)
+    );
+    let runs_json = journey.slipfork(&buildfail, &["logs", "--runs", "--json"]);
+    assert!(
+        runs_json.status.success(),
+        "`logs --runs --json`: {}",
+        stderr(&runs_json)
+    );
+    let success_run = stdout(&runs_json)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|record| record["run_id"].as_str() != Some(build_run.as_str()))
+        .max_by_key(|record| record["started_ms"].as_u64())
+        .and_then(|record| record["run_id"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| {
+            panic!(
+                "the successful boot must record a newer run:\n{}",
+                stdout(&runs_json)
+            )
+        });
+    assert_ne!(
+        success_run, build_run,
+        "`last` must be distinguishable from `failed`"
+    );
+    let last_replay = journey.slipfork(&buildfail, &["logs", "-r", "last"]);
+    assert!(
+        last_replay.status.success(),
+        "`logs -r last`: {}",
+        stderr(&last_replay)
+    );
+    assert!(
+        stdout(&last_replay).contains(&format!("#{success_run}")),
+        "`logs -r last` must return the newest successful record `{success_run}`:\n{}",
+        stdout(&last_replay)
+    );
+    let bare_after = journey.slipfork(&buildfail, &["logs", "-r"]);
+    assert!(
+        bare_after.status.success() && stdout(&bare_after).contains(&format!("#{build_run}")),
+        "bare `logs -r` must keep replaying the failed record:\n{}",
+        stderr(&bare_after)
+    );
+    for (args, expected) in [
+        (&["logs", "-r", "--json"][..], build_run.as_str()),
+        (
+            &["logs", "-r", build_run.as_str(), "--json"][..],
+            build_run.as_str(),
+        ),
+        (&["logs", "-r", "last", "--json"][..], success_run.as_str()),
+    ] {
+        let json_replay = journey.slipfork(&buildfail, args);
+        assert!(
+            json_replay.status.success(),
+            "`{args:?}`: {}",
+            stderr(&json_replay)
+        );
+        let text = stdout(&json_replay);
+        let first: serde_json::Value = serde_json::from_str(
+            text.lines()
+                .next()
+                .unwrap_or_else(|| panic!("`{args:?}` emits no record:\n{text}")),
+        )
+        .unwrap_or_else(|error| panic!("`{args:?}` first line is JSON ({error}):\n{text}"));
+        assert_eq!(
+            first["run_id"].as_str(),
+            Some(expected),
+            "`{args:?}` must mirror `{expected}`:\n{text}"
+        );
+        assert!(!text.contains('\u{1b}'), "`{args:?}` stays ANSI-free");
+    }
+    let down = journey.slipfork(&buildfail, &["down"]);
+    assert!(
+        down.status.success(),
+        "down after the successful rebuild: {}",
+        stderr(&down)
     );
     let catalog = journey.slipfork(&buildfail, &["logs", "--runs"]);
     assert!(
@@ -1735,6 +2540,10 @@ fn world_up_restart_down_journey() {
     assert_eq!(record["kind"], "image", "{record}");
     assert_eq!(record["target"], "app", "{record}");
     assert_eq!(record["state"], "failed", "{record}");
+    assert_eq!(record["phase"], "run", "{record}");
+    assert_eq!(record["instruction"], FAIL_BUILD_RUN, "{record}");
+    assert_eq!(record["source"], "Dockerfile:4", "{record}");
+    assert_eq!(record["exit_code"], 3, "{record}");
     assert!(record["started_ms"].is_u64(), "{record}");
     assert!(record["finished_ms"].is_u64(), "{record}");
     assert!(record["duration_ms"].is_u64(), "{record}");
@@ -1754,17 +2563,418 @@ fn world_up_restart_down_journey() {
         stderr(&bare_run)
     );
     assert!(
-        stdout(&bare_run).contains("failed-run-marker"),
+        stdout(&bare_run).contains("out-line"),
         "`logs {build_run}` must replay the captured output:\n{}",
         stdout(&bare_run)
+    );
+
+    // 3c. Every failing instruction explains itself. An engine-executed step (`COPY --from` a
+    // missing stage, a `FROM` that cannot be pulled) gets one clocked step row, writes its raw
+    // one-line cause as that step's `┃` output, and still ends with a verdict naming the verb. The
+    // replay header is run identity only (`#<id>  image  <target>  <started>`). A failure before
+    // any step puts the reason in the verdict instead of an empty block.
+    let stagefail = journey.project("stagefail", CATALOG_FORKFILE);
+    fs::write(stagefail.join("Dockerfile"), MISSING_STAGE_DOCKERFILE)
+        .expect("write the missing-stage Dockerfile");
+    let stage_build = journey.slipfork(&stagefail, &["up"]);
+    assert_eq!(
+        stage_build.status.code(),
+        Some(1),
+        "{}",
+        up_failure(
+            "a missing `COPY --from` stage must fail `up`",
+            &stagefail,
+            &stage_build
+        )
+    );
+    let stage_block = format!("{}{}", stdout(&stage_build), stderr(&stage_build));
+    assert_eq!(
+        stage_block.matches("next:").count(),
+        1,
+        "an engine-step failure prints exactly one `next:`:\n{stage_block}"
+    );
+    assert_image_failure_envelope(&stage_block, "no build stage named `Missing-Stage`");
+    assert!(
+        stage_block
+            .lines()
+            .any(|line| line.contains("┃ no build stage named `Missing-Stage`")),
+        "`up` streams the failing step's `┃` reason line:\n{stage_block}"
+    );
+    let stage_run = failed_build_run(&stage_block);
+    let stage_replay = journey.slipfork(&stagefail, &["logs", "-r", &stage_run]);
+    assert!(
+        stage_replay.status.success(),
+        "`logs -r {stage_run}`: {}",
+        stderr(&stage_replay)
+    );
+    let stage_text = stdout(&stage_replay);
+    let stage_header = stage_text
+        .lines()
+        .find(|line| line.starts_with(&format!("#{stage_run}")))
+        .unwrap_or_else(|| panic!("`logs -r` must print a run header:\n{stage_text}"));
+    let stage_fields: Vec<&str> = stage_header.split("  ").collect();
+    assert!(
+        stage_fields.len() == 4
+            && stage_fields[0] == format!("#{stage_run}")
+            && stage_fields[1] == "image"
+            && stage_fields[2] == "app",
+        "the replay header names the run identity only (`#<id>  image  app  <started>`):\n{stage_header:?}"
+    );
+    assert!(
+        stage_fields[3].contains('-') && stage_fields[3].contains(':'),
+        "the replay header must end with a date+time, saw {:?}:\n{stage_header:?}",
+        stage_fields[3]
+    );
+    assert!(
+        !stage_header.contains("COPY"),
+        "the replay header must not repeat an instruction:\n{stage_header:?}"
+    );
+    assert_eq!(
+        stage_header.matches("app").count(),
+        1,
+        "the replay must never print the image id twice:\n{stage_header:?}"
+    );
+    // Exactly one clocked step row names the failing instruction, ahead of the verdict.
+    let stage_step = "2/3 COPY --from=Missing-Stage /x /y";
+    assert_eq!(
+        stage_text
+            .lines()
+            .filter(|line| line.trim_end().ends_with(stage_step))
+            .count(),
+        1,
+        "exactly one step row must name `{stage_step}`:\n{stage_text}"
+    );
+    let stage_step_at = stage_text
+        .rfind(stage_step)
+        .unwrap_or_else(|| panic!("the failing step row is missing:\n{stage_text}"));
+    let stage_verdict_at = stage_text
+        .rfind("✗ COPY app failed")
+        .unwrap_or_else(|| panic!("the replay verdict is missing:\n{stage_text}"));
+    assert!(
+        stage_step_at < stage_verdict_at,
+        "the failing step row must precede the verdict:\n{stage_text}"
+    );
+    assert_eq!(
+        stage_text
+            .matches("┃ no build stage named `Missing-Stage`")
+            .count(),
+        1,
+        "the engine's reason is written exactly once:\n{stage_text}"
+    );
+    for absent in ["build `app` failed", "Dockerfile:2:", "next:", "crun"] {
+        assert!(
+            !stage_text.contains(absent),
+            "the capture never carries `{absent}`:\n{stage_text}"
+        );
+    }
+    assert!(
+        !stage_text.contains('\u{1b}'),
+        "NO_COLOR keeps the replay escape-free:\n{stage_text}"
+    );
+    assert!(
+        stage_text.trim_end().ends_with("✗ COPY app failed"),
+        "the replay verdict names the instruction:\n{stage_text}"
+    );
+
+    let stage_json = journey.slipfork(&stagefail, &["logs", "-r", &stage_run, "--json"]);
+    assert!(
+        stage_json.status.success(),
+        "`logs -r {stage_run} --json`: {}",
+        stderr(&stage_json)
+    );
+    let stage_json_text = stdout(&stage_json);
+    assert!(
+        !stage_json_text.contains('\u{1b}'),
+        "`--json` stays escape-free:\n{stage_json_text}"
+    );
+    let stage_events: Vec<serde_json::Value> = stage_json_text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    let stage_record = stage_events
+        .iter()
+        .find(|event| event["run_id"].as_str() == Some(stage_run.as_str()))
+        .unwrap_or_else(|| panic!("`logs -r --json` must emit the record: {stage_events:?}"));
+    assert_eq!(stage_record["phase"], "copy", "{stage_record}");
+    assert!(
+        stage_record["instruction"]
+            .as_str()
+            .is_some_and(|text| text.contains("--from=Missing-Stage")),
+        "{stage_record}"
+    );
+    assert_eq!(stage_record["source"], "Dockerfile:2", "{stage_record}");
+    assert!(
+        stage_record["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("no build stage named `Missing-Stage`")),
+        "{stage_record}"
+    );
+    assert_eq!(stage_record["state"], "failed", "{stage_record}");
+    assert!(
+        stage_record
+            .get("exit_code")
+            .is_none_or(serde_json::Value::is_null),
+        "an engine step carries no child exit code: {stage_record}"
+    );
+
+    // The same story for `FROM`: the pull is the step, and its failure is a `┃` line.
+    let fromfail = journey.project("fromfail", CATALOG_FORKFILE);
+    fs::write(fromfail.join("Dockerfile"), UNPULLABLE_FROM_DOCKERFILE)
+        .expect("write the unpullable FROM Dockerfile");
+    let from_build = journey.slipfork(&fromfail, &["up"]);
+    assert_eq!(
+        from_build.status.code(),
+        Some(1),
+        "{}",
+        up_failure(
+            "an unpullable `FROM` must fail `up`",
+            &fromfail,
+            &from_build
+        )
+    );
+    let from_block = format!("{}{}", stdout(&from_build), stderr(&from_build));
+    assert_eq!(
+        from_block.matches("next:").count(),
+        1,
+        "a failed `FROM` prints exactly one `next:`:\n{from_block}"
+    );
+    assert_image_failure_envelope(&from_block, "127.0.0.1:1");
+    assert!(
+        from_block.lines().any(|line| line.contains('┃')),
+        "`up` streams the failed `FROM` step's `┃` reason line:\n{from_block}"
+    );
+    let from_run = failed_build_run(&from_block);
+    let from_replay = journey.slipfork(&fromfail, &["logs", "-r", &from_run]);
+    assert!(
+        from_replay.status.success(),
+        "`logs -r {from_run}`: {}",
+        stderr(&from_replay)
+    );
+    let from_text = stdout(&from_replay);
+    let from_header = from_text
+        .lines()
+        .find(|line| line.starts_with(&format!("#{from_run}")))
+        .unwrap_or_else(|| panic!("`logs -r` must print a run header:\n{from_text}"));
+    let from_fields: Vec<&str> = from_header.split("  ").collect();
+    assert!(
+        from_fields.len() == 4
+            && from_fields[0] == format!("#{from_run}")
+            && from_fields[1] == "image"
+            && from_fields[2] == "app",
+        "the replay header names the run identity only (`#<id>  image  app  <started>`):\n{from_header:?}"
+    );
+    assert!(
+        from_fields[3].contains('-') && from_fields[3].contains(':'),
+        "the replay header must end with a date+time, saw {:?}:\n{from_header:?}",
+        from_fields[3]
+    );
+    assert!(
+        !from_header.contains("FROM"),
+        "the replay header must not repeat an instruction:\n{from_header:?}"
+    );
+    assert_eq!(
+        from_header.matches("app").count(),
+        1,
+        "the replay must never print the image id twice:\n{from_header:?}"
+    );
+    // Exactly one clocked step row names the failing instruction, ahead of the verdict.
+    let from_step = "FROM 127.0.0.1:1/nope:latest";
+    assert_eq!(
+        from_text
+            .lines()
+            .filter(|line| line.trim_end().ends_with(from_step))
+            .count(),
+        1,
+        "exactly one step row must name `{from_step}`:\n{from_text}"
+    );
+    let from_step_at = from_text
+        .rfind(from_step)
+        .unwrap_or_else(|| panic!("the failing step row is missing:\n{from_text}"));
+    let from_verdict_at = from_text
+        .rfind("✗ FROM app failed")
+        .unwrap_or_else(|| panic!("the replay verdict is missing:\n{from_text}"));
+    assert!(
+        from_step_at < from_verdict_at,
+        "the failing step row must precede the verdict:\n{from_text}"
+    );
+    let from_reason = from_text
+        .lines()
+        .find_map(|line| line.split_once('┃').map(|(_, reason)| reason.trim()))
+        .unwrap_or_default();
+    assert!(
+        from_reason.contains("127.0.0.1:1") || from_reason.to_ascii_lowercase().contains("refused"),
+        "the `┃` reason names the unpullable host, saw {from_reason:?}:\n{from_text}"
+    );
+    assert!(
+        !from_text.contains('\u{1b}'),
+        "NO_COLOR keeps the replay escape-free:\n{from_text}"
+    );
+    assert!(
+        from_text.trim_end().ends_with("✗ FROM app failed"),
+        "the replay verdict names the `FROM` instruction:\n{from_text}"
+    );
+
+    // An invalid `from:` reference is a failure OF the `FROM` step: the row is announced before
+    // the reference is parsed, its raw cause is the step's one `┃` line, and both surfaces read
+    // `✗ FROM app failed` — never a step-less `✗ image … failed: <reason>`, never a `PULL` verb.
+    let badfrom = journey.project("badfrom", INVALID_FROM_FORKFILE);
+    let bad_build = journey.slipfork(&badfrom, &["up"]);
+    assert_eq!(
+        bad_build.status.code(),
+        Some(1),
+        "{}",
+        up_failure(
+            "an invalid `from:` reference must fail `up`",
+            &badfrom,
+            &bad_build
+        )
+    );
+    let bad_block = format!("{}{}", stdout(&bad_build), stderr(&bad_build));
+    assert_eq!(
+        bad_block.matches("next:").count(),
+        1,
+        "an invalid `from:` prints exactly one `next:`:\n{bad_block}"
+    );
+    let bad_doc = slipfork_forkfile::parse(INVALID_FROM_FORKFILE).expect("parse badfrom");
+    let bad_total = slipfork_world::world_plan(&bad_doc, &badfrom)
+        .expect("plan badfrom")
+        .steps
+        .len();
+    assert!(
+        bad_block.contains(&format!("→ [1/{bad_total}] image"))
+            && bad_block.contains("  → 1/1 from")
+            && !bad_block.contains("[1/1] from"),
+        "`up` opens the outer `[1/{bad_total}] image` row then the indented `1/1 FROM` row before parsing:\n{bad_block}"
+    );
+    assert!(
+        bad_block
+            .lines()
+            .any(|line| line.contains('┃') && line.contains("not a valid image reference")),
+        "`up` streams the step's one `┃` reason line:\n{bad_block}"
+    );
+    assert_image_failure_envelope(&bad_block, "not a valid image reference");
+    assert!(
+        !bad_block.contains("PULL"),
+        "`from:` pulls never print a `PULL` verb:\n{bad_block}"
+    );
+    let bad_run = failed_build_run(&bad_block);
+    let bad_replay = journey.slipfork(&badfrom, &["logs", "-r", &bad_run]);
+    assert!(
+        bad_replay.status.success(),
+        "`logs -r {bad_run}`: {}",
+        stderr(&bad_replay)
+    );
+    let bad_text = stdout(&bad_replay);
+    let bad_header = bad_text
+        .lines()
+        .find(|line| line.starts_with(&format!("#{bad_run}")))
+        .unwrap_or_else(|| panic!("`logs -r` must print a run header:\n{bad_text}"));
+    let bad_fields: Vec<&str> = bad_header.split("  ").collect();
+    assert!(
+        bad_fields.len() == 4
+            && bad_fields[0] == format!("#{bad_run}")
+            && bad_fields[1] == "image"
+            && bad_fields[2] == "app",
+        "the replay header names the run identity only (`#<id>  image  app  <started>`):\n{bad_header:?}"
+    );
+    assert!(
+        bad_fields[3].contains('-') && bad_fields[3].contains(':'),
+        "the replay header must end with a date+time, saw {:?}:\n{bad_header:?}",
+        bad_fields[3]
+    );
+    assert!(
+        !bad_header.contains("FROM"),
+        "the replay header must not repeat an instruction:\n{bad_header:?}"
+    );
+    assert_eq!(
+        bad_header.matches("app").count(),
+        1,
+        "the replay must never print the image id twice:\n{bad_header:?}"
+    );
+    // Exactly one clocked step row names the failing instruction, ahead of the verdict.
+    let bad_step = "FROM /bad:latest";
+    assert_eq!(
+        bad_text
+            .lines()
+            .filter(|line| line.trim_end().ends_with(bad_step))
+            .count(),
+        1,
+        "exactly one step row must name `{bad_step}`:\n{bad_text}"
+    );
+    let bad_step_at = bad_text
+        .rfind(bad_step)
+        .unwrap_or_else(|| panic!("the failing step row is missing:\n{bad_text}"));
+    let bad_verdict_at = bad_text
+        .rfind("✗ FROM app failed")
+        .unwrap_or_else(|| panic!("the replay verdict is missing:\n{bad_text}"));
+    assert!(
+        bad_step_at < bad_verdict_at,
+        "the failing step row must precede the verdict:\n{bad_text}"
+    );
+    assert_eq!(
+        bad_text
+            .lines()
+            .filter(|line| line.contains('┃') && line.contains("not a valid image reference"))
+            .count(),
+        1,
+        "the step's reason is written exactly once:\n{bad_text}"
+    );
+    assert!(
+        bad_text.trim_end().ends_with("✗ FROM app failed"),
+        "the replay verdict names the `FROM` step, with no `: reason` suffix:\n{bad_text}"
+    );
+    assert!(
+        !bad_text.contains("PULL") && !bad_text.contains('\u{1b}'),
+        "one `FROM` verb, zero escapes:\n{bad_text}"
+    );
+
+    // Before any step exists (a parse error), the verdict itself carries the reason.
+    let parsefail = journey.project("parsefail", CATALOG_FORKFILE);
+    fs::write(parsefail.join("Dockerfile"), PARSE_FAIL_DOCKERFILE)
+        .expect("write the parse-failing Dockerfile");
+    let parse_build = journey.slipfork(&parsefail, &["up"]);
+    assert_eq!(
+        parse_build.status.code(),
+        Some(1),
+        "{}",
+        up_failure("a parse error must fail `up`", &parsefail, &parse_build)
+    );
+    let parse_block = format!("{}{}", stdout(&parse_build), stderr(&parse_build));
+    assert_eq!(
+        parse_block.matches("next:").count(),
+        1,
+        "a step-less failure prints exactly one `next:`:\n{parse_block}"
+    );
+    assert_image_failure_envelope(&parse_block, "instruction appears before any `FROM`");
+    let parse_run = failed_build_run(&parse_block);
+    let parse_replay = journey.slipfork(&parsefail, &["logs", "-r", &parse_run]);
+    assert!(
+        parse_replay.status.success(),
+        "`logs -r {parse_run}`: {}",
+        stderr(&parse_replay)
+    );
+    let parse_text = stdout(&parse_replay);
+    assert!(
+        parse_text
+            .trim_end()
+            .ends_with("✗ image app failed: Dockerfile:1: instruction appears before any `FROM`"),
+        "`logs -r` carries the step-less reason in its verdict:\n{parse_text}"
+    );
+    assert!(
+        !parse_text.contains('\u{1b}'),
+        "NO_COLOR keeps the replay escape-free:\n{parse_text}"
     );
 
     // 4. Down and re-up: the stamped `uv sync` is skipped and named as such.
     let down = journey.slipfork(&good, &["down"]);
     assert!(down.status.success(), "down: {}", stderr(&down));
     assert!(
-        stdout(&down).contains("→ [1/1] stopping good"),
-        "down must stream its phase header:\n{}",
+        stdout(&down)
+            .lines()
+            .any(|line| line.starts_with('✓') && line.contains("pod") && line.contains("stopped"))
+            && stdout(&down).contains("✓ Stopped good ("),
+        "down must settle the pods it stopped, then its verdict:\n{}",
         stdout(&down)
     );
 
@@ -1842,8 +3052,10 @@ fn world_up_restart_down_journey() {
         up_failure("restart failed", &good, &restart)
     );
     assert!(
-        stdout(&restart).contains("→ [1/1] restarting api"),
-        "restart must stream its phase header:\n{}",
+        stdout(&restart).lines().any(|line| line.starts_with('✓')
+            && line.contains("restarting")
+            && line.contains("api")),
+        "restart must settle its one recycling row:\n{}",
         stdout(&restart)
     );
     assert!(
@@ -1943,7 +3155,6 @@ fn world_up_restart_down_journey() {
             "container `{id}` survived teardown:\n{listed}"
         );
     }
-    assert!(!good.join(".slipfork/world.json").exists());
     // The whole up/restart/down lifecycle leaves the checkout inode-identical, never a
     // subvolume, and never adopted into a sibling.
     let project_final = fs::metadata(&good).expect("stat the project after teardown");
@@ -1966,7 +3177,6 @@ fn world_up_restart_down_journey() {
                 .contains(".slipfork-adopt")),
         "no `.slipfork-adopt` sibling may survive teardown"
     );
-    assert!(!broken.join(".slipfork/world.json").exists());
 
     // 6. No per-project `.slipfork-store` exists, and no run subvolume survives in the mount store.
     for project in [&good, &broken] {
@@ -2005,6 +3215,629 @@ fn world_up_restart_down_journey() {
 }
 
 #[test]
+fn changed_build_inputs_rebuild_and_restart_converges() {
+    for (label, source) in [
+        ("converge", CONVERGE_FORKFILE),
+        ("converge-two", CONVERGE_FORKFILE_TWO),
+    ] {
+        let doc =
+            slipfork_forkfile::parse(source).unwrap_or_else(|_| panic!("`{label}` must parse"));
+        assert!(
+            slipfork_forkfile::check(&doc).is_ok(),
+            "`{label}` must pass static validation"
+        );
+    }
+    let journey = Journey::new();
+    let crun = require_tool("crun");
+    let unshare = require_tool("unshare");
+    require_userns(&unshare);
+    require_registry_egress();
+
+    // The copied content is unique per process: a previous run's sealed step must never be
+    // mistaken for this run's rebuild, even on a warm shared store.
+    let salt = format!(
+        "{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after the epoch")
+            .as_nanos()
+    );
+    let seed_one = format!("one-{salt}");
+    let seed_two = format!("two-{salt}");
+    let seed_three = format!("three-{salt}");
+
+    let project = journey.project("converge", CONVERGE_FORKFILE);
+    fs::write(project.join("seed.txt"), &seed_one).expect("write the copied context");
+    fs::write(project.join("Dockerfile"), CONVERGE_DOCKERFILE_ONE).expect("write the Dockerfile");
+
+    // 1. Cold boot builds the image.
+    let first = journey.slipfork(&project, &["up"]);
+    assert!(
+        first.status.success(),
+        "{}",
+        up_failure("first `up` failed", &project, &first)
+    );
+    let first_run = latest_image_run(&journey, &project);
+
+    // 2. An unchanged `up` is idle: no rebuild and no new image build record.
+    let cached = journey.slipfork(&project, &["up"]);
+    assert!(
+        cached.status.success(),
+        "{}",
+        up_failure("unchanged `up` failed", &project, &cached)
+    );
+    assert!(
+        !stdout(&cached).contains("built"),
+        "an unchanged `up` must not rebuild:\n{}",
+        stdout(&cached)
+    );
+    assert_eq!(
+        latest_image_run(&journey, &project),
+        first_run,
+        "an unchanged `up` must not rebuild the image"
+    );
+
+    // 3. The owner's reproduction: editing the `RUN` to a failing command must actually run it.
+    fs::write(project.join("Dockerfile"), CONVERGE_DOCKERFILE_FAIL).expect("edit the Dockerfile");
+    let failing = journey.slipfork(&project, &["up"]);
+    assert!(
+        !failing.status.success(),
+        "the edited failing RUN must fail the boot: {}",
+        up_failure("edited `up` unexpectedly succeeded", &project, &failing)
+    );
+    let failed_output = format!(
+        "{}{}{}",
+        stdout(&failing),
+        stderr(&failing),
+        supervisor_tail(&project)
+    );
+    assert!(
+        failed_output.contains("built-two"),
+        "the edited `RUN` must execute instead of serving the cached image:\n{failed_output}"
+    );
+    assert!(
+        failed_output.contains("exit 9"),
+        "the edited command's exit code must surface:\n{failed_output}"
+    );
+    // A failed build must never detach the live world: the old image still serves immediately.
+    let still_serving = journey.slipfork(&project, &["exec", "web", "--", "cat", "/seed.txt"]);
+    assert!(still_serving.status.success(), "{}", stderr(&still_serving));
+    assert_eq!(
+        stdout(&still_serving).trim(),
+        seed_one,
+        "a failed `up` must leave the old world serving its last image"
+    );
+    let ps = journey.slipfork(&project, &["ps", "--json"]);
+    assert!(ps.status.success(), "{}", stderr(&ps));
+    let reply: serde_json::Value = serde_json::from_slice(&ps.stdout).expect("ps --json");
+    let world = reply["worlds"]
+        .as_array()
+        .and_then(|worlds| worlds.iter().find(|world| world["world"] == "converge"))
+        .unwrap_or_else(|| panic!("`ps --json` must list the live world: {reply}"));
+    let web = world["services"]
+        .as_array()
+        .and_then(|services| services.iter().find(|service| service["id"] == "web"))
+        .unwrap_or_else(|| panic!("`ps --json` must list the `web` service: {reply}"));
+    assert_eq!(
+        web["running"], true,
+        "a failed `up` must leave the live pod running: {reply}"
+    );
+
+    // 4. A succeeding Dockerfile edit rebuilds with a new image run id, then stays cached.
+    fs::write(project.join("Dockerfile"), CONVERGE_DOCKERFILE_THREE)
+        .expect("repair the Dockerfile");
+    let rebuilt = journey.slipfork(&project, &["up"]);
+    assert!(
+        rebuilt.status.success(),
+        "{}",
+        up_failure("the repaired Dockerfile must boot", &project, &rebuilt)
+    );
+    assert!(
+        stdout(&rebuilt).contains("built-three"),
+        "the repaired Dockerfile must run:\n{}",
+        stdout(&rebuilt)
+    );
+    let dockerfile_run = latest_image_run(&journey, &project);
+    assert_ne!(
+        first_run, dockerfile_run,
+        "a Dockerfile edit must produce a new image run id"
+    );
+    let cached_again = journey.slipfork(&project, &["up"]);
+    assert!(cached_again.status.success());
+    assert!(
+        !stdout(&cached_again).contains("built"),
+        "a warm unchanged `up` must not rebuild:\n{}",
+        stdout(&cached_again)
+    );
+    assert_eq!(latest_image_run(&journey, &project), dockerfile_run);
+
+    // 4b. `up --no-cache` ignores the sealed step cache: every instruction executes again with a
+    // new image run id and real timings, then a plain `up` adopts the fresh stamps and is cached.
+    let forced = journey.slipfork(&project, &["up", "--no-cache", "--json"]);
+    assert!(
+        forced.status.success(),
+        "{}",
+        up_failure("`up --no-cache` failed", &project, &forced)
+    );
+    let forced_text = stdout(&forced);
+    let forced_frames: Vec<serde_json::Value> = forced_text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("each --no-cache line is JSON"))
+        .collect();
+    let verdict = forced_frames
+        .last()
+        .expect("`up --json` ends with one object");
+    assert_eq!(
+        verdict["no_cache"], true,
+        "the final `up --json` object must carry the flag: {verdict}"
+    );
+    assert!(
+        forced_frames.iter().any(|frame| {
+            frame["event"] == "log"
+                && frame["line"]
+                    .as_str()
+                    .is_some_and(|line| line.contains("built-three"))
+        }),
+        "`--no-cache` must re-execute the cached `RUN`:\n{forced_text}"
+    );
+    assert!(
+        forced_frames.iter().any(|frame| {
+            frame["event"] == "step"
+                && frame["image"] == "app"
+                && frame["instruction"] == "RUN"
+                && frame["elapsed_ms"].is_u64()
+        }),
+        "`--no-cache` must stream real per-instruction rows with timings:\n{forced_text}"
+    );
+    let forced_run = latest_image_run(&journey, &project);
+    assert_ne!(
+        dockerfile_run, forced_run,
+        "`--no-cache` must record a new image run id instead of reusing the cached one"
+    );
+    // A stopped world never takes the daemon's Heal path, so this plain `up` must consult the
+    // image stamps the `--no-cache` boot sealed: adopting them is the cache really being warm.
+    let stopped = journey.slipfork(&project, &["down"]);
+    assert!(
+        stopped.status.success(),
+        "down after `--no-cache` failed: {}",
+        stderr(&stopped)
+    );
+    let cached_after_force = journey.slipfork(&project, &["up"]);
+    assert!(
+        cached_after_force.status.success(),
+        "{}",
+        up_failure(
+            "`up` after `--no-cache` failed",
+            &project,
+            &cached_after_force
+        )
+    );
+    assert!(
+        !stdout(&cached_after_force).contains("built"),
+        "a cold boot must adopt the fresh stamps instead of rebuilding:\n{}",
+        stdout(&cached_after_force)
+    );
+    assert_eq!(
+        latest_image_run(&journey, &project),
+        forced_run,
+        "a plain `up` after `--no-cache` must be cached again"
+    );
+
+    // 5. A copied context edit changes the canonical context digest, rebuilds, and the new
+    // content is what the image actually holds.
+    fs::write(project.join("seed.txt"), &seed_two).expect("edit the copied context");
+    let context_edit = journey.slipfork(&project, &["up"]);
+    assert!(
+        context_edit.status.success(),
+        "{}",
+        up_failure(
+            "the context-edited build must boot",
+            &project,
+            &context_edit
+        )
+    );
+    assert!(
+        stdout(&context_edit).contains(&seed_two),
+        "the edited COPY input must execute in the build:\n{}",
+        stdout(&context_edit)
+    );
+    let context_run = latest_image_run(&journey, &project);
+    assert_ne!(
+        dockerfile_run, context_run,
+        "a copied context edit must produce a new image run id"
+    );
+    let shown = journey.slipfork(&project, &["exec", "web", "--", "cat", "/seed.txt"]);
+    assert!(shown.status.success(), "{}", stderr(&shown));
+    assert_eq!(
+        stdout(&shown).trim(),
+        seed_two,
+        "the rebuilt image must hold the edited COPY content"
+    );
+
+    // 5b. A world whose lease was lost (a pre-digest boot or a removed lease file) must still
+    // reconcile on a copied-file edit; the old mtime heuristic would serve the stale image.
+    let lease_path = journey
+        .store_root
+        .join("worlds")
+        .join("converge")
+        .join(LEASE_FILE);
+    let lease = Lease::read(&lease_path).expect("the live world writes its lease");
+    assert!(
+        lease.is_consistent(),
+        "the live world's lease head must match its entries"
+    );
+    fs::remove_file(&lease_path).expect("drop the recorded head");
+    fs::write(project.join("seed.txt"), &seed_three).expect("edit the copied context again");
+    let lost_head = journey.slipfork(&project, &["up"]);
+    assert!(
+        lost_head.status.success(),
+        "{}",
+        up_failure("the lost-head context edit must boot", &project, &lost_head)
+    );
+    assert!(
+        stdout(&lost_head).contains(&seed_three),
+        "a lost recorded head must not hide a copied-file edit:\n{}",
+        stdout(&lost_head)
+    );
+    assert_ne!(
+        context_run,
+        latest_image_run(&journey, &project),
+        "a lost recorded head must still rebuild on a copied context edit"
+    );
+    let shown = journey.slipfork(&project, &["exec", "web", "--", "cat", "/seed.txt"]);
+    assert!(shown.status.success(), "{}", stderr(&shown));
+    assert_eq!(
+        stdout(&shown).trim(),
+        seed_three,
+        "the rebuilt image must hold the second edited COPY content"
+    );
+
+    // 6. A Forkfile edit (add a service) converges on `restart`, not a stale pod restart.
+    fs::write(project.join("Forkfile"), CONVERGE_FORKFILE_TWO).expect("add the worker service");
+    let restarted = journey.slipfork(&project, &["restart"]);
+    assert!(
+        restarted.status.success(),
+        "{}",
+        up_failure(
+            "restart after the Forkfile edit failed",
+            &project,
+            &restarted
+        )
+    );
+    assert!(
+        stdout(&restarted).contains("worker"),
+        "`restart` must boot the newly declared service:\n{}",
+        stdout(&restarted)
+    );
+    let ps = journey.slipfork(&project, &["ps", "--json"]);
+    assert!(ps.status.success(), "{}", stderr(&ps));
+    let reply: serde_json::Value = serde_json::from_slice(&ps.stdout).expect("ps --json");
+    let services = reply["worlds"][0]["services"]
+        .as_array()
+        .unwrap_or_else(|| panic!("ps --json carries services: {reply}"));
+    let worker = services
+        .iter()
+        .find(|row| row["id"] == "worker")
+        .unwrap_or_else(|| panic!("the added service must appear: {services:?}"));
+    assert_eq!(worker["running"], true, "{worker}");
+    let converged_run = latest_image_run(&journey, &project);
+
+    // 7. An unchanged `restart` keeps today's in-place restart with no rebuild.
+    let again = journey.slipfork(&project, &["restart"]);
+    assert!(
+        again.status.success(),
+        "{}",
+        up_failure("unchanged restart failed", &project, &again)
+    );
+    assert!(
+        stdout(&again).contains("restarting"),
+        "an unchanged `restart` must restart in place:\n{}",
+        stdout(&again)
+    );
+    assert_eq!(
+        latest_image_run(&journey, &project),
+        converged_run,
+        "an unchanged `restart` must not rebuild the image"
+    );
+
+    // 8. Teardown leaves no process or container behind.
+    let down = journey.slipfork(&project, &["down"]);
+    assert!(down.status.success(), "final down: {}", stderr(&down));
+    let _ = wait_until(
+        || scoped_leaks(&journey.run).is_empty(),
+        Duration::from_secs(10),
+    );
+    assert!(
+        scoped_leaks(&journey.run).is_empty(),
+        "processes survived teardown: {:?}",
+        scoped_leaks(&journey.run)
+    );
+    let listed = crun_list(&crun);
+    for id in ["web", "worker"] {
+        assert!(
+            !listed.contains(id),
+            "container `{id}` survived teardown:\n{listed}"
+        );
+    }
+}
+
+#[test]
+fn dev_mounts_follow_the_dockerfile_workdir_and_refuse_root() {
+    let journey = Journey::new();
+    require_tool("crun");
+    let unshare = require_tool("unshare");
+    require_userns(&unshare);
+    require_registry_egress();
+
+    // (a) No `WORKDIR`: `/` can never be overlaid, so `up` refuses before any pod exists.
+    let root = journey.project("devroot", DEV_FORKFILE);
+    fs::write(root.join("Dockerfile"), DEV_ROOT_DOCKERFILE).expect("write the root Dockerfile");
+    fs::write(root.join("hello.py"), DEV_HELLO).expect("write hello.py");
+    let refused = journey.slipfork(&root, &["up"]);
+    assert!(
+        !refused.status.success(),
+        "a `/` WORKDIR must refuse a dev boot:\n{}{}",
+        stdout(&refused),
+        stderr(&refused)
+    );
+    let refusal = format!("{}{}", stdout(&refused), stderr(&refused));
+    let lines: Vec<&str> = refusal
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    assert!(
+        lines.iter().any(|line| line.contains("dev image `app`")
+            && line.contains("Dockerfile")
+            && line.contains("WORKDIR")
+            && line.contains("`stage 1`")),
+        "the verdict names the image, Dockerfile, stage, and missing workdir:\n{refusal}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("next: set WORKDIR")),
+        "the refusal must carry the WORKDIR remedy:\n{refusal}"
+    );
+
+    // (b) `WORKDIR /code`: the pod runs there over the live checkout, no restart needed.
+    let code = journey.project("devcode", DEV_FORKFILE);
+    fs::write(code.join("Dockerfile"), DEV_CODE_DOCKERFILE).expect("write the /code Dockerfile");
+    fs::write(code.join("hello.py"), DEV_HELLO).expect("write hello.py");
+    let up = journey.slipfork(&code, &["up"]);
+    assert!(
+        up.status.success(),
+        "{}",
+        up_failure("`WORKDIR /code` must boot", &code, &up)
+    );
+    let pwd = journey.slipfork(&code, &["exec", "web", "--", "pwd"]);
+    assert_eq!(
+        stdout(&pwd).trim(),
+        "/code",
+        "exec must run in the Dockerfile WORKDIR:\n{}",
+        stderr(&pwd)
+    );
+    fs::write(code.join("hello.py"), "print('live edit')\n").expect("edit the host file");
+    let live = journey.slipfork(&code, &["exec", "web", "--", "cat", "hello.py"]);
+    assert_eq!(
+        stdout(&live),
+        "print('live edit')\n",
+        "host edits under `/code` must be live without a restart:\n{}",
+        stderr(&live)
+    );
+
+    // (c) An explicit `/project/api` WORKDIR keeps the `/project` bind: `/project/api` maps to
+    // `<project>/api`, so host edits there are live.
+    let kept = journey.project("devkeep", DEV_FORKFILE);
+    fs::write(kept.join("Dockerfile"), DEV_PROJECT_DOCKERFILE)
+        .expect("write the /project/api Dockerfile");
+    fs::create_dir_all(kept.join("api")).expect("create the api directory");
+    fs::write(kept.join("api/hello.py"), DEV_HELLO).expect("write api/hello.py");
+    let up = journey.slipfork(&kept, &["up"]);
+    assert!(
+        up.status.success(),
+        "{}",
+        up_failure("`WORKDIR /project/api` must boot", &kept, &up)
+    );
+    let pwd = journey.slipfork(&kept, &["exec", "web", "--", "pwd"]);
+    assert_eq!(stdout(&pwd).trim(), "/project/api");
+    fs::write(kept.join("api/hello.py"), "print('kept edit')\n").expect("edit api/hello.py");
+    let live = journey.slipfork(&kept, &["exec", "web", "--", "cat", "hello.py"]);
+    assert_eq!(stdout(&live), "print('kept edit')\n");
+
+    // (d) `-F -dev` is pure Docker: the image copy and its WORKDIR, never the host checkout.
+    let baked = journey.project("devbaked", DEV_FORKFILE);
+    fs::write(baked.join("Dockerfile"), DEV_CODE_DOCKERFILE).expect("write the /code Dockerfile");
+    fs::write(baked.join("hello.py"), DEV_HELLO).expect("write hello.py");
+    let up = journey.slipfork(&baked, &["up", "-F", "-dev"]);
+    assert!(
+        up.status.success(),
+        "{}",
+        up_failure("`-F -dev` must boot", &baked, &up)
+    );
+    fs::write(baked.join("hello.py"), "print('host only')\n").expect("edit the host file");
+    let baked_read = journey.slipfork(&baked, &["exec", "web", "--", "cat", "hello.py"]);
+    assert_eq!(
+        stdout(&baked_read),
+        DEV_HELLO,
+        "`-F -dev` must keep the baked copy:\n{}",
+        stderr(&baked_read)
+    );
+    let pwd = journey.slipfork(&baked, &["exec", "web", "--", "pwd"]);
+    assert_eq!(stdout(&pwd).trim(), "/code");
+
+    // (e) A no-WORKDIR image is refused only for `dev`: `-F -dev` still boots its baked copy.
+    let baked_root = journey.project("devbakedroot", DEV_FORKFILE);
+    fs::write(baked_root.join("Dockerfile"), DEV_ROOT_DOCKERFILE)
+        .expect("write the root Dockerfile");
+    fs::write(baked_root.join("hello.py"), DEV_HELLO).expect("write hello.py");
+    let up = journey.slipfork(&baked_root, &["up", "-F", "-dev"]);
+    assert!(
+        up.status.success(),
+        "{}",
+        up_failure("`-F -dev` must boot a no-WORKDIR image", &baked_root, &up)
+    );
+    let pwd = journey.slipfork(&baked_root, &["exec", "web", "--", "pwd"]);
+    assert_eq!(stdout(&pwd).trim(), "/");
+    let baked_read = journey.slipfork(&baked_root, &["exec", "web", "--", "cat", "/hello.py"]);
+    assert_eq!(
+        stdout(&baked_read),
+        DEV_HELLO,
+        "the image copy must be visible at `/`:\n{}",
+        stderr(&baked_read)
+    );
+    fs::write(baked_root.join("hello.py"), "print('host only')\n").expect("edit the host file");
+    let still_baked = journey.slipfork(&baked_root, &["exec", "web", "--", "cat", "/hello.py"]);
+    assert_eq!(
+        stdout(&still_baked),
+        DEV_HELLO,
+        "`-F -dev` must never see the host edit"
+    );
+
+    for project in [&code, &kept, &baked, &baked_root] {
+        let down = journey.slipfork(project, &["down"]);
+        assert!(down.status.success(), "final down: {}", stderr(&down));
+    }
+}
+
+/// A stale `.slipfork/world.json` never wins identity over the ledger row keyed by the checkout.
+#[test]
+fn stale_world_record_loses_to_the_ledger_identity() {
+    let journey = Journey::new();
+    require_tool("crun");
+    let unshare = require_tool("unshare");
+    require_userns(&unshare);
+    require_registry_egress();
+
+    let legacy = journey.project("legacy", CATALOG_FORKFILE);
+    let record = legacy.join(".slipfork/world.json");
+    let stale = "{\"world\":\"feat-other--legacy\",\"socket\":\"/run/stale.sock\",\"project\":\"/srv/legacy\",\"pid\":1}";
+    fs::create_dir_all(legacy.join(".slipfork")).expect("create .slipfork");
+    fs::write(&record, stale).expect("write the stale world record");
+
+    // 1. Fresh registration: the path-derived world wins; the record is dropped silently.
+    let first = journey.slipfork(&legacy, &["up"]);
+    assert!(
+        first.status.success(),
+        "{}",
+        up_failure(
+            "a stale record must not block a fresh `up`",
+            &legacy,
+            &first
+        )
+    );
+    let started = format!("{}{}", stdout(&first), stderr(&first));
+    assert!(
+        started.contains("✓ Ready -> http://legacy.localhost"),
+        "the checkout's own world must boot:\n{started}"
+    );
+    assert!(
+        !started.contains("world.json") && !started.contains("feat-other"),
+        "a fresh registration must settle the record without scaring the user:\n{started}"
+    );
+    assert!(!record.exists(), "the stale record must be removed");
+    let first_run = latest_image_run(&journey, &legacy);
+    assert!(
+        journey.run.join("state/slipfork/state.db").is_file(),
+        "the daemon must own a real ledger row on disk"
+    );
+
+    let ps = journey.slipfork(&legacy, &["ps", "--json"]);
+    assert!(ps.status.success(), "ps: {}", stderr(&ps));
+    let reply: serde_json::Value = serde_json::from_slice(&ps.stdout).expect("ps --json");
+    let world = reply["worlds"]
+        .as_array()
+        .and_then(|worlds| worlds.iter().find(|world| world["world"] == "legacy"))
+        .unwrap_or_else(|| panic!("the path's world must be registered: {reply}"));
+    assert_eq!(
+        world["state"], "live",
+        "the world must live under the path identity: {reply}"
+    );
+
+    // 2. Once the ledger owns the path, a disagreeing record fails closed with one remedy.
+    fs::write(&record, stale).expect("restore the stale world record");
+    let disagree = journey.slipfork(&legacy, &["up"]);
+    assert!(
+        !disagree.status.success(),
+        "a disagreeing record must fail closed:\n{}{}",
+        stdout(&disagree),
+        stderr(&disagree)
+    );
+    let refusal = format!("{}{}", stdout(&disagree), stderr(&disagree));
+    assert_eq!(
+        refusal.matches("next:").count(),
+        1,
+        "a conflict is one line plus one `next:`:\n{refusal}"
+    );
+    assert!(
+        refusal.contains("next: rm .slipfork/world.json"),
+        "the one remedy clears the stale record:\n{refusal}"
+    );
+    assert!(
+        refusal.contains("feat-other--legacy") && refusal.contains("`legacy`"),
+        "the refusal names both identities:\n{refusal}"
+    );
+    assert!(record.is_file(), "a conflict never deletes the evidence");
+
+    let after = journey.slipfork(&legacy, &["ps", "--json"]);
+    assert!(after.status.success(), "ps: {}", stderr(&after));
+    let reply: serde_json::Value = serde_json::from_slice(&after.stdout).expect("ps --json");
+    let rows: Vec<&serde_json::Value> = reply["worlds"]
+        .as_array()
+        .map(|worlds| {
+            worlds
+                .iter()
+                .filter(|world| world["world"] == "legacy")
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        rows.len(),
+        1,
+        "a refused `up` must not duplicate the row: {reply}"
+    );
+    assert_eq!(
+        rows[0]["state"], "live",
+        "the live world must keep serving: {reply}"
+    );
+
+    fs::remove_file(&record).expect("clear the stale record");
+    // 3. Cleared evidence: the next `up` is idle — no rebuild and no duplicate ledger row.
+    let idle = journey.slipfork(&legacy, &["up"]);
+    assert!(
+        idle.status.success(),
+        "{}",
+        up_failure("`up` after clearing the record failed", &legacy, &idle)
+    );
+    assert!(
+        !stdout(&idle).contains("built"),
+        "an unchanged `up` must not rebuild:\n{}",
+        stdout(&idle)
+    );
+    assert_eq!(
+        latest_image_run(&journey, &legacy),
+        first_run,
+        "an idle `up` must not rebuild the image"
+    );
+    let settled = journey.slipfork(&legacy, &["ps", "--json"]);
+    assert!(settled.status.success(), "ps: {}", stderr(&settled));
+    let reply: serde_json::Value = serde_json::from_slice(&settled.stdout).expect("ps --json");
+    assert_eq!(
+        reply["worlds"].as_array().map(|worlds| worlds
+            .iter()
+            .filter(|world| world["world"] == "legacy")
+            .count()),
+        Some(1),
+        "an idle `up` must not duplicate the row: {reply}"
+    );
+
+    let down = journey.slipfork(&legacy, &["down"]);
+    assert!(down.status.success(), "down: {}", stderr(&down));
+}
+
+#[test]
 fn help_lists_the_daily_verbs() {
     let output = Command::new(env!("CARGO_BIN_EXE_slipfork"))
         .arg("--help")
@@ -2036,6 +3869,38 @@ image app . {
   }
 }
 "#;
+
+const DEV_FORKFILE: &str = r#"# forkfile: 0.1
+image app . {
+  dockerfile Dockerfile
+  service web {
+    run: python3 -m http.server 8099
+  }
+}
+"#;
+
+// No WORKDIR: dev must refuse instead of overlaying the rootfs root.
+const DEV_ROOT_DOCKERFILE: &str = "\
+FROM python:3.13-slim
+COPY . .
+CMD [\"python3\", \"-m\", \"http.server\", \"8099\"]
+";
+
+const DEV_CODE_DOCKERFILE: &str = "\
+FROM python:3.13-slim
+WORKDIR /code
+COPY . .
+CMD [\"python3\", \"-m\", \"http.server\", \"8099\"]
+";
+
+const DEV_PROJECT_DOCKERFILE: &str = "\
+FROM python:3.13-slim
+WORKDIR /project/api
+COPY . .
+CMD [\"python3\", \"-m\", \"http.server\", \"8099\"]
+";
+
+const DEV_HELLO: &str = "print('baked')\n";
 
 // Real SigV4 PUT + auth/anon GET roundtrips on `uploads` (private) and `assets` (cdn public-read).
 const S3_PROBE: &str = r#"import datetime, hashlib, hmac, os, pathlib, time, urllib.error, urllib.request

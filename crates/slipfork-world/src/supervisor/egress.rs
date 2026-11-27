@@ -19,6 +19,8 @@ use std::time::{Duration, Instant};
 use crate::error::{Error, Result};
 use crate::layout::WorldName;
 
+use super::journal::Journal;
+
 /// Interface `slirp4netns --configure` adds inside the world network namespace.
 const DEVICE: &str = "tap0";
 
@@ -154,23 +156,25 @@ pub(super) struct WorldEgress {
     program: PathBuf,
     child: Child,
     pgid: i32,
+    journal: Journal,
 }
 
 impl WorldEgress {
     /// Spawns `slirp4netns --configure … tap0` in its own process group, captures its output in
-    /// the injected durable log path (creating that private chain), and blocks until the device is
-    /// visible in the world netns.
+    /// the journal's durable forwarder log (creating that private chain), and blocks until the
+    /// device is visible in the world netns.
     pub(super) fn attach(
         program: &Path,
         init_pid: u32,
         net_dev: &Path,
-        log: &Path,
+        journal: &Journal,
         timeout: Duration,
     ) -> Result<Self> {
-        let stdout = open_log(log)?;
+        let log = journal.egress_log();
+        let stdout = open_log(&log)?;
         let stderr = stdout
             .try_clone()
-            .map_err(|source| Error::io("clone", log, source))?;
+            .map_err(|source| Error::io("clone", &log, source))?;
         let child = Command::new(program)
             .args(egress_argv(init_pid))
             .stdin(Stdio::null())
@@ -189,8 +193,9 @@ impl WorldEgress {
             program: program.to_path_buf(),
             pgid: i32::try_from(child.id()).unwrap_or(i32::MAX),
             child,
+            journal: journal.clone(),
         };
-        egress.await_attached(net_dev, log, timeout)?;
+        egress.await_attached(net_dev, &log, timeout)?;
         Ok(egress)
     }
 
@@ -238,7 +243,8 @@ impl WorldEgress {
 impl Drop for WorldEgress {
     fn drop(&mut self) {
         if let Err(error) = self.reap() {
-            eprintln!("slipfork-world: egress teardown failed: {error}");
+            self.journal
+                .record(&format!("slipfork-world: egress teardown failed: {error}"));
         }
     }
 }
@@ -255,10 +261,10 @@ mod tests {
         (root, net_dev)
     }
 
-    /// The durable capture path boot composes: `<store>/logs/<world>/slirp4netns.log`.
-    fn durable_log(root: &Path) -> PathBuf {
+    /// The journal boot composes: `<store>/logs` plus the validated world name.
+    fn durable_journal(root: &Path) -> Journal {
         let world = WorldName::parse("demo").expect("valid world name");
-        log_path(&root.join("logs"), &world)
+        Journal::new(&root.join("logs"), &world)
     }
 
     /// Permission bits of one path.
@@ -296,7 +302,8 @@ mod tests {
     fn forwarder_log_lives_beside_durable_captures() {
         let (root, net_dev) = scratch();
         std::fs::write(&net_dev, LO_ONLY).expect("seed a lo-only interface table");
-        let log = durable_log(root.path());
+        let journal = durable_journal(root.path());
+        let log = journal.egress_log();
         assert_eq!(log, root.path().join("logs/demo/slirp4netns.log"));
         assert!(
             !log.starts_with(root.path().join("pods")),
@@ -307,7 +314,7 @@ mod tests {
             Path::new("/nonexistent/slirp4netns"),
             4242,
             &net_dev,
-            &log,
+            &journal,
             Duration::from_millis(50),
         );
         assert_eq!(mode(log.parent().expect("log parent")), 0o700);
@@ -355,7 +362,7 @@ mod tests {
             Path::new("/nonexistent/slirp4netns"),
             4242,
             &net_dev,
-            &durable_log(root.path()),
+            &durable_journal(root.path()),
             Duration::from_millis(200),
         )
         .expect_err("a missing forwarder must fail the boot");
@@ -372,12 +379,12 @@ mod tests {
     fn early_exit_names_the_status_and_log_tail() {
         let (root, net_dev) = scratch();
         std::fs::write(&net_dev, LO_ONLY).expect("seed a lo-only interface table");
-        let log = durable_log(root.path());
+        let journal = durable_journal(root.path());
         let error = WorldEgress::attach(
             Path::new("/bin/false"),
             4242,
             &net_dev,
-            &log,
+            &journal,
             Duration::from_secs(5),
         )
         .expect_err("an instantly exiting forwarder must fail the boot");

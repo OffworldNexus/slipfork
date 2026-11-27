@@ -50,6 +50,16 @@ SLIPFORK_ARCHIVE_URL="file://$archive" SLIPFORK_SHA256="$sha" \
 sh -n packaging/deb/postinst
 sh -n packaging/deb/prerm
 bash -n packaging/arch/slipfork.install
+post=$(sed -n '/^%post$/,/^%preun$/p' packaging/rpm/slipfork.spec)
+printf '%s\n' "$post" | grep -qx '%preun' ||
+    { echo "error: rpm spec lost its %post/%preun markers; next: restore them or update check-install.sh" >&2; exit 1; }
+printf '%s\n' "$post" | sed '1d;$d' | sh -n
+grep -q '^post_upgrade()' packaging/arch/slipfork.install ||
+    { echo "error: arch hook lost post_upgrade; next: make pacman upgrades run the ingress setup" >&2; exit 1; }
+for hook in packaging/deb/postinst packaging/rpm/slipfork.spec packaging/arch/slipfork.install; do
+    grep -q '^[[:space:]]*ingress_setup$' "$hook" ||
+        { echo "error: $hook lost the ingress_setup call; next: restore it" >&2; exit 1; }
+done
 sh -n packaging/alpine/slipfork.post-install
 sh -n packaging/alpine/slipfork.pre-deinstall
 sh -n docs/install.sh

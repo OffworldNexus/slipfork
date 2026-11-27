@@ -1,7 +1,7 @@
 /**
  * `@slipfork/opencode` composition root.
  *
- * This is the only file in the package that reads `process.env`, and it reads only the five names
+ * This is the only file in the package that reads `process.env`, and it reads only the six names
  * in `CHILD_ENV_KEYS` (the same allowlist idea as `editors/zed/src/lib.rs`). Everything else
  * receives the binary and environment from here, so the coordinator stays pure and the CLI
  * adapter stays a thin argv/JSON boundary.
@@ -15,7 +15,14 @@ import { SlipforkWorktreeCoordinator } from "./coordinator.ts";
 const PLUGIN_ID = "slipfork";
 
 /** The only environment names the child `slipfork` process may inherit. */
-const CHILD_ENV_KEYS = ["PATH", "SYSTEMROOT", "HOME", "XDG_RUNTIME_DIR", "XDG_STATE_HOME"] as const;
+const CHILD_ENV_KEYS = [
+  "PATH",
+  "SYSTEMROOT",
+  "HOME",
+  "XDG_RUNTIME_DIR",
+  "XDG_STATE_HOME",
+  "XDG_DATA_HOME",
+] as const;
 
 /** An allowlisted snapshot: doctor tokens and every other ambient variable stay behind. */
 function childEnv(): Record<string, string | undefined> {

@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 /// Where a stage's root filesystem comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StageBase {
@@ -16,8 +18,11 @@ pub enum StageBase {
 pub struct CopySpec {
     /// `--from=<stage>`; copies from that stage's sealed rootfs instead of the build context.
     pub from: Option<String>,
-    /// `--chown=<uid>:<gid>` (numeric only; builds never read the image's `/etc/passwd`).
-    pub chown: Option<Owner>,
+    /// Raw `--chown` spec (`name`, `name:group`, `uid`, `uid:gid`), resolved against the
+    /// destination stage's rootfs when the copy is applied.
+    pub chown: Option<String>,
+    /// `--chmod` mode, parsed as octal and masked to `0o7777`.
+    pub mode: Option<u32>,
     /// Expanded source paths relative to the context or the source stage rootfs.
     pub sources: Vec<String>,
     /// Destination path inside the rootfs.
@@ -31,6 +36,22 @@ pub struct Owner {
     pub uid: u32,
     /// Container gid.
     pub gid: u32,
+}
+
+/// Ownership and mode a `COPY`/`ADD` applies to every entry it writes.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CopyOptions {
+    /// Host owner: a single-mapping build can only represent the invoking uid/gid.
+    pub(crate) owner: Owner,
+    /// `--chmod` mode, masked to `0o7777`.
+    pub(crate) mode: Option<u32>,
+}
+
+impl CopyOptions {
+    /// Bundles the host owner with an optional `--chmod` mode.
+    pub(crate) const fn new(owner: Owner, mode: Option<u32>) -> Self {
+        Self { owner, mode }
+    }
 }
 
 /// One `RUN --mount=type=cache` mount.
@@ -54,7 +75,7 @@ pub struct RunSpec {
 }
 
 /// Shell-form or JSON-exec-form command.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Command {
     /// `/bin/sh -c <script>`.
     Shell(String),
@@ -72,6 +93,16 @@ impl Command {
         }
     }
 
+    /// The command as the `Dockerfile` author wrote it: shell scripts verbatim, exec argv joined by
+    /// spaces. Never wrapped in an extra `sh -c`.
+    #[must_use]
+    pub fn as_written(&self) -> String {
+        match self {
+            Self::Shell(script) => script.clone(),
+            Self::Exec(argv) => argv.join(" "),
+        }
+    }
+
     /// The argv this command expands to at exec time; shell form runs through `/bin/sh -c`.
     #[must_use]
     pub fn to_argv(&self) -> Vec<String> {
@@ -85,7 +116,7 @@ impl Command {
 }
 
 /// Port protocol for `EXPOSE`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Protocol {
     /// `tcp`.
     Tcp,
@@ -103,7 +134,7 @@ impl fmt::Display for Protocol {
 }
 
 /// One `EXPOSE` entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Port {
     /// Port number.
     pub number: u16,
@@ -149,6 +180,55 @@ pub enum Instruction {
 }
 
 impl Instruction {
+    /// The instruction keyword, used as a run-record phase (`run`, `copy`, `from`, …).
+    #[must_use]
+    pub fn phase(&self) -> &'static str {
+        match self {
+            Self::From { .. } => "from",
+            Self::Arg { .. } => "arg",
+            Self::Env(_) => "env",
+            Self::Workdir(_) => "workdir",
+            Self::Copy(_) => "copy",
+            Self::Add(_) => "add",
+            Self::Run(_) => "run",
+            Self::User(_) => "user",
+            Self::Expose(_) => "expose",
+            Self::Cmd(_) => "cmd",
+            Self::Entrypoint(_) => "entrypoint",
+        }
+    }
+
+    /// The uppercase instruction keyword (`RUN`, `COPY`, …) for live build rows.
+    #[must_use]
+    pub fn keyword(&self) -> &'static str {
+        match self {
+            Self::From { .. } => "FROM",
+            Self::Arg { .. } => "ARG",
+            Self::Env(_) => "ENV",
+            Self::Workdir(_) => "WORKDIR",
+            Self::Copy(_) => "COPY",
+            Self::Add(_) => "ADD",
+            Self::Run(_) => "RUN",
+            Self::User(_) => "USER",
+            Self::Expose(_) => "EXPOSE",
+            Self::Cmd(_) => "CMD",
+            Self::Entrypoint(_) => "ENTRYPOINT",
+        }
+    }
+
+    /// The instruction text without its keyword, exactly as the author wrote it.
+    #[must_use]
+    pub fn command_text(&self) -> String {
+        match self {
+            Self::Run(run) => run.command.as_written(),
+            Self::Cmd(command) | Self::Entrypoint(command) => command.as_written(),
+            _ => self
+                .render()
+                .split_once(' ')
+                .map_or_else(String::new, |(_, rest)| rest.to_owned()),
+        }
+    }
+
     /// Canonical text used in cache keys and failure messages.
     #[must_use]
     pub fn render(&self) -> String {
@@ -216,8 +296,11 @@ fn render_copy(op: &str, spec: &CopySpec) -> String {
     if let Some(from) = &spec.from {
         head.push_str(&format!(" --from={from}"));
     }
-    if let Some(owner) = spec.chown {
-        head.push_str(&format!(" --chown={}:{}", owner.uid, owner.gid));
+    if let Some(chown) = &spec.chown {
+        head.push_str(&format!(" --chown={chown}"));
+    }
+    if let Some(mode) = spec.mode {
+        head.push_str(&format!(" --chmod={mode:o}"));
     }
     let mut parts = vec![head];
     parts.extend(spec.sources.iter().cloned());
@@ -237,6 +320,8 @@ pub struct ParsedInstruction {
 /// One `FROM`-scoped build stage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stage {
+    /// 1-based line of the `FROM` that opened this stage.
+    pub line: usize,
     /// `AS` alias (lowercased) when declared.
     pub alias: Option<String>,
     /// Base image or earlier stage.

@@ -1,13 +1,173 @@
 //! Pure path/env/resource helpers for the world boot runtime.
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::rootfs::{is_file_in_rootfs, shim_exists};
 use slipfork_forkfile::{FeatureSet, direct_bin};
-use slipfork_world::{Bind, BindSource, PodEnv};
+use slipfork_world::{Bind, BindSource, Identity, PodEnv, SnapshotStore, StoreLayout, WorldEngine};
+
+use super::ImageHead;
+use super::dev::DevMount;
 
 const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+/// One `snapshots/<key>.json` node record, as far as the identity lookup needs it.
+#[derive(serde::Deserialize)]
+struct SealedRecord {
+    kind: String,
+    #[serde(default)]
+    parents: Vec<String>,
+    #[serde(default)]
+    facts: Option<serde_json::Value>,
+}
+
+/// A sealed-image identity failure: one cause line and the one remedy that fixes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct IdentityFailure {
+    cause: String,
+    remedy: String,
+}
+
+impl IdentityFailure {
+    fn new(cause: impl Into<String>, remedy: impl Into<String>) -> Self {
+        Self {
+            cause: cause.into(),
+            remedy: remedy.into(),
+        }
+    }
+
+    /// The one-line cause (never carries a `next:` tail).
+    pub(super) fn cause(&self) -> &str {
+        &self.cause
+    }
+
+    /// The concrete fix, rendered as the failure's single `next:`.
+    pub(super) fn remedy(&self) -> &str {
+        &self.remedy
+    }
+}
+
+impl From<slipfork_world::IdentityError> for IdentityFailure {
+    fn from(error: slipfork_world::IdentityError) -> Self {
+        Self::new(error.cause(), error.remedy())
+    }
+}
+
+/// Resolves the identity a sealed image must run as (default container root).
+///
+/// Two records describe one sealed image: the head key names the last *materialized* step and the
+/// image node that wraps it carries the final-stage `ImageConfig`, whose `user` is the `Dockerfile`
+/// `USER`. A pulled or cached-from image seals no `user` fact, which is Docker's `0:0` default.
+pub(super) fn sealed_identity(
+    layout: &StoreLayout,
+    engine: &dyn WorldEngine,
+    built: &ImageHead,
+) -> Result<Identity, IdentityFailure> {
+    // A pulled image seals its OCI rootfs under `images/oci/<digest>` and records no OCI config
+    // `USER`, so Docker's `0:0` default applies. Node records must never be consulted here: a
+    // from-only image shares its base key with any same-digest Dockerfile build, whose `USER`
+    // would otherwise alias onto the pull.
+    if built.rootfs.starts_with(layout.images_root()) {
+        return Ok(Identity::ROOT);
+    }
+    let store = SnapshotStore::new(layout, engine);
+    let user = sealed_user(&store, built)?;
+    // The one resolver: build `RUN` steps resolve the same `ImageConfig.user` for the same rootfs
+    // through this identical `Identity::resolve` call (`slipfork-image/src/runtime.rs`).
+    Identity::resolve(&built.rootfs, user.as_deref()).map_err(IdentityFailure::from)
+}
+
+/// The `USER` fact of the image node that wraps the sealed head, if the image names one.
+///
+/// Provenance decides the fallback: a head with no node record at all was pulled (`pulled` on its
+/// first `up`, `cached` thereafter) and keeps Docker's `0:0` default. Any head that *does* have a
+/// record is a Dockerfile build (`built`, or `cached` on a 0-miss rebuild) and must still find its
+/// image record, even if GC swept it, so an explicit `USER` never silently boots root.
+fn sealed_user(
+    store: &SnapshotStore<'_>,
+    built: &ImageHead,
+) -> Result<Option<String>, IdentityFailure> {
+    let head_record = read_record(&store.record_path(&built.key))?;
+    if let Some(record) = head_record.as_ref()
+        && record.kind == "image"
+        && let Some(facts) = record.facts.as_ref()
+    {
+        return Ok(field(facts));
+    }
+    // The image node is the head's single child: its key hashes the head's key as parent. A pure
+    // pull writes no node record, so the snapshots root may not exist at all: that is no records,
+    // not a failure.
+    let parent = built.key.as_hex();
+    let snapshots = store.snapshots_root();
+    if snapshots.is_dir() {
+        let entries = fs::read_dir(snapshots).map_err(|error| {
+            IdentityFailure::new(
+                format!(
+                    "cannot list the sealed snapshots in `{}`: {error}",
+                    snapshots.display()
+                ),
+                "run `slipfork up` to rebuild this world",
+            )
+        })?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(std::ffi::OsStr::to_str) != Some("json") {
+                continue;
+            }
+            let Some(record) = read_record(&path)? else {
+                continue;
+            };
+            if record.kind == "image"
+                && record.parents.as_slice() == [parent.as_str()]
+                && let Some(facts) = record.facts.as_ref()
+            {
+                return Ok(field(facts));
+            }
+        }
+    }
+    // A pulled head writes no node record at all; its absent `USER` is Docker's root default. A
+    // recorded head that lost its image record is a Dockerfile build that must fail closed.
+    if built.state == "pulled" || head_record.is_none() {
+        return Ok(None);
+    }
+    Err(IdentityFailure::new(
+        format!(
+            "the sealed image `{}` has no recorded `USER`",
+            built.key.as_hex()
+        ),
+        "run `slipfork up` to rebuild this world",
+    ))
+}
+
+/// The `facts.user` string of one image config, when it names a `USER`.
+fn field(facts: &serde_json::Value) -> Option<String> {
+    facts.get("user")?.as_str().map(str::to_owned)
+}
+
+/// Reads one node record, mapping every unreadable-or-corrupt case to one remedy line.
+fn read_record(path: &Path) -> Result<Option<SealedRecord>, IdentityFailure> {
+    match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|error| {
+            IdentityFailure::new(
+                format!(
+                    "cannot parse the sealed image record `{}`: {error}",
+                    path.display()
+                ),
+                "run `slipfork up` to rebuild this world",
+            )
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(IdentityFailure::new(
+            format!(
+                "cannot read the sealed image record `{}`: {error}",
+                path.display()
+            ),
+            "run `slipfork up` to rebuild this world",
+        )),
+    }
+}
 
 pub(super) fn project_bind(project: &Path) -> Bind {
     Bind {
@@ -24,6 +184,27 @@ pub(super) fn project_binds(features: &FeatureSet, project: &Path) -> Vec<Bind> 
     } else {
         Vec::new()
     }
+}
+
+/// The binds a `dev` pod gets: the checkout at `/project` plus every Dockerfile destination the
+/// stage's live context must overlay (`WORKDIR`, whole-context `COPY` destination). `/` is never
+/// a bind target.
+pub(super) fn dev_binds(
+    features: &FeatureSet,
+    project: &Path,
+    mount: Option<&DevMount>,
+) -> Vec<Bind> {
+    let mut binds = project_binds(features, project);
+    if let Some(mount) = mount {
+        for destination in mount.overlays.iter().filter(|dest| dest.as_str() != "/") {
+            binds.push(Bind {
+                source: BindSource::Host(mount.context.clone()),
+                destination: destination.clone(),
+                read_only: false,
+            });
+        }
+    }
+    binds
 }
 
 pub(super) fn merge_env(
@@ -238,176 +419,4 @@ fn resolve_in_rootfs(rootfs: &Path, path: &str, program: &str) -> Option<String>
 }
 
 #[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use tempfile::TempDir;
-
-    use super::{ServiceLaunch, project_binds};
-    use slipfork_world::PodEnv;
-
-    /// `/project` is a dev-only bind: dropping `dev` leaves pods on the built rootfs alone.
-    #[test]
-    fn only_a_dev_world_binds_the_live_project() {
-        let source = "# forkfile: 0.1\n\nimage base from python:3.13-slim {\n  service api {\n    run: sleep 3600\n  }\n}\n";
-        let checked = slipfork_forkfile::compile(source).expect("compile the fixture");
-        let dev = checked.document.default_features();
-        assert!(dev.contains("dev"));
-        let binds = project_binds(&dev, std::path::Path::new("/var/tmp/demo"));
-        assert_eq!(binds.len(), 1);
-        assert_eq!(binds[0].destination, "/project");
-
-        let bare = checked
-            .document
-            .resolve_features(true, &[])
-            .expect("resolve an empty base");
-        assert!(!bare.contains("dev"));
-        assert!(
-            project_binds(&bare, std::path::Path::new("/var/tmp/demo")).is_empty(),
-            "a non-dev world must not see the live checkout"
-        );
-    }
-
-    fn touch(root: &TempDir, relative: &str) {
-        let path = root.path().join(relative);
-        fs::create_dir_all(path.parent().expect("fixture parent")).expect("create fixture dirs");
-        fs::write(path, b"#!/bin/sh\n").expect("write fixture binary");
-    }
-
-    fn path_of(launch: &ServiceLaunch) -> String {
-        launch
-            .env
-            .iter()
-            .find(|entry| entry.key == "PATH")
-            .map(|entry| entry.value.clone())
-            .expect("resolved launch carries PATH")
-    }
-
-    #[test]
-    fn merge_path_prefers_a_declared_forkfile_path_then_the_image_path() {
-        let declared = vec![PodEnv::new("PATH", "/declared/bin")];
-        let image = vec!["PATH=/image/bin".to_owned()];
-        assert_eq!(super::merge_path(&declared, &image), "/declared/bin");
-        assert_eq!(super::merge_path(&[], &image), "/image/bin");
-        assert_eq!(super::merge_path(&[], &[]), super::DEFAULT_PATH);
-
-        let mut env = vec![
-            PodEnv::new("PATH", "/declared/bin"),
-            PodEnv::new("HOME", "/root"),
-        ];
-        super::upsert_env(&mut env, vec![PodEnv::new("PATH", "/shim:/declared/bin")]);
-        assert_eq!(env.iter().filter(|entry| entry.key == "PATH").count(), 1);
-        assert_eq!(env[1].value, "/shim:/declared/bin");
-    }
-
-    #[test]
-    fn uv_run_resolves_to_the_project_venv_binary_without_the_wrapper() {
-        let project = TempDir::new().expect("project");
-        let rootfs = TempDir::new().expect("rootfs");
-        touch(&project, ".venv/bin/uvicorn");
-        let launch = ServiceLaunch::resolve(
-            project.path(),
-            "/project",
-            rootfs.path(),
-            super::DEFAULT_PATH,
-            "@uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000",
-        );
-        assert_eq!(
-            launch.argv,
-            [
-                "/project/.venv/bin/uvicorn",
-                "app.main:app",
-                "--reload",
-                "--host",
-                "0.0.0.0",
-                "--port",
-                "8000"
-            ]
-        );
-        assert!(path_of(&launch).starts_with("/project/.venv/bin:"));
-        assert!(path_of(&launch).ends_with(super::DEFAULT_PATH));
-        assert!(
-            launch
-                .env
-                .iter()
-                .any(|entry| entry.key == "VIRTUAL_ENV" && entry.value == "/project/.venv")
-        );
-    }
-
-    #[test]
-    fn pnpm_exec_resolves_to_the_workspace_shim_in_a_subdirectory() {
-        let project = TempDir::new().expect("project");
-        let rootfs = TempDir::new().expect("rootfs");
-        touch(&project, "front/node_modules/.bin/vite");
-        let launch = ServiceLaunch::resolve(
-            project.path(),
-            "/project/front",
-            rootfs.path(),
-            "/image/bin",
-            "@pnpm exec vite dev --host 0.0.0.0 --port 5173",
-        );
-        assert_eq!(
-            launch.argv,
-            [
-                "/project/front/node_modules/.bin/vite",
-                "dev",
-                "--host",
-                "0.0.0.0",
-                "--port",
-                "5173"
-            ]
-        );
-        assert_eq!(
-            path_of(&launch),
-            "/project/front/node_modules/.bin:/image/bin"
-        );
-        assert!(
-            !launch.env.iter().any(|entry| entry.key == "VIRTUAL_ENV"),
-            "a node wrapper must not export a Python venv"
-        );
-    }
-
-    #[test]
-    fn a_missing_shim_keeps_the_original_wrapper() {
-        let project = TempDir::new().expect("project");
-        let rootfs = TempDir::new().expect("rootfs");
-        let launch = ServiceLaunch::resolve(
-            project.path(),
-            "/project",
-            rootfs.path(),
-            super::DEFAULT_PATH,
-            "@uv run python -m app.worker",
-        );
-        assert_eq!(
-            launch.argv,
-            ["/bin/sh", "-c", "uv run python -m app.worker"]
-        );
-        assert!(launch.env.is_empty());
-    }
-
-    #[test]
-    fn a_flag_first_command_and_a_foreign_workdir_both_fall_back() {
-        let project = TempDir::new().expect("project");
-        let rootfs = TempDir::new().expect("rootfs");
-        touch(&project, ".venv/bin/uvicorn");
-        let flag_first = ServiceLaunch::resolve(
-            project.path(),
-            "/project",
-            rootfs.path(),
-            super::DEFAULT_PATH,
-            "@uv run -m uvicorn",
-        );
-        assert_eq!(flag_first.argv, ["/bin/sh", "-c", "uv run -m uvicorn"]);
-        let foreign = ServiceLaunch::resolve(
-            project.path(),
-            "/opt/app",
-            rootfs.path(),
-            super::DEFAULT_PATH,
-            "@uv run uvicorn app.main:app",
-        );
-        assert_eq!(
-            foreign.argv,
-            ["/bin/sh", "-c", "uv run uvicorn app.main:app"]
-        );
-    }
-}
+mod tests;

@@ -29,7 +29,10 @@ mod engine;
 mod error;
 #[allow(unsafe_code)]
 pub mod fdpass;
+#[allow(unsafe_code)]
+pub mod identity;
 mod layout;
+pub mod ledger;
 mod log_store;
 pub mod namespaces;
 mod pod;
@@ -43,12 +46,13 @@ pub mod run_log;
 #[allow(unsafe_code)]
 mod runtime_dir;
 mod secure_file;
+pub mod snapshot;
 #[allow(unsafe_code)]
 mod supervisor;
 
 pub use boot::{
     BootEvent, BootFailure, BootGraph, BootKind, BootScheduler, BootState, BootStep, EpochState,
-    EventSink, FailedHook, HookPhase, ImageNode, ImageStamp, PG_STAMP_FILE, PlanRow, ResourceNode,
+    EventSink, FailedHook, HookPhase, ImageNode, ImagePaths, PG_STAMP_FILE, PlanRow, ResourceNode,
     ServiceHealth, ServiceNode, StampStore, StepExecutor, StepOutcome, StepStamp, WORLD_STAMP_FILE,
     WorldPlan, WorldStamp, WorldStampStore, classify_service, epoch_for, plan_epoch, step_digest,
     world_plan, world_plan_with, write_pg_checkpoint, write_pg_checkpoints,
@@ -74,22 +78,36 @@ pub use control::{
 pub use engine::BtrfsEngine;
 pub use error::{Error, NameKind, Result};
 pub use fdpass::{PAYLOAD_CAP, recv_fd, send_fd};
+pub use identity::{Account, Identity, IdentityError};
 pub use layout::{
     FORKS_DIR, ForkDir, ForkName, PODS_DIR, ProjectScope, STORE_DIR, StoreLayout, WorldName,
-    fork_checkout, fork_checkouts, fork_under, fork_world_id, project_root, world_id_for_project,
+    checkout_chain, fork_checkout, fork_checkouts, fork_under, fork_world_id, project_root,
+};
+pub use ledger::{
+    Access, ChainEntry, ConvergeAction, ConvergeInput, ForkLedger, ForkRequest, ForkRow,
+    LeaseState, LedgerError, LedgerResult, LedgerRows, LiveFork, OrphanWorld, Resolved,
+    RootRequest, StateDb, StatePaths, UnregisteredFork, UntrackedKind, WorldFacts, WorldRow,
+    WorldState, plan_converge, resolve_target,
 };
 pub use log_store::{LogStore, RETAIN_RUNS};
 pub use namespaces::{NAMESPACE_KINDS, NamespaceIdentity, NamespaceTable};
 pub use pod::{
     Bind, BindSource, PodBundle, PodEnv, PodFile, PodHost, PodSpec, is_reusable_pod, write_bundle,
 };
+pub use pod_env::COLOUR_HINTS;
 pub use pod_log::{CHUNK, DIVIDER_CLOSE, DIVIDER_OPEN, LogKind, LogLine, LogReader, LogSink};
 pub use port::{Dirtiness, ForkPaths, WorldEngine};
 pub use reap::{kill_group, reap_world_tree};
 pub use resources::{
-    DatabaseBootstrap, DatabaseFault, DatabaseName, ImageFacts, PostgresClone, PostgresLauncher,
-    PostgresTemplate, RedisLauncher, ResourceKind, S3Bucket, S3Credentials, S3Server,
-    TemplateState,
+    DatabaseBootstrap, DatabaseFault, DatabaseName, ImageFacts, PgSeed, PostgresClone,
+    PostgresLauncher, PostgresTemplate, RedisLauncher, ResourceKind, S3Bucket, S3Credentials,
+    S3Server, SeedSpec, TemplateState,
 };
 pub use runtime_dir::RuntimePods;
+pub use snapshot::{
+    BuildGraph, Cache, Facts, GC_GRACE_MS, GcOutcome, GcReport, KEY_DOMAIN, LEASE_FILE, Lease,
+    LeaseEntry, Node, NodeKey, NodeKind, Observed, Parallelism, Pin, PublishOutcome,
+    RECORD_VERSION, ReconcileFailed, Reconciled, SnapshotError, SnapshotResult, SnapshotSlot,
+    SnapshotStore, gc_mark_set, normalize_canon,
+};
 pub use supervisor::{PodStatus, WorldHost, WorldSupervisor, WorldTools, pod_statuses};

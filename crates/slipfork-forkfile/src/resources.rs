@@ -131,6 +131,8 @@ pub struct Redis {
 ast_eq!(Redis { id, body });
 
 /// A declaration inside a `redis` block.
+// A parsed AST is built once per document; the guarded body is not worth boxing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum RedisItem {
     /// `version <n>`

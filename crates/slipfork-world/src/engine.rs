@@ -1,7 +1,9 @@
+mod observe;
 pub(crate) mod readiness;
 mod teardown;
 
 use std::fs::{self, File};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::btrfs::{self, SubvolumeFlags};
@@ -125,6 +127,56 @@ impl BtrfsEngine {
         let parent = Self::open_dir(&parent)?;
         btrfs::destroy(&parent, path, &name)
     }
+
+    /// Strips Slipfork's own bookkeeping out of a freshly created checkout.
+    ///
+    /// `SNAP_CREATE_V2` clones the whole project tree, so the parent's `.forks` tree and the
+    /// `.slipfork-store` mount store would surface inside the new checkout (as nested stubs or as
+    /// copied entries) and be advertised as phantom forks. Both names are removed from the
+    /// checkout only — the parent tree is never mutated. A nested subvolume is unsealed and
+    /// destroyed through the engine, anything else through `remove_dir_all`, and an entry a
+    /// racing reaper already unlinked is `Ok(())`.
+    fn strip_managed_dirs(&self, checkout: &Path) -> Result<()> {
+        let entries =
+            fs::read_dir(checkout).map_err(|source| Error::io("read", checkout, source))?;
+        for entry in entries {
+            let entry = entry.map_err(|source| Error::io("read", checkout, source))?;
+            let name = entry.file_name();
+            if !layout::is_managed_entry(&name) {
+                continue;
+            }
+            let path = entry.path();
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(source) if source.kind() == io::ErrorKind::NotFound => continue,
+                Err(source) => return Err(Error::io("inspect", &path, source)),
+            };
+            if metadata.is_dir() {
+                let is_subvolume = match btrfs::is_subvolume_path(&path) {
+                    Ok(is_subvolume) => is_subvolume,
+                    Err(Error::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
+                // Reachable when the project itself is the Btrfs mount root: `<project>/.slipfork-store`
+                // is then a real nested subvolume and must go through `SNAP_DESTROY_V2`. A normal
+                // project snapshot only surfaces an `ino == 2` stub, which `remove_dir_all` reaps.
+                if is_subvolume {
+                    Self::destroy_subvolume(&path)?;
+                } else if let Err(source) = fs::remove_dir_all(&path)
+                    && source.kind() != io::ErrorKind::NotFound
+                {
+                    return Err(Error::io("remove", &path, source));
+                }
+            } else if let Err(source) = fs::remove_file(&path)
+                && source.kind() != io::ErrorKind::NotFound
+            {
+                return Err(Error::io("remove", &path, source));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl BtrfsEngine {
@@ -170,15 +222,16 @@ impl BtrfsEngine {
 
 impl WorldEngine for BtrfsEngine {
     fn ensure_store(&self) -> Result<()> {
-        let anchor = self.store_anchor();
-        let dir = Self::open_dir(&anchor)?;
-        Self::require_btrfs(&dir, &anchor)?;
+        // The data-home fallback (`<data_home>/slipfork/store`) and a fresh project mount both
+        // start absent, so the resolved root is created before it is opened. Validation targets
+        // that root itself (not the mount parent), which pins the failure to the path the user
+        // must fix instead of surfacing an `ENOENT` on a directory Slipfork never made.
+        let root = self.layout.store_root();
+        fs::create_dir_all(&root).map_err(|source| Error::io("create", &root, source))?;
+        let dir = Self::open_dir(&root)?;
+        Self::require_btrfs(&dir, &root)?;
         drop(dir);
-        for path in [
-            self.layout.store_root(),
-            self.layout.images_root(),
-            self.layout.worlds_root(),
-        ] {
+        for path in [self.layout.images_root(), self.layout.worlds_root()] {
             fs::create_dir_all(&path).map_err(|source| Error::io("create", &path, source))?;
         }
         Ok(())
@@ -211,12 +264,16 @@ impl WorldEngine for BtrfsEngine {
         self.flush_store()?;
         // A checkout is snapshotted with `SNAP_CREATE_V2` only when it is itself a subvolume. A
         // plain directory is never modified: its tree is copied into the fork path afterwards.
+        // Every fork lands flat at `<family_root>/.forks/<fork>` under `<fork>--<root_world>`,
+        // no matter how deep the parent checkout sits (`specs/03` §7.3).
+        let family = layout::fork_family(project, world)?;
         let project_is_subvolume = btrfs::is_subvolume_path(project)?;
-        let forks_dir = layout::project_forks_dir(project);
+        let forks_dir = layout::project_forks_dir(&family.root);
         fs::create_dir_all(&forks_dir).map_err(|source| Error::io("create", &forks_dir, source))?;
-        let project_snapshot = layout::project_fork_path(project, fork);
+        let project_snapshot = layout::project_fork_path(&family.root, fork);
+        let forked = StoreLayout::fork_world_name(&family.root_world, fork);
         let world_source = self.layout.world(world);
-        let world_snapshot = self.layout.fork_world(world, fork);
+        let world_snapshot = self.layout.world(&forked);
         // Every flat sibling resource clone belongs to the fork too (live PGDATA, AOF, buckets).
         let mut jobs = vec![(world_source, world_snapshot.clone())];
         if project_is_subvolume {
@@ -225,14 +282,13 @@ impl WorldEngine for BtrfsEngine {
         for (kind, pod) in self.world_clones(world)? {
             jobs.push((
                 self.layout.world_clone(world, kind, &pod),
-                self.layout.fork_world_clone(world, fork, kind, &pod),
+                self.layout.world_clone(&forked, kind, &pod),
             ));
         }
         // Snapshot live `svc-*` service rootfses in the same Btrfs transaction so the fork pays
         // zero extra `SNAP_CREATE_V2` commits for services and inherits warm runtime caches.
         let parent_pods = self.layout.world_pods(world);
         if parent_pods.is_dir() {
-            let forked = StoreLayout::fork_world_name(world, fork);
             let fork_pods = self.layout.world_pods(&forked);
             fs::create_dir_all(&fork_pods)
                 .map_err(|source| Error::io("create", &fork_pods, source))?;
@@ -287,9 +343,23 @@ impl WorldEngine for BtrfsEngine {
                 return Err(Error::io("publish", &project_snapshot, source));
             }
         }
+        // Publication cloned the parent's own `.forks`/`.slipfork-store` bookkeeping into the
+        // checkout: nested snapshots surface as stubs and copied entries look like forks, so every
+        // follower of a fork would report phantom `checkout missing` rows. Strip them now; a
+        // failure destroys every snapshot this fork created and fails closed rather than returning
+        // a checkout that still holds managed directories.
+        if let Err(error) = self.strip_managed_dirs(&project_snapshot) {
+            for (_, target) in &jobs {
+                let _ = teardown::destroy_if_present(target);
+            }
+            let _ = teardown::destroy_if_present(&project_snapshot);
+            return Err(error);
+        }
         Ok(ForkPaths {
             project: project_snapshot,
             world: world_snapshot,
+            parent: family.parent,
+            root: family.root_world,
         })
     }
 
@@ -333,10 +403,12 @@ impl WorldEngine for BtrfsEngine {
                 target: format!("fork {fork}"),
             });
         }
-        // Sweep pod clones, flat resource clones, and `worlds/<fork>--<world>` BEFORE unlinking
-        // `.forks/<fork>`, so an interrupted drop keeps the fork addressable on retry instead of
-        // stranding orphan world subvolumes.
-        let forked = StoreLayout::fork_world_name(world, fork);
+        // Sweep pod clones, flat resource clones, and `worlds/<fork>--<root_world>` BEFORE
+        // unlinking `.forks/<fork>`, so an interrupted drop keeps the fork addressable on retry
+        // instead of stranding orphan world subvolumes. The family is resolved from the called
+        // project, so a drop issued at the root never compounds a nested world id.
+        let family = layout::fork_family(project, world)?;
+        let forked = StoreLayout::fork_world_name(&family.root_world, fork);
         teardown::sweep_pods_dir(&self.layout.world_pods(&forked))?;
         let worlds = self.layout.worlds_root();
         if worlds.is_dir() {
@@ -354,8 +426,8 @@ impl WorldEngine for BtrfsEngine {
                 }
             }
         }
-        teardown::destroy_world_if_present(&self.layout.fork_world(world, fork))?;
-        teardown::destroy_if_present(&layout::project_fork_path(project, fork))
+        teardown::destroy_world_if_present(&self.layout.world(&forked))?;
+        teardown::destroy_if_present(&layout::project_fork_path(&family.root, fork))
     }
 
     fn drop_world(&self, world: &WorldName) -> Result<()> {

@@ -3,62 +3,28 @@
 //! Nothing below this module reads `std::env`, `/proc`, the terminal, or the working directory:
 //! `main` calls these functions once and injects the resulting plain values.
 
-use std::ffi::{OsStr, OsString};
-use std::io::IsTerminal;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use slipfork_image::RegistryCredentials;
+
 use crate::mounts;
-use crate::ui::UiMode;
+use crate::ui::report::WallZone;
+use crate::ui::{Terminal, TerminalEnv};
 use crate::world::HostEnv;
 
-/// The terminal contract resolved once for this invocation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Terminal {
-    /// How this invocation renders its result.
-    pub mode: UiMode,
-    /// Visible columns for live panes; `80` for every non-interactive invocation.
-    pub width: usize,
-    /// Whether stdin is a real terminal, resolved once by the composition root.
-    pub stdin_tty: bool,
-}
-
-/// Resolves the output mode and the terminal width exactly once, so no library module has to
-/// probe `/dev/tty` for itself.
+/// Resolves the output mode, terminal geometry, and stdin tty exactly once.
 pub fn terminal(args: &[OsString]) -> Terminal {
-    let mode = detect_ui(args);
-    let width = if mode.interactive() {
-        crossterm::terminal::size().map_or(80, |(width, _)| usize::from(width))
-    } else {
-        80
+    let env = TerminalEnv {
+        no_color: std::env::var_os("NO_COLOR").is_some(),
+        term_dumb: std::env::var_os("TERM").is_some_and(|term| term == "dumb"),
     };
-    Terminal {
-        mode,
-        width,
-        stdin_tty: std::io::stdin().is_terminal(),
-    }
+    Terminal::detect(args, &env)
 }
 
-/// Resolves the one output mode for this invocation.
-///
-/// `--json` wins over everything; a real terminal becomes [`UiMode::Interactive`] with `color`
-/// gated by `NO_COLOR` and `TERM=dumb`; anything else is [`UiMode::Plain`], so a pipe can never
-/// carry an escape or a carriage return.
-pub fn detect_ui(args: &[OsString]) -> UiMode {
-    let tty = std::io::stdout().is_terminal();
-    let color = tty
-        && std::env::var_os("NO_COLOR").is_none()
-        && !std::env::var_os("TERM").is_some_and(|term| term == "dumb");
-    let json = args
-        .iter()
-        .take_while(|argument| argument.as_os_str() != OsStr::new("--"))
-        .any(|argument| argument == "--json");
-    if json {
-        UiMode::Json
-    } else if tty {
-        UiMode::Interactive { color }
-    } else {
-        UiMode::Plain
-    }
+/// Resolves the one local wall clock for this invocation, reading `$TZ` then `/etc/localtime`.
+pub fn wall_zone() -> WallZone {
+    WallZone::from_time_zone(jiff::tz::TimeZone::system())
 }
 
 /// Assembles the injected host environment for this invocation.
@@ -72,6 +38,23 @@ pub fn host(_args: &[OsString], _cwd: &Path, terminal: Terminal) -> Result<HostE
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
         .unwrap_or_else(|| PathBuf::from(format!("/var/tmp/slipfork-state-{uid}")));
     let home = std::env::var_os("HOME").map(PathBuf::from);
+    // `XDG_CONFIG_HOME` must be absolute; a relative one is ignored per the XDG base spec.
+    let config_dir = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| home.as_ref().map(|home| home.join(".config")))
+        .unwrap_or_else(|| PathBuf::from(format!("/var/tmp/slipfork-config-{uid}")));
+    let docker_config = home.as_ref().map(|home| home.join(".docker/config.json"));
+    let registries_path = config_dir.join("slipfork/registries.json");
+    let registry_credentials =
+        RegistryCredentials::load(&registries_path, docker_config.as_deref()).map_err(|error| {
+            format!(
+                "cannot load `{}`: {}\nnext: fix the JSON in `{}` or delete it to pull anonymously",
+                registries_path.display(),
+                error.cause(),
+                registries_path.display()
+            )
+        })?;
     let path: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|paths| std::env::split_paths(&paths).collect())
         .unwrap_or_default();
@@ -103,29 +86,15 @@ pub fn host(_args: &[OsString], _cwd: &Path, terminal: Terminal) -> Result<HostE
         ),
         home,
         install_root,
-        hostname: host_name(),
         display: std::env::var_os("DISPLAY").is_some()
             || std::env::var_os("WAYLAND_DISPLAY").is_some(),
         ssh: std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_TTY").is_some(),
         color: terminal.mode.color(),
         opener,
         env: std::env::vars().collect(),
+        config_dir,
+        registry_credentials,
     })
-}
-
-/// Reads this host's name once; the kernel truncates anything longer than 255 bytes.
-fn host_name() -> String {
-    let mut buffer = [0_u8; 256];
-    // SAFETY: the kernel writes at most `buffer.len()` bytes into the live array.
-    let ret = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) };
-    if ret != 0 {
-        return "localhost".to_owned();
-    }
-    let end = buffer
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(buffer.len());
-    String::from_utf8_lossy(&buffer[..end]).into_owned()
 }
 
 /// Resolves the one resolver file every pod and image step binds as `/etc/resolv.conf`.

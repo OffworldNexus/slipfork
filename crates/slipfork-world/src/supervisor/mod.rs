@@ -8,6 +8,7 @@
 
 mod boot;
 mod egress;
+mod journal;
 mod r#loop;
 
 use std::io::{BufReader, Write};
@@ -247,9 +248,10 @@ pub fn pod_statuses(reply: &serde_json::Value) -> Result<Vec<PodStatus>> {
 impl Drop for WorldSupervisor {
     fn drop(&mut self) {
         // The explicit `stop()` call returns teardown failures; `Drop` is the last-resort
-        // best effort and must still make a leak visible instead of swallowing it.
+        // best effort and still records a leak in the world's durable journal.
         if let Err(error) = self.stop() {
-            eprintln!("slipfork-world: teardown failed: {error}");
+            journal::Journal::new(&self.host.logs_root, &self.world)
+                .record(&format!("slipfork-world: teardown failed: {error}"));
         }
     }
 }
@@ -264,6 +266,6 @@ fn exchange(
     live.stdin
         .write_all(&bytes)
         .and_then(|()| live.stdin.flush())
-        .map_err(|source| Error::io("write", Path::new("slipfork-world-init stdin"), source))?;
+        .map_err(|source| Error::io("write", Path::new("world init stdin"), source))?;
     boot::await_reply(live, request.id(), timeout)
 }

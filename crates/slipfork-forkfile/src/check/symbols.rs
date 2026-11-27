@@ -54,7 +54,8 @@ impl SymbolKind {
             Self::S3 => Some(&["url", "endpoint", "bucket", "access_key", "secret_key"]),
             Self::Cdn => Some(&["domain", "url"]),
             Self::Domain => Some(&["name"]),
-            Self::Image | Self::Service => None,
+            Self::Service => Some(&["port", "name"]),
+            Self::Image => None,
         }
     }
 
@@ -63,11 +64,12 @@ impl SymbolKind {
     pub fn property_type(self, property: &str) -> Option<&'static str> {
         match (self, property) {
             (Self::Postgres | Self::Database | Self::Redis, "port") => Some("number"),
+            (Self::Service, "port") => Some("number"),
             (Self::Postgres | Self::Database, "url" | "host" | "name" | "user" | "password")
             | (Self::Redis, "url" | "host")
             | (Self::S3, "url" | "endpoint" | "bucket" | "access_key" | "secret_key")
             | (Self::Cdn, "domain" | "url")
-            | (Self::Domain, "name") => Some("string"),
+            | (Self::Domain | Self::Service, "name") => Some("string"),
             _ => None,
         }
     }
@@ -80,6 +82,10 @@ pub struct Symbol {
     pub kind: SymbolKind,
     /// The declared `s3` bucket policy; `Private` for every other kind.
     pub policy: BucketPolicy,
+    /// The `port <u16>` a service declares directly in its body; `None` when it has none.
+    ///
+    /// `on` branches never count: only an unconditional port exists under every feature set.
+    pub port: Option<u16>,
     /// Where the id was declared.
     pub span: Span,
 }
@@ -119,6 +125,7 @@ impl SymbolTable {
             Symbol {
                 kind,
                 policy: BucketPolicy::Private,
+                port: None,
                 span,
             },
         );
@@ -216,15 +223,26 @@ impl SymbolTable {
     fn collect_image_item(&mut self, item: &ImageItem, diagnostics: &mut Diagnostics, owner: &str) {
         match item {
             ImageItem::Service(service) => {
-                // A service may reuse its enclosing image's slot (`image x { service x }`);
-                // any other cross-kind collision is still a duplicate.
-                if service.id != owner {
+                let port = Self::last_port(&service.body.items);
+                // A service may reuse its enclosing image's slot (`image x { service x }`): that
+                // slot becomes the service's, so `x.port` resolves like any other service's.
+                if service.id == owner {
+                    if let Some(symbol) = self.entries.get_mut(&service.id) {
+                        symbol.kind = SymbolKind::Service;
+                        symbol.port = port;
+                    }
+                } else {
                     self.record(
                         diagnostics,
                         &service.id,
                         SymbolKind::Service,
                         service.id_span,
                     );
+                    if let Some(symbol) = self.entries.get_mut(&service.id)
+                        && symbol.kind == SymbolKind::Service
+                    {
+                        symbol.port = port;
+                    }
                 }
             }
             ImageItem::On(on) => on.for_each_branch(&mut |body| match body {
@@ -237,6 +255,20 @@ impl SymbolTable {
             }),
             _ => {}
         }
+    }
+
+    /// The last unconditional `port <u16>` declared directly in a service body.
+    ///
+    /// An `on`-branch port is deliberately ignored: it is absent under other feature sets, so it
+    /// can never satisfy a symbol every checked `arg` must be able to read.
+    fn last_port(items: &[ServiceItem]) -> Option<u16> {
+        let mut port = None;
+        for item in items {
+            if let ServiceItem::Port(value) = item {
+                port = Some(*value);
+            }
+        }
+        port
     }
 
     fn collect_postgres_items(&mut self, items: &[PostgresItem], diagnostics: &mut Diagnostics) {

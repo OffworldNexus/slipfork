@@ -21,35 +21,15 @@ pub const WORLD_STAMP_FILE: &str = ".slipfork-world-stamp.json";
 /// The PG sibling checkpoint written at `worlds/<world>.pg.<pod>/.slipfork-pg-stamp.json`.
 pub const PG_STAMP_FILE: &str = ".slipfork-pg-stamp.json";
 
-/// One resolved image rootfs plus the runtime facts a fork reuses without rebuilding.
-///
-/// The parent stamp records these so a fork with a matching `world_epoch` adopts the already
-/// sealed subvolume (`cached`, `~1ms`) instead of re-evaluating `Dockerfile` args — keeping e.g.
-/// `arg VITE_CDN_URL = static-cdn.url` from changing the digest on every fork.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ImageStamp {
-    /// Read-only subvolume the image resolved to.
-    pub rootfs: String,
-    /// Image `config.Env` entries inherited verbatim.
-    #[serde(default)]
-    pub env: Vec<String>,
-    /// `ENTRYPOINT` followed by `CMD`.
-    #[serde(default)]
-    pub argv: Vec<String>,
-    /// Image `config.WorkingDir`.
-    #[serde(default)]
-    pub workdir: String,
-}
-
 /// Resolved world state plus the epoch shared with every resource clone at `CHECKPOINT`.
+///
+/// Images are not recorded here: the daemon owns every sealed image key in `WorldHeads` and the
+/// lease, so a stamp only gates epoch-paired hooks and `@<tool>` digests.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldStamp {
     /// Epoch shared with every paired PG stamp.
     #[serde(default)]
     pub world_epoch: String,
-    /// Resolved image rootfs + runtime facts per image id.
-    #[serde(default)]
-    pub images: BTreeMap<String, ImageStamp>,
     /// Completed `@<tool>` / `when changed(...)` digests.
     #[serde(default)]
     pub tools: BTreeMap<String, String>,
@@ -62,16 +42,11 @@ pub struct WorldStamp {
 }
 
 impl WorldStamp {
-    /// Builds the checkpoint for a completed boot: epoch, resolved images, and step digests.
+    /// Builds the checkpoint for a completed boot: epoch plus every hook/`@<tool>` digest.
     #[must_use]
-    pub fn checkpoint(
-        plan: &WorldPlan,
-        epoch: String,
-        images: BTreeMap<String, ImageStamp>,
-    ) -> Self {
+    pub fn checkpoint(plan: &WorldPlan, epoch: String) -> Self {
         let mut stamp = Self {
             world_epoch: epoch,
-            images,
             ..Self::default()
         };
         for (index, step) in plan.steps.iter().enumerate() {
@@ -261,17 +236,21 @@ impl WorldStampStore {
     }
 
     /// The stamp a fork may reuse: `Some` only when the stored `world_epoch` and every paired
-    /// clone match `(plan, features)`'s epoch, so no caller re-derives trust on its own and a
-    /// cross-feature boot (`-F -dev`, `--no-default-features`) never adopts another mode's images.
+    /// clone match `(plan, features, image_inputs)`'s epoch, so no caller re-derives trust on its
+    /// own and a cross-feature boot (`-F -dev`, `--no-default-features`) never adopts another mode's
+    /// images.
     #[must_use]
     pub fn trusted_stamp<'a>(
         &self,
         plan: &WorldPlan,
         features: &FeatureSet,
+        image_inputs: &BTreeMap<String, String>,
         clones: impl IntoIterator<Item = &'a Path>,
     ) -> Option<WorldStamp> {
         match self.verify_all(clones) {
-            EpochState::Matched(stored) if stored == plan_epoch(plan, features) => self.load(),
+            EpochState::Matched(stored) if stored == plan_epoch(plan, features, image_inputs) => {
+                self.load()
+            }
             _ => None,
         }
     }
@@ -295,10 +274,15 @@ pub fn write_pg_checkpoints(clones: &[PathBuf], epoch: &str) -> Result<()> {
     Ok(())
 }
 
-/// A stable epoch for one `(plan, features)` pair, so a fork with the same `Forkfile` and active
-/// feature set derives the same epoch while any feature override invalidates inherited stamps.
+/// A stable epoch for one `(plan, features, image inputs)` tuple, so a fork with the same
+/// `Forkfile`, active feature set, and on-disk `Dockerfile`/context derives the same epoch while
+/// any feature override or build-input edit invalidates inherited stamps.
 #[must_use]
-pub fn plan_epoch(plan: &WorldPlan, features: &FeatureSet) -> String {
+pub fn plan_epoch(
+    plan: &WorldPlan,
+    features: &FeatureSet,
+    image_inputs: &BTreeMap<String, String>,
+) -> String {
     let mut seed = String::from("features|");
     for (index, name) in features.active().iter().enumerate() {
         if index > 0 {
@@ -319,9 +303,10 @@ pub fn plan_epoch(plan: &WorldPlan, features: &FeatureSet) -> String {
     }
     for image in &plan.images {
         seed.push_str(&format!(
-            "image|{}|{}\n",
+            "image|{}|{}|{}\n",
             image.id,
-            image.from.as_deref().unwrap_or("")
+            image.from.as_deref().unwrap_or(""),
+            image_inputs.get(&image.id).map_or("", String::as_str)
         ));
     }
     epoch_for(&seed)

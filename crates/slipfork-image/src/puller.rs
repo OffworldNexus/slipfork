@@ -1,21 +1,26 @@
 //! The puller: resolve, stream, verify, unpack, seal, cache.
 
-use std::collections::BTreeMap;
+mod flight;
+
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+
+use self::flight::{FlightRole, FlightTable, PullGuard, await_flight, new_flight, new_table};
 
 use slipfork_world::{Dirtiness, ImageFacts, WorldEngine, is_subvolume_path};
 
+use crate::credentials::RegistryCredentials;
 use crate::digest::DigestReader;
 use crate::error::{Error, Result};
 use crate::layout::ImageLayout;
 use crate::manifest::ImageManifest;
 use crate::reference::ImageReference;
-use crate::registry::{Credentials, RegistryClient, RegistryScheme};
+use crate::registry::{RegistryClient, RegistryScheme};
+use crate::step_log::{StepLog, StepPlace};
 use crate::unpack::LayerUnpacker;
 use crate::{Architecture, BaseImageBuilder};
 
@@ -51,55 +56,6 @@ struct ConfigRuntime {
     cmd: Vec<String>,
 }
 
-/// One in-flight pull of one OCI reference; waiters reuse the leader's sealed result.
-type Flight = Arc<(
-    Mutex<Option<std::result::Result<PulledImage, String>>>,
-    Condvar,
-)>;
-type FlightTable = Arc<Mutex<BTreeMap<String, Flight>>>;
-
-enum FlightRole {
-    Lead(PullGuard),
-    Wait(Flight),
-}
-
-struct PullGuard {
-    key: String,
-    table: FlightTable,
-    flight: Flight,
-    finished: bool,
-}
-
-impl PullGuard {
-    fn finish(mut self, outcome: std::result::Result<PulledImage, String>) {
-        self.finished = true;
-        if let Ok(mut table) = self.table.lock() {
-            table.remove(&self.key);
-        }
-        let (lock, cvar) = &*self.flight;
-        if let Ok(mut slot) = lock.lock() {
-            *slot = Some(outcome);
-            cvar.notify_all();
-        }
-    }
-}
-
-impl Drop for PullGuard {
-    fn drop(&mut self) {
-        if self.finished {
-            return;
-        }
-        if let Ok(mut table) = self.table.lock() {
-            table.remove(&self.key);
-        }
-        let (lock, cvar) = &*self.flight;
-        if let Ok(mut slot) = lock.lock() {
-            *slot = Some(Err("the pull worker panicked".to_owned()));
-            cvar.notify_all();
-        }
-    }
-}
-
 /// Docker-free OCI Distribution v2 puller behind the [`BaseImageBuilder`] port.
 pub struct OciPuller {
     world: Arc<dyn WorldEngine>,
@@ -116,7 +72,7 @@ impl OciPuller {
     pub fn new(
         world: Arc<dyn WorldEngine>,
         layout: ImageLayout,
-        credentials: Credentials,
+        credentials: RegistryCredentials,
         architecture: Architecture,
         user_agent: String,
     ) -> Self {
@@ -125,7 +81,7 @@ impl OciPuller {
             layout,
             architecture,
             client: RegistryClient::new(credentials, user_agent),
-            flights: Arc::new(Mutex::new(BTreeMap::new())),
+            flights: new_table(),
             attempts: AtomicUsize::new(0),
         }
     }
@@ -148,17 +104,36 @@ impl OciPuller {
 
     /// Pulls `reference`, reusing a sealed cache entry without downloading a blob again.
     pub fn pull(&self, reference: &ImageReference) -> Result<PulledImage> {
-        self.pull_into(reference, &mut io::sink())
+        self.pull_into(reference, &mut StepLog::discard())
     }
 
-    /// Pulls `reference`, flushing one progress line per registry phase into `log`.
-    ///
-    /// The caller supplies the sink: the CLI forwards each line as a typed boot event, tests
-    /// pass [`io::sink`]. Every line is flushed immediately so a slow layer never looks stalled.
+    /// Pulls `reference` as one live `FROM` row (1 of 1), labelled with `args` as the author wrote
+    /// it; the normalized registry reference never reaches the row.
+    pub fn pull_row(
+        &self,
+        reference: &ImageReference,
+        args: &str,
+        log: &mut StepLog<'_>,
+    ) -> Result<PulledImage> {
+        log.started(StepPlace::new(1, 1, 0), "FROM", args);
+        let started = std::time::Instant::now();
+        match self.pull_into(reference, log) {
+            Ok(image) => {
+                log.done(started.elapsed());
+                Ok(image)
+            }
+            Err(error) => {
+                log.failed(started.elapsed(), error.exit_code());
+                Err(error)
+            }
+        }
+    }
+
+    /// Pulls `reference`, emitting one typed engine note per registry phase into `log`.
     pub fn pull_into(
         &self,
         reference: &ImageReference,
-        log: &mut dyn Write,
+        log: &mut StepLog<'_>,
     ) -> Result<PulledImage> {
         // One real pull per OCI reference: two `Dockerfile` builds sharing a base wait here
         // instead of unpacking into the same staging directory.
@@ -177,6 +152,92 @@ impl OciPuller {
         }
     }
 
+    /// Resolves `reference` once and returns its manifest digest plus OCI config facts.
+    ///
+    /// The digest is remembered in `images/refs.json`, so a later warm [`RefResolver`] resolves it
+    /// with no registry request. The config document is cached beside the digest.
+    ///
+    /// [`RefResolver`]: crate::plan::RefResolver
+    pub fn resolve_image(&self, reference: &ImageReference) -> Result<(String, ImageFacts)> {
+        let mut session = self.client.session(reference);
+        let resolved = session.manifest(self.architecture)?;
+        let digest = resolved.digest.clone();
+        self.layout.remember_ref(&reference.to_string(), &digest);
+        self.layout.ensure()?;
+        let mut log = StepLog::discard();
+        let facts = self.image_facts(&mut session, &resolved, &mut log)?;
+        Ok((digest, facts))
+    }
+
+    /// The OCI config a prior resolve cached for `digest`, when it is still readable.
+    #[must_use]
+    pub fn cached_facts(&self, digest: &str) -> Option<ImageFacts> {
+        let path = self.layout.config(digest);
+        let bytes = fs::read(&path).ok()?;
+        parse_config(&bytes, &path).ok()
+    }
+
+    /// Streams and verifies `reference`'s layers directly into `slot` (a writable snapshot).
+    ///
+    /// No sealed `images/oci/<digest>` rootfs is installed: the slot becomes the `base`/`external`
+    /// node. A cached config document avoids a second config download; the manifest and blobs are
+    /// fetched through the injected registry client, which re-reads credentials per session.
+    pub fn unpack_into(
+        &self,
+        reference: &ImageReference,
+        slot: &Path,
+        log: &mut StepLog<'_>,
+    ) -> Result<PulledImage> {
+        let mut session = self.client.session(reference);
+        let resolved = session.manifest(self.architecture)?;
+        let digest = resolved.digest.clone();
+        self.layout.remember_ref(&reference.to_string(), &digest);
+        self.layout.ensure()?;
+        let facts = self.image_facts(&mut session, &resolved, log)?;
+        self.unpack(&mut session, &resolved.manifest, slot, log)?;
+        Ok(self.pulled(slot.to_path_buf(), digest, facts, false))
+    }
+
+    /// Streams and verifies `reference`'s planned manifest layers directly into `slot`.
+    ///
+    /// The build plan's digest is authoritative: the reference is pinned to it, so the registry
+    /// serves the manifest **by digest** and a floating tag that moved between planning and
+    /// materializing cannot change what is unpacked. The tag is only remembered as an alias of
+    /// that digest for later warm resolves.
+    pub fn unpack_digest_into(
+        &self,
+        reference: &ImageReference,
+        expected_digest: &str,
+        slot: &Path,
+        log: &mut StepLog<'_>,
+    ) -> Result<PulledImage> {
+        let pinned = reference.with_digest(expected_digest)?;
+        let mut session = self.client.session(&pinned);
+        let resolved = match session.manifest(self.architecture) {
+            Ok(resolved) => resolved,
+            // Tag-only lab registries 404 on `manifests/sha256:…`; retry the tag but still require
+            // the planned digest, so a tag that moved stays a hard `MovedTag` error.
+            Err(Error::Http { status: 404, .. }) => {
+                session = self.client.session(reference);
+                session.manifest(self.architecture)?
+            }
+            Err(error) => return Err(error),
+        };
+        let digest = resolved.digest.clone();
+        if digest != expected_digest {
+            return Err(Error::MovedTag {
+                reference: reference.to_string(),
+                expected: expected_digest.to_owned(),
+                actual: digest,
+            });
+        }
+        self.layout.remember_ref(&reference.to_string(), &digest);
+        self.layout.ensure()?;
+        let facts = self.image_facts(&mut session, &resolved, log)?;
+        self.unpack(&mut session, &resolved.manifest, slot, log)?;
+        Ok(self.pulled(slot.to_path_buf(), digest, facts, false))
+    }
+
     /// Joins or opens the singleflight slot for one reference.
     fn join_flight(&self, key: &str) -> Result<FlightRole> {
         let mut table = self.flights.lock().map_err(|_| Error::Interrupted {
@@ -185,34 +246,46 @@ impl OciPuller {
         if let Some(existing) = table.get(key) {
             return Ok(FlightRole::Wait(Arc::clone(existing)));
         }
-        let flight: Flight = Arc::new((Mutex::new(None), Condvar::new()));
+        let flight = new_flight();
         table.insert(key.to_owned(), Arc::clone(&flight));
-        Ok(FlightRole::Lead(PullGuard {
-            key: key.to_owned(),
-            table: Arc::clone(&self.flights),
+        Ok(FlightRole::Lead(PullGuard::new(
+            key.to_owned(),
+            Arc::clone(&self.flights),
             flight,
-            finished: false,
-        }))
+        )))
+    }
+
+    /// The sealed image `reference` already pulls to, with no registry request at all.
+    ///
+    /// A recorded digest whose rootfs is still sealed means the whole pull is served from disk.
+    /// The daemon probes this before announcing a `FROM` row, so a cache hit settles as one
+    /// `cached` verdict with zero inner rows while a real pull opens its row first.
+    pub fn cached(&self, reference: &ImageReference) -> Result<Option<PulledImage>> {
+        let Some(digest) = self.layout.cached_ref(&reference.to_string()) else {
+            return Ok(None);
+        };
+        let image = self.layout.image(&digest);
+        if !image.exists() || !self.world.is_sealed(&image)? {
+            return Ok(None);
+        }
+        let path = self.layout.config(&digest);
+        let bytes = fs::read(&path).map_err(|source| Error::io("read", &path, source))?;
+        let facts = parse_config(&bytes, &path)?;
+        Ok(Some(self.pulled(image, digest, facts, true)))
     }
 
     /// The real pull, run by exactly one thread per reference at a time.
     fn pull_uncached(
         &self,
         reference: &ImageReference,
-        log: &mut dyn Write,
+        log: &mut StepLog<'_>,
     ) -> Result<PulledImage> {
         // A recorded digest with a sealed rootfs means the whole pull is served from disk: no
         // registry session, no manifest request, and no "pull" line in the boot log.
         let key = reference.to_string();
-        if let Some(digest) = self.layout.cached_ref(&key) {
-            let image = self.layout.image(&digest);
-            if image.exists() && self.world.is_sealed(&image)? {
-                let path = self.layout.config(&digest);
-                let bytes = fs::read(&path).map_err(|source| Error::io("read", &path, source))?;
-                let facts = parse_config(&bytes, &path)?;
-                note(log, format!("sealed {digest}: reusing cache"));
-                return Ok(self.pulled(image, digest, facts, true));
-            }
+        if let Some(image) = self.cached(reference)? {
+            note(log, format!("sealed {}: reusing cache", image.digest));
+            return Ok(image);
         }
         let mut session = self.client.session(reference);
         let resolved = session.manifest(self.architecture)?;
@@ -291,7 +364,7 @@ impl OciPuller {
         &self,
         session: &mut crate::registry::RegistrySession<'_>,
         resolved: &crate::registry::ResolvedManifest,
-        log: &mut dyn Write,
+        log: &mut StepLog<'_>,
     ) -> Result<ImageFacts> {
         let path = self.layout.config(&resolved.digest);
         if let Ok(bytes) = fs::read(&path) {
@@ -325,7 +398,7 @@ impl OciPuller {
         session: &mut crate::registry::RegistrySession<'_>,
         manifest: &ImageManifest,
         root: &Path,
-        log: &mut dyn Write,
+        log: &mut StepLog<'_>,
     ) -> Result<()> {
         let unpacker = LayerUnpacker::new(root);
         let total = manifest.layers.len();
@@ -363,22 +436,6 @@ impl OciPuller {
     }
 }
 
-/// Waits for the leader's outcome; a poisoned lock is reported as a failed flight.
-fn await_flight(flight: &Flight) -> std::result::Result<PulledImage, String> {
-    let (lock, cvar) = &**flight;
-    let mut state = lock
-        .lock()
-        .map_err(|_| "the pull singleflight state was poisoned".to_owned())?;
-    loop {
-        if let Some(outcome) = state.clone() {
-            return outcome;
-        }
-        state = cvar
-            .wait(state)
-            .map_err(|_| "the pull singleflight wait was poisoned".to_owned())?;
-    }
-}
-
 /// Parses a cached image config; a missing runtime block yields empty facts.
 fn parse_config(bytes: &[u8], path: &Path) -> Result<ImageFacts> {
     let document: ConfigDocument = serde_json::from_slice(bytes).map_err(|source| Error::Json {
@@ -392,10 +449,9 @@ fn parse_config(bytes: &[u8], path: &Path) -> Result<ImageFacts> {
     })
 }
 
-/// Writes one already-formatted progress line and flushes it; sink errors are not fatal.
-fn note(log: &mut dyn Write, line: String) {
-    let _ = writeln!(log, "{line}");
-    let _ = log.flush();
+/// Reports one already-formatted bookkeeping note on `log`.
+fn note(log: &mut StepLog<'_>, line: String) {
+    log.note(&line);
 }
 
 impl BaseImageBuilder for OciPuller {

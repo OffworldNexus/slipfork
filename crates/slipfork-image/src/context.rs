@@ -9,6 +9,11 @@ use crate::digest::hex;
 use crate::error::{Error, Result};
 use crate::ignore::Dockerignore;
 
+/// VCS metadata, reserved unconditionally at any depth: build-tool state, never user input.
+/// `.dockerignore` cannot re-include it, and `COPY . .` deliberately diverges from Docker here so
+/// a `fork` branch switch (HEAD/index/logs churn) can never invalidate an image.
+const VCS_METADATA: &str = ".git";
+
 /// One included file or directory, relative to the context root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextEntry {
@@ -37,6 +42,16 @@ impl BuildContext {
             root: root.to_path_buf(),
             ignore: Dockerignore::default(),
             entries: Vec::new(),
+        }
+    }
+
+    /// The context for one build walk: the full `.dockerignore`-filtered walk when a host
+    /// `COPY`/`ADD` needs it, otherwise the empty context the builder keys against.
+    pub fn for_walk(root: &Path, needs_context: bool) -> Result<Self> {
+        if needs_context {
+            Self::load(root)
+        } else {
+            Ok(Self::empty(root))
         }
     }
 
@@ -131,7 +146,7 @@ impl BuildContext {
         Ok(())
     }
 
-    /// The Dockerfile and `.dockerignore` are metadata, never copied into the image.
+    /// The Dockerfile, `.dockerignore`, and VCS metadata are build-tool state, never image input.
     fn reserved(relative: &Path) -> bool {
         // Slipfork's own state (`world.json`, logs, CoW stores, forks) is never build input:
         // walking `.slipfork-store` would try to hash sealed image subvolumes as files.
@@ -140,7 +155,12 @@ impl BuildContext {
             .next()
             .and_then(|first| first.as_os_str().to_str())
             .is_some_and(|first| matches!(first, ".slipfork" | ".slipfork-store" | ".forks"));
+        // `.git` is build-tool state, never user input, so it is excluded at any depth.
+        let vcs = relative
+            .components()
+            .any(|component| component.as_os_str() == std::ffi::OsStr::new(VCS_METADATA));
         managed
+            || vcs
             || matches!(
                 relative.to_str(),
                 Some(".dockerignore") | Some("Dockerfile") | Some("dockerfile")

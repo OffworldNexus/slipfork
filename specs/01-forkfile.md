@@ -65,12 +65,37 @@ Each `image` declares a rootfs and encloses the `service`s and hooks that run in
 | `image api ./backend { ... }` | Build in `./backend`; that directory is the default `workdir` |
 | `image mailpit from axllent/mailpit:latest { ... }` | Pull OCI layers over HTTPS |
 | `arg KEY = <expr>` | Build-time value; `secret(...)` is rejected statically |
+| `service web { port 3000 }` | Exposes the running `web.port` and `web.name` to `arg` |
+
+`arg` expressions read the same flat symbol namespace as `env`, so a service's running port flows straight into the `Dockerfile`:
+
+```forkfile
+postgres pg { database app_db }
+redis cache
+
+image api . {
+  arg DB_URL = app_db.url
+  arg REDIS_PORT = cache.port
+  arg PORT = web.port
+  on dev { arg DEBUG = "1" }
+
+  service web {
+    port 3000
+    route /
+    run: app --port $port
+  }
+}
+```
+
+A service's `port` must be declared unconditionally in its body; a `port` inside `on dev` never satisfies `web.port`. An arg whose expression does not evaluate fails at `Forkfile:line:col`, naming the arg and the valid properties; no build arg is ever silently dropped.
 
 `workdir`, `dockerfile` and `stage` override inside the block. Build-time `arg`s are never runtime `env`, and a secret-tainted `arg` in any `on` branch fails the file.
 
 ## 3. `features` and `on <expr>`
 
 `dev` is built in and active for every local command: it is the switch that bind-mounts the checkout at `/project`. `-F -dev` (or `--no-default-features`) drops it and runs each image's own `ENTRYPOINT`/`CMD` with no `/project` bind.
+
+With `dev`, a Dockerfile-built image overlays its live build context at the target stage's effective `WORKDIR` and at any distinct whole-context `COPY`/`ADD` destination, so `slipfork exec` and `slipfork shell` see host edits immediately; an explicit `WORKDIR /project…` keeps that bind. A stage that never sets `WORKDIR` still runs from `/`, which cannot be overlaid, so a `dev` boot refuses before any pod starts (one line + `next:`); `-F -dev` keeps the image copy and its `WORKDIR`.
 
 `features` declares extra switches and groups. The default base is `{dev} ∪ features.default`, and a group implies its members transitively, so `dev = [mail]` turns `mail` on whenever `dev` is on. `-F/--features` edits that set per command (`-F mail`, `-F +mail`, `-F -dev`, `-F dev,mail`), and `slipfork features` persists the same edits to `.slipfork/features.json`.
 

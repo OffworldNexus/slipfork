@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use slipfork_world::ImageFacts;
 
@@ -10,7 +11,7 @@ use crate::digest::hex;
 use super::instruction::{Command, Instruction, Port, Protocol};
 
 /// Runtime metadata of the image produced by a stage.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageConfig {
     /// Runtime environment of the final image.
     pub env: BTreeMap<String, String>,

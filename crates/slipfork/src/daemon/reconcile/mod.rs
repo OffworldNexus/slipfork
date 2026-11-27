@@ -1,0 +1,435 @@
+//! Daemon-side image pre-plan: seal every world image into `WorldHeads` before a supervisor runs.
+//!
+//! The daemon owns every pull and Dockerfile build. `__supervise` only reads the recorded heads,
+//! so a failed build never detaches or stops the serving world, and a fork boots parent rootfses
+//! without materializing anything. Run logs and build notes live here, not in the world runtime.
+
+mod diagnosis;
+pub(super) mod progress;
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::num::NonZeroUsize;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Instant;
+
+use serde_json::Value;
+use slipfork_image::{
+    BuildRequest, Cache, ImageReference, NativeImageBuilder, PulledImage, planned_instruction_width,
+};
+use slipfork_world::{LogStore, NodeKey, WorldName, world_plan_with};
+
+use super::Failure;
+use super::image::{ImageLab, now_ms, pull_externals};
+use crate::daemon::lifecycle::plan::{self, PlanPosition, PlannedRow};
+use crate::world::HostEnv;
+use crate::world::WorldHeads;
+use crate::world::features::WorldFeatures;
+use crate::world::{HEADS_VERSION, ImageHead, RunNotes, RunTarget};
+use progress::{AttemptFailure, ImageAttempt, ImageRow, ImageSettle};
+
+/// One world build's inputs: its host, checkout, world id, and the merged plan the CLI latched.
+pub(crate) struct WorldBuild<'a> {
+    pub(crate) host: &'a HostEnv,
+    pub(crate) project: &'a Path,
+    pub(crate) world: &'a WorldName,
+    pub(crate) rows: &'a [PlannedRow],
+}
+
+impl WorldBuild<'_> {
+    /// Compiles the world, seals every declared image (and resource image), and writes one head file.
+    ///
+    /// The first error returns before any head file is written, so a half-built world is never booted.
+    pub(crate) fn seal(
+        &self,
+        no_cache: bool,
+        emit: &mut dyn FnMut(Value),
+    ) -> Result<WorldHeads, Failure> {
+        let (host, project, world, rows) = (self.host, self.project, self.world, self.rows);
+        let path = project.join("Forkfile");
+        let source = fs::read_to_string(&path).map_err(|error| {
+            Failure::new(
+                "forkfile",
+                format!(
+                    "cannot read `{}`: {error}\nnext: create a Forkfile, then retry",
+                    path.display()
+                ),
+            )
+        })?;
+        let checked = slipfork_forkfile::compile(&source).map_err(|diagnostics| {
+            let diagnostic = diagnostics.first();
+            Failure::new(
+                "invalid-forkfile",
+                format!(
+                    "Forkfile:{}: {}",
+                    diagnostic.map_or(0, |item| item.span.line()),
+                    diagnostic.map_or("the Forkfile is invalid", |item| item.message.as_str())
+                ) + "\nnext: run `slipfork fmt` after fixing the first error",
+            )
+        })?;
+        let doc = *checked.document;
+        let features = WorldFeatures::load_resolved(project, &doc).map_err(|message| {
+            Failure::new(
+                "feature",
+                format!("{message}\nnext: {}", WorldFeatures::REMEDY),
+            )
+        })?;
+        let plan = world_plan_with(&doc, project, &features).map_err(|error| {
+            Failure::new(
+                "forkfile-plan",
+                format!("{error}\nnext: fix the Forkfile, then run `slipfork doctor`"),
+            )
+        })?;
+        let image_inputs =
+            crate::world::image_inputs(project, world, &doc, &plan.images, &features);
+        let lab = ImageLab::for_project(host, project)?;
+        let arch = lab.architecture.oci();
+        let store = LogStore::at(host.store_root_for(project), world.clone());
+        let puller = lab.puller(host);
+        let step_host = lab.step_host(host)?;
+        let builder = NativeImageBuilder::new(
+            Arc::clone(&lab.engine),
+            lab.puller(host).sharing_flights(&puller),
+            lab.store.clone(),
+            lab.architecture,
+            step_host,
+        )
+        .with_cache(if no_cache { Cache::Cold } else { Cache::Warm });
+        let mut images = BTreeMap::new();
+        for node in &plan.images {
+            let command = node
+                .from
+                .clone()
+                .unwrap_or_else(|| node.paths(project).dockerfile.display().to_string());
+            let started = Instant::now();
+            // The announced counter is resolved once from the merged plan, never re-walked downstream.
+            let position = PlanPosition {
+                step: plan::index(rows, "image", &node.id).unwrap_or(1),
+                total: plan::total(rows),
+            };
+            let run = RunTarget::open(&store, project, "image", &node.id, &command)
+                .map_err(|failure| Failure::new("image-log", failure.message))?;
+            let mut attempt = ImageAttempt::begin(
+                emit,
+                &plan,
+                ImageRow {
+                    position,
+                    run,
+                    notes: RunNotes::new(&store),
+                    project,
+                    image: &node.id,
+                },
+            )?;
+            let outcome = build_image(
+                project,
+                &doc,
+                &features,
+                world,
+                node,
+                arch,
+                &puller,
+                &builder,
+                &mut attempt,
+            );
+            let elapsed = millis(started);
+            match outcome {
+                Ok((head, settle, last, executed)) => {
+                    images.insert(node.id.clone(), head);
+                    attempt.finish(settle, elapsed, last.as_ref(), executed);
+                }
+                Err(failure) => return Err(attempt.fail(failure, elapsed)),
+            }
+        }
+        // Resource images (`postgres:18`, `redis:7`) are pulled by the daemon too: the supervisor
+        // boots every pod from a head and never constructs a puller. Collect first so the loop can
+        // insert into `images` while it iterates the plan's immutable resource list.
+        let missing: Vec<String> = plan
+            .resources
+            .iter()
+            .filter_map(|resource| resource.resource.image())
+            .filter(|reference| !images.contains_key(*reference))
+            .map(str::to_owned)
+            .collect();
+        for reference in missing {
+            let pulled = pull_reference(&puller, &reference).map_err(|message| {
+            Failure::new(
+                "registry-pull",
+                format!(
+                    "pull `{reference}` failed: {message}\nnext: check the reference and registry credentials, then retry"
+                ),
+            )
+        })?;
+            images.insert(reference, pulled_head(pulled, arch));
+        }
+        let heads = WorldHeads {
+            v: HEADS_VERSION,
+            world: world.as_str().to_owned(),
+            image_inputs,
+            built_at_ms: now_ms(),
+            images,
+        };
+        heads
+            .save(&WorldHeads::path(&host.runtime_dir, world))
+            .map_err(|error| {
+                Failure::new(
+                    "image-heads",
+                    format!("{error}\nnext: run `slipfork up` again"),
+                )
+            })?;
+        Ok(heads)
+    }
+}
+
+/// Seals one declared image: a `from:` pull or a native Dockerfile build.
+#[allow(clippy::too_many_arguments)]
+fn build_image(
+    project: &Path,
+    doc: &slipfork_forkfile::ast::Forkfile,
+    features: &slipfork_forkfile::FeatureSet,
+    world: &WorldName,
+    node: &slipfork_world::ImageNode,
+    arch: &str,
+    puller: &slipfork_image::OciPuller,
+    builder: &NativeImageBuilder,
+    attempt: &mut ImageAttempt<'_>,
+) -> Result<
+    (
+        ImageHead,
+        ImageSettle,
+        Option<slipfork_image::StepTrace>,
+        usize,
+    ),
+    AttemptFailure,
+> {
+    if let Some(reference) = &node.from {
+        let pulled = attempt.pull(puller, reference).map_err(|error| {
+            AttemptFailure::engine(
+                format!("pull `{reference}` failed: {}", error.cause()),
+                &error,
+                None,
+            )
+        })?;
+        let settle = if pulled.cached {
+            ImageSettle::Cached
+        } else {
+            ImageSettle::Pulled
+        };
+        return Ok((pulled_head(pulled, arch), settle, None, 0));
+    }
+    let paths = node.paths(project);
+    let source = fs::read_to_string(&paths.dockerfile).map_err(|error| {
+        AttemptFailure::bare(format!(
+            "build `{}` failed: cannot read `{}`: {error}\nnext: create the Dockerfile named by this image, then retry",
+            node.id,
+            paths.dockerfile.display()
+        ))
+    })?;
+    let args = crate::world::build_args(
+        doc,
+        world.as_str(),
+        crate::world::INGRESS_SCHEME,
+        &node.id,
+        features,
+    );
+    let target = doc.eval_image_stage_with(&node.id, features);
+    let request = BuildRequest {
+        context: paths.context,
+        dockerfile: paths.dockerfile,
+        args,
+        target: target.clone(),
+        externals: BTreeMap::new(),
+    };
+    let width = planned_instruction_width(&source, target.as_deref()).unwrap_or(0);
+    let report = attempt
+        .events(|log| {
+            log.plan_width(width);
+            let externals = pull_externals(&source, target.as_deref(), puller, log)?;
+            builder.build(
+                &BuildRequest {
+                    externals,
+                    ..request.clone()
+                },
+                log,
+                now_ms(),
+            )
+        })
+        .map_err(|error| {
+            let cause = error.cause();
+            let instruction = attempt.instruction();
+            let run_id = attempt.run_id().map(str::to_owned);
+            match diagnosis::classify(&cause, instruction.as_deref(), run_id.as_deref()) {
+                Some(found) => AttemptFailure::engine(
+                    format!(
+                        "build `{}` failed: {}\nnext: {}",
+                        node.id, found.summary, found.next
+                    ),
+                    &error,
+                    None,
+                ),
+                None => {
+                    let next = run_id.as_deref().map_or_else(
+                        || "fix the failing Dockerfile instruction and retry".to_owned(),
+                        |id| {
+                            format!(
+                                "fix the failing Dockerfile instruction and retry, or run `slipfork logs -r {id}`"
+                            )
+                        },
+                    );
+                    AttemptFailure::engine(
+                        format!("build `{}` failed: {}\nnext: {next}", node.id, cause),
+                        &error,
+                        None,
+                    )
+                }
+            }
+        })?;
+    let last = report.last;
+    let executed = report.cache_misses;
+    let settle = if report.cache_misses == 0 {
+        ImageSettle::Cached
+    } else {
+        ImageSettle::Built(
+            NonZeroUsize::new(executed).expect("built implies at least one executed instruction"),
+        )
+    };
+    let head = ImageHead {
+        key: report.key,
+        rootfs: report.rootfs,
+        inherited_env: report
+            .config
+            .env
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect(),
+        argv: report.config.exec_argv(),
+        workdir: report.config.workdir,
+        state: settle.as_str().to_owned(),
+    };
+    Ok((head, settle, last, executed))
+}
+
+/// Pulls one reference with no image row (a resource included outside the plan's image list).
+fn pull_reference(
+    puller: &slipfork_image::OciPuller,
+    reference: &str,
+) -> Result<PulledImage, String> {
+    let parsed = ImageReference::parse(reference).map_err(|error| error.cause().to_owned())?;
+    puller
+        .pull_into(
+            &parsed,
+            &mut slipfork_image::StepLog::with_events(&mut |_| {}),
+        )
+        .map_err(|error| error.cause().to_owned())
+}
+
+/// The head one pulled image contributes: sealed rootfs, inherited env, and entrypoint+cmd.
+fn pulled_head(image: PulledImage, arch: &str) -> ImageHead {
+    let state = if image.cached { "cached" } else { "pulled" }.to_owned();
+    let mut argv = image.facts.entrypoint;
+    argv.extend(image.facts.cmd);
+    let platform = format!("linux/{arch}");
+    ImageHead {
+        key: NodeKey::base(arch, &image.digest, &platform),
+        rootfs: image.rootfs,
+        inherited_env: image.facts.env,
+        argv,
+        workdir: "/".to_owned(),
+        state,
+    }
+}
+
+/// Whole milliseconds from one attempt's start.
+fn millis(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+impl super::Daemon {
+    /// Resolves one `up`/`restart` request's project, world, and `--no-cache` flag.
+    pub(super) fn up_target(&self, params: &Value) -> Result<(PathBuf, WorldName, bool), Failure> {
+        let project = super::lifecycle::up::project_path(params)?;
+        let requested = params.get("world").and_then(Value::as_str);
+        let world = {
+            let core = self.core()?;
+            // Registration precedes naming so the Idle head and `origin_world` see repaired ancestry.
+            core.ensure_chain(&project, requested)?;
+            crate::world::WorldIdentities::new(Some(&core.ledger)).name(&project, requested)
+        }
+        .map_err(|message| Failure::new("world", message))?;
+        let no_cache = params
+            .get("no_cache")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        Ok((project, world, no_cache))
+    }
+
+    /// Restarts the live pods, or reconciles and reboots when the recorded head changed.
+    pub(super) fn dispatch_restart(
+        &self,
+        params: &Value,
+        emit: &mut dyn FnMut(Value),
+    ) -> Result<Option<Value>, Failure> {
+        // Drop the core guard before the reconcile arm re-locks it: a temporary `MutexGuard` in a
+        // `match` scrutinee lives for the whole arm and would deadlock on the second `core()`.
+        let (project, world, _) = self.up_target(params)?;
+        let origin = self.core()?.origin_world(&project);
+        let host = { self.core()?.host().clone() };
+        let desired = crate::daemon::lease::prepare(&host, &project, &world, origin.as_ref())
+            .ok()
+            .map(|(head, _)| head);
+        let action = self.core()?.restart(params, desired.as_ref(), emit)?;
+        match action {
+            super::lifecycle::core::RestartAction::Restarted(value) => Ok(Some(value)),
+            super::lifecycle::core::RestartAction::Reconcile => {
+                let (project, world, no_cache) = self.up_target(params)?;
+                let planned = self.preplan(&project, &world, no_cache, emit)?;
+                let plan = self
+                    .core()?
+                    .detach_live(&super::rpc::key_of(&project))
+                    .ok_or_else(|| {
+                        Failure::new("no-world", "no world is running in this directory")
+                    })?;
+                super::lifecycle::up::reconcile(plan);
+                let mut session = self.core()?.begin_up(params, planned, None)?;
+                session.plan_already_announced();
+                let mut reply = session.run(self, emit)?;
+                // The boot stream already printed `✓ Ready`; mark the reply so the CLI never
+                // fabricates a `Restarted (0 pods)` line for a full rebuild.
+                if let Some(value) = reply.as_object_mut() {
+                    value.insert("reconciled".to_owned(), Value::Bool(true));
+                }
+                Ok(Some(reply))
+            }
+        }
+    }
+
+    /// Announces the world plan once, then seals every image head before the old world stops.
+    pub(super) fn preplan(
+        &self,
+        project: &Path,
+        world: &WorldName,
+        no_cache: bool,
+        emit: &mut dyn FnMut(Value),
+    ) -> Result<crate::daemon::lease::Planned, Failure> {
+        let rows = super::lifecycle::plan::world_rows(project);
+        super::lifecycle::plan::emit(&rows, rows.len(), emit);
+        let host = self.core()?.host().clone();
+        WorldBuild {
+            host: &host,
+            project,
+            world,
+            rows: &rows,
+        }
+        .seal(no_cache, emit)?;
+        // The planned lease derives from the just-sealed image keys; the boot writes it verbatim.
+        let origin = self.core()?.origin_world(project);
+        let planned = crate::daemon::lease::prepare(&host, project, world, origin.as_ref())?;
+        // gc runs only once the new heads are sealed, so unreachable nodes are reaped after a
+        // known-good plan; its entry keys (never the synthetic world key) are pinned.
+        if let Err(error) = crate::daemon::lease::collect_garbage(&host, project, Some(&planned.1))
+        {
+            eprintln!("slipfork daemon: snapshot gc: {error}");
+        }
+        Ok(planned)
+    }
+}

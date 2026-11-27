@@ -1,6 +1,6 @@
 pkgbase = slipfork-bin
 	pkgdesc = Copy-on-write Btrfs development environments, Docker-free
-	pkgver = 0.1.0
+	pkgver = 0.1.1
 	pkgrel = 1
 	url = https://github.com/OffworldNexus/slipfork
 	arch = x86_64
@@ -9,12 +9,14 @@ pkgbase = slipfork-bin
 	depends = glibc
 	depends = crun
 	depends = btrfs-progs
+	depends = slirp4netns
 	provides = slipfork
 	conflicts = slipfork
 	options = !strip
-	source_x86_64 = slipfork-0.1.0-1-x86_64.pkg.tar.zst::https://github.com/OffworldNexus/slipfork/releases/download/v0.1.0/slipfork-0.1.0-1-x86_64.pkg.tar.zst
+	install = slipfork.install
+	source_x86_64 = slipfork-0.1.1-1-x86_64.pkg.tar.zst::https://github.com/OffworldNexus/slipfork/releases/download/v0.1.1/slipfork-0.1.1-1-x86_64.pkg.tar.zst
 	sha256sums_x86_64 = REPLACE_WITH_RELEASE_SHA256
-	source_aarch64 = slipfork-0.1.0-1-aarch64.pkg.tar.zst::https://github.com/OffworldNexus/slipfork/releases/download/v0.1.0/slipfork-0.1.0-1-aarch64.pkg.tar.zst
+	source_aarch64 = slipfork-0.1.1-1-aarch64.pkg.tar.zst::https://github.com/OffworldNexus/slipfork/releases/download/v0.1.1/slipfork-0.1.1-1-aarch64.pkg.tar.zst
 	sha256sums_aarch64 = REPLACE_WITH_RELEASE_SHA256
 
 pkgname = slipfork-bin

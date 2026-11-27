@@ -1,183 +1,115 @@
-//! The one live boot pane shared by `up`, `restart`, `fork`, `down`, and `drop`.
+//! The one append-only boot narrative shared by `up`, `restart`, `fork`, `down`, and `drop`.
 //!
-//! Three drivers, one event model: a colour terminal establishes a `DECSTBM` scroll region where
-//! every started task owns one fixed row (cyan Braille spinner plus live elapsed, rewritten in
-//! place when it finishes) above a fixed `apt`-style panel on row `rows`; a `NO_COLOR`/`TERM=dumb`
-//! terminal rewrites one `\r` ASCII line with zero `ESC[` bytes; a pipe gets `→ [i/n] kind name`
-//! headers plus one `✓ …` row per node and zero `\r`.
+//! Completed rows are ordinary newline-terminated scrollback lines in event order; a colour TTY
+//! additionally owns one in-place status line (`\r\x1b[2K` + the rendered line) — its prefix
+//! written only by `ui::report::live::Pane` — carrying the spinner, counter, verb/target, elapsed
+//! clock, and tail phase. A pipe, `NO_COLOR` terminal, or
+//! unmeasurable terminal gets plain newline-terminated lines with zero escapes and zero `\r`.
 //!
-//! The daemon's `plan` frame arrives before the first row and latches the six-column grid, so a
-//! long name or a later state can never shear a row that is already on screen.
-//!
-//! Every string lives in [`render`]; this module only schedules them. Mode and width arrive as
-//! plain values from the composition root. Log frames are never rendered here: every build, hook,
-//! and pod byte already tees to `<store>/logs/<world>/<id>.log` for `slipfork logs`.
+//! The daemon's `plan` frame latches the plan positions before row 1; `--json` passes through.
 
-mod ascii;
-mod pane;
+mod build;
+mod layout;
+mod phase;
+mod progress;
 mod render;
+mod status;
 
-use std::io::Write;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde_json::Value;
 
 use crate::ui::UiMode;
-use crate::ui::table::ColumnWidths;
+use crate::ui::normalize_size;
+use crate::ui::report::Palette;
+use crate::ui::report::Pane;
 
-use self::ascii::AsciiLine;
-use self::pane::{Pane, Screen, Ticker};
+use self::build::Narrative;
+use self::progress::BootProgress;
 use self::render as text;
-use self::render::{Node, completed_row};
+use self::status::{Append, StatusLine, Ticker};
 
-pub use self::render::elapsed_text;
+// The curated boot surface. The library crate's integration tests consume these; the binary
+// target compiles the same module tree but imports none of them, hence the scoped allowance.
+#[allow(unused_imports)]
+pub use self::render::{
+    BarProgress, OuterWidths, completed_row, dropped_row, outer_verb, outer_widths, pane_geometry,
+    panel_line,
+};
 
 /// One live boot pane; drop it (via [`BootTui::finish`]) before printing the final result.
 pub struct BootTui {
     mode: UiMode,
     width: usize,
-    total: usize,
-    done: usize,
     started: Instant,
-    current: String,
-    pane: Option<Arc<Mutex<Pane>>>,
-    ascii: Option<Arc<Mutex<AsciiLine>>>,
+    status: Option<Arc<Mutex<StatusLine>>>,
     ticker: Option<Ticker>,
     failed: bool,
-    /// Verdict rows held until the scroll region is restored, so the final line never scrolls.
+    /// The final verdict rows held until the status line is erased.
     verdict: Vec<String>,
-    /// The one failure sentence, printed to stderr after the region is restored.
-    diagnostics: Vec<String>,
-    /// The announced boot plan as raw `[icon, kind, name, state, duration, run-id]` cells, used
-    /// only when a stream arrives without a `plan` frame.
-    plan: Vec<Vec<String>>,
-    /// Whether the `plan` frame already latched the grid and the operation count.
-    announced: bool,
-    /// Every announced `(kind, name)`, so a `Started` row only allocates a slot when it was planned.
-    announced_rows: Vec<(String, String)>,
-    /// The precomputed six-column grid shared by every running and completed row.
-    widths: ColumnWidths,
+    /// The verdict envelope held for stderr: `✗ …`, optional `runtime:`, one `next:`.
+    diagnosis: Vec<String>,
+    /// The plan-derived outer `kind` and `target` column widths.
+    widths: OuterWidths,
+    /// The announced plan, both progress levels, and the bar label.
+    progress: BootProgress,
+    /// The live build/hook narrative: phase rows, collapse, and the failure block.
+    narrative: Narrative,
+    /// The plain append sink used whenever no status line owns the cursor.
+    append: Append,
 }
 
-/// Asks the real terminal for its cursor row (1-based) with a bounded `DSR` probe.
-///
-/// Raw mode is enabled only around the write, poll, and read of `ESC[6n`, then the exact captured
-/// mode is restored. A pipe, a non-tty, a silent console, or a 60ms timeout yields `None` — the
-/// pane then takes its region-scroll path instead of blocking on a terminal that never answers.
-fn probe_cursor_row() -> Option<usize> {
-    // SAFETY: `isatty(3)` only inspects descriptor flags.
-    let tty =
-        unsafe { libc::isatty(libc::STDIN_FILENO) == 1 && libc::isatty(libc::STDOUT_FILENO) == 1 };
-    if !tty {
-        return None;
-    }
-    let mut captured = std::mem::MaybeUninit::<libc::termios>::uninit();
-    // SAFETY: `tcgetattr` initializes the buffer for a live tty descriptor.
-    if unsafe { libc::tcgetattr(libc::STDIN_FILENO, captured.as_mut_ptr()) } != 0 {
-        return None;
-    }
-    // SAFETY: the call above succeeded and fully initialized the buffer.
-    let original = unsafe { captured.assume_init() };
-    let mut raw = original;
-    // SAFETY: `cfmakeraw` only mutates the local termios copy.
-    unsafe { libc::cfmakeraw(&mut raw) };
-    raw.c_cc[libc::VMIN] = 0;
-    raw.c_cc[libc::VTIME] = 0;
-    // SAFETY: `raw` is a fully initialized termios for this tty descriptor.
-    if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw) } != 0 {
-        return None;
-    }
-    let asked = {
-        let mut stdout = std::io::stdout().lock();
-        stdout
-            .write_all(b"\x1b[6n")
-            .and_then(|()| stdout.flush())
-            .is_ok()
-    };
-    let row = if asked { read_cursor_row() } else { None };
-    // SAFETY: restoring the exact termios captured before the probe.
-    unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &original) };
-    row
-}
-
-/// Reads `ESC[{row};{col}R` within 60ms; any silence, partial reply, or stray byte yields `None`.
-fn read_cursor_row() -> Option<usize> {
-    let deadline = Instant::now() + Duration::from_millis(60);
-    let mut response = Vec::new();
-    while response.len() < 32 {
-        let left = deadline.saturating_duration_since(Instant::now());
-        let millis = i32::try_from(left.as_millis()).unwrap_or(60).max(1);
-        let mut poll = libc::pollfd {
-            fd: libc::STDIN_FILENO,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: one valid `pollfd` lives across the call and the wait is capped at 60ms.
-        let ready = unsafe { libc::poll(&mut poll, 1, millis) };
-        if ready <= 0 {
-            return None;
-        }
-        let mut byte = 0_u8;
-        // SAFETY: `byte` is one writable byte on a live tty descriptor.
-        let read =
-            unsafe { libc::read(libc::STDIN_FILENO, std::ptr::from_mut(&mut byte).cast(), 1) };
-        if read != 1 {
-            return None;
-        }
-        response.push(byte);
-        if byte == b'R' {
-            break;
-        }
-    }
-    let text = std::str::from_utf8(&response).ok()?;
-    let body = text.strip_prefix("\x1b[")?.strip_suffix('R')?;
-    let (row, _) = body.split_once(';')?;
-    row.parse().ok()
+/// The measured terminal size, or `None` when it cannot be measured (zero rows included).
+fn terminal_size() -> Option<(usize, usize)> {
+    let (cols, rows) = crossterm::terminal::size().ok()?;
+    let (cols, rows) = normalize_size(usize::from(cols), usize::from(rows));
+    (rows > 0).then_some((cols, rows))
 }
 
 impl BootTui {
     /// A pane with the anchored progress bar (`up`, `restart`, `fork`).
     #[must_use]
-    pub fn boot(mode: UiMode, width: usize, title: &str) -> Self {
-        Self::new(mode, width, title, true)
+    pub fn boot(mode: UiMode, width: usize, title: &str, verbose: bool) -> Self {
+        Self::new(mode, width, title, true, verbose)
     }
 
-    /// Rows only, no progress bar (`down`, `drop`).
+    /// Rows only, no status line (`down`, `drop`).
     #[must_use]
     pub fn rows(mode: UiMode, width: usize, title: &str) -> Self {
-        Self::new(mode, width, title, false)
+        Self::new(mode, width, title, false, false)
     }
 
-    fn new(mode: UiMode, width: usize, title: &str, summary: bool) -> Self {
-        // The only ambient-terminal probe lives here, at the composition root: a bounded 60ms
-        // `DSR` ask so the anchored pane can seed its flow cursor from the shell prompt's row.
-        let live = summary && mode.color();
-        let prompt_row = if live { probe_cursor_row() } else { None };
-        let pane = live.then(|| Arc::new(Mutex::new(Pane::new(title, width, prompt_row))));
-        let ascii = (summary && mode.interactive() && !mode.color())
-            .then(|| Arc::new(Mutex::new(AsciiLine::new(title, width))));
-        let screen = pane
+    fn new(mode: UiMode, width: usize, title: &str, summary: bool, verbose: bool) -> Self {
+        // The only ambient-terminal probe lives here, at the composition root.
+        let progress = BootProgress::new(title);
+        let narrative = Narrative::new(verbose);
+        let measured = terminal_size();
+        let live = summary && mode.color() && measured.is_some();
+        let cols = measured.map_or(width, |(cols, _)| cols).max(width);
+        let status = live.then(|| {
+            Arc::new(Mutex::new(StatusLine::new(
+                progress.clone(),
+                narrative.steps(),
+                Pane::new(cols),
+            )))
+        });
+        let ticker = status
             .clone()
-            .map(Screen::Bars)
-            .or_else(|| ascii.clone().map(Screen::Ascii));
+            .map(|status| Ticker::start(status, || terminal_size().map(|(cols, _)| cols)));
         Self {
             mode,
             width,
-            total: 0,
-            done: 0,
             started: Instant::now(),
-            current: String::new(),
-            pane,
-            ascii,
-            ticker: screen.map(Ticker::start),
+            status,
+            ticker,
             failed: false,
             verdict: Vec::new(),
-            diagnostics: Vec::new(),
-            plan: Vec::new(),
-            announced: false,
-            announced_rows: Vec::new(),
-            widths: text::boot_widths(&[]),
+            diagnosis: Vec::new(),
+            widths: OuterWidths::default(),
+            progress,
+            narrative,
+            append: Append,
         }
     }
 
@@ -187,16 +119,31 @@ impl BootTui {
         self.failed
     }
 
-    /// Renders one typed daemon `event` frame.
+    /// Renders one typed daemon `event` frame; `--json` frames never reach the renderer.
     pub fn observe(&mut self, event: &Value) {
+        if self.mode.json() {
+            return;
+        }
+        let palette = Palette::new(self.mode.color());
         match event["event"].as_str().unwrap_or_default() {
             "plan" => self.plan_event(event),
-            "started" => self.started_node(event),
-            // Log frames are captured under `<store>/logs` and read with `slipfork logs`; they
-            // never reach the terminal.
-            "log" => {}
-            "finished" | "up-to-date" => self.finished_node(event),
-            "failed" => self.failed_node(event),
+            "started" => self.started_node(event, palette),
+            "step" => {
+                self.progress.observe_step(event);
+                let actions = self.narrative.step(event, palette);
+                self.sync_status(actions.is_empty());
+                self.apply(actions, palette);
+            }
+            "log" => {
+                let actions = self.narrative.log(event, self.width, palette);
+                self.apply(actions, palette);
+            }
+            "note" => {
+                let actions = self.narrative.note(event, palette);
+                self.apply(actions, palette);
+            }
+            "finished" | "up-to-date" => self.finished_node(event, palette),
+            "failed" => self.failed_node(event, palette),
             "ready" => self.ready_event(event),
             "stopped" => self.stopped_event(event),
             _ => {}
@@ -208,60 +155,71 @@ impl BootTui {
         if self.mode.json() {
             return;
         }
-        if let Some(pane) = &self.pane {
-            if let Ok(mut pane) = pane.lock() {
-                pane.println(text);
-            }
+        if let Some(status) = &self.status
+            && let Ok(mut status) = status.lock()
+        {
+            status.emit(&[text.to_owned()]);
             return;
         }
-        if let Some(ascii) = &self.ascii {
-            if let Ok(mut line) = ascii.lock() {
-                line.clear();
-                // Keep the ticker's lock until this row is on the wire: it redraws the same
-                // `\r` line from another thread and would otherwise erase characters mid-row.
-                println!("{text}");
-                return;
-            }
-        }
-        println!("{text}");
+        self.append.row(text);
     }
 
-    /// Stops the ticker, restores the scroll region, then prints the held verdict.
+    /// Stops the ticker, erases the status line, then prints the held verdict rows.
     pub fn finish(&mut self) {
         self.ticker = None;
-        if let Some(ascii) = &self.ascii
-            && let Ok(mut line) = ascii.lock()
+        if let Some(status) = &self.status
+            && let Ok(mut status) = status.lock()
         {
-            line.clear();
+            status.erase();
         }
-        if let Some(pane) = &self.pane
-            && let Ok(mut pane) = pane.lock()
-        {
-            pane.restore();
-        }
-        // Post-finish rows (`✓ Restarted …`, verdicts) must go through plain `println!`: keeping
-        // the live pane would re-enter its region and leave a stale `⠋` row above the shell.
-        self.pane = None;
-        self.ascii = None;
-        // The ticker is joined and the pane mutex is free, so one stdout lock now serializes
-        // every remaining byte (verdicts and diagnostics) with no other writer alive.
-        let mut stdout = std::io::stdout().lock();
-        for row in self.verdict.drain(..) {
-            let _ = writeln!(stdout, "{row}");
-        }
-        let _ = stdout.flush();
-        drop(stdout);
-        for row in self.diagnostics.drain(..) {
-            eprintln!("{row}");
+        self.status = None;
+        self.append.rows(&std::mem::take(&mut self.verdict));
+        self.append.diagnoses(std::mem::take(&mut self.diagnosis));
+    }
+
+    /// Routes one narrative action through the one status-line emitter or plain stdout.
+    fn apply(&mut self, actions: Vec<build::Action>, palette: Palette) {
+        for action in actions {
+            match action {
+                build::Action::Output {
+                    stream,
+                    text,
+                    indent,
+                } => {
+                    let rows = build::wrap_gutter(&stream, &text, self.width, palette, indent);
+                    self.emit_rows(&rows);
+                }
+                build::Action::Settle(row) | build::Action::Print(row) => {
+                    self.emit_rows(&[row]);
+                }
+                build::Action::Diagnose(row) => {
+                    if self.status.is_some() {
+                        self.diagnosis.push(row);
+                    } else {
+                        self.append.diagnose(&row);
+                    }
+                }
+            }
         }
     }
 
-    /// Latches the six-column grid and the operation count from the one `plan` frame.
-    ///
-    /// This happens before row 1 is printed, so a name or a state that arrives later can never
-    /// shift a row that is already on screen. A second plan frame is ignored.
+    /// Emits completed rows as ordinary lines (repainting the status line when one is painted).
+    fn emit_rows(&mut self, rows: &[String]) {
+        if rows.is_empty() {
+            return;
+        }
+        if let Some(status) = &self.status
+            && let Ok(mut status) = status.lock()
+        {
+            status.emit(rows);
+            return;
+        }
+        self.append.rows(rows);
+    }
+
+    /// Latches the announced rows and their plan positions from the one `plan` frame.
     fn plan_event(&mut self, event: &Value) {
-        if self.announced {
+        if self.progress.announced() {
             return;
         }
         let Some(rows) = event["rows"].as_array() else {
@@ -279,22 +237,32 @@ impl BootTui {
         if announced.is_empty() {
             return;
         }
-        self.announced = true;
-        self.widths = text::plan_widths(&announced);
         let total = event["total"]
             .as_u64()
             .and_then(|total| usize::try_from(total).ok())
             .unwrap_or(announced.len());
-        self.total = self.total.max(total);
-        self.announced_rows = announced;
-        if let Some(pane) = &self.pane
-            && let Ok(mut pane) = pane.lock()
+        self.progress.announce(&announced, total);
+        self.refresh_widths();
+        self.sync_status(true);
+    }
+
+    fn refresh_widths(&mut self) {
+        self.widths = text::outer_widths(self.progress.plan());
+        self.narrative.set_outer(self.widths);
+    }
+
+    fn sync_status(&self, redraw: bool) {
+        if let Some(status) = &self.status
+            && let Ok(mut status) = status.lock()
         {
-            pane.set_widths(self.widths.clone());
+            status.set_progress(self.progress.clone());
+            if redraw {
+                status.paint();
+            }
         }
     }
 
-    fn started_node(&mut self, event: &Value) {
+    fn started_node(&mut self, event: &Value, palette: Palette) {
         let kind = event["kind"].as_str().unwrap_or("step").to_owned();
         let name = event["name"]
             .as_str()
@@ -302,117 +270,70 @@ impl BootTui {
             .unwrap_or("step")
             .to_owned();
         let step = event["step"].as_u64().unwrap_or(0);
-        let total = event["total"].as_u64().unwrap_or(0);
-        self.total = self.total.max(total as usize).max(step as usize);
-        self.current.clone_from(&name);
-        // A `Started` for a row the plan never announced (a phase header such as `down`'s
-        // `stopping`) only updates the counters: it allocates no slot and no column width.
-        let live = !self.announced
-            || self
-                .announced_rows
-                .iter()
-                .any(|(planned_kind, planned_name)| planned_kind == &kind && planned_name == &name);
-        if !self.announced {
-            // No plan frame: fall back to the legacy growing row set, six cells wide.
-            self.plan.push(vec![
-                String::new(),
-                kind.clone(),
-                name.clone(),
-                String::new(),
-                String::new(),
-                String::new(),
-            ]);
-            self.widths = text::boot_widths(&self.plan);
+        if !self.progress.announced() {
+            self.progress.remember(&kind, &name);
+            self.refresh_widths();
         }
-        if let Some(pane) = &self.pane {
-            if let Ok(mut pane) = pane.lock() {
-                pane.set_widths(self.widths.clone());
-                pane.start(&kind, &name, self.total, live);
-            }
-            return;
+        let (index, outer_total) =
+            self.progress
+                .position_at(&kind, &name, usize::try_from(step).unwrap_or(0));
+        let position = (index > 0 && outer_total > 0).then_some((index, outer_total));
+        if kind != "image" && index > 0 {
+            self.progress
+                .set_active(index, outer_total, text::outer_verb(&kind), &name);
         }
-        if self.mode.json() {
-            return;
-        }
-        if self.ascii.is_some() {
-            self.ascii_update();
-        } else {
-            println!("{}", text::header_row(step, total, &kind, &name));
-        }
+        let actions = self.narrative.started(event, position);
+        // No eager `→` row: an outer step that streams nothing earns only its later verdict, and a
+        // streaming one earns its single header from the first `log` line.
+        self.sync_status(true);
+        self.apply(actions, palette);
     }
 
-    fn finished_node(&mut self, event: &Value) {
-        let Some(node) = Node::from_event(event) else {
+    fn finished_node(&mut self, event: &Value, palette: Palette) {
+        let Some(kind) = event["kind"].as_str() else {
             return;
         };
-        self.done += 1;
-        if !self.announced {
-            let state = node.state.to_lowercase();
-            match self
-                .plan
-                .iter_mut()
-                .rev()
-                .find(|row| row[1].as_str() == node.kind && row[2].as_str() == node.name)
-            {
-                Some(row) => row[3].clone_from(&state),
-                None => self.plan.push(vec![
-                    String::new(),
-                    node.kind.to_owned(),
-                    node.name.to_owned(),
-                    state,
-                    String::new(),
-                    String::new(),
-                ]),
-            }
-            self.widths = text::boot_widths(&self.plan);
+        let Some(name) = event["name"].as_str().or_else(|| event["label"].as_str()) else {
+            return;
+        };
+        let Some(millis) = event["duration_ms"]
+            .as_u64()
+            .or_else(|| event["elapsed_ms"].as_u64())
+        else {
+            return;
+        };
+        self.progress.advance(kind, name);
+        if kind == "image" {
+            self.progress.finish_build();
+        } else {
+            self.progress.clear_active();
         }
-        let row = completed_row(&node, &self.widths, self.mode.color());
-        if let Some(pane) = &self.pane
-            && let Ok(mut pane) = pane.lock()
-        {
-            pane.set_widths(self.widths.clone());
-            pane.complete(node.kind, node.name, &row, self.done);
+        if !self.progress.announced() {
+            self.progress.remember(kind, name);
+            self.refresh_widths();
+        }
+        if let Some(actions) = self.narrative.finish_node(kind, name, event, palette) {
+            self.sync_status(actions.is_empty());
+            self.apply(actions, palette);
             return;
         }
-        if self.mode.json() {
-            return;
-        }
-        self.line(&row);
-        if self.ascii.is_some() {
-            self.ascii_update();
-        }
+        let frame = build::counter(event).unwrap_or((0, 0));
+        let (index, total) = self.progress.settled(kind, name, frame);
+        let row = self
+            .narrative
+            .settled_row(event, kind, name, millis, (index, total));
+        self.emit_rows(&[completed_row(&row, &self.widths, palette)]);
     }
 
-    fn failed_node(&mut self, event: &Value) {
+    fn failed_node(&mut self, event: &Value, palette: Palette) {
         self.failed = true;
-        let kind = event["kind"].as_str().unwrap_or("step");
-        let name = event["name"]
-            .as_str()
-            .or_else(|| event["label"].as_str())
-            .unwrap_or("step");
-        if self.mode.json() {
-            return;
-        }
-        let row = text::failed_row(kind, name, self.mode.color());
-        // Exactly one `next:` per failure: the catalog run id supplies a styled replay command, or
-        // the step's own remedy is used when it never opened a capture.
-        let (details, sentence) = text::failure_block(event, self.width, self.mode.color());
-        if self.pane.is_some() {
-            if let Some(pane) = &self.pane
-                && let Ok(mut pane) = pane.lock()
-            {
-                pane.set_widths(self.widths.clone());
-                pane.complete(kind, name, &row, self.done);
-            }
-            self.verdict.extend(details);
-            self.diagnostics.push(sentence);
-            return;
-        }
-        self.line(&row);
-        for detail in details {
-            self.line(&detail);
-        }
-        eprintln!("{sentence}");
+        // Stop the repaint thread first, so no tick can restore a live status after the verdict.
+        self.ticker = None;
+        self.progress.clear_active();
+        self.progress.finish_build();
+        let actions = self.narrative.failed(event, palette);
+        self.sync_status(true);
+        self.apply(actions, palette);
     }
 
     fn ready_event(&mut self, event: &Value) {
@@ -427,11 +348,11 @@ impl BootTui {
             ),
             None => text::ready_row(url, color),
         };
-        if self.pane.is_some() {
+        if self.status.is_some() {
             self.verdict.push(text);
             return;
         }
-        self.line(&text);
+        self.append.row(&text);
     }
 
     fn stopped_event(&mut self, event: &Value) {
@@ -442,15 +363,6 @@ impl BootTui {
             self.mode.color(),
         );
         self.line(&row);
-    }
-
-    /// Pushes the current counters into the ASCII line and redraws it immediately.
-    fn ascii_update(&self) {
-        if let Some(ascii) = &self.ascii
-            && let Ok(mut line) = ascii.lock()
-        {
-            line.show(self.done, self.total, &self.current);
-        }
     }
 }
 

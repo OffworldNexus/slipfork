@@ -3,31 +3,30 @@
 //! The composition root hands this session the working directory and the color
 //! decision; nothing here reads the environment or probes the terminal.
 
-use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use serde_json::{Value, json};
+use serde_json::json;
 
-use crate::compose::Terminal;
 use crate::daemon::{DaemonClient, DaemonError};
-use crate::ui::{Palette, UiMode};
+use crate::ui::report::{Failure, Report, ReportRenderer, StreamKind, WallZone};
+use crate::ui::{Terminal, UiMode};
 use crate::world::HostEnv;
 use crate::{doctor, status};
 
-// `mod auth;` is dormant past 0.1.0: OSPP pairing returns in a later release.
-// mod auth;
+pub(crate) use crate::ui::report::emit_stdout as emit;
+
+mod docker;
 mod env;
 mod exec;
 mod features;
 mod fmtmigrate;
 mod open;
 mod pty;
-mod runs;
 mod secret;
 mod streams;
 mod timeparse;
-// pub use auth::AuthArgs;
+pub use docker::{DockerArgs, DockerVerb};
 pub use env::EnvArgs;
 pub use exec::{ExecArgs, TargetArgs};
 pub use features::FeaturesArgs;
@@ -38,11 +37,15 @@ pub use streams::LogsArgs;
 pub use timeparse::{parse_since, parse_until};
 
 /// One CLI invocation's environment, injected by the composition root.
+///
+/// The wall zone is resolved exactly once here and shared by every human surface through
+/// [`Self::renderer`]; no handler below reads `TZ` or re-probes stdio.
 #[derive(Debug, Clone)]
 pub struct Session {
     cwd: PathBuf,
     terminal: Terminal,
     host: HostEnv,
+    wall: WallZone,
 }
 
 impl Session {
@@ -58,15 +61,30 @@ impl Session {
         &self.host
     }
 
-    /// Builds a session from the injected working directory, terminal, and host state. No handler
-    /// below ever re-probes stdio.
+    /// Builds a session from the injected working directory, terminal, host state, and wall clock.
+    /// No handler below ever re-probes stdio or reads the environment.
     #[must_use]
-    pub fn new(cwd: PathBuf, terminal: Terminal, host: HostEnv) -> Self {
+    pub fn new(cwd: PathBuf, terminal: Terminal, host: HostEnv, wall: WallZone) -> Self {
         Self {
             cwd,
             terminal,
             host,
+            wall,
         }
+    }
+
+    /// The one report renderer for this invocation.
+    #[must_use]
+    pub(crate) fn renderer(&self) -> ReportRenderer {
+        ReportRenderer::new(self.terminal, self.wall.clone())
+    }
+
+    /// The one daemon connect sink: the ephemeral hint prints here exactly once.
+    pub(crate) fn connect(&self) -> Result<DaemonClient, DaemonError> {
+        let renderer = self.renderer();
+        DaemonClient::connect(self.host(), &mut |notice| {
+            let _ = renderer.emit_notice(StreamKind::Stderr, &notice.to_string());
+        })
     }
 
     /// The output mode resolved once by the composition root.
@@ -85,12 +103,6 @@ impl Session {
     #[must_use]
     pub fn color(&self) -> bool {
         self.terminal.mode.color()
-    }
-
-    /// Whether this invocation asked for the machine-readable object.
-    #[must_use]
-    pub fn json_requested(&self) -> bool {
-        self.terminal.mode.json()
     }
 
     /// Switches to `--json` once clap has confirmed the flag was really typed.
@@ -123,27 +135,49 @@ impl Session {
     }
 
     fn render_status(&self, json: bool, verbose: bool, scoped: bool) -> ExitCode {
-        let value = match DaemonClient::connect_existing(&self.host) {
+        let reply = match DaemonClient::connect_existing(&self.host) {
             Ok(Some(mut client)) => match client.call_streaming("ps", json!({}), &mut |_| {}) {
-                Ok(value) => value,
+                Ok(value) => match status::parse(&value) {
+                    Ok(reply) => reply,
+                    Err(error) => {
+                        return self.report(
+                            "status-reply",
+                            &format!("cannot decode the daemon's ps reply: {error}"),
+                            "run `slipfork status --json` and report the payload",
+                            json,
+                        );
+                    }
+                },
                 Err(error) => {
-                    return self.fail(&error.to_string(), "start it with `slipfork up` and retry");
+                    return self.report(
+                        &error.code,
+                        &error.message,
+                        "start it with `slipfork up` and retry",
+                        json,
+                    );
                 }
             },
-            Ok(None) => json!({ "worlds": [] }),
+            // No daemon answers: read `state.db` read-only and never converge or write.
+            Ok(None) => match status::offline(&self.host.state_dir) {
+                Ok(reply) => reply,
+                Err(error) => {
+                    return self.report(
+                        "status-ledger",
+                        &format!(
+                            "cannot read {}/state.db: {error}",
+                            self.host.state_dir.display()
+                        ),
+                        "run `slipfork doctor` and check the state directory",
+                        json,
+                    );
+                }
+            },
             Err(error) => {
-                return self.fail(
-                    &error.to_string(),
+                return self.report(
+                    &error.code,
+                    &error.message,
                     "check that XDG_RUNTIME_DIR is readable and retry",
-                );
-            }
-        };
-        let reply = match status::parse(&value) {
-            Ok(reply) => reply,
-            Err(error) => {
-                return self.fail(
-                    &format!("cannot decode the daemon's ps reply: {error}"),
-                    "run `slipfork status --json` and report the payload",
+                    json,
                 );
             }
         };
@@ -158,28 +192,28 @@ impl Session {
         if json {
             return match serde_json::to_string(&reply) {
                 Ok(text) => emit(&format!("{text}\n")),
-                Err(error) => self.fail(
+                Err(error) => self.report(
+                    "ps",
                     &format!("cannot encode the ps reply: {error}"),
                     "run `slipfork status --json` and report the payload",
+                    false,
                 ),
             };
         }
         if scoped && other_worlds && reply.worlds.is_empty() {
-            return emit(&status::no_world_line(
-                &self.cwd,
-                self.host.home.as_deref(),
-                self.color(),
-            ));
+            let text = status::no_world_line(&self.cwd, self.host.home.as_deref(), self.color());
+            return self.renderer().emit_text_exit(StreamKind::Stdout, &text);
         }
         let options = status::Options::new(self.color())
             .with_home(self.host.home.clone())
             .with_verbose(verbose);
-        emit(&status::render(&reply, &options))
+        let text = status::render(&reply, &options);
+        self.renderer().emit_text_exit(StreamKind::Stdout, &text)
     }
 
     /// Prints the three host requirements and their remedies.
     pub fn doctor(&self, json: bool) -> ExitCode {
-        doctor::run(&self.host, &self.cwd, json, self.color())
+        doctor::run(&self.host, &self.cwd, json, &self.renderer())
     }
 
     /// The one refusal for a host verb that never reached the daemon.
@@ -207,45 +241,22 @@ impl Session {
         self.report(&error.code, &error.message, next, json)
     }
 
-    fn fail(&self, message: &str, next: &str) -> ExitCode {
-        let palette = Palette::new(self.color());
-        // A daemon message may already carry its own `next:` line; that remedy wins, and the
-        // renderer still prints exactly one.
-        let (body, embedded) = crate::world::split_remedy(message);
-        let mut emitted = false;
-        for line in body.lines() {
-            if palette.color() {
-                if emitted {
-                    eprintln!("{}", palette.value(line));
-                } else {
-                    eprintln!("{} {}", palette.icon_bad(), palette.value(line));
-                }
-            } else if emitted {
-                eprintln!("{line}");
-            } else {
-                eprintln!("error: {line}");
-            }
-            emitted = true;
-        }
-        let next = embedded.as_deref().map_or(next, |remedy| remedy);
-        if palette.color() {
-            eprintln!("{} {}", palette.kind("next:"), palette.command(next));
+    /// One failure renderer: a JSON object under `--json`, `error:`/`next:` lines otherwise.
+    pub(crate) fn report(&self, code: &str, message: &str, next: &str, json: bool) -> ExitCode {
+        let (message, next) = message_and_next(message, next);
+        let failure = Failure::new(code, message, next);
+        if json {
+            let _ = self.renderer().json_exit(&failure.json());
         } else {
-            eprintln!("next: {next}");
+            let _ = self.renderer().emit(&Report::failure(failure));
         }
         ExitCode::FAILURE
     }
 
-    /// One failure renderer: a JSON object under `--json`, `error:`/`next:` lines otherwise.
-    pub(crate) fn report(&self, code: &str, message: &str, next: &str, json: bool) -> ExitCode {
-        if json {
-            let _ = emit(&format!(
-                "{}\n",
-                json!({ "error": { "code": code, "message": message, "next": next } })
-            ));
-            return ExitCode::FAILURE;
-        }
-        self.fail(message, next)
+    /// Renders one typed failure through the report layer, in either mode.
+    pub(crate) fn failure(&self, failure: Failure) -> ExitCode {
+        let _ = self.renderer().emit(&Report::failure(failure));
+        ExitCode::FAILURE
     }
 
     /// Renders one feature diagnostic as `Forkfile:<line>: <message>`, plus its single `next:`.
@@ -265,40 +276,10 @@ impl Session {
             json,
         )
     }
-
-    /// The `fmt`/`migrate` failure renderer: the same nested error object plus a `details` map.
-    fn report_details(
-        &self,
-        code: &str,
-        message: &str,
-        details: Option<Value>,
-        next: &str,
-        json: bool,
-    ) -> ExitCode {
-        if json {
-            let mut error = json!({ "code": code, "message": message, "next": next });
-            if let Some(details) = details {
-                error["details"] = details;
-            }
-            let _ = emit(&format!("{}\n", json!({ "error": error })));
-            return ExitCode::FAILURE;
-        }
-        self.fail(message, next)
-    }
 }
 
-/// Writes one already-rendered chunk to stdout without panicking on a closed pipe.
-pub(crate) fn emit(text: &str) -> ExitCode {
-    let mut stdout = io::stdout().lock();
-    match stdout
-        .write_all(text.as_bytes())
-        .and_then(|()| stdout.flush())
-    {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("error: failed to write output: {error}");
-            eprintln!("next: check that stdout is writable");
-            ExitCode::FAILURE
-        }
-    }
+/// Splits a daemon message at its trailing `next: …` line; the message's own remedy wins.
+pub(crate) fn message_and_next(message: &str, fallback: &str) -> (String, String) {
+    let (body, embedded) = crate::ui::report::split_remedy(message);
+    (body, embedded.unwrap_or_else(|| fallback.to_owned()))
 }

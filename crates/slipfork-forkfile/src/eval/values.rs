@@ -27,6 +27,10 @@ pub(super) enum BoundSymbol {
         id: String,
         primary: bool,
     },
+    Service {
+        name: String,
+        port: Option<u16>,
+    },
 }
 
 impl BoundSymbol {
@@ -36,7 +40,7 @@ impl BoundSymbol {
             Self::Postgres { .. } | Self::Database { .. } => {
                 secret_property(SymbolKind::Postgres, BucketPolicy::Private, property)
             }
-            Self::Redis | Self::Cdn { .. } | Self::Domain { .. } => false,
+            Self::Redis | Self::Cdn { .. } | Self::Domain { .. } | Self::Service { .. } => false,
         }
     }
 }
@@ -153,6 +157,11 @@ fn eval_property(symbol: &BoundSymbol, prop: &str, world: &str) -> Option<String
         BoundSymbol::Cdn { bucket } => match prop {
             "domain" => Some(format!("{bucket}.{world}.localhost")),
             "url" => Some(format!("http://{bucket}.{world}.localhost")),
+            _ => None,
+        },
+        BoundSymbol::Service { name, port } => match prop {
+            "port" => port.map(|value| value.to_string()),
+            "name" => Some(name.clone()),
             _ => None,
         },
         BoundSymbol::Domain { id, primary } => {

@@ -13,7 +13,7 @@ const UNFORMATTED: &str =
     "# forkfile: 0.1\n\nimage backend . {\n    service api {\n        port 8000\n    }\n}\n\n";
 
 const CANONICAL: &str =
-    "# forkfile: 0.1\nimage backend . {\n    service api {\n        port 8000\n    }\n}\n";
+    "# forkfile: 0.1\n\nimage backend . {\n    service api {\n        port 8000\n    }\n}\n";
 
 const SNOW: &str = "images:\n  - id: backend\n    context: .\ncomponents:\n  - id: api\n    image: backend\n    run_command: gunicorn app:app\n";
 

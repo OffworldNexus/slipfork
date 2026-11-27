@@ -1,5 +1,5 @@
 ---
-description: "Slipfork boots your containers, databases, caches and buckets from one Forkfile behind one .localhost URL on native Btrfs — no Docker."
+description: "Slipfork is a cloud in a box: setup any project and its infrastructure in 5s on your laptop and get your coding agent fork it at will in milliseconds."
 hide:
   - toc
 ---
@@ -8,98 +8,95 @@ hide:
 
 # Your cloud environment, locally in a box
 
-**Slipfork turns one `Forkfile` into your whole stack** — images, PostgreSQL, Redis, S3 buckets and
-workers — and serves it from one `.localhost` URL. It runs natively on Btrfs with `crun`, so there is
-no Docker daemon to install and no shared staging box to fight over.
+Slipfork is like Docker Compose with opinions, without Docker and on crack. It understands the application's managed dependencies (database, storage, etc) through an environment-agnostic `Forkfile`, and is able to create a *cloud in box* completely automatically. You go from **git checkout** to a **running development environment** in seconds.
 
-!!! warning "Very experimental release"
+It's not based on Docker because it tries to circumvent the typical hurdles that you meet when doing development:
 
-    0.1.0 is a very experimental release with breaking changes ahead. Report what breaks in the
+- Automatic UID mapping, so that if you execute something inside the container it won't create files as root in your home folder
+- Every project gets their own `.localhost` domain name, you never need to worry about port collision again
+- Supporting infrastructure such as PostgreSQL, Redis or S3 are bootstrapped as needed: all you need is ask
+
+!!! warning "Targeted platform support"
+
+    The project is leveraging advanced features of the Linux kernel and the Btrfs file system. If you're on Linux but don't have Btrfs, [mount a Btrfs workspace image](install.md#on-ext4-or-xfs-mount-a-btrfs-workspace-image-in-your-home-folder). If not, you will need to run it from a VM. The target user runs this on a cloud machine, alongside a coding agent.
+
+!!! warning "Pre-1.0"
+
+    The Forkfile and CLI can change between releases; report what breaks in the
     [issue tracker](https://github.com/OffworldNexus/slipfork/issues).
+
+## Support
+
+The infrastructure runs on DigitalOcean, which we do not operate. We step in manually only for an absolute emergency — a third-party failure we can work around, or a blocking edge case in one of our own processes — and that is rare. At this stage there is no support plan: everything else is best-effort through the [issue tracker](https://github.com/OffworldNexus/slipfork/issues).
+
+## Getting started
+
+First, let's install slipfork on your local machine:
 
 ```console
 $ curl -fsSL https://offworldnexus.github.io/slipfork/install.sh | sh
-$ slipfork up
-✓ Ready -> http://acme-shop.localhost
 ```
 
-[Get started](getting-started.md){ .md-button .md-button--primary }
-[The Forkfile](forkfile.md){ .md-button }
-
-!!! info "One URL, cloud-identical routes"
-
-    `http://acme-shop.localhost` is the front door. `route /api` keeps its prefix on the primary
-    world domain (the first declared `domain`), an extra declared `domain mail` answers on
-    `mail.acme-shop.localhost`, and each `s3` bucket on `<bucket>.acme-shop.localhost`.
-
-## Worlds and forks
-
-A **world** is the running stack declared by one `Forkfile`. A **fork** is an atomic copy-on-write
-snapshot of that world and your checkout, with its own dependencies, data pages and URL.
-
-```mermaid
-flowchart LR
-  F["Forkfile"] -->|"slipfork up"| W["World acme-shop\nhttp://acme-shop.localhost"]
-  W -->|"slipfork fork billing-api"| K["Fork billing-api\nhttp://billing-api--acme-shop.localhost"]
-  K -->|"slipfork drop billing-api"| R["snapshots deleted"]
-  W --- DB[("PostgreSQL 18")]
-  K --- DBF[("CoW snapshot")]
-```
-
-Forking reports two tiers: the CoW clone as `snapshot_ms` (`~150–365ms` on the 4-vCPU
-droplet, asserted `< 500ms`) and the full boot as the elapsed (`~5.5s` median, asserted `< 8.0s` for
-the real 8-component FastAPI + SvelteKit stack). The boot, not the clone, takes the
-seconds — `.venv`, `node_modules`, database pages and bucket objects are already on disk, so the
-wait is `uvicorn --reload` and `vite dev` warming their first requests.
-Test a risky migration on the fork; the parent world keeps serving.
-
-## A Forkfile is the whole topology
+Next, you need a project (with Btrfs — [mount a workspace image](install.md#on-ext4-or-xfs-mount-a-btrfs-workspace-image-in-your-home-folder) on ext4 or XFS). We're going to host a simple Python/WSGI application. The Forkfile looks like this:
 
 ```forkfile
 # forkfile: 0.1
 
-domain main
 postgres pg { database app_db }
-redis cache
-s3 uploads
 
 env common {
-  DATABASE_URL = app_db.url
-  REDIS_URL    = cache.url
+    DATABASE_URL = app_db.url
 }
 
 image api . {
-  use env common
-  service web {
-    port 8000
-    route /api
-    run: @uv run uvicorn app.main:app --host 0.0.0.0 --port $port
-  }
+    arg port = web.port
+    use env common
+
+    on dev {
+        stage dev
+    }
+
+    service web {
+        port 4242
+        route /
+
+        on dev {
+            run: @uv run granian --reload --interface wsgi app:app --host 0.0.0.0 --port $port
+        }
+    }
 }
 ```
 
-Services live inside the image that runs them. Build-time `arg`s stay separate from runtime `env`,
-and `@uv` / `@pnpm` wire lockfile-watched installs automatically.
+Now create the project and its files:
 
-| Verb | What it does |
-| :--- | :--- |
-| `slipfork up` | Boot the world and print `✓ Ready -> <url>` |
-| `slipfork fork feat-auth` | Snapshot code and data, boot a fork on its own URL |
-| `slipfork drop feat-auth` | Stop the fork and delete its snapshots |
-| `slipfork status` | One tree of every world and domain, forks included |
-| `slipfork logs -f api` | Stream merged logs with per-service gutters |
-| `slipfork down` | Stop the world, keep the data subvolumes |
+```console
+$ uv init get-started
+$ cd get-started
+$ uv add granian
+```
 
-!!! warning "Linux, Btrfs and crun"
+```python
+# app.py
+def app(environ, start_response):
+    start_response("200 OK", [("Content-Type", "text/plain; charset=utf-8")])
+    return [b"hello from get-started\n"]
+```
 
-    `slipfork` needs a Linux host with a Btrfs filesystem, `crun`, and `slirp4netns` on `PATH`;
-    `slipfork doctor`
-    checks exactly those three things. The editor language server `slipfork-lsp` runs on Linux,
-    macOS and Windows.
+```dockerfile
+# Dockerfile
+FROM python:3.13-slim AS dev
+ARG port
+RUN pip install --no-cache-dir uv
+WORKDIR /project
+```
 
-## Where next
+`WORKDIR /project` is where the `dev` stage bind-mounts your checkout. Save the `Dockerfile`, `Forkfile` and `app.py` in `get-started/`, then:
 
-* [Getting started](getting-started.md) — install, a Forkfile, `up`, `fork`, `drop`, `down`.
-* [Install](install.md) — every distro, the daemon unit and the `:80` ingress.
-* [The Forkfile](forkfile.md) — the complete `# forkfile: 0.1` language.
-* [CLI](cli.md) — daily verbs, trees, progress and `NO_COLOR`.
+```console
+$ slipfork up
+✓ Ready -> http://get-started.localhost
+```
+
+The project directory name is the world name, so this world answers on `http://get-started.localhost`.
+
+The [tutorial](tutorial.md) continues from here: a SvelteKit front on the same domain, and forking the running world.

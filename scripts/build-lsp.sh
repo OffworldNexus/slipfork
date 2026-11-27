@@ -61,10 +61,11 @@ do
     name="slipfork-lsp-$platform-$arch"
     stage=$(mktemp -d "${TMPDIR:-/var/tmp}/slipfork-lsp.XXXXXX")
     install -d "$stage/$name"
+    bindir="${CARGO_TARGET_DIR:-target}/$target/release"
     if [ "$kind" = zip ]; then
-        install -m 0755 "target/$target/release/slipfork-lsp.exe" "$stage/$name/slipfork-lsp.exe"
+        install -m 0755 "$bindir/slipfork-lsp.exe" "$stage/$name/slipfork-lsp.exe"
     else
-        install -m 0755 "target/$target/release/slipfork-lsp" "$stage/$name/slipfork-lsp"
+        install -m 0755 "$bindir/slipfork-lsp" "$stage/$name/slipfork-lsp"
     fi
     install -m 0644 "$license" "$stage/$name/LICENSE"
     if [ "$kind" = zip ]; then

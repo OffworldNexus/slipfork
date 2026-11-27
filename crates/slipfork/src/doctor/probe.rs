@@ -18,7 +18,7 @@ pub enum Part {
     /// A filesystem path.
     Path(String),
     /// Secondary prose.
-    Dim(String),
+    Meta(String),
     /// A bold label.
     Bold(String),
     /// A primary URL.
@@ -35,7 +35,7 @@ impl Part {
     pub fn text(&self) -> &str {
         match self {
             Self::Path(text)
-            | Self::Dim(text)
+            | Self::Meta(text)
             | Self::Bold(text)
             | Self::Url(text)
             | Self::Ok(text)
@@ -45,10 +45,10 @@ impl Part {
 
     /// The same fragment under the shipped palette.
     #[must_use]
-    pub fn render(&self, palette: &crate::ui::Palette) -> String {
+    pub fn render(&self, palette: &crate::ui::report::Palette) -> String {
         match self {
             Self::Path(text) => palette.path(text),
-            Self::Dim(text) => palette.dim(text),
+            Self::Meta(text) => palette.meta(text),
             Self::Bold(text) => palette.label(text),
             Self::Url(text) => palette.url(text),
             Self::Ok(text) => palette.status(text),
@@ -86,16 +86,22 @@ impl Doctor {
 fn storage(project: &Path, state_dir: &Path, home: Option<&Path>) -> Check {
     let project_is_btrfs = slipfork_world::is_btrfs_path(project).unwrap_or(false);
     let state_is_btrfs = slipfork_world::is_btrfs_path(state_dir).unwrap_or(false);
-    let shown = shorten(project, home);
-    if project_is_btrfs || state_is_btrfs {
+    storage_row(&shorten(project, home), project_is_btrfs || state_is_btrfs)
+}
+
+/// The shipped `Storage` copy: the path, one bold verdict phrase, one consequence.
+///
+/// Three parts means one separator each; the verdict is a single bold phrase so `--json` never
+/// reads `~/demo · on · Btrfs · …`.
+fn storage_row(shown: &str, on_btrfs: bool) -> Check {
+    if on_btrfs {
         return Check::new(
             "Storage",
             true,
             vec![
-                Part::Path(shown),
-                Part::Dim("on".to_owned()),
-                Part::Bold("Btrfs".to_owned()),
-                Part::Dim("instant copy-on-write forks ready".to_owned()),
+                Part::Path(shown.to_owned()),
+                Part::Bold("on Btrfs".to_owned()),
+                Part::Meta("instant copy-on-write forks ready".to_owned()),
             ],
             None,
         );
@@ -104,10 +110,9 @@ fn storage(project: &Path, state_dir: &Path, home: Option<&Path>) -> Check {
         "Storage",
         false,
         vec![
-            Part::Path(shown),
-            Part::Dim("not on".to_owned()),
-            Part::Bold("Btrfs".to_owned()),
-            Part::Dim("instant copy-on-write forks are unavailable".to_owned()),
+            Part::Path(shown.to_owned()),
+            Part::Bold("not on Btrfs".to_owned()),
+            Part::Meta("instant copy-on-write forks are unavailable".to_owned()),
         ],
         Some("move the project onto a Btrfs mount and run `slipfork up`".to_owned()),
     )
@@ -130,7 +135,7 @@ fn containers(host: &HostEnv) -> Check {
             false,
             vec![
                 Part::Bold("crun not installed".to_owned()),
-                Part::Dim("rootless container sandboxing unavailable".to_owned()),
+                Part::Meta("rootless container sandboxing unavailable".to_owned()),
             ],
             Some("install crun (for example `sudo apt-get install crun`) and retry".to_owned()),
         );
@@ -156,7 +161,7 @@ fn containers(host: &HostEnv) -> Check {
             true,
             vec![
                 Part::Bold(label),
-                Part::Dim("rootless container sandboxing enabled".to_owned()),
+                Part::Meta("rootless container sandboxing enabled".to_owned()),
             ],
             None,
         ),
@@ -164,7 +169,7 @@ fn containers(host: &HostEnv) -> Check {
             false,
             vec![
                 Part::Bold(label),
-                Part::Dim("rootless container sandboxing blocked by AppArmor".to_owned()),
+                Part::Meta("rootless container sandboxing blocked by AppArmor".to_owned()),
             ],
             Some(
                 "sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 and retry"
@@ -175,7 +180,7 @@ fn containers(host: &HostEnv) -> Check {
             false,
             vec![
                 Part::Bold(label),
-                Part::Dim("rootless container sandboxing unavailable".to_owned()),
+                Part::Meta("rootless container sandboxing unavailable".to_owned()),
             ],
             Some("sudo sysctl -w user.max_user_namespaces=2147483647 and retry".to_owned()),
         ),
@@ -185,7 +190,7 @@ fn containers(host: &HostEnv) -> Check {
     if find(&host.path, "slirp4netns").is_none() {
         ready = false;
         parts.push(Part::Bold("slirp4netns not installed".to_owned()));
-        parts.push(Part::Dim(
+        parts.push(Part::Meta(
             "pods cannot reach PyPI, npm, or HTTPS".to_owned(),
         ));
         let egress_remedy =
@@ -240,7 +245,7 @@ fn daemon(host: &HostEnv) -> Check {
             true,
             vec![
                 Part::Ok("running".to_owned()),
-                Part::Dim("background user service active".to_owned()),
+                Part::Meta("background user service active".to_owned()),
             ],
             None,
         );
@@ -250,7 +255,7 @@ fn daemon(host: &HostEnv) -> Check {
         false,
         vec![
             Part::Bad("not running".to_owned()),
-            Part::Dim("`slipfork up` starts it automatically".to_owned()),
+            Part::Meta("`slipfork up` starts it automatically".to_owned()),
         ],
         Some(
             "run `slipfork up` (packages enable `slipfork.service`; otherwise \
@@ -297,7 +302,7 @@ fn domains(host: &HostEnv) -> Check {
             true,
             vec![
                 Part::Url("http://*.localhost".to_owned()),
-                Part::Dim("local domain routing active".to_owned()),
+                Part::Meta("local domain routing active".to_owned()),
             ],
             None,
         );
@@ -323,7 +328,7 @@ fn domains(host: &HostEnv) -> Check {
         false,
         vec![
             Part::Url("http://*.localhost".to_owned()),
-            Part::Dim(detail.to_owned()),
+            Part::Meta(detail.to_owned()),
         ],
         Some(next.to_owned()),
     )
@@ -347,4 +352,41 @@ fn find(path: &[PathBuf], name: &str) -> Option<PathBuf> {
     path.iter()
         .map(|directory| directory.join(name))
         .find(|candidate| candidate.is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::storage_row;
+
+    #[test]
+    fn storage_row_is_three_parts_and_one_separator_each() {
+        let ready = storage_row("~/demo", true);
+        assert_eq!(
+            ready.detail,
+            "~/demo · on Btrfs · instant copy-on-write forks ready"
+        );
+        assert_eq!(ready.parts.len(), 3, "one separator per seam: {ready:?}");
+        assert_eq!(ready.detail.matches(" · ").count(), 2, "{:?}", ready.detail);
+        assert!(ready.ok);
+        assert_eq!(ready.next, None);
+
+        let missing = storage_row("~/demo", false);
+        assert_eq!(
+            missing.detail,
+            "~/demo · not on Btrfs · instant copy-on-write forks are unavailable"
+        );
+        assert_eq!(
+            missing.parts.len(),
+            3,
+            "one separator per seam: {missing:?}"
+        );
+        assert_eq!(
+            missing.detail.matches(" · ").count(),
+            2,
+            "{:?}",
+            missing.detail
+        );
+        assert!(!missing.ok);
+        assert!(missing.next.is_some());
+    }
 }

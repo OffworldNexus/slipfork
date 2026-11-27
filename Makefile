@@ -2,18 +2,42 @@ CARGO ?= cargo
 UV ?= uv
 UVX ?= uvx
 
+# One canonical build dir, honouring a redirected CARGO_TARGET_DIR (CI caches, agent builds).
+# The binary always comes from this checkout; only a `make SLIPFORK_BIN=...` command-line
+# override wins, never an inherited environment value.
+TARGET_DIR ?= $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR),target)
+SLIPFORK_BIN := $(abspath $(TARGET_DIR))/debug/slipfork
+
 # Point this at a directory on a real Btrfs mount (a loop file is fine); never `/tmp`.
 SLIPFORK_TEST_ROOT ?=
 LIVE_RUNTIME_DIR ?= /dev/shm/sf-live-runtime
+# The suites boot the helper this checkout builds, never an installed `/usr/bin` copy.
+LIVE_PROFILE ?= debug
+LIVE_CARGO_PROFILE := $(if $(filter release,$(LIVE_PROFILE)),--release,)
+LIVE_WORLD_INIT ?= $(TARGET_DIR)/$(LIVE_PROFILE)/slipfork-world-init
 LIVE_SUITES := \
+	slipfork/critical_status_live \
 	slipfork-world/critical_btrfs_live \
+	slipfork-world/fork_flat_live \
 	slipfork-image/critical_oci_live \
 	slipfork-image/critical_dockerfile_live \
 	slipfork-world/critical_pod_runtime \
+	slipfork-world/critical_snapshot_graph \
 	slipfork-world/pod_control_lab \
+	slipfork-world/pod_run_live \
 	slipfork/critical_world_journey \
-	slipfork/critical_status_live \
-	slipfork/critical_fork_live
+	slipfork/critical_heads_live \
+	slipfork/critical_fork_live \
+	slipfork/critical_registry_live \
+	slipfork/logs_colour_live \
+	slipfork/logs_last_live \
+	slipfork/image_rpc
+
+# Suites that expect a `from:` image pull: a warm `.slipfork-store` settles it `cached`, so
+# `live-test` refuses to start warm unless `LIVE_RESET=1` provisions the cold store. The cold
+# suite runs first so CI pulls the cold base image once, before the warm suites.
+LIVE_COLD_SUITES := slipfork/critical_status_live
+LIVE_RESET ?=
 
 .PHONY: fmt clippy test check coverage guard test-tools live-test lsp-assets js-test typecheck packages-check docs-check docs-serve install uninstall
 
@@ -46,9 +70,9 @@ check:
 
 # The plugin's tests spawn the real binary from this workspace, never a stand-in.
 js-test:
-	$(CARGO) build -p slipfork
+	$(CARGO) build --target-dir "$(TARGET_DIR)" -p slipfork
 	cd packages/opencode-slipfork && test -d node_modules || bun install --silent
-	cd packages/opencode-slipfork && SLIPFORK_BIN=$(CURDIR)/target/debug/slipfork bun test
+	cd packages/opencode-slipfork && SLIPFORK_BIN="$(SLIPFORK_BIN)" bun test
 
 typecheck:
 	cd packages/opencode-slipfork && test -d node_modules || bun install --silent
@@ -116,33 +140,88 @@ live-test:
 		echo "live-test: SLIPFORK_TEST_ROOT is unset; next: SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test" >&2; exit 2; }
 	@case "$(SLIPFORK_TEST_ROOT)" in /|/home|/home/*|/root|/root/*|/etc|/etc/*|/usr|/usr/*|"$$HOME") \
 		echo "live-test: refusing $(SLIPFORK_TEST_ROOT) as SLIPFORK_TEST_ROOT; next: SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test" >&2; exit 2 ;; esac
-	@test "$$(stat -f -c %t "$(SLIPFORK_TEST_ROOT)" 2>/dev/null)" = 9123683e || { \
-		echo "live-test: $(SLIPFORK_TEST_ROOT) is not on Btrfs" >&2; \
-		echo "next: sudo mkdir -p $(SLIPFORK_TEST_ROOT) && sudo truncate -s 12G $(SLIPFORK_TEST_ROOT).img && sudo mkfs.btrfs -f $(SLIPFORK_TEST_ROOT).img && sudo mount -o loop,user_subvol_rm_allowed,noatime $(SLIPFORK_TEST_ROOT).img $(SLIPFORK_TEST_ROOT)" >&2; exit 2; }
+	@root=$$(readlink -f "$(SLIPFORK_TEST_ROOT)"); \
+	test "$$(stat -f -c %t "$$root" 2>/dev/null)" = 9123683e || { \
+		echo "live-test: $$root is not on Btrfs" >&2; \
+		echo "next: sudo mkdir -p $$root && sudo truncate -s 12G $$root.img && sudo mkfs.btrfs -f $$root.img && sudo mount -o loop,user_subvol_rm_allowed,noatime $$root.img $$root" >&2; exit 2; }; \
+	mnt=$$(findmnt -n -o TARGET -T "$$root" 2>/dev/null); \
+	[ -n "$$mnt" ] || mnt=$$(stat -c %m "$$root" 2>/dev/null); \
+	[ "$$mnt" = "$$root" ] || { \
+		echo "live-test: $$root must be the Btrfs mount root, because a subdirectory shares the parent store; next: SLIPFORK_TEST_ROOT=/mnt/slipfork-live make live-test" >&2; exit 2; }
 	@test "$$(stat -f -c %t /dev/shm 2>/dev/null)" = 1021994 || { \
 		echo "live-test: /dev/shm is not tmpfs; next: mount a tmpfs to hold XDG_RUNTIME_DIR" >&2; exit 2; }
 	@command -v crun >/dev/null 2>&1 || { \
 		echo "live-test: crun is missing; next: sudo apt-get install crun" >&2; exit 2; }
-	@rm -rf "$(SLIPFORK_TEST_ROOT)/home" "$(SLIPFORK_TEST_ROOT)/tmp" && install -d -m 700 "$(SLIPFORK_TEST_ROOT)" "$(SLIPFORK_TEST_ROOT)/home" "$(SLIPFORK_TEST_ROOT)/tmp" || { echo "live-test: cannot create $(SLIPFORK_TEST_ROOT)/home; next: sudo chown \"$$(id -u):$$(id -g)\" $(SLIPFORK_TEST_ROOT)" >&2; exit 2; } && \
-		chmod 700 "$(SLIPFORK_TEST_ROOT)/home" "$(SLIPFORK_TEST_ROOT)/tmp" && \
-		rm -rf "$(LIVE_RUNTIME_DIR)" && install -d -m 700 "$(LIVE_RUNTIME_DIR)"
-	@set -e; live_cargo_home="$${CARGO_HOME:-$$HOME/.cargo}"; \
-		live_rustup_home="$${RUSTUP_HOME:-$$HOME/.rustup}"; \
-		for suite in $(LIVE_SUITES); do \
-		pkg=$${suite%%/*}; test=$${suite##*/}; \
-		printf '[live] %s %s\n' "$$pkg" "$$test"; \
-		HOME="$(SLIPFORK_TEST_ROOT)/home" TMPDIR="$(SLIPFORK_TEST_ROOT)/tmp" \
+	@root=$$(readlink -f "$(SLIPFORK_TEST_ROOT)"); store="$$root/.slipfork-store"; \
+	cold=""; for suite in $(LIVE_SUITES); do case " $(LIVE_COLD_SUITES) " in *" $$suite "*) cold="$$cold $$suite";; esac; done; \
+	if [ -d "$$store/images" ] && [ -n "$$(ls -A "$$store/images" 2>/dev/null)" ] && [ -n "$$cold" ] && [ "$(LIVE_RESET)" != 1 ]; then \
+		echo "live-test: $$store already holds a warm image cache; next: LIVE_RESET=1 make live-test (cold suites:$$cold)" >&2; exit 2; fi; \
+	if [ "$(LIVE_RESET)" = 1 ]; then \
+		sh "$(abspath scripts/purge-store.sh)" "$$store" || { \
+			echo "live-test: cannot delete the warm store $$store; next: stop stale slipfork daemons (pkill -f \"slipfork __daemon\") and retry" >&2; \
+			exit 2; }; \
+		echo "live-test: cold store $$store"; fi
+	@root=$$(readlink -f "$(SLIPFORK_TEST_ROOT)"); \
+	rm -rf "$$root/.live"; install -d -m 700 "$$root" "$$root/.live" "$$root/.live/home" "$$root/.live/tmp" || { echo "live-test: cannot create $$root/.live/home; next: sudo chown \"$$(id -u):$$(id -g)\" $$root" >&2; exit 2; }; \
+	chmod 700 "$$root/.live/home" "$$root/.live/tmp"; \
+	rm -rf "$(LIVE_RUNTIME_DIR)" && install -d -m 700 "$(LIVE_RUNTIME_DIR)"; \
+	reaped=0; \
+	for envf in /proc/[0-9]*/environ; do \
+		[ -r "$$envf" ] || continue; \
+		tr '\0' '\n' < "$$envf" 2>/dev/null | grep -q "^XDG_RUNTIME_DIR=$(LIVE_RUNTIME_DIR)/" || continue; \
+		pid=$${envf#/proc/}; pid=$${pid%/environ}; \
+		cmd=$$(tr '\0' ' ' < "/proc/$$pid/cmdline" 2>/dev/null) || continue; \
+		case " $$cmd " in \
+			*" __daemon "*|*" __supervise "*|*" slipfork-world-init "*) ;; \
+			*) continue ;; \
+		esac; \
+		kill -9 "$$pid" 2>/dev/null && reaped=$$((reaped + 1)); \
+	done; \
+	[ "$$reaped" -eq 0 ] || printf 'live-test: reaped %s stale slipfork process(es) from a previous run\n' "$$reaped"
+	@case "$(LIVE_PROFILE)" in debug|release) ;; *) \
+		echo "live-test: unknown LIVE_PROFILE=$(LIVE_PROFILE); next: LIVE_PROFILE=debug make live-test" >&2; exit 2 ;; esac
+	@$(CARGO) build $(LIVE_CARGO_PROFILE) --target-dir "$(TARGET_DIR)" -p slipfork-world --bin slipfork-world-init
+	@test -x "$(LIVE_WORLD_INIT)" || { \
+		echo "live-test: $(LIVE_WORLD_INIT) is missing; next: $(CARGO) build $(LIVE_CARGO_PROFILE) --target-dir \"$(TARGET_DIR)\" -p slipfork-world --bin slipfork-world-init" >&2; exit 2; }
+	@# Each suite gets the shortest possible numbered runtime slot (1…16) because pod control.sock
+	@# paths sit close to the 108-byte sun_path limit; the reap above clears a crashed run's __daemon.
+	@root=$$(readlink -f "$(SLIPFORK_TEST_ROOT)"); \
+	live_cargo_home="$${CARGO_HOME:-$$HOME/.cargo}"; \
+	live_rustup_home="$${RUSTUP_HOME:-$$HOME/.rustup}"; \
+	passed=0; failed=0; total=0; \
+	store="$$root/.slipfork-store"; \
+	purge_store() { \
+		sh "$(abspath scripts/purge-store.sh)" "$$store" || { \
+			echo "live-test: cannot purge the warm store $$store before $$suite; next: stop stale slipfork daemons (pkill -f \"slipfork __daemon\") and retry" >&2; \
+			exit 2; }; \
+		echo "live-test: cold store $$store (before $$suite)"; \
+	}; \
+	for suite in $(LIVE_SUITES); do \
+		pkg=$${suite%%/*}; test=$${suite##*/}; total=$$((total + 1)); \
+		slot=$$total; \
+		case " $(LIVE_COLD_SUITES) " in *" $$suite "*) purge_store;; esac; \
+		install -d -m 700 "$(LIVE_RUNTIME_DIR)/$$slot"; \
+		printf '[live] RUN %s %s\n' "$$pkg" "$$test"; \
+		HOME="$$root/.live/home" TMPDIR="$$root/.live/tmp" \
 			CARGO_HOME="$$live_cargo_home" RUSTUP_HOME="$$live_rustup_home" \
-			XDG_RUNTIME_DIR="$(LIVE_RUNTIME_DIR)" SLIPFORK_TEST_ROOT="$(SLIPFORK_TEST_ROOT)" \
-			$(CARGO) test -p "$$pkg" --features "$$pkg/live" --test "$$test" -- --test-threads=1; \
-	done
+			XDG_RUNTIME_DIR="$(LIVE_RUNTIME_DIR)/$$slot" SLIPFORK_TEST_ROOT="$$root" \
+			SLIPFORK_WORLD_INIT="$(abspath $(LIVE_WORLD_INIT))" \
+			$(CARGO) test $(LIVE_CARGO_PROFILE) --target-dir "$(TARGET_DIR)" -p "$$pkg" --features "$$pkg/live" --test "$$test" -- --test-threads=1; \
+		rc=$$?; \
+		if [ "$$rc" -eq 0 ]; then \
+			passed=$$((passed + 1)); printf '[live] PASS %s %s\n' "$$pkg" "$$test"; \
+		else \
+			failed=$$((failed + 1)); printf '[live] FAIL %s %s (exit %s)\n' "$$pkg" "$$test" "$$rc"; \
+		fi; \
+	done; \
+	if [ "$$failed" -ne 0 ]; then echo "live-test: FAILED $$passed/$$total — see the FAIL lines above" >&2; exit 1; fi; \
+	echo "live-test: $$passed/$$total suites passed"
 
 # ---------------------------------------------------------------------------
 # Development installs: a branch build into your own prefix, never /usr.
 # ---------------------------------------------------------------------------
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
-TARGET_DIR ?= $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR),target)
 DEV_BINS := slipfork slipfork-lsp slipfork-world-init
 
 # The package and `install.sh --user` own the well-known bins: refuse /usr, /bin and /sbin,
@@ -168,7 +247,33 @@ install:
 	install -d -m 0755 "$(BINDIR)"; \
 	for bin in $(DEV_BINS); do install -m 0755 "$(TARGET_DIR)/release/$$bin" "$(BINDIR)/$$bin"; done; \
 	( cd "$(BINDIR)" && sha256sum $(DEV_BINS) > "$(RECEIPT)" ); \
-	echo "installed $(DEV_BINS) -> $(BINDIR); next: put $(BINDIR) before /usr/bin in PATH, then run hash -r"
+	echo "installed $(DEV_BINS) -> $(BINDIR); next: put $(BINDIR) before /usr/bin in PATH, then run hash -r"; \
+	dev_exe="$(BINDIR)/slipfork"; \
+	unit_state=""; \
+	if command -v systemctl >/dev/null 2>&1; then \
+	  unit_state=$$(systemctl --user show -p LoadState --value slipfork 2>/dev/null || true); \
+	fi; \
+	if [ "$$unit_state" = loaded ] && systemctl --user is-active --quiet slipfork 2>/dev/null; then \
+	  running=$$(systemctl --user show -p ExecStart --value slipfork 2>/dev/null | grep -o 'path=[^ ;]*' | head -n 1 | cut -d= -f2); \
+	  if [ -z "$$running" ]; then \
+	    pid=$$(systemctl --user show -p MainPID --value slipfork 2>/dev/null || true); \
+	    case "$$pid" in ''|0) pid="" ;; esac; \
+	    [ -z "$$pid" ] || running=$$(readlink -f "/proc/$$pid/exe" 2>/dev/null || true); \
+	  fi; \
+	  same=""; \
+	  if [ -n "$$running" ]; then \
+	    [ "$$(readlink -f "$$running" 2>/dev/null || echo "$$running")" != "$$(readlink -f "$$dev_exe" 2>/dev/null || echo "$$dev_exe")" ] || same=1; \
+	  fi; \
+	  if [ -z "$$running" ]; then \
+	    echo "slipfork: packaged slipfork.service is still active; next: systemctl --user stop slipfork" >&2; \
+	  elif [ -z "$$same" ]; then \
+	    if systemctl --user stop slipfork >/dev/null 2>&1; then \
+	      echo "✓ stopped the packaged slipfork.service — the dev CLI will start the dev daemon"; \
+	    else \
+	      echo "slipfork: packaged slipfork.service is still active; next: systemctl --user stop slipfork" >&2; \
+	    fi; \
+	  fi; \
+	fi
 
 # Removes exactly the three binaries it installed, proven by the receipt; never systemd units,
 # the store, or a binary from the package / `install.sh`.
@@ -182,12 +287,20 @@ uninstall:
 	( cd "$(BINDIR)" && sha256sum -c --quiet "$(RECEIPT)" >/dev/null 2>&1 ) || { echo "uninstall: $(BINDIR) no longer holds the make-installed binaries; next: remove them yourself, or use the installer's --uninstall" >&2; exit 2; }; \
 	for bin in $(DEV_BINS); do rm -f "$(BINDIR)/$$bin"; done; \
 	rm -f "$$receipt"; \
-	echo "removed $(DEV_BINS) from $(BINDIR)"
+	echo "removed $(DEV_BINS) from $(BINDIR)"; \
+	unit_state=""; \
+	if command -v systemctl >/dev/null 2>&1; then \
+	  unit_state=$$(systemctl --user show -p LoadState --value slipfork 2>/dev/null || true); \
+	fi; \
+	if [ "$$unit_state" = loaded ] && ! systemctl --user is-active --quiet slipfork 2>/dev/null \
+	  && systemctl --user start slipfork >/dev/null 2>&1; then \
+	  echo "✓ restarted the packaged slipfork.service"; \
+	fi
 
 # ---------------------------------------------------------------------------
 # Distribution artifacts (specs/06-distribution-and-docs.md §1-§8).
 # ---------------------------------------------------------------------------
-VERSION ?= 0.1.0
+VERSION ?= 0.1.1
 # `CHANNEL=nightly` needs the run, UTC date and commit that produced the build;
 # `scripts/release_stamp.py` turns them into the per-ecosystem stamps below.
 CHANNEL ?= stable

@@ -5,14 +5,14 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::ps::{PsReply, PsWorld};
-use crate::ui::paint;
+use crate::ui::report::Palette;
 
 /// How one status render should look.
 #[derive(Debug, Clone, Default)]
 pub struct Options {
     /// Emit ANSI escapes.
     pub color: bool,
-    /// Add supervisor lineage to every world header.
+    /// Add supervisor pid to live status headers.
     pub verbose: bool,
     /// `$HOME`, used to shorten project paths to `~/…`.
     pub home: Option<PathBuf>,
@@ -36,7 +36,7 @@ impl Options {
         self
     }
 
-    /// Enables the lineage column.
+    /// Enables the supervisor pid column.
     #[must_use]
     pub fn with_verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
@@ -78,10 +78,6 @@ pub fn display_path(path: &Path, home: Option<&Path>) -> String {
 pub fn no_world_line(cwd: &Path, home: Option<&Path>, color: bool) -> String {
     format!(
         "{}\n",
-        paint(
-            &format!("○ No world for {}", display_path(cwd, home)),
-            "2",
-            color
-        )
+        Palette::new(color).meta(&format!("○ No world for {}", display_path(cwd, home)))
     )
 }

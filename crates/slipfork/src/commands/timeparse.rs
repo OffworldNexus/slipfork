@@ -1,7 +1,7 @@
-//! `logs --since/--until` value parsing and the UTC `-t` timestamp gutter.
+//! `logs --since/--until` value parsing.
 //!
-//! Relative (`30s|5m|2h|1d`) and RFC 3339 inputs both resolve to epoch milliseconds here, and the
-//! renderer's gutter is computed without the host timezone so two machines print identical rows.
+//! Relative (`30s|5m|2h|1d`) and RFC 3339 inputs both resolve to epoch milliseconds here; the
+//! composition root resolves the local wall clock once into a `WallZone` (see `ui::report`).
 
 use slipfork_world::pod_log::now_ms;
 
@@ -157,36 +157,4 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     era * 146_097 + day_of_era - 719_468
-}
-
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let days = days + 719_468;
-    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
-    let day_of_era = (days - era * 146_097) as u32;
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let year = i64::from(year_of_era) + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_prime = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
-    let month = if month_prime < 10 {
-        month_prime + 3
-    } else {
-        month_prime - 9
-    };
-    (if month <= 2 { year + 1 } else { year }, month, day)
-}
-
-/// UTC `YYYY-MM-DD HH:MM:SS` gutter for `-t`, independent of the host timezone.
-pub(crate) fn format_ts(ts_ms: u64) -> String {
-    let seconds = (ts_ms / 1000) as i64;
-    let days = seconds.div_euclid(86_400);
-    let time = seconds.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    format!(
-        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}",
-        time / 3600,
-        time % 3600 / 60,
-        time % 60
-    )
 }

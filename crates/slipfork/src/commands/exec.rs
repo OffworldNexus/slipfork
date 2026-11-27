@@ -11,9 +11,10 @@ use std::sync::atomic::Ordering;
 use serde_json::{Value, json};
 
 use super::pty;
-use super::streams::{INTERRUPTED, Renderer, install_sigint, refusal_next};
+use super::streams::{INTERRUPTED, install_sigint, refusal_next};
 use crate::commands::Session;
 use crate::daemon::{DaemonClient, DaemonError};
+use crate::ui::report::StreamRenderer;
 
 /// Parsed `shell` arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,7 +63,7 @@ impl Session {
             "target": args.target,
             "tty": false,
         });
-        let mut renderer = Renderer::exec(self.color(), args.json);
+        let mut renderer = StreamRenderer::verbatim(self.renderer());
         let stdin = std::io::stdin();
         let input_fd = stdin.as_raw_fd();
         let mut input = stdin.lock();
@@ -160,7 +161,7 @@ impl Session {
         let Some(mut client) = self.existing_daemon(json) else {
             return ExitCode::FAILURE;
         };
-        let mut renderer = Renderer::exec(self.color(), json);
+        let mut renderer = StreamRenderer::verbatim(self.renderer());
         let stdin = std::io::stdin();
         let input_fd = stdin.as_raw_fd();
         let mut input = stdin.lock();
@@ -188,8 +189,8 @@ impl Session {
             return self.report(&error.code, &error.message, &next, true);
         }
         if error.code == "shell-refused" {
-            eprintln!("{}", error.message);
-            return ExitCode::FAILURE;
+            let next = refusal_next(error, verb);
+            return self.report(&error.code, &error.message, &next, false);
         }
         self.stream_fail(error, verb, false)
     }

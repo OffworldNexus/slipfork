@@ -1,6 +1,6 @@
 # 02 — The CLI UX
 
-Slipfork runs your cloud environment locally in a box; CI is the clutch. One `clap` tree owns argv, one domain tree renders state, and every failure ends in one `next:` command.
+Slipfork runs your cloud environment locally in a box; CI is the clutch. One `clap` tree owns argv, one `Report` renderer owns every terminal and `--json` byte, and every failure ends in one `next:` command.
 
 ```console
 $ slipfork up
@@ -18,7 +18,16 @@ $ slipfork ps
     pg      postgres 18   running
 ```
 
-**Semantic palette (interactive colour TTY only):** green `●`/`✓`/`running`/`ready`; cyan `cached` and `up to date`; yellow `built`, `pulled` and `orphaned`; bold red `✗`, `failed` and `stopped`; bold cyan underlined URLs; bold green copyable commands; dim paths, stopped forks and prose.
+Interactive colour terminals apply one role-based SGR palette, while `NO_COLOR`, `TERM=dumb`, pipes, and `--json` emit zero escapes:
+
+| Role | SGR | Tokens |
+| :--- | :--- | :--- |
+| Settled / live | `32` (green) | `●`, `✓`, `built`, `pulled`, `ready`, `running`, `cached`, `up to date`, `done`, closing `Ready`/`Restarted`/`Stopped`/`Dropped` |
+| Transitional / warning | `33` (yellow) | `starting`, `ps`/`status` `stopped`, `orphaned`, stderr gutter `┃` |
+| Failure / refusal | `31` (red) | `✗`, `!`, `error:`, `failed`, `failed at i/n`, `refused` |
+| Keywords | `35` / `38;5;132` | Outer verbs (`image`, `setup`, `start`, `hook`, `RUN`) / inner Dockerfile steps (`from`, `copy`, `run`) |
+| Links & remedies | `1;4;36` / `36` | Primary `.localhost` URLs (`1;4;36`) / copyable `next:` commands (`36`) |
+| Neutral metadata | `38;5;244` (never `2`) | `[i/n]`, `n/N`, timings, clocks, paths, `#run_id`, 12-char `sha256:` digests, `•`, `○`, stdout `│` |
 
 ## 1. `clap` surface, completions and manpage
 
@@ -32,7 +41,7 @@ Resolution is deterministic and happens before any daemon mutation.
 
 | Verb | Usage | No target | Bare target resolution |
 | :--- | :--- | :--- | :--- |
-| `up` | `slipfork up [TARGET]` | this directory's `Forkfile` | `.forks/<name>` under cwd, then a registered world/fork |
+| `up` | `slipfork up [TARGET] [--no-cache]` | this directory's `Forkfile` | `.forks/<name>` under cwd, then a registered world/fork |
 | `down` | `slipfork down [TARGET]` | this directory's world | `.forks/<name>` under cwd, then a registered world/fork |
 | `restart` | `slipfork restart [TARGET] [-s SERVICE]` | every service here | a live service here, then `.forks/<name>`, then a world/fork |
 
@@ -42,7 +51,9 @@ Resolution order for a bare target:
 2. **Local fork checkout:** `<cwd>/.forks/<TARGET>` when that directory exists.
 3. **Registered world or fork:** an exact project match, then a unique registry name.
 
-`restart -s <SERVICE>` / `--service <SERVICE>` always names a service, never a world. A bare target that matches a service in this directory's live world restarts that service; anything else resolves as a world or fork. With no target, `restart` restarts every service in this directory's world.
+`restart -s <SERVICE>` / `--service <SERVICE>` always names a service, never a world. A bare target that matches a service in this directory's live world restarts that service; anything else resolves as a world or fork.
+
+With no target, `restart` restarts every service in this directory's world.
 
 ```mermaid
 flowchart TD
@@ -55,7 +66,7 @@ flowchart TD
   D -->|no| E["registered world/fork, else one error + next:"]
 ```
 
-`up` preflights this directory and a `<cwd>/.forks/<name>` checkout: it reads and compiles that `Forkfile` before contacting the daemon, so an invalid file fails in one line without booting or stopping anything. A registered world or fork is resolved through the daemon's `ps` first.
+`up` preflights this directory and a `<cwd>/.forks/<name>` checkout: it compiles that `Forkfile` before contacting the daemon, so an invalid file fails in one line without booting or stopping anything. A registered world or fork is resolved through the daemon's `ps` first.
 
 !!! warning "Worlds and forks are positional"
 
@@ -66,7 +77,7 @@ flowchart TD
 Worlds are **flat**: one header per world, a blank line between worlds, and no ports or uptime ages in human output. Every domain has the same shape — its URL, then `<path>  -> <target>  <kind>  <status>`:
 
 ```text
-● demo  ~/demo
+● demo       ~/demo
   http://demo.localhost
     /     -> web      service              running
     /api  -> api      service              running
@@ -75,162 +86,247 @@ Worlds are **flat**: one header per world, a blank line between worlds, and no p
   support
     worker  service       running
     pg      postgres 18   running
-  ○ feat-auth  ~/demo/.forks/feat-auth  stopped
+
+○ feat-auth  ~/demo/.forks/feat-auth  stopped  ← demo
 ```
 
-A non-default route mode is the only suffix: `(strip-prefix)`, `(rewrite /v1)` or `(exact)`. `support` holds workers and resources; `--json` keeps `state` (`live`/`stopped`), `port`, `started_at_ms`, `url`, `routes` (each `{prefix, port, mode, domain?}`, where `domain` is the declared `domain <id>`), `orphaned` and `stopped_forks` for automation.
+Every world frame is its own block after a blank line, so the header grid pads `demo` to the longer `feat-auth` name.
 
-A `stopped_forks[]` entry is stopped by membership alone — no duplicate boolean rides on it — and a stopped row carries no `supervisor_pid` or `started_at_ms`.
+A non-default route mode is the only suffix: `(strip-prefix)`, `(rewrite /v1)` or `(exact)`. `support` holds workers and resources; `--json` keeps `state` (`live`/`stopped`/`broken`), `port`, `started_at_ms`, `url`, `routes` (each `{prefix, port, mode, domain?}`), `orphaned` and `lineage` (immediate parent first, root last).
+
+Every fork is a ledger row: a stopped fork prints as a `○` row exactly like a stopped root, and a running one as a `●` header with the dim `← parent ← root` suffix. Dropping a parent re-parents its forks, so the next `ps` reads `salut ← test1`:
+
+```text
+● test1    ~/slproj/test1
+  http://test1.localhost
+    /  -> web  service  running
+
+● bonjour  ~/slproj/test1/.forks/bonjour  ← test1
+  http://bonjour--test1.localhost
+    /  -> web  service  running
+
+● salut    ~/slproj/test1/.forks/salut    ← bonjour ← test1
+  http://salut--test1.localhost
+    /  -> web  service  running
+```
+
+```text
+$ slipfork drop bonjour -f
+$ slipfork ps
+● test1  ~/slproj/test1
+  http://test1.localhost
+    /  -> web  service  running
+
+● salut  ~/slproj/test1/.forks/salut  ← test1
+  http://salut--test1.localhost
+    /  -> web  service  running
+```
+
+A stopped row is stopped by its ledger state alone — no duplicate boolean rides on it — and carries no `supervisor_pid` or `started_at_ms`.
 
 When state cannot be honest, `ps` names the one real problem instead of inventing rows:
 
 | Situation | Row |
 | :--- | :--- |
-| Stopped fork still on disk | dim `○ <fork>  ~/demo/.forks/<fork>  stopped` |
-| Stopped root world still on disk | dim `○ <world>  ~/<world>  stopped` (its `.forks` family stays visible) |
+| Stopped fork still on disk | neutral `○ <fork>  ~/demo/.forks/<fork>  stopped` |
+| Stopped root world still on disk | neutral `○ <world>  ~/<world>  stopped` (its `.forks` family stays visible) |
 | Fork checkout vanished | `! checkout missing — run \`slipfork drop <fork>\`` |
 | World checkout vanished | `! checkout missing — restore it or run \`slipfork down <world>\`` |
 | Uncompilable or missing `Forkfile` | `! Forkfile invalid: <line>:<col>: <message>` |
 
-A `!` row sits directly under its world header. Live pods keep their `running` rows and no `orphaned` row is fabricated. A stopped fork row is directly usable with `slipfork up <fork>` or `slipfork drop <fork>`.
+A `!` row sits directly under its world header, live pods keep their `running` rows, and no `orphaned` row is fabricated. A stopped fork row is directly usable with `slipfork up <fork>` or `slipfork drop <fork>`.
 
-A project root keeps its whole family visible after `slipfork down`: the root row becomes a dim `○ demo  ~/demo  stopped`, every stopped `.forks/*` sibling prints the same dim row, and every running fork keeps its `●` header (even when the daemon was restarted without the root). Inside `~/demo/.forks/<fork>`, `ps` scopes strictly to that one fork, running or stopped.
+A project root keeps its whole family visible after `slipfork down`: the root row becomes `○ demo  ~/demo  stopped`, every stopped `.forks/*` sibling prints the same row, and every running fork keeps its `●` header. Inside `~/demo/.forks/<fork>`, `ps` scopes strictly to that one fork, running or stopped.
 
-`orphaned` (yellow) appears only after a successful recompile that no longer declares a live pod, and the next `up` clears it. Bare `slipfork` is `status`; with nothing running it prints a dim `○ No worlds running` and exits `0`.
+`orphaned` (yellow) appears only after a successful recompile that no longer declares a live pod, and the next `up` clears it. Bare `slipfork` is `status`; with nothing running it prints `○ No worlds running` and exits `0`.
 
-## 4. `up` reconciliation and the `DECSTBM` bottom bar
+## 4. `up` reconciliation and the append-only status line
 
-Repeating `slipfork up` is idempotent (`0ms`) only when the `Forkfile` content digest and feature set are unchanged. After an edit it reconciles: pods no longer declared stop and show `orphaned` until then, and added or changed services boot.
+Repeating `slipfork up` on an unchanged world is Idle (`~0.1s`): the detector prints `• [1/1] world <w> up to date` plus `✓ Ready -> <url>`, never an image row. Idle requires `<world>/.slipfork-lease.json` to match the fresh plan's head across the `Forkfile`, resolved features, world plan, and every image's `Dockerfile` + copied-context digest.
 
-On an interactive ANSI TTY with `rows >= 3`, `up`, `restart` and `fork` establish a VT100 scroll region (`\x1b[1;{rows-1}r`); finished tasks scroll above a one-line `apt`-style panel on row `rows`.
+A matching head with a pod down heals only that service, and `restart` on a matching head recycles pods in place on the leased images without rebuilding. A changed head reconciles while the old world keeps serving, stopping undeclared pods (`orphaned`) and booting changed services only after new heads seal; `--no-cache` rebuilds every image from `FROM` down, and the next plain `up` is cached again.
+
+On a colour TTY the boot narrative is append-only: settled rows are ordinary newline-terminated scrollback lines, and exactly one in-place status line is redrawn (prefixed `\r\x1b[2K`). While a phase runs it carries that phase's live row (counter, verb, target, command, elapsed); between phases it falls back to a panel frame (spinner + a 24-cell bar only when `cols >= 80`, without shearing the counter + `done/total` + `pct%` + label + elapsed clock). Slipfork never emits a scroll region, `\x1b[r`, absolute cursor addressing, DSR, alternate screen, or a screen clear.
 
 ```mermaid
 flowchart TD
-  Region["Rows 1..rows-1: ONE fixed live row per task (cyan Braille spinner + live elapsed)<br/>rewritten in place to ✓ / • / ✗ · zero sha256, dockerfile or hook lines"]
-  Panel["Row rows: never scrolls<br/>⠋ [██████████████████░░░░░░]  9/12  75% · 4 running (pg, front, worker, api) · 0.4s<br/>clamped to cols, SIGWINCH redraw, RAII clear"]
-  Region --- Panel
+  Scroll["Scrollback: settled [i/n] outer rows + indented n/N build steps, one newline-terminated line each"]
+  Status["One status line (Pane-owned): while a phase runs → ⠸ 0/2 · image api · step 3/6 RUN · 1.2s; between phases → [██████░░░░░░░░░░░░░░░░░░]  0/2  25% · [1/2] image api · 1.2s (rewritten with CR + clear-line; 24-cell bar when cols >= 80)"]
+  Scroll --- Status
 ```
 
-- **Six-column rows:** icon, kind, name, state, duration (right, `>= 6`), and the `#run_id` slot
-  (left, `>= 7`, reserved for a later release and empty today).
-- **`plan` frame first:** before the first `started`, the supervisor announces
-  `{"event":"plan","rows":[{"kind","name"}…],"total":N}` for every step it will run; `fork` prepends
-  its `snapshot` and `branch <name>` rows and `down` announces every known pod plus its final
-  `removed run subvolumes` row. The CLI measures all six columns from that one frame, so a later
-  long name or `up to date` state never shifts a row already printed.
-- **One fixed slot per task:** a `started` row allocates its own line immediately and spins there;
-  `finished`/`up-to-date`/`failed` rewrites that same slot. A full region scrolls one line and the
-  top task leaves it — no other row moves.
-- **Counter math:** `filled = round(done / total * 24)`, `pct = round(done / total * 100)`, rendered
-  as `<spinner> [<24 cells>]  <done>/<total>  <pct>% · <active summary> · <elapsed>`; the active
-  summary is `Starting <name>…` for one task and `N running (<a>, <b>, …)` for several.
-- **Flow cursor and resize:** finished rows advance through a real 2D VT100 grid, so the prompt returns to the row the shell expects; `SIGWINCH` re-queries `(cols, rows)`, re-applies the region and redraws.
-- **Narrow and short terminals:** below `cols < 80` the bar is omitted, then `· <summary>`; `done/total`, `pct%` and `elapsed` are never sheared. With `rows < 3` the panel rewrites one line with `\r`.
-- **Truthful rows, zero log spam:** all build, setup, hook and pod output goes to `<store>/logs/<world>/<id>.log`, read with `slipfork logs <id>`; a cache hit prints `cached`, and every step that really executes mints a dim `#run_id` in the reserved last column (see §6).
+- **Two-level `plan` frame:** before the first `started`, the daemon emits `{"event":"plan","rows":[{"kind","name"}…],"total":N}` (`fork` prepends `snapshot` and `branch <name>`; `down`/`drop` announce pods plus teardown). The renderer latches outer `keyword` and `target` widths once from that frame and inner lowercase instruction widths from the planned stage, so columns never shift mid-stream.
+- **Outer `[i/n]` and inner `n/N` rows:** outer steps sit at column 0 (`✓ [1/2] image  web  built 3 steps  1.4s  #b7f2a1`); cold image builds open `→ [1/2] image  web  running` and nest indented `  ✓ 1/3 from  python:3.13-slim  <1ms` rows (no `[` brackets, no repeated target), while a cached image emits `✓ [1/2] image  web  cached  8ms` with zero inner rows.
+- **Status-line counter:** the counter reads `outer_done/outer_total` while the label reads `[i/n] image <id> · step k/K <VERB>`; inner progress settles into scrollback rows and never widens the status line.
+- **Resize and narrow terminals:** `SIGWINCH` re-measures the terminal and `Pane::resize(cols)` re-clamps the one status line and repaints; under `NO_COLOR`/`TERM=dumb` there is no status line at all — rows append plainly with zero `\x1b[` and zero `\r`.
 
-A successful `up` ends at `✓ Ready -> <url>` with no trailing reminder line. A RAII guard clears row `rows` and restores `\x1b[r` on success, error, panic and `SIGINT`; `down` streams one stop row per pod plus `removed run subvolumes`, keeping data subvolumes and logs.
-
-On error the guard clears the panel, restores the screen, prints the failed row and one stderr sentence pointing at the log:
+A successful `up` settles the final rows into scrollback, drops the status line, and prints `✓ Ready -> <url>` with no trailing reminder. On failure, `BootTui` expands the failing phase and its full arrival-ordered `│`/`┃` output once, settles the image row at its failing step, and emits one verdict plus one `next:` on stderr:
 
 ```text
-✗ image     backend   failed                    84ms
-  `RUN pnpm run build` failed: `crun` exited with code 1
+  ✗ 3/6 run   pnpm run build
+    ┃ ELIFECYCLE Command failed with exit code 1.
+✗ [1/2] image  backend  failed at 3/6
+✗ RUN backend failed (exit 1)
   next: slipfork logs -r 3f9c21
-✗ Failed to build image backend
 ```
 
-The indented detail row carries the step's message alone, then exactly one `next:` remedy
-(`next:` dim, the command bold); the `Forkfile:<line>` location lives only in
-`slipfork logs -r <id>` and the raw `--json` step event, so a failure never ends in prose.
-
-`NO_COLOR`, `TERM=dumb` and pipes emit zero `\x1b[` bytes and zero SGR; the ASCII path uses `\r` only and `--json` is pure JSON.
+`NO_COLOR`, `TERM=dumb` and pipes emit zero `\x1b[` bytes and zero SGR; pipes emit append-only `→`/`✓`/`•`/`✗` rows with zero `\r`, and `--json` is pure NDJSON.
 
 ## 5. Two-tier `fork` and `drop`
 
-`slipfork fork [name]` CoW-snapshots your checkout and world data (`snapshot_ms` measures `~150–365ms`, asserted `< 500ms`) and reuses parent image subvolumes (`cached`, ~1 ms); omitting `[name]` derives the slug from the current git branch.
+`slipfork fork [name]` CoW-snapshots your checkout and world data (`snapshot_ms` `~150–365ms`, asserted `< 500ms`) and reuses parent image subvolumes (`cached`, `~1ms`); omitting `[name]` derives the slug from the current git branch.
 
-The fork then boots the ordinary `up` path, so the real FastAPI (`uvicorn --reload`) + SvelteKit (`vite dev`) stack reaches all 8 components ready and its first `200 OK` at a median `~5.5s` on the 4-vCPU dev VM, asserted `< 8.0s` on 2-vCPU CI runners. That ceiling measures `uvicorn` first-request transforms and `vite dev` SSR, not Slipfork's clone; a warm fork prints `cached` images and `up to date` setup/hooks and re-runs nothing.
+The fork then boots the ordinary `up` path, reaching all 8 demo components ready and first `200 OK` at a median `~5.5s` on the 4-vCPU dev VM (`< 8.0s` ceiling on 2-vCPU CI runners); a warm fork prints `cached` images and `up to date` setup/hooks and re-runs nothing.
 
-A failed `fork` rolls back atomically: it stops its supervisor and pods and drops the registry entry before unlinking snapshots, so no half-booted fork survives. `slipfork drop <name>` stops the fork and deletes its project, data and log snapshots, refusing a dirty checkout without `-f`.
+A failed `fork` rolls back atomically: it stops its supervisor and pods and drops the ledger entry before unlinking snapshots, so no half-booted fork survives. `slipfork drop <name>` stops the fork and deletes its project, data and log snapshots, refusing a dirty checkout without `-f`.
+
+`drop` is a single-node splice: in `salut ← bonjour ← test1`, dropping `bonjour` re-parents `salut` onto `test1` in the same transaction, so the next `ps` reads `salut ← test1`, `merci ← salut ← test1` keeps serving `200 OK`, and only `bonjour`'s subvolumes are destroyed.
 
 ## 6. Unified real-PTY `shell`, `logs`, `doctor` and the daily verbs
 
-`slipfork shell <target>` is the only interactive entry point for every pod. `<target>` is required (`clap` exits `2` on stderr when omitted) and dispatches by declared kind: services and images get a real PTY `/bin/bash` (prompt `(<world>:<target>) \w$ `) or `/bin/sh`, postgres gets `psql`, redis gets `redis-cli`, and `s3` buckets are refused on stderr with exit `1`.
+`slipfork shell <target>` is the only interactive entry point for every pod (`<target>` required; `clap` exits `2` when omitted). Services and images attach a real PTY `/bin/bash` (`(<world>:<target>) \w$ `) or `/bin/sh`, postgres runs `psql`, redis runs `redis-cli`, and `s3` buckets fail closed on stderr with exit `1`.
 
-`slipfork logs [-f] [-a] [target]` merges application `service`s by default; `-a` adds images and resources, and naming one target reads `<store>/logs/<world>/<id>.log`, including an `image` build log after a failed cold `up`. `slipfork doctor` leads with `✓ Ready` or `✗ N issue(s)` across its four shipped rows `Storage`, `Containers`, `Daemon` and `Domains`.
+`slipfork logs [-f] [-a] [target] [--last N]` merges application `service`s by default, `-a` adds images and resources, and naming one target reads `<store>/logs/<world>/<id>.log` even after a failed `up` or `down`. `--last N` tails the last N rendered lines (a followed `-f` implies `--last 20` unless you pass one), and `slipfork doctor` leads with `✓ Ready` or `✗ N issue(s) found` across its four rows `Storage`, `Containers`, `Daemon` and `Domains`.
 
 ### Per-step run ids
 
-Every step that executes work (`image` `built`/`pulled`, `setup`, and every `hook`) mints one 6-character lowercase hex `run_id`, streams that step's stdout and stderr into `<store>/logs/<world>/runs/<run_id>.log` with its `<run_id>.idx` companion, and appends one `{run_id, ts_ms, kind, name, command, state, duration_ms}` line to `runs/index.jsonl`. `runs/last` and `runs/last-failed` point at the newest id. A `cached`/`up to date` step ran zero commands, so it mints no id and writes no run files; long-lived services keep `<store>/logs/<world>/<service>.log`.
+Every step that executes work (`image` `built`/`pulled`, `setup`, and every `hook`) mints one 6-character lowercase hex `run_id`, streams stdout/stderr into `<store>/logs/<world>/runs/<run_id>.log` + `.idx`, and appends one catalog record to `runs/index.jsonl`. `cached` and `up to date` steps ran zero commands, so they mint no id and write no run files.
 
-The boot row reserves its last seven cells for a dim `#id`:
-
-```text
-✓ image     backend          built      4.1s  #b7f2a1
-✓ setup     backend          ready      812ms
-```
-
-A failure prints the step's message, its one `next:` replay command, then the bare verdict:
+Boot rows reserve a trailing 7-cell `#id` slot (`38;5;244`) for executed steps, and a step failure ends in one verdict plus one `logs -r` remedy:
 
 ```text
-✗ setup     backend   failed                    84ms
-  `uv sync` failed: exit status 1
+✓ [1/3] image  backend  built 4 steps  4.1s  #b7f2a1
+✗ [2/3] setup  backend  failed
+  ┃ error: Failed to resolve dependencies
+✗ setup backend failed (exit 1)
   next: slipfork logs -r c91e04
-✗ Failed to run setup 'uv sync' (backend)
 ```
 
-`slipfork logs -r <id>` accepts `c91e04`, `#c91e04`, `last`, or `failed`, replays the run log cleanly through the indexed reader, and honours `--since`/`--until`/`-t`/`--json` exactly like service logs. `slipfork logs --runs` prints the catalog as a borderless table, so any past id can be found:
+`slipfork logs -r [<id>|last|failed]` replays one recorded run (`c91e04`, `#c91e04`, `last`, or `failed`), honouring `--since`/`--until`/`-t`/`--json`; bare `-r` defaults to `failed`.
+
+An image build replays as one `#<id>  image  <target>  <started>` header, one local-clocked row per executed instruction with `│`/`┃` child output beneath it, and one closing verdict:
 
 ```text
-#run_id  kind   step               status  duration  recorded
-#b7f2a1  image  backend            built      4.1s  2026-11-22 23:09:12
-#c91e04  setup  backend uv sync    failed      84ms  2026-11-22 23:10:03
+#b7f2a1  image  backend  2026-11-22 23:09:12
+
+  23:09:12.104  1/4 FROM python:3.13-slim
+  23:09:12.118  2/4 COPY . /app
+  23:09:12.290  3/4 RUN sh -c "npm run build"
+  23:09:12.517 ┃ npm ERR! code ELIFECYCLE
+
+✗ RUN backend failed (exit 3)
 ```
 
-Both render zero `\x1b[` bytes under `NO_COLOR`, a pipe, or `--json`.
+Setup and hook runs keep `#<id>  setup  <target>  <command>  <started>` and settle with `✓ setup backend done (1.8s)` or one failure verdict; a closed stdout (`… | head -1`) exits `0` quietly. With no failed record, bare `-r` fails closed with `error: no failed run in this world` and `next: slipfork up`; `slipfork logs --runs` renders the borderless catalog table:
+
+```text
+#run_id  kind   step             status  duration  recorded
+#b7f2a1  image  backend          built       4.1s  2026-11-22 23:09:12
+#c91e04  setup  backend uv sync  failed      84ms  2026-11-22 23:10:03
+```
 
 | Command | Behaviour |
 | :--- | :--- |
-| `slipfork up [TARGET]` | Boot this directory, a `.forks/<name>` checkout, or a registered world/fork; preflight that `Forkfile` first |
+| `slipfork up [TARGET] [--no-cache]` | Boot this directory, `.forks/<name>`, or a registered world/fork; preflight `Forkfile` first; `--no-cache` rebuilds every image step |
 | `slipfork down [TARGET]` | Stop this directory's world or the named world/fork; remove run subvolumes, keep data and logs |
-| `slipfork restart [TARGET] [-s SERVICE]` | Restart one service, a world/fork, or every service here through the bottom-bar TUI |
-| `slipfork logs [-f] [-a] [-t] [--since <ms>] [--until <ms>] [targets]...` | Services by default; `-a` adds images and resources; several targets merge in timestamp order |
-| `slipfork logs -r <id>\|last\|failed` | Replay one recorded step run (`#<id>` accepted), honouring `--since`/`--until`/`-t`/`--json` |
+| `slipfork restart [TARGET] [-s SERVICE]` | Restart one service, a world/fork, or every service here through the append-only status line |
+| `slipfork logs [-f] [-a] [-t] [--since <ms>] [--until <ms>] [--last <N>] [targets]...` | Services by default; `-a` adds images and resources; several targets merge in timestamp order; `--last N` tails rendered lines and `-f` implies 20 unless explicit |
+| `slipfork logs -r [<id>\|last\|failed]` | Replay one catalog run (`#<id>` accepted) with local wall-clock rows, `│`/`┃` gutters, and one verdict; bare `-r` means `failed` |
 | `slipfork logs --runs` | Borderless `#run_id`, kind, step, status, duration, recorded table of every executed step |
 | `slipfork shell <target>` | Required target: PTY bash/sh, `psql`, `redis-cli`; refuses `s3` and unknowns |
 | `slipfork exec [service\|image] -- <cmd>` | Ad-hoc command inside the target with a real PTY on a terminal; exit code forwarded |
 
-`slipfork exec` allocates a real kernel PTY whenever stdin and stdout are terminals and `--json` is off, so `ipython`, `bash`, `psql`, and coloured progress bars keep their prompts and line editing. `-i` requires both terminals and fails closed without them; `--no-interactive` keeps a plain pipe so prompts see immediate EOF while piped stdin still streams.
-
-The relay forwards the child's own escapes untouched; only Slipfork's own output obeys `NO_COLOR`.
+`slipfork exec` allocates a real kernel PTY whenever stdin and stdout are terminals and `--json` is off; `-i` fails closed without both terminals, and `--no-interactive` keeps a plain pipe. The PTY relay forwards the child's own escapes untouched while Slipfork's own rows obey `NO_COLOR`.
 
 ```bash
-slipfork exec api -- uv run ipython            # interactive REPL on a real PTY
+slipfork exec api -- uv run ipython               # interactive REPL on a real PTY
 echo 'select 1;' | slipfork exec pg -- psql -tA   # piped stdin still streams
 slipfork exec --no-interactive api -- python3 -c 'import sys; print(sys.stdin.isatty())'  # False
 ```
 
 ### Features
 
-`dev` is built in and active for every `up`, `fork` and `env`. `slipfork features` prints the resolved set with what each group implies, and persists edits for the next boot.
+`dev` is built in and active for every `up`, `fork` and `env`. `slipfork features` prints the resolved set with `IMPLIES` and persists edits (`+mail`, `-dev`, `enable`, `disable`, `reset`) into `.slipfork/features.json`.
 
-| Form | Effect |
-| :--- | :--- |
-| `slipfork features` | Resolved features and `IMPLIES`; no write |
-| `slipfork features +mail` / `-dev` | Persist one ordered edit |
-| `slipfork features enable <f>...` / `disable <f>...` / `reset` | Persist named changes; `reset` restores the built-in default |
-
-`up`, `fork` and `env` accept `-F/--features` (`mail`, `+mail`, `-dev`, comma lists) and `--no-default-features` to start from an empty base. `up` and `fork` write the result to `.slipfork/features.json`; `env` evaluates only. A fork inherits its parent's `.slipfork/features.json`, so `slipfork fork prod-check -F -dev` boots the production shape.
-
-With `dev` active Slipfork bind-mounts the live checkout at `/project`, so `uvicorn --reload` and `vite dev` see every save. With `dev` off (`-F -dev` or `--no-default-features`) nothing is bound and Slipfork runs the image's native `ENTRYPOINT`/`CMD` on the declared ports — built assets, no `else` branch required.
+`up`, `fork` and `env` accept `-F/--features` and `--no-default-features` (`up` and `fork` persist; `env` evaluates only, and forks inherit the parent's `.slipfork/features.json`). With `dev` active Slipfork bind-mounts the live checkout; with `dev` off nothing is bound and pods run their image's native `ENTRYPOINT`/`CMD`.
 
 ## 7. Terminal gate split and `--json`
 
-- **Modes:** colour TTY uses the `DECSTBM` region and panel; ASCII TTY rewrites one `\r` plain line with zero `\x1b[`; a pipe emits `→ [i/n] kind name` headers plus `✓`/`•` rows; `--json` is pure JSON.
-- **Plan frame:** `up`, `restart` and `fork` stream `{"event":"plan","rows":[{"kind","name"}…],"total":N}`
-  before the first `started`; `--json` forwards it verbatim (extra keys are forward-compatible) with
-  zero escapes. `down` carries the same frame on its event stream and still answers one final object.
-- **Payloads:** `up`/`restart` → `{world, url, elapsed_ms, nodes:[{kind,name,state,duration_ms}]}`; `down` → `{world, elapsed_ms}`; `fork` → `{fork, world, project, url, elapsed_ms, snapshot_ms}`; `drop` → `{dropped, elapsed_ms}`; `doctor` → `{ready, checks:[{name,ok,detail,next?}]}`; `status`/`ps` → `{worlds:[...]}` including `state` (`live`/`stopped`), `port`, `started_at_ms`, `url`, `routes` (each `{prefix, port, mode, domain?}`), `orphaned` and `stopped_forks` (membership means stopped; stopped rows omit `supervisor_pid`/`started_at_ms`); failures → `{"error":{code,message,next}}`.
-- **Ephemeral daemon:** auto-start warns once on stderr; distribution packages installed with
-  `sudo` enable and start the per-user unit and the `:80` socket for the installing user, so the
-  fallback appears only on tarball, headless, or rootless installs.
+- **Modes:** a colour TTY owns exactly one in-place status line (prefixed `\r\x1b[2K`; while a phase runs it is that phase's live row — counter, verb, target, command, elapsed — and between phases it is a panel frame of spinner + a 24-cell bar only when `cols >= 80` (dropped without shearing the counter) + `done/total` + `pct%` + label + elapsed clock) while settled rows append to scrollback; `NO_COLOR` / `TERM=dumb` emits append-only plain rows with zero `\x1b[` and zero `\r` (no rewritten line); a pipe emits append-only rows with zero `\x1b[` and zero `\r`; `--json` serializes the same typed `Report` events and final payload.
+- **Plan frame:** `up`, `restart`, `fork`, `down`, and `drop` stream `{"event":"plan","rows":[{"kind","name"}…],"total":N}` before the first `started`; `--json` forwards it verbatim with zero escapes.
+- **Payloads:** `up`/`restart` → `{world, url, elapsed_ms, nodes:[{kind,name,state,duration_ms}]}` (`up` adds `no_cache`); `down` → `{world, elapsed_ms}`; `fork` → `{fork, world, project, url, elapsed_ms, snapshot_ms}`; `drop` → `{dropped, elapsed_ms}`; `doctor` → `{ready, checks:[{name,ok,detail,next?}]}`; `status`/`ps` → `{worlds:[...]}`; failures → `{"error":{code,message,next}}`.
+- **Ephemeral daemon:** auto-start emits one `Entry::Notice` (`•`, `38;5;244`) on stderr through `ReportRenderer` when the user service is not enabled (`docs/install.sh` and distro packages enable both units).
+
+## 8. Docker-compatible registry verbs
+
+`slipfork docker` is a Docker-shaped surface, never a daemon claim: no `dockerd`, no socket, and no second build pipeline. Every image path reuses the daemon's `OciPuller`/`NativeImageBuilder` and sealed snapshot store.
+
+| Command | Behaviour |
+| :--- | :--- |
+| `slipfork docker login [HOST] [--username USER] [--password-stdin]` | Default `docker.io`; verifies through the registry probe, then saves `0600` |
+| `slipfork docker logout [HOST]` | Removes the host from `<config>/slipfork/registries.json` (`~/.docker/config.json` stays read-only fallback) |
+| `slipfork docker list` | Borderless `HOST USERNAME` report table; never prints a secret |
+| `slipfork docker images` | Borderless `SOURCE NAME IMAGE` report table (`sha256:<12-hex>` in `38;5;244` for humans, full digest in `--json`) |
+| `slipfork docker pull <REFERENCE>` | Pulls into the sealed store through the report stream and prints `sha256:<12-hex>` (`38;5;244`) |
+| `slipfork docker build <COMPONENT> [--target STAGE] [--no-cache]` | Builds one `Forkfile` image through the same inner-step report rows as `up` and prints `sha256:<12-hex>` (`38;5;244`) |
+
+`login` reads from `--password-stdin` or a no-echo TTY prompt, never argv, and fails closed as one error plus `next:` without writing on bad credentials. `--json` emits `{"host","username","stored":true}` (`login`), `{"host","removed"}` (`logout`), arrays with full `sha256:<64-hex>` digests (`list`/`images`), and NDJSON `step`/`log` frames followed by `{"component","target","image_id","cache_key","digest?","rootfs","cache_hits","cache_misses","no_cache"}` (`build`).
+
+## 9. One Report Layer
+
+Every CLI surface — live `up`/`restart`/`fork`/`down`/`drop`, `docker`, `logs`, `status`/`ps`, `doctor`, `env`, `secret`, `features`, `open`, `fmt`, `migrate`, and `main`/usage errors — speaks through **one** typed `Report` model and **one** `ReportRenderer` (`crates/slipfork/src/ui/report/`). No command formats raw SGR codes, guesses column widths, or calls `println!`/`eprintln!` directly, so state, colour, alignment, and `next:` remedies cannot drift.
+
+```mermaid
+flowchart LR
+  Daemon["Daemon / Host Facts\n(typed events, epoch ms, zero ANSI)"] --> Report["Report\nSections + Rows(Outcome) + Verdict/Failure"]
+  Report --> Renderer["ReportRenderer\n(Terminal + Palette + Table + WallZone)"]
+  Renderer -->|Interactive / Plain| Term["Terminal / Pipe\n(one status line + append rows + 1 stderr Failure)"]
+  Renderer -->|Json| Json["--json\n(NDJSON frames + final object / error JSON)"]
+```
+
+### 9.1 Vocabulary: `Report`, `Row`, and `Outcome`
+
+A `Report` is `{ sections: Vec<Section>, verdict: Option<Verdict>, remedy: Option<String> }`, where `Verdict` pairs `Outcome::Ok` with a closed `VerdictKind::{Ready, Forked, Restarted, Stopped, Dropped, Built, Pulled, Set, Unset, LoggedIn}` (green `32`) or `Outcome::Failed`/`Refused` with `Failure`, and each `Section` pairs an optional header with ordered `Entry` items (`Row`, `Stream { indent, stream, line, ts_ms }`, non-`-v` `Notice { stream, text }`, or `-v` `Note(String)`). Each `Row` carries `{ level, counter, keyword, target, state: Outcome, command, timing, id }` (`level` is `Outer` `[i/n]`, `Inner` indented `n/N` substep without target, or `Tree` branch); **both `icon` and the state word/SGR derive strictly from `Outcome`**, never a free string:
+
+| `Outcome` variant | Icon & SGR | State word & SGR | Contract |
+| :--- | :--- | :--- | :--- |
+| `Ok(Done)` | `✓` green (`32`) for `Built`/`Partial`/`Pulled`/`Ready`/`Running`/`Starting`/`Settled`/`Restarted`/`Stopped`/`Step`; dim `•` (`38;5;244`) for `Declined`; cyan `•` (`36`) for `Finished`; `●` (`32`) on live world headers | `Done::{Built { steps }, Partial { cached, built }, Pulled, Ready, Running, Starting, Settled, Restarted, Stopped, Declined, Finished, Step}` → `built N step(s)`, `cached N · built N`, `pulled`, `ready`, `running`, `starting`, `done`, `restarted`, `stopped`, `up to date`, `finished`, or empty (`Step`) (state words `32`, `stopped` `33`) | Executed work succeeded (`Ok` and `Cached` are the **only** producers of `✓`) |
+| `Cached` | `✓` green (`32`) | `cached` green (`32`) | Completed cache hit (`0` steps executed, never `built N`, no `#run_id`) |
+| `Skipped` | `•` neutral (`38;5;244`) | `up to date` green (`32`) | Lease/effect key matched (`0` commands run, no `#run_id`) |
+| `Running` | `⠋..⠏` TTY / 4-frame ASCII spinner / `→` pipe (unstyled) | `running` green (`32`); `starting` yellow (`33`) on booting `ps` pods | In-flight phase row prior to settlement |
+| `Failed { at }` | `✗` red (`31`) | `failed` or `failed at i/n` red (`31`) | Started work failed at optional inner step `(i, n)` |
+| `Refused` | `✗` red (`31`) | `refused` red (`31`) | Rejected before execution (`Forkfile`, dirty fork, target, TTY) |
+| `Problem` | `!` red (`31`) | no state word; the reason lives in `target`/`command` | A `ps`/`status` health row the caller explains in place |
+| `Stopped` | `○` neutral (`38;5;244`) | `stopped` yellow (`33`) | Inactive world/fork or `○ No worlds running` in `ps`/`status` |
+| `Orphaned` | `•` yellow (`33`; omitted on indented `ps` rows) | `orphaned` yellow (`33`) | Live pod removed from `Forkfile`, awaiting next `up` |
+
+### 9.2 Single renderer ownership & impossible states
+
+`compose.rs` resolves `Terminal { cols, rows, mode, stdin_tty }` once at startup and forwards `SIGWINCH` geometry updates into `ReportRenderer` as `Resize { cols, rows }` values, so no print site calls `ioctl` or `/proc`. `ReportRenderer` is the sole owner of `Palette` (`pub(super)` inside `ui`), `UiMode`, ANSI-stripped `Table` measurement (padding outside SGR resets so `strip_ansi(&styled) == plain`), outer `[i/n]` and inner `n/N` lowercase keyword alignment, stream gutters (`│` stdout `38;5;244`, `┃` stderr `33`, indent `2` outer / `4` inner), and blank lines (`\n\n\n` is impossible: one blank line separates `ps` worlds and non-empty `logs -r` bodies, and failure blocks follow the last row with zero blank padding).
+
+!!! warning "Impossible states enforced by types"
+
+    `Row` has no `icon` or `state: String` field, and `Done::built_or_cached(executed)` maps `0` executed steps (`cache_misses == 0`) to `Outcome::Cached` (`✓ … cached`) and `n >= 1` to `Outcome::Ok(Done::Built { steps: NonZeroUsize })` (`✓ … built N step(s)`). A mixed image settles as `Outcome::Ok(Done::Partial { cached, built })` and renders `cached N · built M`; a `ps`/`status` health row uses `Outcome::Problem` (`!`). Each step settles through `StepSettlement` (`Completed { done, duration, run_id } | Cached { duration } | Skipped { duration } | Failed(FailureFacts)`), and `FailureFacts { code, kind, phase, target, at, exit_code, run_id, reason, runtime, next }` constructs one CLI `Failure` that drives **both** the `Palette`-styled stderr failure lines (`✗ <VERB> <target> failed (exit N)` / `error: <reason>`, `-v` `  runtime: …`, and one `next: <cyan command>`) **and** `--json`'s `{"error":{code,message,next}}`.
+
+### 9.3 Injected local wall clock (`WallZone`)
+
+Daemon events and run logs store epoch milliseconds (`ts_ms: u64`) only; neither the daemon nor any print site calls `Utc::now`, `tzset`, or `libc::localtime_r`. `compose.rs` composes one plain `WallZone` from `$TZ` / `/etc/localtime` through `jiff::tz::TimeZone` (`from_time_zone`, plus `named` and `fixed` constructors) once at startup — zero `*Clock` types, zero `unsafe` — and injects it into `ReportRenderer` to format local `YYYY-MM-DD HH:MM:SS` (`-t`, `--runs`, replay headers) and `HH:MM:SS.mmm` (replay rows).
+
+Unit tests pin `WallZone::from_time_zone`, `named`, and `fixed` against fixed epoch integers across CET/CEST DST boundaries in safe parallel Rust, and CLI lab journeys pass `.env("TZ", "Europe/Paris")` to `Command::new`.
+
+### 9.4 Streaming performance, daemon boundary & two-level `up`
+
+- **Bounded live work, zero re-render:** column widths latch once from `plan`, `planned_instruction_width`, or `roster`; settled rows and piped/replay `Entry::Stream` lines flush once and drop (`BrokenPipe` shuts down the stream and exits `0`), while the only rewritten bytes are that one status line (`\r\x1b[2K`); every settled row is written once to scrollback.
+- **Escape-free daemon facts:** `__daemon` and `__supervise` strip child CSI escapes on captured build/hook lines, never construct `Palette`, and send typed `FailureFacts` instead of `"...\nnext: ..."` strings.
+- **Intact two-level `up` plan:** `RowLevel::Outer` (`[i/n]`) and `RowLevel::Inner` (`n/N`) share `BootProgress`, whose `(outer_done * inner_total + inner_settled)` fill clears `building` atomically when the image's single outer slot settles.
+
+### 9.5 Shipped module map, ownership & mechanical grep gate
+
+| Shipped surface | Owning module (`ui/report/`) | Deleted legacy |
+| :--- | :--- | :--- |
+| Live `up`/`restart`/`fork`/`down`/`drop` boot narrative | `boot/` `BootTui` (the one append-only narrative) over `Pane` (sole owner of the `\r\x1b[2K` status line) + `BootProgress`, `StepSettlement`, `FailureFacts`, `ConnectNotice::Ephemeral { color }` | `boot/failure.rs`, `BootTui` `Palette`/`println!`, `Node { success, state }`, `ImageEnd`, `ImageTally` `self.total` bug, `world::fail` |
+| `docker build`/`pull`, `logs`, `logs -r`, `--runs` | `ReportRenderer` inner-step + `Stream` rows, `StreamRenderer`, 12-char digest `Table`/`Column`/`ColumnWidths` | `commands/docker/printer.rs` (`EventPrinter`), `commands/streams/render.rs`, SGR-`2` `paint` in `runs.rs`, raw `eprintln!` in `exec.rs` |
+| `status`/`ps` trees, `doctor`, `env`/`secret`/`features`/`open`/`fmt`/`migrate`, `main`/usage errors | `Report`, `Section`, `Entry`, `Row`, `Outcome`, `Done`, `Counter`, `Verdict`; public re-exports `Palette`, `Table`, `Failure` from `ui/report/mod.rs`; only the `paint`, `table`, `failure` helpers are `pub(super)` | `commands/auth.rs` (dormant), `ui/failure.rs` (`split_remedy`, `failure_block`), hand-rolled clock types, `status::rows::State`, `Session::{fail,report,report_details}` |
+| Wall clock | `WallZone` (`from_time_zone`/`named`/`fixed`) injected into `ReportRenderer` | `unsafe` `tzset`/`localtime_r` |
+
+**Grep gate (`tools/guard.py`):** zero `println!`, `eprintln!`, `print!`, or `eprint!` under `crates/slipfork/src/**`, with exactly four allowlisted sinks — `ui/report/render.rs`, `ui/report/exit.rs`, `daemon/**`, and `world/supervise.rs` — so no CLI module prints raw and every byte flows through the typed `Report` layer.

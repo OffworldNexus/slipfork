@@ -1,16 +1,18 @@
 //! Output modes and the one colour layer for the shipped CLI.
 //!
 //! The composition root resolves [`UiMode`] once from the terminal and the environment; every
-//! renderer receives it as a plain value and never asks a second time. [`Palette`] is the single
-//! role API, `paint` stays the raw SGR primitive, and [`boot`] is the only live pane the world
-//! verbs draw.
+//! renderer receives it as a plain value and never asks a second time. [`report::Palette`] is the
+//! single role API, its raw SGR primitive stays private to the report layer, and [`boot`] is the
+//! only live pane the world verbs draw.
 
-mod paint;
-mod palette;
-pub mod table;
+mod ansi;
+mod elapsed;
+pub mod report;
+mod terminal;
 
-pub use paint::paint;
-pub use palette::Palette;
+pub use ansi::{colour_only, segments, strip, visible_width};
+pub use elapsed::elapsed_text;
+pub use terminal::{FALLBACK_COLS, Terminal, TerminalEnv, normalize_size};
 
 /// How this invocation renders its result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -9,9 +9,10 @@ use serde_json::{Value, json};
 use slipfork_forkfile::FeatureEdit;
 use slipfork_forkfile::ast::Forkfile;
 
-use crate::commands::{Session, emit};
-use crate::ui::Palette;
-use crate::ui::table::{Column, Table};
+use crate::commands::Session;
+use crate::ui::report::Palette;
+use crate::ui::report::{Column, Table};
+use crate::world::WorldIdentities;
 use crate::world::features::WorldFeatures;
 
 /// Mark, name, state, implications.
@@ -98,13 +99,24 @@ impl Session {
                 );
             }
         };
-        let world = match crate::world::world_name(self.cwd(), None) {
+        let identities = match WorldIdentities::open(self.host().state_dir.clone()) {
+            Ok(identities) => identities,
+            Err(error) => {
+                return self.report(
+                    "ledger",
+                    &error,
+                    "run `slipfork doctor` and retry",
+                    args.json,
+                );
+            }
+        };
+        let world = match identities.name(self.cwd(), None) {
             Ok(world) => world.as_str().to_owned(),
             Err(error) => {
                 return self.report(
                     "world",
                     &error,
-                    "run `slipfork features` from the project directory",
+                    "run `slipfork up` to register this checkout",
                     args.json,
                 );
             }
@@ -133,22 +145,19 @@ impl Session {
                     })
                 })
                 .collect();
-            return emit(&format!(
-                "{}\n",
-                json!({
-                    "project": self.cwd().display().to_string(),
-                    "world": world,
-                    "no_default": config.no_default,
-                    "edits": config.edits,
-                    "active": resolved.active(),
-                    "features": features,
-                })
-            ));
+            return self.renderer().json_exit(&json!({
+                "project": self.cwd().display().to_string(),
+                "world": world,
+                "no_default": config.no_default,
+                "edits": config.edits,
+                "active": resolved.active(),
+                "features": features,
+            }));
         }
         let palette = Palette::new(self.color());
         let table = Table::new(&COLUMNS);
         let mut plain: Vec<Vec<String>> = vec![HEADER.map(str::to_owned).to_vec()];
-        let mut styled: Vec<Vec<String>> = vec![HEADER.map(|cell| palette.dim(cell)).to_vec()];
+        let mut styled: Vec<Vec<String>> = vec![HEADER.map(|cell| palette.meta(cell)).to_vec()];
         for name in resolved.available() {
             let active = resolved.contains(name);
             let implies = implies_cell(&implications, name);
@@ -159,40 +168,40 @@ impl Session {
                 implies.clone(),
             ]);
             styled.push(vec![
-                palette.tint(
-                    if active { "●" } else { "○" },
-                    if active { "32" } else { "2" },
-                ),
+                if active {
+                    palette.ok("●")
+                } else {
+                    palette.dim("○")
+                },
                 if active {
                     palette.label(name)
                 } else {
-                    palette.dim(name)
+                    palette.meta(name)
                 },
                 if active {
-                    palette.tint("active", "32")
+                    palette.ok("active")
                 } else {
-                    palette.dim("inactive")
+                    palette.meta("inactive")
                 },
-                palette.dim(&implies),
+                palette.meta(&implies),
             ]);
         }
         let widths = table.widths(&plain);
-        let mut text = String::new();
+        let mut lines = Vec::new();
         for row in &styled {
-            text.push_str(&table.line(&widths, row));
-            text.push('\n');
+            lines.push(table.line(&widths, row));
         }
         if !config.is_default() {
-            text.push_str(&format!("{}\n", palette.dim(&summary(&config))));
+            lines.push(palette.meta(&summary(&config)));
         }
         if changed {
-            text.push_str(&format!(
-                "{} {}\n",
+            lines.push(format!(
+                "{} {}",
                 palette.kind("next:"),
                 palette.command("run `slipfork up` to apply these features")
             ));
         }
-        emit(&text)
+        self.renderer().emit_lines_exit(lines)
     }
 }
 

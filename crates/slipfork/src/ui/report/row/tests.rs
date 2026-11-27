@@ -1,0 +1,391 @@
+use std::num::NonZeroUsize;
+
+use super::{Counter, Done, FailureFacts, Outcome, Row, RowLevel, StepSettlement};
+use crate::ui::report::Palette;
+
+fn counter(index: usize, total: usize) -> Option<Counter> {
+    Some(Counter { index, total })
+}
+
+fn red(mark: &str, word: &str) -> (String, String) {
+    (
+        format!("\u{1b}[31m{mark}\u{1b}[0m"),
+        format!("\u{1b}[31m{word}\u{1b}[0m"),
+    )
+}
+
+#[test]
+fn the_plain_icon_state_table_is_byte_exact() {
+    let plain = Palette::new(false);
+    for (outcome, icon, state) in [
+        (
+            Outcome::Ok(Done::Built {
+                steps: NonZeroUsize::new(1).unwrap(),
+            }),
+            "✓",
+            "built 1 step",
+        ),
+        (
+            Outcome::Ok(Done::Built {
+                steps: NonZeroUsize::new(3).unwrap(),
+            }),
+            "✓",
+            "built 3 steps",
+        ),
+        (Outcome::Ok(Done::Pulled), "✓", "pulled"),
+        (Outcome::Ok(Done::Ready), "✓", "ready"),
+        (Outcome::Ok(Done::Running), "✓", "running"),
+        (Outcome::Ok(Done::Settled), "✓", "done"),
+        (Outcome::Ok(Done::Step), "✓", ""),
+        (Outcome::Ok(Done::Restarted), "✓", "restarted"),
+        (Outcome::Ok(Done::Stopped), "✓", "stopped"),
+        (Outcome::Ok(Done::Declined), "•", "up to date"),
+        (Outcome::Ok(Done::Finished), "•", "finished"),
+        (
+            Outcome::Ok(Done::Partial {
+                cached: NonZeroUsize::new(9).unwrap(),
+                built: NonZeroUsize::new(2).unwrap(),
+            }),
+            "✓",
+            "cached 9 · built 2",
+        ),
+        (Outcome::Cached, "✓", "cached"),
+        (Outcome::Skipped, "•", "up to date"),
+        (Outcome::Running, "→", "running"),
+        (Outcome::Failed { at: None }, "✗", "failed"),
+        (Outcome::Failed { at: counter(2, 3) }, "✗", "failed at 2/3"),
+        (Outcome::Refused, "✗", "refused"),
+        (Outcome::Problem, "!", ""),
+        (Outcome::Stopped, "○", "stopped"),
+        (Outcome::Orphaned, "•", "orphaned"),
+    ] {
+        assert_eq!(outcome.icon(plain), icon, "{outcome:?}");
+        assert_eq!(outcome.state(plain), state, "{outcome:?}");
+        assert_eq!(outcome.plain(), state, "{outcome:?}");
+    }
+}
+
+#[test]
+fn the_colored_icon_state_table_uses_the_role_codes() {
+    let colored = Palette::new(true);
+    let (failed_icon, failed_state) = red("✗", "failed");
+    for (outcome, icon, state) in [
+        (
+            Outcome::Ok(Done::Ready),
+            "\u{1b}[32m✓\u{1b}[0m".to_owned(),
+            "\u{1b}[32mready\u{1b}[0m".to_owned(),
+        ),
+        (
+            Outcome::Cached,
+            "\u{1b}[32m✓\u{1b}[0m".to_owned(),
+            "\u{1b}[32mcached\u{1b}[0m".to_owned(),
+        ),
+        (
+            Outcome::Ok(Done::Restarted),
+            "\u{1b}[32m✓\u{1b}[0m".to_owned(),
+            "restarted".to_owned(),
+        ),
+        (
+            Outcome::Ok(Done::Stopped),
+            "\u{1b}[32m✓\u{1b}[0m".to_owned(),
+            "\u{1b}[33mstopped\u{1b}[0m".to_owned(),
+        ),
+        (
+            Outcome::Ok(Done::Declined),
+            "\u{1b}[38;5;244m•\u{1b}[0m".to_owned(),
+            "\u{1b}[32mup to date\u{1b}[0m".to_owned(),
+        ),
+        (
+            Outcome::Ok(Done::Finished),
+            "\u{1b}[36m•\u{1b}[0m".to_owned(),
+            "finished".to_owned(),
+        ),
+        (
+            Outcome::Ok(Done::Partial {
+                cached: NonZeroUsize::new(9).unwrap(),
+                built: NonZeroUsize::new(2).unwrap(),
+            }),
+            "\u{1b}[32m✓\u{1b}[0m".to_owned(),
+            "cached 9 · built 2".to_owned(),
+        ),
+        (
+            Outcome::Skipped,
+            "\u{1b}[38;5;244m•\u{1b}[0m".to_owned(),
+            "\u{1b}[32mup to date\u{1b}[0m".to_owned(),
+        ),
+        (
+            Outcome::Running,
+            "→".to_owned(),
+            "\u{1b}[32mrunning\u{1b}[0m".to_owned(),
+        ),
+        (
+            Outcome::Failed { at: None },
+            failed_icon.clone(),
+            failed_state.clone(),
+        ),
+        (Outcome::Refused, failed_icon.clone(), red("x", "refused").1),
+        (
+            Outcome::Stopped,
+            "\u{1b}[38;5;244m○\u{1b}[0m".to_owned(),
+            "\u{1b}[33mstopped\u{1b}[0m".to_owned(),
+        ),
+        (
+            Outcome::Orphaned,
+            "\u{1b}[33m•\u{1b}[0m".to_owned(),
+            "\u{1b}[33morphaned\u{1b}[0m".to_owned(),
+        ),
+    ] {
+        assert_eq!(outcome.icon(colored), icon, "{outcome:?}");
+        assert_eq!(outcome.state(colored), state, "{outcome:?}");
+    }
+    assert_eq!(
+        Outcome::Ok(Done::Built {
+            steps: NonZeroUsize::new(2).unwrap()
+        })
+        .state(colored),
+        "\u{1b}[32mbuilt\u{1b}[0m 2 steps"
+    );
+}
+
+#[test]
+fn built_or_cached_maps_zero_to_cached_and_n_to_built() {
+    assert_eq!(Done::built_or_cached(0), Outcome::Cached);
+    assert_eq!(
+        Done::built_or_cached(1),
+        Outcome::Ok(Done::Built {
+            steps: NonZeroUsize::new(1).unwrap()
+        })
+    );
+    assert_eq!(
+        Done::built_or_cached(9),
+        Outcome::Ok(Done::Built {
+            steps: NonZeroUsize::new(9).unwrap()
+        })
+    );
+}
+
+#[test]
+fn cached_and_skipped_rows_never_print_a_run_id() {
+    let plain = Palette::new(false);
+    for state in [Outcome::Cached, Outcome::Skipped] {
+        let row = Row {
+            level: RowLevel::Outer,
+            counter: counter(1, 2),
+            keyword: Some("setup".to_owned()),
+            target: Some("api".to_owned()),
+            state,
+            command: Some("uv sync".to_owned()),
+            timing_ms: Some(41),
+            id: Some("3f9c21".to_owned()),
+        };
+        assert!(!row.line(plain).contains('#'), "{}", row.line(plain));
+        assert!(!state.shows_run_id());
+    }
+    let executed = Row {
+        level: RowLevel::Outer,
+        counter: counter(1, 2),
+        keyword: Some("setup".to_owned()),
+        target: Some("api".to_owned()),
+        state: Outcome::Ok(Done::Built {
+            steps: NonZeroUsize::new(1).unwrap(),
+        }),
+        command: Some("uv sync".to_owned()),
+        timing_ms: Some(41),
+        id: Some("3f9c21".to_owned()),
+    };
+    let line = executed.line(plain);
+    assert!(line.starts_with("[1/2] SETUP api "), "{line}");
+    assert!(line.ends_with(" (41ms) #3f9c21"), "{line}");
+    assert!(!Outcome::Ok(Done::Declined).shows_run_id());
+    assert!(!Outcome::Ok(Done::Finished).shows_run_id());
+    assert!(Outcome::Ok(Done::Ready).shows_run_id());
+}
+
+#[test]
+fn from_state_maps_every_shipped_word_and_rejects_unknown_states() {
+    for (word, outcome) in [
+        ("", Outcome::Ok(Done::Settled)),
+        (" Done ", Outcome::Ok(Done::Settled)),
+        ("cached", Outcome::Cached),
+        ("pulled", Outcome::Ok(Done::Pulled)),
+        ("ready", Outcome::Ok(Done::Ready)),
+        ("running", Outcome::Ok(Done::Running)),
+        ("starting", Outcome::Ok(Done::Starting)),
+        ("restarted", Outcome::Ok(Done::Restarted)),
+        ("stopped", Outcome::Ok(Done::Stopped)),
+        ("declined", Outcome::Ok(Done::Declined)),
+        ("up to date", Outcome::Ok(Done::Declined)),
+        ("up-to-date", Outcome::Ok(Done::Declined)),
+        ("finished", Outcome::Ok(Done::Finished)),
+        ("failed", Outcome::Failed { at: None }),
+    ] {
+        assert_eq!(Outcome::from_state(word), Some(outcome), "{word:?}");
+    }
+    assert_eq!(Outcome::from_state("weird"), None);
+}
+
+#[test]
+fn every_step_settlement_maps_to_its_outcome() {
+    let facts = FailureFacts {
+        code: "build".to_owned(),
+        kind: "RUN".to_owned(),
+        phase: Some("build".to_owned()),
+        target: Some("api".to_owned()),
+        at: counter(2, 3),
+        exit_code: Some(1),
+        run_id: Some("abc".to_owned()),
+        reason: "exit 1".to_owned(),
+        runtime_ms: Some(9),
+        next: "slipfork logs".to_owned(),
+    };
+    assert_eq!(
+        StepSettlement::Completed {
+            done: Done::Pulled,
+            duration_ms: 3,
+            run_id: Some("abc".to_owned()),
+        }
+        .outcome(),
+        Outcome::Ok(Done::Pulled)
+    );
+    assert_eq!(
+        StepSettlement::Cached { duration_ms: 3 }.outcome(),
+        Outcome::Cached
+    );
+    assert_eq!(
+        StepSettlement::Skipped { duration_ms: 3 }.outcome(),
+        Outcome::Skipped
+    );
+    assert_eq!(
+        StepSettlement::Failed(facts.clone()).outcome(),
+        Outcome::Failed { at: counter(2, 3) }
+    );
+}
+
+#[test]
+fn settlement_wire_shape_is_stable_and_round_trips() {
+    let value = |settlement: &StepSettlement| {
+        serde_json::to_value(settlement).expect("serialize a settlement")
+    };
+    assert_eq!(
+        value(&StepSettlement::Cached { duration_ms: 7 }),
+        serde_json::json!({ "state": "cached", "duration_ms": 7 })
+    );
+    assert_eq!(
+        value(&StepSettlement::Skipped { duration_ms: 7 }),
+        serde_json::json!({ "state": "skipped", "duration_ms": 7 })
+    );
+    assert_eq!(
+        value(&StepSettlement::Completed {
+            done: Done::Built {
+                steps: NonZeroUsize::new(2).unwrap(),
+            },
+            duration_ms: 9,
+            run_id: Some("abc".to_owned()),
+        }),
+        serde_json::json!({
+            "state": "completed",
+            "done": { "built": { "steps": 2 } },
+            "duration_ms": 9,
+            "run_id": "abc",
+        })
+    );
+    assert_eq!(
+        value(&StepSettlement::Completed {
+            done: Done::Pulled,
+            duration_ms: 3,
+            run_id: None,
+        }),
+        serde_json::json!({
+            "state": "completed",
+            "done": "pulled",
+            "duration_ms": 3,
+            "run_id": null,
+        })
+    );
+    let failed = StepSettlement::Failed(FailureFacts {
+        code: "build".to_owned(),
+        kind: "RUN".to_owned(),
+        phase: Some("build".to_owned()),
+        target: Some("api".to_owned()),
+        at: counter(2, 3),
+        exit_code: Some(1),
+        run_id: Some("abc".to_owned()),
+        reason: "exit 1".to_owned(),
+        runtime_ms: Some(9),
+        next: "slipfork logs".to_owned(),
+    });
+    let envelope = value(&failed);
+    assert_eq!(
+        envelope,
+        serde_json::json!({
+            "state": "failed",
+            "code": "build",
+            "kind": "RUN",
+            "phase": "build",
+            "target": "api",
+            "at": { "index": 2, "total": 3 },
+            "exit_code": 1,
+            "run_id": "abc",
+            "reason": "exit 1",
+            "runtime_ms": 9,
+            "next": "slipfork logs",
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<StepSettlement>(envelope).expect("deserialize a settlement"),
+        failed
+    );
+}
+
+#[test]
+fn a_docker_step_pads_its_lowercase_keyword_once_from_the_plan_width() {
+    let plain = Palette::new(false);
+    let row = Row {
+        level: RowLevel::Step {
+            instruction_width: 7,
+        },
+        counter: counter(2, 3),
+        keyword: Some("RUN".to_owned()),
+        target: Some("make".to_owned()),
+        state: Outcome::Ok(Done::Step),
+        command: None,
+        timing_ms: Some(12),
+        id: None,
+    };
+    assert_eq!(row.line(plain), "[2/3] run     make ✓ (12ms)");
+
+    let long = Row {
+        level: RowLevel::Step {
+            instruction_width: 4,
+        },
+        counter: counter(4, 11),
+        keyword: Some("WORKDIR".to_owned()),
+        target: Some("/app".to_owned()),
+        state: Outcome::Ok(Done::Step),
+        command: None,
+        timing_ms: Some(1_200),
+        id: None,
+    };
+    assert_eq!(long.line(plain), "[4/11] workdir /app ✓ (1.2s)");
+
+    let failed = Row {
+        level: RowLevel::Step {
+            instruction_width: 7,
+        },
+        counter: counter(2, 3),
+        keyword: Some("RUN".to_owned()),
+        target: Some("make".to_owned()),
+        state: Outcome::Failed { at: None },
+        command: Some("(exit 3)".to_owned()),
+        timing_ms: Some(12),
+        id: None,
+    };
+    assert_eq!(failed.line(plain), "[2/3] run     make ✗ (12ms) (exit 3)");
+
+    let colored = failed.line(Palette::new(true));
+    assert!(
+        colored.contains("\u{1b}[38;5;132mrun\u{1b}[0m    "),
+        "padding stays outside the tint: {colored:?}"
+    );
+    assert!(!colored.contains("failed"), "a step repeats no state word");
+}

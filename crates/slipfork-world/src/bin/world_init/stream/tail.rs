@@ -109,7 +109,7 @@ pub(crate) fn serve_logs(
                 &mut stream,
                 &request_id,
                 &pod,
-                Stream::Combined,
+                line.stream,
                 output_kind(line.kind),
                 Some(line.ts_ms),
                 &line.text,
@@ -133,14 +133,14 @@ pub(crate) fn serve_logs(
             &mut stream,
             &request_id,
             &pod,
-            Stream::Combined,
+            line.stream,
             output_kind(line.kind),
             Some(line.ts_ms),
             &line.text,
         )?;
     }
     if let Some(fault) = failure {
-        eprintln!("slipfork-world-init: {fault}");
+        eprintln!("world init: {fault}");
         // Report the typed failure before EOF so the client renders a remedy, not an empty replay.
         return refuse(&mut stream, &request_id, "replay-failed", fault.to_string());
     }

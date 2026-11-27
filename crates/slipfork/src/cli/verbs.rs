@@ -41,7 +41,7 @@ const STYLES: Styles = Styles::styled()
     max_term_width = 100,
 )]
 pub struct Cli {
-    /// Add supervisor lineage and resource detail to status rows.
+    /// Add supervisor pid and resource detail to status rows.
     #[arg(short = 'v', long, global = true)]
     pub verbose: bool,
 
@@ -108,6 +108,9 @@ pub enum Command {
         target: Option<String>,
         #[command(flatten)]
         features: FeatureArgs,
+        /// Ignore sealed image and step caches for this run.
+        #[arg(long)]
+        no_cache: bool,
     },
 
     /// Stop this directory's world, or the named world/fork, and every pod in it.
@@ -167,9 +170,19 @@ pub enum Command {
         /// Prefix every line with a human timestamp gutter.
         #[arg(short = 't', long)]
         timestamps: bool,
-        /// Replay one recorded step run (`<id>`, `#<id>`, `last`, or `failed`).
-        #[arg(short = 'r', long = "run", value_name = "RUN", conflicts_with = "runs")]
+        /// Replay a recorded run: failed (default when bare), last, or <id>; use -r=<id> next to a target.
+        #[arg(
+            short = 'r',
+            long = "run",
+            value_name = "RUN",
+            num_args = 0..=1,
+            default_missing_value = "failed",
+            conflicts_with = "runs"
+        )]
         run: Option<String>,
+        /// Tail the last N rendered lines (with -f defaults to 20).
+        #[arg(long, value_name = "N", conflicts_with = "runs")]
+        last: Option<String>,
         /// List every recorded step run for this world.
         #[arg(long, conflicts_with_all = ["targets", "run", "follow"])]
         runs: bool,
@@ -225,6 +238,15 @@ pub enum Command {
     Secret {
         #[command(subcommand)]
         command: SecretCommand,
+    },
+
+    /// Docker-compatible registry and image verbs; never a Docker daemon.
+    ///
+    /// `login`/`logout` manage the owner-only credential store, `list`/`images` inspect it and the
+    /// OCI cache, and `pull`/`build` reuse the native engine that `up` boots.
+    Docker {
+        #[command(subcommand)]
+        command: DockerCommand,
     },
 
     /// Open the world or service URL in your browser, printing it when headless.
@@ -287,6 +309,10 @@ pub enum Command {
         project: PathBuf,
         #[arg(long = "name", value_name = "NAME")]
         world: String,
+        #[arg(long, value_name = "PATH")]
+        heads: PathBuf,
+        #[arg(long)]
+        no_cache: bool,
     },
 }
 
@@ -309,6 +335,56 @@ pub enum SecretCommand {
     },
 }
 
+/// `slipfork docker` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum DockerCommand {
+    /// Verify credentials against a registry, then save them to the 0600 store.
+    Login {
+        /// Registry host (default: Docker Hub).
+        #[arg(value_name = "HOST", default_value = "docker.io")]
+        host: String,
+        /// Registry username.
+        #[arg(long, value_name = "USERNAME")]
+        username: String,
+        /// Read the password from one stdin line instead of the terminal prompt.
+        #[arg(long)]
+        password_stdin: bool,
+    },
+
+    /// Forget one host's stored credentials.
+    Logout {
+        /// Registry host (default: Docker Hub).
+        #[arg(value_name = "HOST", default_value = "docker.io")]
+        host: String,
+    },
+
+    /// List the hosts in the Slipfork credential store.
+    List,
+
+    /// List cached OCI references and their digests.
+    Images,
+
+    /// Pull one OCI reference into the sealed image cache.
+    Pull {
+        /// Full reference, e.g. `ghcr.io/owner/image:tag`.
+        #[arg(value_name = "REFERENCE")]
+        reference: String,
+    },
+
+    /// Build one `Forkfile` image component, streaming its Dockerfile steps.
+    Build {
+        /// Image component id declared in this directory's Forkfile.
+        #[arg(value_name = "COMPONENT")]
+        component: String,
+        /// Build only up to this Dockerfile stage.
+        #[arg(long, value_name = "STAGE")]
+        target: Option<String>,
+        /// Ignore the sealed step cache and execute every instruction again.
+        #[arg(long)]
+        no_cache: bool,
+    },
+}
+
 /// Parses `bash`, `zsh`, or `fish`, refusing anything else with the remedy in the message.
 fn parse_shell(value: &str) -> Result<Shell, String> {
     match value {
@@ -318,5 +394,45 @@ fn parse_shell(value: &str) -> Result<Shell, String> {
         other => Err(format!(
             "`{other}` is not a shell; expected bash, zsh, or fish"
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::{Cli, Command};
+
+    fn logs(argv: &[&str]) -> (Option<String>, Vec<String>) {
+        let cli = Cli::try_parse_from(argv).expect("the logs argv parses");
+        match cli.command.expect("logs is a command") {
+            Command::Logs { run, targets, .. } => (run, targets),
+            other => panic!("expected logs, parsed {other:?}"),
+        }
+    }
+
+    /// Bare `-r` defaults to `failed`; explicit values and `-r=<id> <target>` stay unambiguous.
+    #[test]
+    fn bare_run_defaults_to_failed_and_explicit_forms_parse_cleanly() {
+        assert_eq!(
+            logs(&["slipfork", "logs", "-r"]),
+            (Some("failed".to_owned()), Vec::new())
+        );
+        assert_eq!(
+            logs(&["slipfork", "logs", "-r", "last"]),
+            (Some("last".to_owned()), Vec::new())
+        );
+        assert_eq!(
+            logs(&["slipfork", "logs", "-r", "5be421"]),
+            (Some("5be421".to_owned()), Vec::new())
+        );
+        assert_eq!(
+            logs(&["slipfork", "logs", "-r=5be421", "api"]),
+            (Some("5be421".to_owned()), vec!["api".to_owned()])
+        );
+        assert_eq!(
+            logs(&["slipfork", "logs", "api", "-r"]),
+            (Some("failed".to_owned()), vec!["api".to_owned()])
+        );
     }
 }

@@ -39,10 +39,7 @@ fn copy_dir(from: &Path, to: &Path, root_device: u64, top: bool) -> Result<()> {
     for entry in fs::read_dir(from).map_err(|source| Error::io("read", from, source))? {
         let entry = entry.map_err(|source| Error::io("read", from, source))?;
         let name = entry.file_name();
-        if top
-            && (name.to_str() == Some(layout::FORKS_DIR)
-                || name.to_str() == Some(layout::STORE_DIR))
-        {
+        if top && layout::is_managed_entry(&name) {
             continue;
         }
         let source_path = from.join(&name);

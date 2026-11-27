@@ -1,7 +1,8 @@
 # CLI
 
-Every command talks to one per-user daemon, renders one domain tree, and fails with one `next:` line.
-Interactive terminals get colour and a fixed one-line bottom bar; pipes and `--json` get clean data.
+Every command renders one domain tree and fails with one `next:` line. World verbs talk to one
+per-user daemon; `docker login|logout|list|images`, `fmt`, and `migrate` run in-process without
+contacting it. `docker pull` and `docker build` stream from that daemon like `up` does.
 
 ```console
 $ slipfork up
@@ -41,23 +42,29 @@ flowchart LR
 | :--- | :--- |
 | `slipfork status` | Every world and domain as one tree; bare `slipfork` is the same verb |
 | `slipfork ps` | The same tree scoped to this directory's world or fork |
-| `slipfork up [TARGET]` | Boot this directory's `Forkfile`, a `.forks/<name>` checkout, or a registered world/fork |
+| `slipfork up [TARGET] [--no-cache]` | Boot this directory's `Forkfile`, a `.forks/<name>` checkout, or a registered world/fork; `--no-cache` rebuilds every image instead of reusing sealed stamps |
 | `slipfork down [TARGET]` | Stop this directory's world, or the named world/fork, keeping data and logs |
 | `slipfork restart [TARGET] [-s SERVICE]` | Restart a service, a world/fork, or every service here |
 | `slipfork fork [name]` | Snapshot code and world data, boot the fork on its own URL |
 | `slipfork drop <name>` | Stop a fork and delete its snapshots; `-f` discards a dirty checkout |
 | `slipfork logs [-f] [-a] [-t] [--since <time>] [--until <time>] [targets]...` | Merged service logs; `-a` adds images and resources; several targets merge in time order |
-| `slipfork logs -r <id>\|last\|failed` | Replay one recorded step run; `--runs` lists the whole catalog |
+| `slipfork logs -r [<id>\|last\|failed]` | Replay one recorded step run; bare `-r` replays the latest failed run, and `--runs` lists the whole catalog |
 | `slipfork shell <target>` | Real PTY: `bash`/`sh`, `psql`, or `redis-cli` for one declared target |
 | `slipfork exec [-i\|--no-interactive] [service\|image] -- <cmd>` | Run any command in a pod with a real PTY on a terminal; exit code forwarded |
 | `slipfork env [component]` | Resolved runtime variables, secrets redacted |
 | `slipfork features [+mail\|-dev\|reset]` | Resolved features and persisted edits for the next boot |
 | `slipfork secret list\|set\|unset` | Manage local offline secrets; `set` reads stdin |
+| `slipfork docker login\|logout\|list\|images\|pull\|build [--no-cache]` | Registry credentials, cached OCI refs, native pulls and builds; never a Docker daemon |
 | `slipfork open [service]` | Open the world or route URL in a browser |
 | `slipfork doctor` | Four plain-English rows: Storage, Containers, Daemon, Domains |
 | `slipfork fmt` | Format a Forkfile; `--check` reports only |
 | `slipfork migrate` | Convert a legacy `snow.yml` into a `Forkfile` |
 | `slipfork completions <shell>` | Print bash, zsh or fish completions |
+
+`slipfork up --no-cache` skips every sealed image and step lookup for one run, re-executes every
+`Dockerfile` instruction and replaces the same-key subvolume before booting; the next plain
+`slipfork up` is cached again. `slipfork docker build app --no-cache` does the same for one
+component through the per-user daemon.
 
 `slipfork exec` allocates a real kernel PTY whenever stdin and stdout are terminals and `--json` is off, so `ipython`, `bash`, and `psql` keep their prompts, colours, and line editing. `-i` requires both terminals and fails closed without them, while `--no-interactive` keeps a plain pipe so prompts see immediate EOF.
 
@@ -83,6 +90,38 @@ $ slipfork fork prod-check -F -dev
 `-F` also accepts comma lists and `+`/`-` edits (`-F mail,dev`, `-F +mail`, `-F -mail`), and
 `--no-default-features` starts from an empty base. `slipfork up` and `fork` persist the result in
 `.slipfork/features.json`; `slipfork env` evaluates without writing.
+
+## Docker-compatible registry verbs
+
+`slipfork docker` is a Docker-shaped CLI over the native OCI engine, not a Docker daemon: there is
+no `dockerd`, no Docker socket, and no second build pipeline. Pulls and builds stream from the same
+per-user daemon as `up`, sharing its sealed cache, step keys, and injected credentials; when the
+daemon is not installed the command auto-spawns an ephemeral one and prints the tarball hint.
+`login`, `logout`, `list`, and `images` stay in-process.
+
+```console
+$ printf '%s\n' "$GH_TOKEN" | slipfork docker login ghcr.io --username octo --password-stdin
+✓ Logged in to ghcr.io as octo
+
+$ slipfork docker pull postgres:18
+[1/1] FROM postgres:18
+✓ Pulled postgres:18 sha256:… sealed
+
+$ slipfork docker build backend --target runtime
+[1/6] FROM python:3.13-slim
+[2/6] ENV PYTHONUNBUFFERED=1
+…
+✓ Built backend sha256:… (5 hits, 0 misses)
+```
+
+Credentials live in `~/.config/slipfork/registries.json` with mode `0600`; Docker's
+`~/.docker/config.json` is a read-only per-host fallback that is never rewritten. `login` verifies
+the password before storing it, `list` prints only `HOST USERNAME`, and every verb accepts
+`--json` with zero ANSI.
+
+`Built` prints a local image id, not a registry manifest digest; a real `sha256:` manifest digest
+appears only when the build is a pure pulled base. Both `docker pull --json` and `docker build
+--json` stream NDJSON step frames and finish with one object.
 
 ## Naming a world, fork or service
 
@@ -229,12 +268,14 @@ one run catalog, so a lost id is never lost output:
 
 ```console
 $ slipfork logs app              # replays the failed image build
-$ slipfork logs -r failed        # the newest failed step run
+$ slipfork logs -r                # bare: the newest failed step run
+$ slipfork logs -r last           # the newest recorded step run
 $ slipfork logs --runs           # #run_id kind step status duration recorded
 ```
 
 `logs <target>` resolves a live pod first, then the newest catalog record whose target is that id
-(an image id, a hook, or a service), then the recorded run. `logs -r <id>|last|failed` and `--runs`
+(an image id, a hook, or a service), then the recorded run. Bare `logs -r` means `failed`; write
+`-r=<id>` next to a target (`slipfork logs -r=5be421 api`). `logs -r <id>|last|failed` and `--runs`
 read the same catalog, and all of it survives `down`: retention keeps the newest 20 successful runs
 per world and never prunes a `failed` or crashed one.
 
@@ -275,10 +316,11 @@ $ slipfork up --json
 ```
 
 Under `--json`, `up` streams one NDJSON event per boot node and then
-`{world, url, elapsed_ms, nodes: [{kind, name, state, duration_ms}]}`; `restart` answers the same
-final shape, and `fork` answers `{fork, world, project, url, elapsed_ms, snapshot_ms}`.
+`{world, url, elapsed_ms, nodes: [{kind, name, state, duration_ms}], no_cache}`; `restart`
+answers the same final shape without the flag, and `fork` answers
+`{fork, world, project, url, elapsed_ms, snapshot_ms}`.
 
 ## Where next
 
 * [The Forkfile](forkfile.md) — what these commands boot.
-* [Getting started](getting-started.md) — the five-step first run.
+* [Tutorial](tutorial.md) — four steps from a Python API to a fork.

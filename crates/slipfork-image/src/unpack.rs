@@ -3,10 +3,10 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Read};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 
 use crate::error::{Error, Result};
+use crate::metadata::{Mtime, set_mode, set_mtime};
 
 /// Compression wrapper of a layer blob, derived from its OCI media type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,15 +83,17 @@ impl LayerUnpacker {
         let entries = archive
             .entries()
             .map_err(|source| Error::io("read a layer archive", &self.root, source))?;
-        let mut dir_modes: Vec<(PathBuf, u32)> = Vec::new();
+        let mut dir_metadata: Vec<(PathBuf, u32, Mtime)> = Vec::new();
         for entry in entries {
             let mut entry =
                 entry.map_err(|source| Error::io("read a layer entry", &self.root, source))?;
-            self.apply_entry(&mut entry, &mut dir_modes)?;
+            self.apply_entry(&mut entry, &mut dir_metadata)?;
         }
-        // Directory modes land after every child exists; a sealed `/root` would block its own tree.
-        for (path, mode) in dir_modes {
+        // Directory mode and mtime land after every child exists: writing a child re-stamps its
+        // parent, and a sealed `/root` would block its own tree.
+        for (path, mode, mtime) in dir_metadata {
             set_mode(&path, mode)?;
+            set_mtime(&path, mtime, true)?;
         }
         Ok(())
     }
@@ -99,7 +101,7 @@ impl LayerUnpacker {
     fn apply_entry<R: Read>(
         &self,
         entry: &mut tar::Entry<'_, R>,
-        dir_modes: &mut Vec<(PathBuf, u32)>,
+        dir_metadata: &mut Vec<(PathBuf, u32, Mtime)>,
     ) -> Result<()> {
         let path = entry
             .path()
@@ -111,20 +113,36 @@ impl LayerUnpacker {
                 return self.apply_whiteout(parent, &whiteout);
             }
         }
-        let mode = entry.header().mode().unwrap_or(0o644);
-        match entry.header().entry_type() {
+        let (mode, mtime, entry_type) = {
+            let header = entry.header();
+            (
+                header
+                    .mode()
+                    .map_err(|source| Error::io("read a layer entry mode", &rel, source))?,
+                Mtime::from_unix_secs(
+                    header
+                        .mtime()
+                        .map_err(|source| Error::io("read a layer entry mtime", &rel, source))?,
+                    &rel,
+                )?,
+                header.entry_type(),
+            )
+        };
+        match entry_type {
             tar::EntryType::Directory => {
                 let dir = self.ensure_dir(&rel)?;
-                dir_modes.push((dir, mode));
+                dir_metadata.push((dir, mode, mtime));
             }
             tar::EntryType::Regular | tar::EntryType::Continuous => {
-                self.write_file(&rel, mode, entry)?;
+                self.write_file(&rel, mode, mtime, entry)?;
             }
             tar::EntryType::Symlink => {
                 let target = self.link_target(entry, &rel)?;
-                self.write_symlink(&rel, &target)?;
+                self.write_symlink(&rel, &target, mtime)?;
             }
             tar::EntryType::Link => {
+                // A hardlink shares its target's inode, so it already carries the target's mtime;
+                // stamping it would rewrite the timestamp of the file it points at.
                 let target = self.link_target(entry, &rel)?;
                 self.write_hardlink(&rel, &target)?;
             }
@@ -153,6 +171,7 @@ impl LayerUnpacker {
         &self,
         rel: &Path,
         mode: u32,
+        mtime: Mtime,
         entry: &mut tar::Entry<'_, R>,
     ) -> Result<()> {
         let path = self.entry_path(rel)?;
@@ -160,14 +179,19 @@ impl LayerUnpacker {
         let mut file =
             fs::File::create(&path).map_err(|source| Error::io("create", &path, source))?;
         io::copy(entry, &mut file).map_err(|source| Error::io("unpack", &path, source))?;
-        set_mode(&path, mode)
+        set_mode(&path, mode)?;
+        // The copy stamped `now`; restore the header's timestamp the layer sealed.
+        set_mtime(&path, mtime, true)
     }
 
-    fn write_symlink(&self, rel: &Path, target: &Path) -> Result<()> {
+    fn write_symlink(&self, rel: &Path, target: &Path, mtime: Mtime) -> Result<()> {
         validate_symlink_target(rel, target)?;
         let path = self.entry_path(rel)?;
         remove_path(&path)?;
-        std::os::unix::fs::symlink(target, &path).map_err(|source| Error::io("link", &path, source))
+        std::os::unix::fs::symlink(target, &path)
+            .map_err(|source| Error::io("link", &path, source))?;
+        // Never follow: the link itself carries the timestamp, its target is untouched.
+        set_mtime(&path, mtime, false)
     }
 
     fn write_hardlink(&self, rel: &Path, target: &Path) -> Result<()> {
@@ -339,9 +363,4 @@ fn remove_path(path: &Path) -> Result<()> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(Error::io("remove", path, err)),
     }
-}
-
-fn set_mode(path: &Path, mode: u32) -> Result<()> {
-    fs::set_permissions(path, fs::Permissions::from_mode(mode & 0o7777))
-        .map_err(|source| Error::io("chmod", path, source))
 }

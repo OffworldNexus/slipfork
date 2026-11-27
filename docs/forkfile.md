@@ -44,7 +44,7 @@ image api . {
 }
 ```
 
-`slipfork fmt` rewrites the file canonically, and `slipfork fmt --check` is the CI gate.
+`slipfork fmt` rewrites the file canonically, keeps at most one authored blank line between consecutive declarations in a body (and after the `# forkfile:` header when you authored one), and `slipfork fmt --check` is the CI gate.
 
 ## The version header
 
@@ -56,6 +56,21 @@ starts, with a `Forkfile:<line>:<col>` caret span naming the token.
 `dev` is built in and active for `up`, `fork` and `env`; it is what bind-mounts your checkout at
 `/project`. Declare only extra switches, and let groups imply their members: `dev = [mail]` turns
 `mail` on whenever `dev` is on. Drop `dev` per command with `-F -dev` or `--no-default-features`.
+
+With `dev`, a Dockerfile-built image overlays its live build context at the target stage's
+`WORKDIR` and at any distinct whole-context `COPY` destination, so `slipfork exec` and
+`slipfork shell` see your edits immediately. An explicit `WORKDIR` under `/project` keeps that bind.
+
+That overlay is a bind mount, so apps see your checkout's **host** ownership and modes: a service
+with a strict writability check (one that refuses a group-writable `drwxrwxr-x` tree) needs `0755`
+directories and `0644` files, while files Slipfork's own containers create are `umask 0022`.
+
+```console
+$ chmod -R g-w,o-w .
+```
+
+A stage with no `WORKDIR` (still `/`) refuses a `dev` boot with one line + a `next:` hint.
+`-F -dev` keeps the image copy instead.
 
 `slipfork features` shows the resolved set and persists edits (`slipfork features +mail`,
 `slipfork features -dev`, `slipfork features reset`) into `.slipfork/features.json` for the next boot.
@@ -92,6 +107,29 @@ image frontend ./front {
 | `image mailpit from axllent/mailpit:latest { ... }` | Pull an OCI image over HTTPS |
 | `dockerfile <path>` / `stage <name>` / `workdir <path>` | Overrides inside the block |
 | `arg KEY = <expr>` | Build-time only; `secret(...)` is rejected statically |
+| `service web { port 3000 }` | Exposes the running `web.port` and `web.name` to `arg` |
+
+```forkfile
+postgres pg { database app_db }
+redis cache
+
+image api . {
+  arg DB_URL = app_db.url
+  arg REDIS_PORT = cache.port
+  arg PORT = web.port
+  on dev { arg DEBUG = "1" }
+
+  service web {
+    port 3000
+    route /
+    run: app --port $port
+  }
+}
+```
+
+Declare `port` unconditionally in the service body; an active `on dev { port 5173 }` may still
+override the running port at boot. An arg whose expression does not evaluate is a
+`Forkfile:line:col` error naming the arg, never a silently dropped build arg.
 
 Every `service` and hook inside the block inherits the rootfs, the default `workdir`, `use env`
 groups and the bind-mounted project subvolume.
@@ -238,4 +276,4 @@ flowchart LR
 ## Where next
 
 * [CLI](cli.md) — the verbs that boot, inspect and fork this file.
-* [Getting started](getting-started.md) — a complete file you can boot today.
+* [Tutorial](tutorial.md) — build a world step by step, then fork it.

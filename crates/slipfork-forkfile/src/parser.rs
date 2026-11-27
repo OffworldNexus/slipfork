@@ -19,6 +19,8 @@ pub(crate) fn parse(source: &str) -> Result<Forkfile, Diagnostics> {
     }
 }
 
+pub(crate) mod trivia;
+
 /// The parser state: a streaming lexer, one lookahead token, and diagnostics.
 pub(crate) struct Parser<'a> {
     pub(crate) lexer: Lexer<'a>,
@@ -26,6 +28,7 @@ pub(crate) struct Parser<'a> {
     pub(crate) pushback: Vec<Token>,
     pub(crate) diags: Diagnostics,
     after_newline: bool,
+    blank_pending: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -36,6 +39,7 @@ impl<'a> Parser<'a> {
             pushback: Vec::new(),
             diags: Diagnostics::new(),
             after_newline: false,
+            blank_pending: false,
         }
     }
 
@@ -215,66 +219,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn skip_trivia(&mut self, comments: &mut Vec<String>) -> Result<(), Diagnostic> {
-        loop {
-            self.fill()?;
-            let token = self.peeked.take().expect("token filled");
-            if matches!(&token.kind, TokenKind::Newline) {
-                self.after_newline = true;
-                continue;
-            }
-            if matches!(&token.kind, TokenKind::Comment(_)) {
-                if let TokenKind::Comment(text) = token.kind {
-                    comments.push(text);
-                }
-                continue;
-            }
-            self.peeked = Some(token);
-            return Ok(());
-        }
-    }
-
-    pub(crate) fn flush_comments<T>(block: &mut Block<T>, pending: &mut Vec<String>) {
-        let index = block.items.len();
-        for text in pending.drain(..) {
-            block.comments.push(Comment {
-                index,
-                text,
-                trailing: false,
-            });
-        }
-    }
-
-    /// Consumes trailing comments on the item's line and requires a line end.
-    pub(crate) fn finish_item<T>(&mut self, block: &mut Block<T>) -> Result<(), Diagnostic> {
-        loop {
-            self.fill()?;
-            if matches!(
-                &self.peeked.as_ref().expect("token filled").kind,
-                TokenKind::Comment(_)
-            ) {
-                let token = self.peeked.take().expect("token filled");
-                if let TokenKind::Comment(text) = token.kind {
-                    block.comments.push(Comment {
-                        index: block.items.len().saturating_sub(1),
-                        text,
-                        trailing: true,
-                    });
-                }
-                continue;
-            }
-            let token = self.peeked.as_ref().expect("token filled");
-            return match &token.kind {
-                TokenKind::Newline | TokenKind::RBrace | TokenKind::Eof => Ok(()),
-                other => Err(Diagnostic::new(
-                    token.span,
-                    format!("unexpected {}", other.describe()),
-                    "end the declaration with a line break",
-                )),
-            };
-        }
-    }
-
     fn parse_document(&mut self) -> Result<Forkfile, Diagnostic> {
         let header = self.lexer.next_token()?;
         let version = Self::header_version(&header)?;
@@ -293,9 +237,11 @@ impl<'a> Parser<'a> {
                 Self::flush_comments(&mut items, &mut pending);
                 break;
             }
+            let item_blank = std::mem::take(&mut self.blank_pending);
             match self.parse_top() {
                 Ok(item) => {
                     Self::flush_comments(&mut items, &mut pending);
+                    items.blank_lines.push(item_blank);
                     items.items.push(item);
                     if let Err(diagnostic) = self.finish_item(&mut items) {
                         self.diags.push(diagnostic);
@@ -497,10 +443,12 @@ impl<'a> Parser<'a> {
                     "add a closing `}`",
                 ));
             }
+            let item_blank = std::mem::take(&mut self.blank_pending);
             self.peeked = Some(token);
             match item(self) {
                 Ok(node) => {
                     Self::flush_comments(&mut block, &mut pending);
+                    block.blank_lines.push(item_blank);
                     block.items.push(node);
                     if let Err(diagnostic) = self.finish_item(&mut block) {
                         self.diags.push(diagnostic);

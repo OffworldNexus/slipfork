@@ -95,7 +95,7 @@ pub(crate) fn handle(listener: &UnixListener, world: &mut InitWorld) -> Result<b
                             error: None,
                         },
                         Err(fault) => {
-                            eprintln!("slipfork-world-init: {fault}");
+                            eprintln!("world init: {fault}");
                             failure_frame(id, "launch-failed", &fault)
                         }
                     };
@@ -111,7 +111,7 @@ pub(crate) fn handle(listener: &UnixListener, world: &mut InitWorld) -> Result<b
                         error: None,
                     },
                     Err(fault) => {
-                        eprintln!("slipfork-world-init: {fault}");
+                        eprintln!("world init: {fault}");
                         failure_frame(id, "stop-failed", &fault)
                     }
                 };
@@ -126,7 +126,7 @@ pub(crate) fn handle(listener: &UnixListener, world: &mut InitWorld) -> Result<b
                 let shared = world.shared();
                 std::thread::spawn(move || {
                     if let Err(fault) = serve_run_once(&shared, id, pod, timeout_ms, stream) {
-                        eprintln!("slipfork-world-init: {fault}");
+                        eprintln!("world init: {fault}");
                     }
                 });
             }
@@ -144,7 +144,7 @@ pub(crate) fn handle(listener: &UnixListener, world: &mut InitWorld) -> Result<b
                     if let Err(fault) = serve_logs(
                         shared, id, service, pods, follow, since_ms, until_ms, stream,
                     ) {
-                        eprintln!("slipfork-world-init: {fault}");
+                        eprintln!("world init: {fault}");
                     }
                 });
             }
@@ -158,7 +158,7 @@ pub(crate) fn handle(listener: &UnixListener, world: &mut InitWorld) -> Result<b
                 let shared = world.shared();
                 std::thread::spawn(move || {
                     if let Err(fault) = serve_exec(shared, id, pod, argv, stdin, stream, buffered) {
-                        eprintln!("slipfork-world-init: {fault}");
+                        eprintln!("world init: {fault}");
                     }
                 });
             }
@@ -181,7 +181,7 @@ pub(crate) fn handle(listener: &UnixListener, world: &mut InitWorld) -> Result<b
                 };
                 std::thread::spawn(move || {
                     if let Err(fault) = serve_exec_pty(shared, request, stream) {
-                        eprintln!("slipfork-world-init: {fault}");
+                        eprintln!("world init: {fault}");
                     }
                 });
             }
@@ -228,7 +228,7 @@ fn serve_run_once(
             error: None,
         },
         Err(fault) => {
-            eprintln!("slipfork-world-init: {fault}");
+            eprintln!("world init: {fault}");
             let code = if fault.is_timeout() {
                 "run-timeout"
             } else {

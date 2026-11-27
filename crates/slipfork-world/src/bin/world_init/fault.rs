@@ -8,9 +8,8 @@ use slipfork_world::control::{self as wire, InitFrame, PROTOCOL_VERSION};
 /// Remedy for an unparseable argv.
 pub(crate) const REMEDY_ARGS: &str =
     "run pods through `slipfork`; it passes --namespaces, --pods, and --crun explicitly";
-/// Remedy for a broken control frame.
-pub(crate) const REMEDY_PROTOCOL: &str =
-    "re-run with the `slipfork` and `slipfork-world-init` binaries from this build";
+// The canonical control-protocol owner defines this remedy; keep one literal.
+pub(crate) use slipfork_world::control::REMEDY_PROTOCOL;
 /// Remedy for a missing runtime.
 pub(crate) const REMEDY_CRUN: &str =
     "install crun (e.g. `apt install crun`) and confirm `crun --version` runs, then retry";

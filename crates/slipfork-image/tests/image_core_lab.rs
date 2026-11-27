@@ -5,12 +5,13 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use slipfork_image::{
-    Architecture, BuildArgs, BuildContext, BuildRequest, Command, Credentials, DockerfileParser,
+    Architecture, BuildArgs, BuildContext, BuildEvent, BuildRequest, Command, DockerfileParser,
     Dockerignore, ImageConfig, ImageLayout, ImageReference, Instruction, LayerUnpacker,
-    NativeImageBuilder, OciPuller, StepHost, StepLayout, Variables, stage_walk,
+    NativeImageBuilder, OciPuller, RegistryCredentials, StepHost, StepLog, Variables,
+    build_inputs_digest, stage_walk,
 };
 use slipfork_world::{BtrfsEngine, StoreLayout, WorldEngine};
 
@@ -69,10 +70,6 @@ fn docker_hub_references_normalize_and_hostile_names_are_refused() {
     assert_eq!(
         layout.image("sha256:0123456789abcdef"),
         Path::new("/store/images/oci/sha256-0123456789abcdef")
-    );
-    assert_eq!(
-        layout.staging("sha256:0123456789abcdef"),
-        Path::new("/store/images/oci/.partial-sha256-0123456789abcdef")
     );
 }
 
@@ -157,7 +154,181 @@ fn a_real_build_context_hashes_stably_and_honours_dockerignore() {
     let _ = fs::remove_dir_all(&root);
 }
 
-/// Dockerfile variables keep unknown references verbatim, and an unknown instruction fails closed.
+/// The canonical build-input digest tracks the `Dockerfile` and copied context, and ignores a
+/// checkout edit for an image that copies nothing (so bind-mounted sources never force rebuilds).
+#[test]
+fn build_inputs_digest_tracks_the_dockerfile_copied_context_and_args() {
+    let root = lab("inputs-digest");
+    fs::create_dir_all(root.join("src")).expect("create the context");
+    fs::write(root.join("src/app.txt"), "one").expect("write source");
+    fs::write(root.join("debug.log"), "noise").expect("write ignored log");
+    fs::write(root.join(".dockerignore"), "*.log\n").expect("write ignore");
+    let dockerfile = root.join("Dockerfile");
+    fs::write(
+        &dockerfile,
+        "FROM alpine:3.20\nCOPY src /src\nRUN echo one\n",
+    )
+    .expect("write the Dockerfile");
+
+    let first = build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new()).expect("digest");
+    assert_eq!(
+        first,
+        build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new()).expect("digest again")
+    );
+    // An ignored file is not a build input.
+    fs::write(root.join("debug.log"), "more noise").expect("edit the ignored log");
+    assert_eq!(
+        first,
+        build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new())
+            .expect("ignored edit keeps the digest")
+    );
+    // A copied context file is.
+    fs::write(root.join("src/app.txt"), "two").expect("edit the copied source");
+    let context_edited =
+        build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new()).expect("context digest");
+    assert_ne!(
+        first, context_edited,
+        "a copied file edit must change the key"
+    );
+    // So is the Dockerfile itself.
+    fs::write(
+        &dockerfile,
+        "FROM alpine:3.20\nCOPY src /src\nRUN echo two\n",
+    )
+    .expect("edit the Dockerfile");
+    let dockerfile_edited = build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new())
+        .expect("Dockerfile digest");
+    assert_ne!(
+        context_edited, dockerfile_edited,
+        "a Dockerfile edit must change the key"
+    );
+    // A `Dockerfile` with no host `COPY`/`ADD` never walks the checkout.
+    fs::write(&dockerfile, "FROM alpine:3.20\nRUN echo three\n").expect("drop the COPY");
+    let no_context = build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new())
+        .expect("no-context digest");
+    fs::write(root.join("src/app.txt"), "three").expect("edit an uncopied source");
+    assert_eq!(
+        no_context,
+        build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new())
+            .expect("uncopied edit keeps the digest")
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// M3.166: the resolved build `arg` map is a build input. Identical args keep the digest, a `PORT`
+/// value change moves it, and an empty map differs from a populated one.
+#[test]
+fn build_inputs_digest_tracks_resolved_build_args() {
+    let root = lab("inputs-args");
+    fs::create_dir_all(root.join("src")).expect("create the context");
+    fs::write(root.join("src/app.txt"), "one").expect("write source");
+    let dockerfile = root.join("Dockerfile");
+    fs::write(
+        &dockerfile,
+        "FROM alpine:3.20\nCOPY src /src\nARG PORT=3000\n",
+    )
+    .expect("write the Dockerfile");
+
+    let empty = build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new()).expect("digest");
+    let mut port_3000 = BuildArgs::new();
+    port_3000.declare("PORT", "3000");
+    let sealed = build_inputs_digest(&root, &dockerfile, None, &port_3000).expect("args digest");
+    assert_ne!(empty, sealed, "an empty and a populated args map differ");
+
+    let mut same = BuildArgs::new();
+    same.declare("PORT", "3000");
+    assert_eq!(
+        sealed,
+        build_inputs_digest(&root, &dockerfile, None, &same).expect("same args keep the digest")
+    );
+
+    let mut port_5173 = BuildArgs::new();
+    port_5173.declare("PORT", "5173");
+    assert_ne!(
+        sealed,
+        build_inputs_digest(&root, &dockerfile, None, &port_5173).expect("changed arg digest"),
+        "a changed `PORT` value must move the digest"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// M3.129: VCS metadata is never a build input. A `fork` branch switch rewrites `.git/HEAD`,
+/// `.git/index`, and `.git/logs`, so a root-context image (`COPY . .`) must keep its digest and
+/// `.git` must never reach the `COPY` payload (a root `.git` directory, a linked worktree's
+/// `.git` file, and a nested repository alike). A real copied-file edit still moves the digest.
+#[test]
+fn a_git_only_change_never_moves_the_build_input_digest_or_reaches_copy() {
+    let root = lab("git-context");
+    fs::create_dir_all(root.join("src")).expect("create the context");
+    fs::write(root.join("src/app.txt"), "one").expect("write source");
+    fs::create_dir_all(root.join(".git/logs")).expect("create the checkout metadata");
+    fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
+    fs::write(root.join(".git/index"), "index-main").expect("write the index");
+    fs::write(root.join(".git/logs/HEAD"), "main\n").expect("write the reflog");
+    fs::create_dir_all(root.join("vendor/dep/.git")).expect("create a nested repository");
+    fs::write(root.join("vendor/dep/.git/HEAD"), "nested\n").expect("write the nested HEAD");
+    fs::create_dir_all(root.join("vendor/wt")).expect("create a linked worktree");
+    fs::write(
+        root.join("vendor/wt/.git"),
+        "gitdir: ../../.git/worktrees/wt\n",
+    )
+    .expect("write a worktree `.git` file");
+    fs::write(root.join("vendor/wt/real.txt"), "real\n").expect("write a real worktree file");
+    let dockerfile = root.join("Dockerfile");
+    fs::write(&dockerfile, "FROM alpine:3.20\nCOPY . /code\n").expect("write the Dockerfile");
+
+    let first = build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new()).expect("digest");
+    let paths: Vec<String> = BuildContext::load(&root)
+        .expect("load the real build context")
+        .entries()
+        .iter()
+        .map(|entry| entry.relative.to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        !paths
+            .iter()
+            .any(|path| path.split('/').any(|part| part == ".git")),
+        "VCS metadata must never reach `COPY`: {paths:?}"
+    );
+    assert!(paths.contains(&"src/app.txt".to_owned()), "{paths:?}");
+    assert!(
+        paths.contains(&"vendor/wt/real.txt".to_owned()),
+        "a worktree's real files still ship: {paths:?}"
+    );
+
+    // Exactly what `VcsWorkspace::switch` rewrites when the fork checks out another branch.
+    fs::write(root.join(".git/HEAD"), "ref: refs/heads/feat\n").expect("switch HEAD");
+    fs::write(root.join(".git/index"), "index-feat").expect("rewrite the index");
+    fs::write(root.join(".git/logs/HEAD"), "main\nfeat\n").expect("append the reflog");
+    fs::write(root.join("vendor/dep/.git/HEAD"), "nested-feat\n").expect("switch the submodule");
+    fs::write(
+        root.join("vendor/wt/.git"),
+        "gitdir: ../../.git/worktrees/wt2\n",
+    )
+    .expect("switch the worktree");
+    assert_eq!(
+        first,
+        build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new())
+            .expect("branch-switch digest"),
+        "a branch switch must not change a root-context image's inputs"
+    );
+
+    // A real copied source edit and the Dockerfile still move the digest.
+    fs::write(root.join("src/app.txt"), "two").expect("edit the copied source");
+    let edited =
+        build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new()).expect("edited digest");
+    assert_ne!(first, edited, "a copied file edit must rebuild");
+    fs::write(&dockerfile, "FROM alpine:3.20\nCOPY . /code\nRUN true\n")
+        .expect("edit the Dockerfile");
+    assert_ne!(
+        edited,
+        build_inputs_digest(&root, &dockerfile, None, &BuildArgs::new())
+            .expect("Dockerfile digest"),
+        "a Dockerfile edit must rebuild"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn dockerfile_variables_keep_unknown_refs_and_bogus_instructions_error() {
     let mut args = BuildArgs::new();
@@ -190,6 +361,40 @@ fn dockerfile_variables_keep_unknown_refs_and_bogus_instructions_error() {
     );
 }
 
+/// `COPY --chmod` parses both `755` and `0o755` to the same octal mode, renders without the `0o`
+/// prefix, and refuses a non-octal value with a line-decorated `Dockerfile` error.
+#[test]
+fn copy_chmod_parses_octal_and_renders_canonically() {
+    for source in [
+        "FROM base\nCOPY --chmod=755 src /dst\n",
+        "FROM base\nCOPY --chmod=0o755 src /dst\n",
+    ] {
+        let stages = DockerfileParser::parse(source).expect("a valid octal `--chmod`");
+        let parsed = &stages[0].instructions[0];
+        let Instruction::Copy(spec) = &parsed.instruction else {
+            panic!("expected COPY, saw {:?}", parsed.instruction);
+        };
+        assert_eq!(spec.mode, Some(0o755), "{source}");
+        assert_eq!(
+            parsed.instruction.render(),
+            "COPY --chmod=755 src /dst",
+            "render prints the bare octal mode"
+        );
+    }
+
+    let error = DockerfileParser::parse("FROM base\nCOPY --chmod=999 src /dst\n")
+        .expect_err("`999` is not octal");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("Dockerfile:2:"),
+        "the line is named: {rendered}"
+    );
+    assert!(
+        rendered.contains("--chmod=999"),
+        "the flag is named: {rendered}"
+    );
+}
+
 /// A missing `crun` is a typed failure before any build step touches a subvolume.
 #[test]
 fn a_missing_crun_fails_typed_before_any_step_runs() {
@@ -201,14 +406,14 @@ fn a_missing_crun_fails_typed_before_any_step_runs() {
     let puller = OciPuller::new(
         Arc::clone(&engine) as Arc<dyn WorldEngine>,
         ImageLayout::new(store.images_root()),
-        Credentials::Anonymous,
+        RegistryCredentials::default(),
         Architecture::X86_64,
         "slipfork-tests/0.1".to_owned(),
     );
     let builder = NativeImageBuilder::new(
         Arc::clone(&engine) as Arc<dyn WorldEngine>,
         puller,
-        StepLayout::new(store.images_root()),
+        store.clone(),
         Architecture::X86_64,
         StepHost::new(
             "/nonexistent/crun",
@@ -223,9 +428,12 @@ fn a_missing_crun_fails_typed_before_any_step_runs() {
         dockerfile,
         args: BuildArgs::new(),
         target: None,
+        externals: std::collections::BTreeMap::new(),
     };
+    let mut events = |_: BuildEvent<'_>| {};
+    let mut log = StepLog::with_events(&mut events);
     let error = builder
-        .build(&request, &mut std::io::sink())
+        .build(&request, &mut log, 1_000)
         .expect_err("a missing crun must fail closed");
     assert!(
         matches!(error, slipfork_image::Error::CrunMissing { .. }),
@@ -264,6 +472,125 @@ fn a_real_tar_layer_unpacks_a_dot_root_entry_onto_disk() {
         "#!/bin/sh\n"
     );
     let _ = fs::remove_dir_all(&root);
+}
+
+/// M3.143: every materialized entry keeps the mtime its layer header states. Without this, Debian's
+/// baked `/var/lib/apt/lists/*InRelease` looks freshly fetched, the mirror answers `304`, and `apt`
+/// rejects the image-build-era `Valid-Until`. A file written after unpacking (a `RUN`) keeps `now`.
+#[test]
+fn unpacked_layers_keep_header_mtimes_and_later_writes_stay_fresh() {
+    const BAKED: u64 = 1_793_836_800; // 2026-11-05T00:00:00Z
+    const PATCHED: u64 = 1_793_577_600; // 2026-11-02T00:00:00Z
+    let start = SystemTime::now();
+    let root = lab("unpack-mtime");
+    let rootfs = root.join("rootfs");
+
+    let mut base = tar::Builder::new(Vec::new());
+    let mut dir = tar::Header::new_gnu();
+    dir.set_entry_type(tar::EntryType::Directory);
+    dir.set_size(0);
+    dir.set_mode(0o755);
+    dir.set_mtime(BAKED);
+    dir.set_path("opt/").expect("directory path");
+    dir.set_cksum();
+    base.append(&dir, &b""[..]).expect("append the directory");
+
+    let mut file = tar::Header::new_gnu();
+    file.set_entry_type(tar::EntryType::Regular);
+    file.set_size(6);
+    file.set_mode(0o644);
+    file.set_mtime(BAKED);
+    file.set_path("opt/state.txt").expect("file path");
+    file.set_cksum();
+    base.append(&file, &b"baked\n"[..])
+        .expect("append the file");
+
+    let mut link = tar::Header::new_gnu();
+    link.set_entry_type(tar::EntryType::Symlink);
+    link.set_size(0);
+    link.set_mode(0o777);
+    link.set_mtime(BAKED);
+    link.set_path("opt/current").expect("link path");
+    link.set_link_name("state.txt").expect("link target");
+    link.set_cksum();
+    base.append(&link, &b""[..]).expect("append the symlink");
+
+    let mut patch = tar::Builder::new(Vec::new());
+    let mut later = tar::Header::new_gnu();
+    later.set_entry_type(tar::EntryType::Regular);
+    later.set_size(7);
+    later.set_mode(0o644);
+    later.set_mtime(PATCHED);
+    later.set_path("opt/later.txt").expect("file path");
+    later.set_cksum();
+    patch
+        .append(&later, &b"later\n\n"[..])
+        .expect("append the patched file");
+
+    let unpacker = LayerUnpacker::new(&rootfs);
+    let base_layer = gzip_layer(&base.into_inner().expect("base tar"));
+    unpacker
+        .apply(
+            &mut base_layer.as_slice(),
+            "application/vnd.oci.image.layer.v1.tar+gzip",
+        )
+        .expect("unpack the base layer");
+    let baked = UNIX_EPOCH + Duration::from_secs(BAKED);
+    for path in ["opt", "opt/state.txt", "opt/current"] {
+        let entry = fs::symlink_metadata(rootfs.join(path)).expect("stat the unpacked entry");
+        assert_eq!(
+            entry.modified().expect("read the mtime"),
+            baked,
+            "`{path}` must keep the layer header's mtime (a symlink via nofollow)"
+        );
+    }
+
+    let patch_layer = gzip_layer(&patch.into_inner().expect("patch tar"));
+    unpacker
+        .apply(
+            &mut patch_layer.as_slice(),
+            "application/vnd.oci.image.layer.v1.tar+gzip",
+        )
+        .expect("unpack the patch layer");
+    let patched = UNIX_EPOCH + Duration::from_secs(PATCHED);
+    assert_eq!(
+        fs::symlink_metadata(rootfs.join("opt/later.txt"))
+            .expect("stat the patched file")
+            .modified()
+            .expect("read the mtime"),
+        patched,
+        "each layer keeps its own header mtime"
+    );
+    assert_eq!(
+        fs::symlink_metadata(rootfs.join("opt/state.txt"))
+            .expect("stat the untouched file")
+            .modified()
+            .expect("read the mtime"),
+        baked,
+        "a later layer never re-stamps an untouched file"
+    );
+
+    // A `RUN` writes after unpacking: the resulting file keeps `now`, never a layer timestamp.
+    fs::write(rootfs.join("opt/written.txt"), b"run\n").expect("write a run artifact");
+    let written = fs::metadata(rootfs.join("opt/written.txt"))
+        .expect("stat the run artifact")
+        .modified()
+        .expect("read the mtime");
+    // The kernel stamps mtimes from its coarse tick, which may trail `Clock::now` by a jiffy.
+    let earliest = start - Duration::from_secs(1);
+    assert!(
+        written >= earliest,
+        "a file written after unpacking keeps `now`, saw {written:?} before {earliest:?}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+fn gzip_layer(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(bytes).expect("gzip the layer");
+    encoder.finish().expect("finish the gzip layer")
 }
 
 /// Real `--target` semantics: stages walk in declaration order and stop right after the requested
@@ -337,14 +664,14 @@ fn an_absent_target_alias_fails_before_any_build_work() {
     let puller = OciPuller::new(
         Arc::clone(&engine) as Arc<dyn WorldEngine>,
         ImageLayout::new(store.images_root()),
-        Credentials::Anonymous,
+        RegistryCredentials::default(),
         Architecture::X86_64,
         "slipfork-tests/0.1".to_owned(),
     );
     let builder = NativeImageBuilder::new(
         Arc::clone(&engine) as Arc<dyn WorldEngine>,
         puller,
-        StepLayout::new(store.images_root()),
+        store.clone(),
         Architecture::X86_64,
         StepHost::new(
             "/nonexistent/crun",
@@ -359,9 +686,12 @@ fn an_absent_target_alias_fails_before_any_build_work() {
         dockerfile,
         args: BuildArgs::new(),
         target: Some("staging".to_owned()),
+        externals: std::collections::BTreeMap::new(),
     };
+    let mut events = |_: BuildEvent<'_>| {};
+    let mut log = StepLog::with_events(&mut events);
     let error = builder
-        .build(&request, &mut std::io::sink())
+        .build(&request, &mut log, 1_000)
         .expect_err("an absent target alias must fail closed");
     assert!(
         matches!(error, slipfork_image::Error::UnknownStage { ref name } if name == "staging"),

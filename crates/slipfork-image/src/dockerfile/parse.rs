@@ -1,7 +1,7 @@
 //! Per-instruction parsers: flags, quoting, heredocs, and typed instruction construction.
 
 use super::instruction::{
-    CacheMount, Command, CopySpec, Instruction, Owner, Port, Protocol, RunSpec, StageBase,
+    CacheMount, Command, CopySpec, Instruction, Port, Protocol, RunSpec, StageBase,
 };
 use super::{permissive_split, shell_split, split_flags};
 use crate::error::{Error, Result};
@@ -111,6 +111,7 @@ fn parse_copy(op: &str, rest: &str, line: usize) -> Result<Instruction> {
     let mut spec = CopySpec {
         from: None,
         chown: None,
+        mode: None,
         sources: Vec::new(),
         dest: String::new(),
     };
@@ -120,20 +121,23 @@ fn parse_copy(op: &str, rest: &str, line: usize) -> Result<Instruction> {
             None => (flag.as_str(), ""),
         };
         match name {
-            "--from" => spec.from = Some(value.to_ascii_lowercase()),
-            "--chown" => spec.chown = Some(parse_owner(value, line)?),
-            "--chmod" | "--link" | "--exclude" | "--parents" | "--checksum" => {
+            // Image-reference tags and digests are case-sensitive; aliases match case-insensitively
+            // at classification time instead.
+            "--from" => spec.from = Some(value.to_owned()),
+            "--chown" => spec.chown = Some(value.to_owned()),
+            "--chmod" => spec.mode = Some(parse_mode(value, line)?),
+            "--link" | "--exclude" | "--parents" | "--checksum" => {
                 return Err(Error::Dockerfile {
                     line,
                     message: format!("`{name}` is not supported by the native builder"),
-                    next: "drop the flag; use `--chown` or `--from` instead",
+                    next: "drop the flag; use `--from`, `--chown`, or `--chmod` instead",
                 });
             }
             _ => {
                 return Err(Error::Dockerfile {
                     line,
                     message: format!("unknown `{op}` flag `{name}`"),
-                    next: "use `--from=<stage>` or `--chown=<uid>:<gid>`",
+                    next: "use `--from=<stage>`, `--chown=<user>`, or `--chmod=<mode>`",
                 });
             }
         }
@@ -159,18 +163,15 @@ fn parse_copy(op: &str, rest: &str, line: usize) -> Result<Instruction> {
     })
 }
 
-fn parse_owner(value: &str, line: usize) -> Result<Owner> {
-    let (uid, gid) = value.split_once(':').unwrap_or((value, value));
-    let parse = |raw: &str| {
-        raw.parse::<u32>().map_err(|_| Error::Dockerfile {
-            line,
-            message: format!("`--chown={value}` is not numeric"),
-            next: "write `--chown=<uid>:<gid>`; builds never look names up in the image",
-        })
-    };
-    Ok(Owner {
-        uid: parse(uid)?,
-        gid: parse(gid)?,
+fn parse_mode(value: &str, line: usize) -> Result<u32> {
+    let digits = value.strip_prefix("0o").unwrap_or(value);
+    let mode = u32::from_str_radix(digits, 8)
+        .ok()
+        .filter(|mode| *mode <= 0o7777 && !digits.is_empty());
+    mode.ok_or_else(|| Error::Dockerfile {
+        line,
+        message: format!("`--chmod={value}` is not an octal mode"),
+        next: "write `--chmod=755` (up to `7777`)",
     })
 }
 

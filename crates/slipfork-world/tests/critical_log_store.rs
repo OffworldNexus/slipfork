@@ -8,7 +8,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use slipfork_world::run_log::{LAST_FAILED_FILE, LAST_FILE, RunCapture, RunRecord};
-use slipfork_world::{LogStore, WorldName};
+use slipfork_world::{LogStore, Stream, WorldName};
 
 fn temp(prefix: &str) -> tempfile::TempDir {
     tempfile::Builder::new()
@@ -37,6 +37,11 @@ fn seed(store: &LogStore, state: &str, started_ms: u64) -> String {
             kind: "setup".to_owned(),
             target: "backend".to_owned(),
             command: "uv sync".to_owned(),
+            phase: String::new(),
+            instruction: String::new(),
+            source: String::new(),
+            exit_code: None,
+            reason: None,
             state: state.to_owned(),
             started_ms,
             finished_ms: Some(started_ms + 5),
@@ -95,7 +100,7 @@ fn begin_record_and_records_roundtrip_through_one_log_store() {
     .expect("begin a run");
     let run_id = capture.run_id().to_owned();
     capture
-        .append("resolved 12 packages")
+        .append_stream(Stream::Stdout, "resolved 12 packages")
         .expect("append stdout");
     capture.finish("ready", 41).expect("finish the run");
 
@@ -129,6 +134,11 @@ fn begin_record_and_records_roundtrip_through_one_log_store() {
             kind: "image".to_owned(),
             target: "base".to_owned(),
             command: "base".to_owned(),
+            phase: String::new(),
+            instruction: String::new(),
+            source: String::new(),
+            exit_code: None,
+            reason: None,
             state: "built".to_owned(),
             started_ms: record.started_ms + 100,
             finished_ms: Some(record.started_ms + 150),
@@ -298,6 +308,11 @@ fn catalog_keeps_the_newest_line_for_a_duplicate_run_id() {
         kind: "setup".to_owned(),
         target: "backend".to_owned(),
         command: "uv sync".to_owned(),
+        phase: String::new(),
+        instruction: String::new(),
+        source: String::new(),
+        exit_code: None,
+        reason: None,
         state: "ready".to_owned(),
         started_ms: 10,
         finished_ms: Some(20),

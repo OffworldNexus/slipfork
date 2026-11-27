@@ -263,11 +263,11 @@ impl Checker {
     ) {
         match item {
             ImageItem::Arg(arg) => {
-                expr::check_value(&arg.value, expr::ValueMode::Build, symbols, &mut self.diags);
+                expr::check_arg(arg, symbols, &mut self.diags);
             }
             ImageItem::ArgBlock(block) => {
                 for arg in &block.args.items {
-                    expr::check_value(&arg.value, expr::ValueMode::Build, symbols, &mut self.diags);
+                    expr::check_arg(arg, symbols, &mut self.diags);
                 }
             }
             ImageItem::Env(env) => {

@@ -2,9 +2,9 @@
  * Lab journeys against the real `slipfork` binary built from this workspace.
  *
  * Nothing here is mocked: every call below spawns `target/debug/slipfork`, with an isolated
- * allowlisted child environment and `XDG_*` directories under `/var/tmp`. The live fork/drop
- * journey runs only when `SLIPFORK_TEST_ROOT` points at a Btrfs mount, and the off-lab journey
- * asserts the CLI's own refusal remedies verbatim.
+ * allowlisted child environment and private `XDG_*` directories (runtime, state, data) under
+ * `/var/tmp`. The live fork/drop journey runs only when `SLIPFORK_TEST_ROOT` points at a Btrfs
+ * mount, and the off-lab journey asserts the CLI's own refusal remedies verbatim.
  */
 import { spawnSync } from "node:child_process";
 import {
@@ -33,7 +33,14 @@ import {
 const REPO = fileURLToPath(new URL("../../../", import.meta.url));
 const BINARY = process.env.SLIPFORK_BIN ?? join(REPO, "target", "debug", "slipfork");
 const BTRFS_MAGIC = 2435016766;
-const CHILD_ENV_KEYS = ["PATH", "SYSTEMROOT", "HOME", "XDG_RUNTIME_DIR", "XDG_STATE_HOME"] as const;
+const CHILD_ENV_KEYS = [
+  "PATH",
+  "SYSTEMROOT",
+  "HOME",
+  "XDG_RUNTIME_DIR",
+  "XDG_STATE_HOME",
+  "XDG_DATA_HOME",
+] as const;
 
 const runtimes: string[] = [];
 const roots: string[] = [];
@@ -50,18 +57,26 @@ function binary(): string {
   return BINARY;
 }
 
-function childEnv(runtime: string, state: string): Record<string, string | undefined> {
+function childEnv(
+  runtime: string,
+  state: string,
+  data: string,
+): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {};
   for (const key of CHILD_ENV_KEYS) env[key] = process.env[key];
   env.XDG_RUNTIME_DIR = runtime;
   env.XDG_STATE_HOME = state;
+  env.XDG_DATA_HOME = data;
   return env;
 }
 
-/** Reproduce the composition root's allowlisted `process.env` snapshot (`src/index.ts`). */
-function pluginEnv(): Record<string, string | undefined> {
+/** Reproduce the composition root's allowlisted snapshot with the probe's private `XDG_*` paths. */
+function pluginEnv(probe: Lab): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {};
   for (const key of CHILD_ENV_KEYS) env[key] = process.env[key];
+  env.XDG_RUNTIME_DIR = probe.runtime;
+  env.XDG_STATE_HOME = probe.env.XDG_STATE_HOME;
+  env.XDG_DATA_HOME = probe.env.XDG_DATA_HOME;
   return env;
 }
 
@@ -88,15 +103,33 @@ interface Lab {
   env: Record<string, string | undefined>;
 }
 
+/**
+ * A private runtime must never attach to a daemon another run left behind: that would test an
+ * unrelated binary. Fail closed with one line and one remedy instead of reusing it.
+ */
+function assertFreshRuntime(runtime: string): void {
+  const socket = join(runtime, "daemon.sock");
+  const pids = daemonPids(runtime);
+  if (!existsSync(socket) && pids.length === 0) return;
+  const remedy = pids.length > 0 ? `kill -TERM ${pids.join(" ")}` : `rm ${socket}`;
+  throw new Error(
+    `refusing to reuse a live daemon in ${runtime}; next: ${remedy} and rerun \`bun test\``,
+  );
+}
+
 /** One project + one daemon runtime for the whole journey. */
 function lab(root: string): Lab {
   const project = join(root, "demo");
   mkdirSync(project, { recursive: true });
   const runtime = join(root, "runtime");
   mkdirSync(runtime, { recursive: true, mode: 0o700 });
+  assertFreshRuntime(runtime);
+  const state = join(root, "state");
+  const data = join(root, "data");
+  mkdirSync(data, { recursive: true, mode: 0o700 });
   if (!runtimes.includes(runtime)) runtimes.push(runtime);
   if (!roots.includes(root)) roots.push(root);
-  const env = childEnv(runtime, join(root, "state"));
+  const env = childEnv(runtime, state, data);
   const coordinator = new SlipforkWorktreeCoordinator(
     project,
     new CliSlipforkGateway({ binary: binary(), env }),
@@ -167,6 +200,22 @@ function shutdown(runtime: string): void {
     );
   }
 }
+
+test("lab refuses a runtime that already holds a daemon socket", () => {
+  const root = scratch();
+  try {
+    const runtime = join(root, "runtime");
+    mkdirSync(runtime, { recursive: true, mode: 0o700 });
+    const socket = join(runtime, "daemon.sock");
+    writeFileSync(socket, "");
+    expect(() => lab(root)).toThrow(
+      /refusing to reuse a live daemon .*; next: rm .*daemon\.sock/,
+    );
+    expect(() => lab(root)).toThrow(`next: rm ${socket} and rerun \`bun test\``);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 // ---------------------------------------------------------------------------------------------
 // One real-CLI journey: refusal remedies equal the binary's own document, and routing is exact.
@@ -303,61 +352,81 @@ test("composition root: Plugin.define registers every hook and this binary docum
 
   const probe = lab(scratch());
   const hooks = harness(probe.project, probe.project);
-  await Effect.runPromise(Effect.scoped(plugin.effect(hooks.ctx)));
 
-  expect(plugin.id).toBe("slipfork");
-  expect(hooks.worktrees).toHaveLength(1);
-  expect(hooks.shell).toHaveLength(1);
-  expect(hooks.context).toHaveLength(1);
-  expect(hooks.idle).toHaveLength(1);
-
-  const definition = hooks.worktrees[0]!;
-  expect(definition.id).toBe("slipfork");
-
-  // Both refusals equal this binary's own `message\nnext:` document from this checkout.
-  const decodedFork = refusal(["fork", "feat", "--json"], probe.project, pluginEnv());
-
-  const created = await Effect.runPromise(
-    definition.create({
-      sourceDirectory: probe.project,
-      directory: join(probe.project, ".forks", "feat"),
-    }),
-  ).then(
-    () => "created",
-    (error: Error) => error.message,
-  );
-  expect(created).toBe(`slipfork fork 'feat' failed: ${decodedFork}`);
-
-  const listed = await Effect.runPromise(definition.list(probe.project));
-  expect(listed).toEqual([{ directory: probe.project, type: "root" }]);
-
-  const decodedDrop = refusal(["drop", "feat", "--json", "--force"], probe.project, pluginEnv());
-
-  const removed = await Effect.runPromise(
-    definition.remove({ directory: forkDirectory(probe.project, "feat"), force: true }),
-  ).then(
-    () => "removed",
-    (error: Error) => error.message,
-  );
-  expect(removed).toBe(`slipfork drop 'feat' failed: ${decodedDrop}`);
-
-  const shellEvent: ShellCreateBefore = {
-    command: "true",
-    cwd: probe.project,
-    timeout: 1_000,
-    shell: "/bin/sh",
-    env: {},
+  // The plugin's own allowlisted child environment comes from `process.env`, so point the
+  // composition root at this probe's private runtime instead of the host daemon's.
+  const privateEnv = pluginEnv(probe);
+  const saved = {
+    XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
+    XDG_STATE_HOME: process.env.XDG_STATE_HOME,
+    XDG_DATA_HOME: process.env.XDG_DATA_HOME,
   };
-  await Effect.runPromise(hooks.shell[0]!(shellEvent));
-  expect(shellEvent.env).toEqual({});
+  process.env.XDG_RUNTIME_DIR = privateEnv.XDG_RUNTIME_DIR;
+  process.env.XDG_STATE_HOME = privateEnv.XDG_STATE_HOME;
+  process.env.XDG_DATA_HOME = privateEnv.XDG_DATA_HOME;
+  try {
+    expect(process.env.XDG_RUNTIME_DIR).toBe(probe.runtime);
+    await Effect.runPromise(Effect.scoped(plugin.effect(hooks.ctx)));
 
-  const contextEvent = { sessionID: "ses_1", system: [] as { type: "text"; text: string }[] };
-  await Effect.runPromise(hooks.context[0]!(contextEvent));
-  expect(contextEvent.system).toEqual([]);
+    expect(plugin.id).toBe("slipfork");
+    expect(hooks.worktrees).toHaveLength(1);
+    expect(hooks.shell).toHaveLength(1);
+    expect(hooks.context).toHaveLength(1);
+    expect(hooks.idle).toHaveLength(1);
 
-  // A finishing shell/subagent keeps the fork: the idle hook returns without reaping.
-  await Effect.runPromise(hooks.idle[0]!({ sessionID: "ses_1", background: [{ kind: "shell" }] }));
-  await Effect.runPromise(hooks.idle[0]!({ sessionID: "ses_1", background: [] }));
+    const definition = hooks.worktrees[0]!;
+    expect(definition.id).toBe("slipfork");
+
+    // Both refusals equal this binary's own `message\nnext:` document from this checkout.
+    const decodedFork = refusal(["fork", "feat", "--json"], probe.project, pluginEnv(probe));
+
+    const created = await Effect.runPromise(
+      definition.create({
+        sourceDirectory: probe.project,
+        directory: join(probe.project, ".forks", "feat"),
+      }),
+    ).then(
+      () => "created",
+      (error: Error) => error.message,
+    );
+    expect(created).toBe(`slipfork fork 'feat' failed: ${decodedFork}`);
+
+    const listed = await Effect.runPromise(definition.list(probe.project));
+    expect(listed).toEqual([{ directory: probe.project, type: "root" }]);
+
+    const decodedDrop = refusal(["drop", "feat", "--json", "--force"], probe.project, pluginEnv(probe));
+
+    const removed = await Effect.runPromise(
+      definition.remove({ directory: forkDirectory(probe.project, "feat"), force: true }),
+    ).then(
+      () => "removed",
+      (error: Error) => error.message,
+    );
+    expect(removed).toBe(`slipfork drop 'feat' failed: ${decodedDrop}`);
+
+    const shellEvent: ShellCreateBefore = {
+      command: "true",
+      cwd: probe.project,
+      timeout: 1_000,
+      shell: "/bin/sh",
+      env: {},
+    };
+    await Effect.runPromise(hooks.shell[0]!(shellEvent));
+    expect(shellEvent.env).toEqual({});
+
+    const contextEvent = { sessionID: "ses_1", system: [] as { type: "text"; text: string }[] };
+    await Effect.runPromise(hooks.context[0]!(contextEvent));
+    expect(contextEvent.system).toEqual([]);
+
+    // A finishing shell/subagent keeps the fork: the idle hook returns without reaping.
+    await Effect.runPromise(hooks.idle[0]!({ sessionID: "ses_1", background: [{ kind: "shell" }] }));
+    await Effect.runPromise(hooks.idle[0]!({ sessionID: "ses_1", background: [] }));
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------------------------

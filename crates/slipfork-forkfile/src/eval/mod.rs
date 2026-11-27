@@ -12,7 +12,9 @@ use std::collections::BTreeMap;
 
 pub use features::{FeatureEdit, FeatureSet};
 
-use crate::ast::{ActiveBody, Forkfile, Image, ImageItem, On, PostgresItem, S3Item, TopItem};
+use crate::ast::{
+    ActiveBody, Forkfile, Image, ImageItem, On, OnBody, PostgresItem, S3Item, ServiceItem, TopItem,
+};
 use crate::expr::{Expr, GeneratorSpec};
 use values::{BoundSymbol, eval_expr, is_tainted};
 
@@ -66,6 +68,11 @@ impl Forkfile {
     }
 
     /// Evaluates build-time `arg` bindings for `image_id` in `world` under `features`.
+    ///
+    /// The symbol namespace is flat and feature-independent, exactly as [`crate::check`] declares
+    /// it, and a service's `port` only counts when declared unconditionally. Together that means
+    /// every `arg` expression the checker accepts has a value here: nothing is ever silently
+    /// dropped, even for a resource or service declared inside an `on` branch.
     #[must_use]
     pub fn eval_image_args_with(
         &self,
@@ -320,7 +327,7 @@ fn collect_symbols(
         }
         TopItem::Postgres(pg) => {
             let mut dbs = Vec::new();
-            collect_pg_dbs(&pg.body.items, features, &mut dbs);
+            collect_pg_dbs(&pg.body.items, &mut dbs);
             for db in &dbs {
                 map.insert(db.clone(), BoundSymbol::Database { name: db.clone() });
             }
@@ -338,53 +345,91 @@ fn collect_symbols(
                     policy: s3.policy_at(features.active()),
                 },
             );
-            collect_s3_cdns(&s3.body.items, features, &s3.bucket, map);
+            collect_s3_cdns(&s3.body.items, &s3.bucket, map);
         }
-        TopItem::On(on) => {
-            if let Some(body) = active(on, features) {
-                match body {
-                    ActiveBody::Inline(inner) => {
-                        collect_symbols(inner, features, saw_domain, map);
-                    }
-                    ActiveBody::Block(block) => {
-                        for inner in &block.items {
-                            collect_symbols(inner, features, saw_domain, map);
-                        }
-                    }
+        TopItem::Image(image) => bind_image_services(&image.body.items, features, map),
+        TopItem::On(on) => on.for_each_branch(&mut |body| match body {
+            OnBody::Inline(inner) => collect_symbols(inner, features, saw_domain, map),
+            OnBody::Block(block) => {
+                for inner in &block.items {
+                    collect_symbols(inner, features, saw_domain, map);
                 }
             }
-        }
+        }),
         _ => {}
     }
 }
 
-fn collect_pg_dbs(items: &[PostgresItem], features: &FeatureSet, out: &mut Vec<String>) {
+/// Binds every `service` of one image, matching the checker's flat, branch-agnostic namespace.
+///
+/// A service exists regardless of which `on` branch declares it, so `arg` evaluation is total for
+/// a checked document; its port, by contrast, is the last one an **active** branch declares.
+fn bind_image_services(
+    items: &[ImageItem],
+    features: &FeatureSet,
+    map: &mut BTreeMap<String, BoundSymbol>,
+) {
     for item in items {
         match item {
-            PostgresItem::Database(db) => out.push(db.id.clone()),
-            PostgresItem::On(on) => {
+            ImageItem::Service(service) => {
+                map.insert(
+                    service.id.clone(),
+                    BoundSymbol::Service {
+                        name: service.id.clone(),
+                        port: active_port(&service.body.items, features),
+                    },
+                );
+            }
+            ImageItem::On(on) => on.for_each_branch(&mut |branch| match branch {
+                OnBody::Inline(inner) => {
+                    bind_image_services(std::slice::from_ref(inner.as_ref()), features, map);
+                }
+                OnBody::Block(block) => bind_image_services(&block.items, features, map),
+            }),
+            _ => {}
+        }
+    }
+}
+
+/// The last `port <u16>` an active branch of a service body declares, in declaration order.
+fn active_port(items: &[ServiceItem], features: &FeatureSet) -> Option<u16> {
+    let mut port = None;
+    for item in items {
+        match item {
+            ServiceItem::Port(value) => port = Some(*value),
+            ServiceItem::On(on) => {
                 if let Some(body) = active(on, features) {
-                    match body {
+                    let found = match body {
                         ActiveBody::Inline(inner) => {
-                            collect_pg_dbs(std::slice::from_ref(inner), features, out);
+                            active_port(std::slice::from_ref(inner), features)
                         }
-                        ActiveBody::Block(block) => {
-                            collect_pg_dbs(&block.items, features, out);
-                        }
+                        ActiveBody::Block(block) => active_port(&block.items, features),
+                    };
+                    if found.is_some() {
+                        port = found;
                     }
                 }
             }
             _ => {}
         }
     }
+    port
 }
 
-fn collect_s3_cdns(
-    items: &[S3Item],
-    features: &FeatureSet,
-    bucket: &str,
-    map: &mut BTreeMap<String, BoundSymbol>,
-) {
+fn collect_pg_dbs(items: &[PostgresItem], out: &mut Vec<String>) {
+    for item in items {
+        match item {
+            PostgresItem::Database(db) => out.push(db.id.clone()),
+            PostgresItem::On(on) => on.for_each_branch(&mut |body| match body {
+                OnBody::Inline(inner) => collect_pg_dbs(std::slice::from_ref(inner.as_ref()), out),
+                OnBody::Block(block) => collect_pg_dbs(&block.items, out),
+            }),
+            _ => {}
+        }
+    }
+}
+
+fn collect_s3_cdns(items: &[S3Item], bucket: &str, map: &mut BTreeMap<String, BoundSymbol>) {
     for item in items {
         match item {
             S3Item::Cdn(cdn) => {
@@ -395,18 +440,12 @@ fn collect_s3_cdns(
                     },
                 );
             }
-            S3Item::On(on) => {
-                if let Some(body) = active(on, features) {
-                    match body {
-                        ActiveBody::Inline(inner) => {
-                            collect_s3_cdns(std::slice::from_ref(inner), features, bucket, map);
-                        }
-                        ActiveBody::Block(block) => {
-                            collect_s3_cdns(&block.items, features, bucket, map);
-                        }
-                    }
+            S3Item::On(on) => on.for_each_branch(&mut |body| match body {
+                OnBody::Inline(inner) => {
+                    collect_s3_cdns(std::slice::from_ref(inner.as_ref()), bucket, map);
                 }
-            }
+                OnBody::Block(block) => collect_s3_cdns(&block.items, bucket, map),
+            }),
             S3Item::Policy(_) => {}
         }
     }

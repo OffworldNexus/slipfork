@@ -12,7 +12,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use slipfork_world::{
     BtrfsEngine, Dirtiness, Error, ForkName, PostgresLauncher, PostgresTemplate, StoreLayout,
-    WorldEngine, WorldName, is_btrfs_path, is_subvolume_path,
+    WorldEngine, WorldName, fork_checkouts, is_btrfs_path, is_subvolume_path,
 };
 
 /// Two kernel snapshots plus path bookkeeping: measured ~0.6ms on local NVMe, ~15–30ms on a raw
@@ -119,6 +119,7 @@ fn btrfs_lifecycle() {
     fs::create_dir_all(project.join("src")).expect("seed project tree");
     fs::write(project.join("src/main.rs"), "fn main() {}\n").expect("seed source");
     fs::write(project.join("Cargo.toml"), "[package]\nname = \"demo\"\n").expect("seed manifest");
+    fs::write(project.join("Forkfile"), "# forkfile: 0.1\n").expect("seed the Forkfile");
     fs::create_dir_all(project.join("src/nested")).expect("seed nested tree");
     fs::write(project.join("src/nested/main.rs"), "pub fn nested() {}\n")
         .expect("seed nested file");
@@ -455,6 +456,170 @@ fn btrfs_lifecycle() {
     engine
         .destroy(&template.path(), Dirtiness::Clean, true)
         .expect("destroy the sealed golden template");
+    let leftovers = subvolumes_under(&run);
+    assert!(leftovers.is_empty(), "leaked subvolumes: {leftovers:?}");
+    fs::remove_dir_all(&run).expect("remove scratch run");
+}
+
+/// A fork must never advertise the parent's own `.forks` tree or the `.slipfork-store` mount as
+/// checkouts: `SNAP_CREATE_V2` clones those root entries into the new checkout, so the engine
+/// strips them after publication while leaving the parent tree untouched.
+#[test]
+fn fork_strips_managed_dirs_from_checkout() {
+    let run = live_run_root();
+    let engine = BtrfsEngine::new(StoreLayout::at(run.join(".slipfork-store")));
+    engine.ensure_store().expect("create .slipfork-store");
+
+    let project = run.join("demo");
+    engine
+        .create_subvolume(&project)
+        .expect("create the demo subvolume");
+    fs::create_dir_all(project.join("src")).expect("seed project tree");
+    fs::write(project.join("src/main.rs"), "fn main() {}\n").expect("seed source");
+    let world = WorldName::parse("demo").expect("valid world name");
+    engine.create_world(&world).expect("create world data");
+
+    for name in ["feat-one", "feat-two"] {
+        let fork = ForkName::parse(name).expect("valid fork name");
+        engine
+            .fork(&project, &world, &fork)
+            .expect("fork the project");
+    }
+
+    // Parent bookkeeping no fork may carry into its checkout: a stale copy stage inside `.forks`
+    // and a nested `.slipfork-store` tree both sit at the project root before the third fork.
+    fs::create_dir_all(project.join(".forks/.partial-stale")).expect("seed a stale stage");
+    fs::write(project.join(".forks/.partial-stale/leak"), "leak\n").expect("seed stage payload");
+    fs::create_dir_all(project.join(".slipfork-store/nested")).expect("seed a store tree");
+    fs::write(project.join(".slipfork-store/nested/leak"), "leak\n").expect("seed store payload");
+    assert_eq!(
+        fork_checkouts(&project)
+            .expect("list the two real checkouts")
+            .len(),
+        2,
+        "a stale stage is never a fork"
+    );
+
+    let third = ForkName::parse("feat-three").expect("valid fork name");
+    let forked = engine
+        .fork(&project, &world, &third)
+        .expect("fork beside parent bookkeeping");
+
+    for managed in [".forks", ".slipfork-store"] {
+        assert!(
+            !forked.project.join(managed).exists(),
+            "`{managed}` must never appear inside `{}`",
+            forked.project.display()
+        );
+    }
+    assert!(
+        !forked.project.join(".forks/.partial-stale").exists(),
+        "a stale stage must never be advertised as a fork"
+    );
+    assert!(
+        fork_checkouts(&forked.project)
+            .expect("list the new checkout's own forks")
+            .is_empty(),
+        "a returned checkout must advertise zero forks of its own"
+    );
+    assert!(
+        is_subvolume_path(&forked.project).expect("probe the third checkout"),
+        "the third fork must take the kernel snapshot path, not a copied directory"
+    );
+    assert_eq!(
+        fs::read_to_string(forked.project.join("src/main.rs")).expect("read the fork source"),
+        "fn main() {}\n",
+        "stripping managed dirs must keep the checkout payload"
+    );
+
+    // `fork` reads the parent: both managed trees and their payloads survive.
+    assert!(
+        project.join(".forks/.partial-stale/leak").is_file(),
+        "fork must never mutate the parent `.forks` tree"
+    );
+    assert!(
+        project.join(".forks/feat-one").is_dir(),
+        "the parent keeps its own fork checkouts"
+    );
+    assert!(
+        project.join(".slipfork-store/nested/leak").is_file(),
+        "fork must never mutate the parent `.slipfork-store` tree"
+    );
+
+    // Exactly one entry per real checkout: no phantom from a nested `.forks`, no `checkout missing`.
+    let checkouts = fork_checkouts(&project).expect("list the fork checkouts");
+    let names: Vec<&str> = checkouts.iter().map(|dir| dir.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["feat-one", "feat-three", "feat-two"],
+        "every fork is advertised exactly once, with no phantom"
+    );
+    for dir in &checkouts {
+        assert!(
+            dir.path.join("src/main.rs").is_file(),
+            "`{}` must be a real checkout, never a phantom",
+            dir.name
+        );
+        assert!(
+            !dir.path.join(".forks").exists() && !dir.path.join(".slipfork-store").exists(),
+            "`{}` must hold no managed directory",
+            dir.name
+        );
+    }
+
+    // A fork of a fork lands flat beside its parent: no nested `.forks`, no compounded id.
+    let child = ForkName::parse("feat-child").expect("valid fork name");
+    let parent_world = WorldName::parse("feat-one--demo").expect("valid parent world");
+    let child_paths = engine
+        .fork(&project.join(".forks/feat-one"), &parent_world, &child)
+        .expect("fork feat-child from feat-one");
+    assert_eq!(child_paths.project, project.join(".forks/feat-child"));
+    assert_eq!(
+        child_paths.world,
+        run.join(".slipfork-store/worlds/feat-child--demo")
+    );
+    assert!(
+        !run.join(".slipfork-store/worlds/feat-child--feat-one--demo")
+            .exists(),
+        "a fork world id never compounds its parent's id"
+    );
+    assert!(
+        !project.join(".forks/feat-one/.forks").exists(),
+        "forking a fork never nests a `.forks` inside the parent checkout"
+    );
+    engine
+        .drop_fork(&project, &world, &child, Dirtiness::Clean, false)
+        .expect("drop feat-child");
+    assert!(
+        !child_paths.project.exists() && !child_paths.world.exists(),
+        "the flat child is reaped"
+    );
+    assert!(
+        project.join(".forks/feat-one").is_dir(),
+        "dropping the child never removes its parent"
+    );
+
+    for name in ["feat-one", "feat-two", "feat-three"] {
+        let fork = ForkName::parse(name).expect("valid fork name");
+        let project_snapshot = project.join(".forks").join(name);
+        let world_snapshot = run.join(format!(".slipfork-store/worlds/{name}--demo"));
+        engine
+            .drop_fork(&project, &world, &fork, Dirtiness::Clean, false)
+            .expect("drop the fork");
+        assert!(
+            !project_snapshot.exists(),
+            "drop must reap the `{name}` checkout"
+        );
+        assert!(
+            !world_snapshot.exists(),
+            "drop must reap the `{name}` world snapshot"
+        );
+    }
+
+    engine.drop_world(&world).expect("drop the world");
+    engine
+        .destroy(&project, Dirtiness::Clean, true)
+        .expect("destroy the project subvolume");
     let leftovers = subvolumes_under(&run);
     assert!(leftovers.is_empty(), "leaked subvolumes: {leftovers:?}");
     fs::remove_dir_all(&run).expect("remove scratch run");

@@ -5,10 +5,9 @@ use std::process::ExitCode;
 use serde_json::{Value, json};
 use slipfork_forkfile::FeatureEdit;
 
-use crate::commands::{Session, emit};
-use crate::daemon::DaemonClient;
-use crate::ui::Palette;
-use crate::ui::table::{Column, Table};
+use crate::commands::Session;
+use crate::ui::report::Palette;
+use crate::ui::report::{Column, Table};
 
 /// The three columns of one `env` listing: key, separator, value.
 const ENV: [Column; 3] = [Column::left(), Column::left(), Column::left()];
@@ -45,7 +44,7 @@ impl Session {
         }
         // `--json` is machine data: it never carries a plaintext secret, even from a TTY.
         let reveal = args.reveal && self.interactive() && !args.json;
-        let mut client = match DaemonClient::connect(&self.host) {
+        let mut client = match self.connect() {
             Ok(client) => client,
             Err(error) => return self.daemon_failure(&error, args.json),
         };
@@ -87,12 +86,12 @@ impl Session {
                 }
                 out.insert(component.clone(), Value::Object(rows));
             }
-            return emit(&format!("{}\n", Value::Object(out)));
+            return self.renderer().json_exit(&Value::Object(out));
         }
         let palette = Palette::new(self.color());
         let multiple = components.len() > 1;
         let table = table();
-        let mut text = String::new();
+        let mut lines = Vec::new();
         for (component, variables) in components {
             let rows: Vec<(&str, &Value)> = variables
                 .as_object()
@@ -107,22 +106,21 @@ impl Session {
                     .collect::<Vec<_>>(),
             );
             if multiple {
-                text.push_str(&format!("{}\n", palette.label(component)));
+                lines.push(palette.label(component));
             }
             for (key, info) in rows {
                 let value = display(info);
                 let shown = if is_secret(info) && info["set"].as_bool() == Some(true) {
                     palette.redacted(&value)
                 } else if value == "<unset>" {
-                    palette.dim(&value)
+                    palette.meta(&value)
                 } else {
                     palette.value(&value)
                 };
-                text.push_str(&table.line(&widths, &[palette.key(key), palette.dim("="), shown]));
-                text.push('\n');
+                lines.push(table.line(&widths, &[palette.key(key), palette.meta("="), shown]));
             }
         }
-        emit(&text)
+        self.renderer().emit_lines_exit(lines)
     }
 }
 

@@ -1,7 +1,7 @@
 //! `RUN` execution through `crun`, one container per Dockerfile instruction.
 
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Stdio};
@@ -10,8 +10,56 @@ use std::thread;
 
 use crate::dockerfile::{CacheMount, Command as StepCommand, ImageConfig, Owner, RunSpec};
 use crate::error::{Error, Result};
+use crate::identity::{Identity, PROCESS_UMASK};
+pub(crate) use crate::step_log::StepLog;
+use crate::step_log::exit_detail;
 
 const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+/// The `RUN` child's environment: image `ENV`, then our colour hints, then the `apt` config.
+fn step_env(config: &ImageConfig) -> Vec<String> {
+    let mut env = vec![format!("PATH={DEFAULT_PATH}")];
+    for (key, value) in &config.env {
+        env.push(format!("{key}={value}"));
+    }
+    // glibc's `getenv` returns the first match, so drop any image `ENV APT_CONFIG=...` before
+    // appending the per-step config; the last entry alone would never win.
+    env.retain(|entry| !entry.starts_with("APT_CONFIG="));
+    env.push(format!("APT_CONFIG={APT_CONF_TARGET}"));
+    if !config.env.contains_key("NO_COLOR") {
+        for (key, value) in slipfork_world::COLOUR_HINTS {
+            if !config.env.contains_key(key) {
+                env.push(format!("{key}={value}"));
+            }
+        }
+    }
+    env
+}
+
+/// `apt` refuses to drop privileges it never had inside a single-mapping user namespace.
+const APT_CONF: &str = "APT::Sandbox::User \"root\";\n";
+
+/// Where the per-step `apt.conf` is bound: a tmpfs-only path, never the image's own `/dev`.
+const APT_CONF_TARGET: &str = "/dev/slipfork-apt.conf";
+
+/// Device nodes a rootless `mknod` cannot create; the host's own are bound read-only instead.
+const DEVICES: [&str; 6] = [
+    "/dev/null",
+    "/dev/zero",
+    "/dev/full",
+    "/dev/random",
+    "/dev/urandom",
+    "/dev/tty",
+];
+
+/// Which child stream one step-log line came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stream {
+    /// The `RUN` command's standard output.
+    Stdout,
+    /// The `RUN` command's standard error.
+    Stderr,
+}
 
 /// Plain host values `crun` needs; the composition root injects all of them.
 #[derive(Debug, Clone)]
@@ -22,9 +70,9 @@ pub struct StepHost {
     pub resolv_conf: PathBuf,
     /// Disk-backed scratch root for OCI bundles.
     pub scratch_root: PathBuf,
-    /// Invoking uid, mapped identically inside the user namespace.
+    /// Invoking uid, mapped to container root (and to every `USER` the step names).
     pub uid: u32,
-    /// Invoking gid, mapped identically inside the user namespace.
+    /// Invoking gid, mapped to container root (and to every `USER` the step names).
     pub gid: u32,
 }
 
@@ -47,21 +95,13 @@ impl StepHost {
         }
     }
 
-    /// Default numeric owner for files written by `COPY`/`ADD`.
+    /// Numeric owner for files written by `COPY`/`ADD`; the only id a single mapping represents.
     #[must_use]
     pub const fn owner(&self) -> Owner {
         Owner {
             uid: self.uid,
             gid: self.gid,
         }
-    }
-
-    /// A `/etc/passwd` that contains the invoking uid, so images never need a real one.
-    fn passwd(&self) -> String {
-        format!(
-            "root:x:0:0:root:/root:/sbin/nologin\nslipfork:x:{}:{}:slipfork:/:/bin/sh\n",
-            self.uid, self.gid
-        )
     }
 }
 
@@ -96,6 +136,9 @@ impl CrunStepRuntime {
     }
 
     /// Executes `run` inside `rootfs`, streaming every child line to `log`.
+    ///
+    /// The step's identity is resolved from the rootfs it was handed: `USER app` runs as the
+    /// account the image itself defines, mapped one-to-one onto the invoking host uid/gid.
     #[allow(clippy::too_many_arguments)]
     pub fn run(
         &self,
@@ -105,18 +148,20 @@ impl CrunStepRuntime {
         run: &RunSpec,
         cache: &[(CacheMount, PathBuf)],
         line: usize,
-        log: &mut dyn Write,
+        log: &mut StepLog<'_>,
     ) -> Result<()> {
         self.ensure_crun()?;
+        // The one resolver: the service-boot path resolves the sealer-recorded `ImageConfig.user`
+        // for the same rootfs through this identical `Identity::resolve` call.
+        let identity = Identity::resolve(rootfs, config.user.as_deref())?;
         fs::create_dir_all(&self.host.scratch_root)
             .map_err(|source| Error::io("create", &self.host.scratch_root, source))?;
         let bundle = self.host.scratch_root.join(id);
         let _ = fs::remove_dir_all(&bundle);
         fs::create_dir_all(&bundle).map_err(|source| Error::io("create", &bundle, source))?;
 
-        let passwd = bundle.join("passwd");
-        fs::write(&passwd, self.host.passwd())
-            .map_err(|source| Error::io("write", &passwd, source))?;
+        let apt_conf = bundle.join("apt.conf");
+        fs::write(&apt_conf, APT_CONF).map_err(|source| Error::io("write", &apt_conf, source))?;
 
         for mount in &run.mounts {
             let target = rooted(rootfs, &mount.target);
@@ -127,7 +172,16 @@ impl CrunStepRuntime {
             fs::create_dir_all(&path).map_err(|source| Error::io("create", &path, source))?;
         }
 
-        let config_json = self.oci_config(rootfs, config, run, cache, &passwd);
+        let spec = StepBundle {
+            host: &self.host,
+            rootfs,
+            apt_conf: &apt_conf,
+            identity,
+            config,
+            run,
+            cache,
+        };
+        let config_json = spec.oci_spec();
         let config_path = bundle.join("config.json");
         let bytes = serde_json::to_vec_pretty(&config_json).map_err(|source| Error::Json {
             url: config_path.display().to_string(),
@@ -148,13 +202,11 @@ impl CrunStepRuntime {
         } else {
             Err(Error::StepFailed {
                 line,
-                instruction: run.command.render(),
-                message: format!(
-                    "`crun` exited with {}",
-                    status
-                        .code()
-                        .map_or_else(|| "a signal".to_owned(), |code| format!("code {code}"))
-                ),
+                phase: "run",
+                instruction: run.command.as_written().into(),
+                message: "the command exited with a non-zero status".to_owned(),
+                exit_code: status.code(),
+                runtime: Some(exit_detail(status.code()).into()),
                 next: "fix the command above; its output was streamed while it ran".to_owned(),
             })
         }
@@ -165,7 +217,7 @@ impl CrunStepRuntime {
         &self,
         id: &str,
         bundle: &Path,
-        log: &mut dyn Write,
+        log: &mut StepLog<'_>,
     ) -> Result<std::process::ExitStatus> {
         let mut child = StdCommand::new(&self.host.crun)
             // `--cgroup-manager` is a crun global option: it must precede the subcommand.
@@ -186,7 +238,7 @@ impl CrunStepRuntime {
                     Error::io("run", &self.host.crun, source)
                 }
             })?;
-        let (sender, receiver) = mpsc::channel::<String>();
+        let (sender, receiver) = mpsc::channel::<(Stream, String)>();
         let readers: Vec<thread::JoinHandle<()>> = [
             child.stdout.take().map(Reader::stdout),
             child.stderr.take().map(Reader::stderr),
@@ -199,9 +251,8 @@ impl CrunStepRuntime {
         })
         .collect();
         drop(sender);
-        for line in receiver {
-            let _ = writeln!(log, "{line}");
-            let _ = log.flush();
+        for (stream, line) in receiver {
+            log.line(stream, &line);
         }
         for reader in readers {
             let _ = reader.join();
@@ -229,25 +280,40 @@ impl CrunStepRuntime {
         self.delete_container(id);
         let _ = fs::remove_dir_all(bundle);
     }
+}
 
-    fn oci_config(
-        &self,
-        rootfs: &Path,
-        config: &ImageConfig,
-        run: &RunSpec,
-        cache: &[(CacheMount, PathBuf)],
-        passwd: &Path,
-    ) -> serde_json::Value {
-        let args = match &run.command {
+/// Everything one `RUN` step needs to render its OCI spec, resolved once in
+/// [`CrunStepRuntime::run`].
+struct StepBundle<'a> {
+    /// Injected host facts (resolv.conf and the single uid/gid mapping).
+    host: &'a StepHost,
+    /// The writable step rootfs that becomes the container root.
+    rootfs: &'a Path,
+    /// The per-step `apt.conf` bound read-only at [`APT_CONF_TARGET`].
+    apt_conf: &'a Path,
+    /// Container identity the step runs as.
+    identity: Identity,
+    /// Image metadata (`env`, `workdir`, `user`) applied to the process.
+    config: &'a ImageConfig,
+    /// The command to execute and any declared cache mounts.
+    run: &'a RunSpec,
+    /// Resolved host directories for `RUN --mount=type=cache`.
+    cache: &'a [(CacheMount, PathBuf)],
+}
+
+impl StepBundle<'_> {
+    /// Builds the OCI runtime spec for this step: single-mapping identity, Docker default
+    /// capabilities for root, no new privileges, a tmpfs `/dev` with host devices, and a seccomp
+    /// profile that turns the `chown` family into a success no-op.
+    fn oci_spec(&self) -> serde_json::Value {
+        let args = match &self.run.command {
             StepCommand::Shell(script) => {
                 vec!["/bin/sh".to_owned(), "-c".to_owned(), script.clone()]
             }
             StepCommand::Exec(argv) => argv.clone(),
         };
-        let mut env = vec![format!("PATH={DEFAULT_PATH}")];
-        for (key, value) in &config.env {
-            env.push(format!("{key}={value}"));
-        }
+        let env = step_env(self.config);
+
         let mut mounts = vec![
             serde_json::json!({"destination": "/proc", "type": "proc", "source": "proc"}),
             serde_json::json!({
@@ -256,20 +322,30 @@ impl CrunStepRuntime {
                 "source": "tmpfs",
                 "options": ["nosuid", "strictatime", "mode=755", "size=65536k"]
             }),
-            serde_json::json!({
-                "destination": "/etc/resolv.conf",
-                "type": "bind",
-                "source": self.host.resolv_conf,
-                "options": ["ro", "rbind"]
-            }),
-            serde_json::json!({
-                "destination": "/etc/passwd",
-                "type": "bind",
-                "source": passwd,
-                "options": ["ro", "rbind"]
-            }),
         ];
-        for (mount, host_dir) in cache {
+        // Bound after the `/dev` tmpfs, so these mountpoints exist only in the tmpfs and never in
+        // the image rootfs; a rootless build cannot `mknod` them itself.
+        for device in DEVICES {
+            mounts.push(serde_json::json!({
+                "destination": device,
+                "type": "bind",
+                "source": device,
+                "options": ["ro", "rbind"]
+            }));
+        }
+        mounts.push(serde_json::json!({
+            "destination": APT_CONF_TARGET,
+            "type": "bind",
+            "source": self.apt_conf,
+            "options": ["ro", "rbind"]
+        }));
+        mounts.push(serde_json::json!({
+            "destination": "/etc/resolv.conf",
+            "type": "bind",
+            "source": self.host.resolv_conf,
+            "options": ["ro", "rbind"]
+        }));
+        for (mount, host_dir) in self.cache {
             let mut options = vec!["rbind"];
             if mount.readonly {
                 options.push("ro");
@@ -281,17 +357,30 @@ impl CrunStepRuntime {
                 "options": options
             }));
         }
+
+        let identity = self.identity;
+        let capabilities = identity.capabilities();
         serde_json::json!({
             "ociVersion": "1.0.2",
             "process": {
                 "terminal": false,
-                "user": {"uid": self.host.uid, "gid": self.host.gid},
+                "user": {"uid": identity.uid, "gid": identity.gid},
                 "args": args,
                 "env": env,
-                "cwd": config.workdir,
-                "noNewPrivileges": false
+                // Docker parity: a `RUN` must not inherit the daemon's umask, or `uv sync` makes a
+                // group-writable `.venv` that the app's safety check refuses to serve.
+                "umask": PROCESS_UMASK,
+                "cwd": self.config.workdir,
+                "capabilities": {
+                    "bounding": capabilities,
+                    "effective": capabilities,
+                    "permitted": capabilities,
+                    "inheritable": [],
+                    "ambient": []
+                },
+                "noNewPrivileges": true
             },
-            "root": {"path": rootfs, "readonly": false},
+            "root": {"path": self.rootfs, "readonly": false},
             "hostname": "slipfork-build",
             "mounts": mounts,
             "linux": {
@@ -302,10 +391,20 @@ impl CrunStepRuntime {
                     {"type": "ipc"},
                     {"type": "uts"}
                 ],
-                "uidMappings": [{"containerID": self.host.uid, "hostID": self.host.uid, "size": 1}],
-                "gidMappings": [{"containerID": self.host.gid, "hostID": self.host.gid, "size": 1}],
+                "uidMappings": [{"containerID": identity.uid, "hostID": self.host.uid, "size": 1}],
+                "gidMappings": [{"containerID": identity.gid, "hostID": self.host.gid, "size": 1}],
                 "maskedPaths": [],
-                "readonlyPaths": []
+                "readonlyPaths": [],
+                // Charliecloud precedent: dpkg chowns to unmapped ids (`root:shadow`), so the
+                // whole `chown` family reports success instead of failing the package install.
+                "seccomp": {
+                    "defaultAction": "SCMP_ACT_ALLOW",
+                    "syscalls": [{
+                        "names": ["chown", "fchown", "lchown", "fchownat"],
+                        "action": "SCMP_ACT_ERRNO",
+                        "errnoRet": 0
+                    }]
+                }
             },
             "annotations": {"slipfork.builder": "native"}
         })
@@ -326,6 +425,14 @@ impl Reader {
     fn stderr(pipe: std::process::ChildStderr) -> Self {
         Self::Stderr(pipe)
     }
+
+    /// The stream this pipe carries.
+    fn stream(&self) -> Stream {
+        match self {
+            Self::Stdout(_) => Stream::Stdout,
+            Self::Stderr(_) => Stream::Stderr,
+        }
+    }
 }
 
 impl Read for Reader {
@@ -337,10 +444,11 @@ impl Read for Reader {
     }
 }
 
-fn stream_lines(reader: Reader, sender: &Sender<String>) {
+fn stream_lines(reader: Reader, sender: &Sender<(Stream, String)>) {
+    let stream = reader.stream();
     for line in BufReader::new(reader).lines() {
         let Ok(line) = line else { break };
-        if sender.send(line).is_err() {
+        if sender.send((stream, line)).is_err() {
             break;
         }
     }
@@ -351,3 +459,6 @@ pub(crate) fn rooted(rootfs: &Path, destination: &str) -> PathBuf {
     let trimmed = destination.trim_start_matches('/');
     rootfs.join(trimmed)
 }
+
+#[cfg(test)]
+mod tests;

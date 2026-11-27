@@ -1,7 +1,7 @@
 id = "forkfile"
 name = "Forkfile"
 description = "First-party Forkfile support for Slipfork: live diagnostics, @tool hover, go-to-definition, and format-on-save through the standalone `slipfork-lsp` binary."
-version = "0.1.0"
+version = "0.1.1"
 schema_version = 1
 authors = ["Slipfork contributors"]
 repository = "https://github.com/OffworldNexus/slipfork"

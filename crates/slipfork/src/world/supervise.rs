@@ -1,22 +1,33 @@
 //! Hidden detached-supervisor mode: boot the world, stream typed events, wait for the init.
 
+mod events;
+mod log;
+mod sink;
+
 use std::fs;
-use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use slipfork_world::{
-    BootEvent, BootFailure, BootScheduler, BootState, BootStep, LogStore, ResourceKind, StampStore,
-    StepOutcome, WorldName, WorldStamp, WorldStampStore, control, is_btrfs_path, plan_epoch,
-    run_log::RunCapture, world_plan_with, write_pg_checkpoints,
+    BootEvent, BootFailure, BootScheduler, BootStep, LogStore, ResourceKind, StampStore,
+    StepOutcome, WorldName, WorldStamp, WorldStampStore, is_btrfs_path, plan_epoch,
+    world_plan_with, write_pg_checkpoints,
 };
 
 use crate::commands::Session;
+use crate::ui::report::{Failure, Report};
 use crate::world::features::WorldFeatures;
+use crate::world::runtime::frames::{
+    ROTATION_NOTE, StepPin, UP_NOTE_ENV, failure_facts, note_frame,
+};
 
-use super::{HostEnv, SuperviseArgs, WorldState, fail, runtime::WorldRuntime, state_path};
+use self::events::{boot_event_json, step_index};
+
+use super::{HostEnv, SuperviseArgs, runtime::WorldBoot, runtime::WorldRuntime};
+
+pub(super) use sink::{BootSink, Emitter};
 
 impl Session {
     /// Hidden detached-supervisor mode: boot, wait until `down`, then exit.
@@ -26,14 +37,37 @@ impl Session {
         unsafe {
             libc::setsid();
         }
-        match supervisor_main(&args.project, &args.world, self.host()) {
+        match supervisor_main(
+            &args.project,
+            &args.world,
+            &args.heads,
+            self.host(),
+            args.no_cache,
+        ) {
             Ok(()) => ExitCode::SUCCESS,
-            Err(message) => fail(message, "inspect `.slipfork/supervisor.log`"),
+            Err(message) => {
+                let (message, embedded) = crate::ui::report::split_remedy(&message);
+                let next = embedded.unwrap_or_else(|| {
+                    "inspect `.slipfork/supervisor.log` for the boot cause".to_owned()
+                });
+                let _ = self.renderer().emit(&Report::failure(Failure::new(
+                    "supervise",
+                    message,
+                    next,
+                )));
+                ExitCode::FAILURE
+            }
         }
     }
 }
 
-fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), String> {
+fn supervisor_main(
+    project: &Path,
+    world: &str,
+    heads_path: &Path,
+    env: &HostEnv,
+    no_cache: bool,
+) -> Result<(), String> {
     let world = WorldName::parse(world).map_err(|error| error.to_string())?;
     let source = fs::read_to_string(project.join("Forkfile"))
         .map_err(|error| format!("read Forkfile: {error}"))?;
@@ -52,20 +86,47 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
     let features = WorldFeatures::load_resolved(project, &doc)
         .map_err(|error| format!("{error}\nnext: {}", WorldFeatures::REMEDY))?;
     let plan = world_plan_with(&doc, project, &features).map_err(|error| error.to_string())?;
-    let emitter = Arc::new(Mutex::new(Emitter { open: true }));
-    let runtime = Arc::new(WorldRuntime::new(
+    // The daemon sealed every image before spawning this supervisor; a stale parent, changed
+    // build inputs, or a vanished rootfs fails here instead of silently rebuilding during boot.
+    let heads = crate::world::WorldHeads::load(heads_path)?;
+    heads.validate(
         project,
-        world.clone(),
         &doc,
+        &world,
         &plan,
-        features.clone(),
+        &features,
+        &env.store_root_for(project),
+    )?;
+    let emitter = Arc::new(Mutex::new(Emitter { open: true }));
+    // A denied append rotated the boot log before spawn; narrate it once on the typed stream.
+    if let Some(note) = env.env.get(UP_NOTE_ENV).filter(|note| !note.is_empty()) {
+        let pin = StepPin {
+            step: 1,
+            total: 1,
+            label: "up",
+            name: "up",
+            image: None,
+            index: None,
+        };
+        if let Ok(mut emitter) = emitter.lock() {
+            let mut frame = note_frame(&pin, note);
+            frame["kind"] = json!(ROTATION_NOTE);
+            emitter.send(frame);
+        }
+    }
+    let runtime = Arc::new(WorldRuntime::new(WorldBoot {
+        project,
+        world: world.clone(),
+        doc: &doc,
+        plan: &plan,
+        features: features.clone(),
+        heads: &heads,
+        no_cache,
         env,
-        Arc::clone(&emitter),
-    )?);
+        emitter: Arc::clone(&emitter),
+    })?);
     let pods_dir = runtime.pods_dir().to_path_buf();
-    let socket = control::control_socket_path(&pods_dir).map_err(|error| error.to_string())?;
     let world_dir = runtime.world_dir();
-    write_state(project, &world, &socket)?;
 
     // Epoch-paired stamps gate every conditional skip: `fork` snapshots the world and each typed
     // PG sibling together, so matching pairs reuse `@<tool>` and `before-start`/`pre-deploy`
@@ -77,25 +138,36 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
         .filter(|resource| resource.resource == ResourceKind::Postgres)
         .map(|resource| layout.world_clone(&world, resource.resource, &resource.id))
         .collect();
-    let epoch = plan_epoch(&plan, &features);
+    let epoch = plan_epoch(&plan, &features, &heads.image_inputs);
     let stamp_store = WorldStampStore::new(&world_dir);
-    let trusted = stamp_store
-        .trusted_stamp(
-            &plan,
-            &features,
-            pg_clones.iter().map(|clone| clone.as_path()),
-        )
-        .is_some();
-    // A root world that was `down` and then `up` with an unchanged `Forkfile`, lockfiles, and
-    // `PGDATA` carries the same paired checkpoint a fork does, so it reuses the trusted hook path
-    // instead of re-running `pg` -> `pre-deploy` -> `api` serially.
+    let trusted = !no_cache
+        && stamp_store
+            .trusted_stamp(
+                &plan,
+                &features,
+                &heads.image_inputs,
+                pg_clones.iter().map(|clone| clone.as_path()),
+            )
+            .is_some();
+    // Paired world + PG stamps reuse trusted `@<tool>`/`pre-deploy` digests across warm `up` and `fork`.
     let stamps = stamps_for(project, &stamp_store, trusted);
 
+    let step_commands: Arc<Vec<Option<String>>> =
+        Arc::new(plan.steps.iter().map(|step| step.command.clone()).collect());
     let failed_frame: Arc<Mutex<Option<(usize, Value)>>> = Arc::new(Mutex::new(None));
     let sink_emitter = Arc::clone(&emitter);
     let sink_failed = Arc::clone(&failed_frame);
+    let sink_total = plan.steps.len();
+    let sink_commands = Arc::clone(&step_commands);
     let sink: Arc<slipfork_world::EventSink> = Arc::new(move |event: BootEvent| {
-        let frame = boot_event_json(&event);
+        let mut frame = boot_event_json(&event, sink_total);
+        // The plan owns every step's command; the typed event only names the step index.
+        if let Some(command) = step_index(&event)
+            .and_then(|index| sink_commands.get(index))
+            .and_then(Option::as_deref)
+        {
+            frame["command"] = json!(command);
+        }
         if let BootEvent::Failed { step, .. } = event {
             if let Ok(mut slot) = sink_failed.lock()
                 && slot.as_ref().is_none_or(|(existing, _)| step < *existing)
@@ -108,11 +180,21 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
             emitter.send(frame);
         }
     });
+    let typed_exit: Arc<Mutex<Option<(usize, i32)>>> = Arc::new(Mutex::new(None));
     let executor: Arc<slipfork_world::StepExecutor> = {
         let runtime = Arc::clone(&runtime);
+        let exit = Arc::clone(&typed_exit);
         Arc::new(
             move |index: usize, step: &BootStep| -> Result<StepOutcome, BootFailure> {
-                runtime.execute(index, step)
+                let outcome = runtime.execute(index, step);
+                if let Err(failure) = &outcome
+                    && let Some(code) = failure.exit_code
+                    && let Ok(mut slot) = exit.lock()
+                    && slot.as_ref().is_none_or(|(existing, _)| index < *existing)
+                {
+                    *slot = Some((index, code));
+                }
+                outcome
             },
         )
     };
@@ -142,7 +224,7 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
             if let Err(error) = runtime.flush_store() {
                 eprintln!("slipfork: store flush: {error}");
             }
-            let checkpoint = WorldStamp::checkpoint(&plan, epoch.clone(), runtime.image_stamps());
+            let checkpoint = WorldStamp::checkpoint(&plan, epoch.clone());
             if let Err(error) = stamp_store.save(&checkpoint) {
                 eprintln!("slipfork: write world stamp: {error}");
             }
@@ -160,24 +242,42 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
             }
         }
         Err(error) => {
-            let mut frame = failed_frame
-                .lock()
-                .ok()
-                .and_then(|mut slot| slot.take().map(|(_, frame)| frame))
-                .unwrap_or_else(|| {
-                    json!({
-                        "event": "failed",
-                        "label": error.to_string().lines().next().unwrap_or("boot failed"),
-                        "line": 0,
-                        "message": error.to_string().lines().next().unwrap_or_default(),
+            let captured = failed_frame.lock().ok().and_then(|mut slot| slot.take());
+            let failed_step = captured.as_ref().map(|(step, _)| *step);
+            let mut frame = captured.map(|(_, frame)| frame).unwrap_or_else(|| {
+                json!({
+                    "event": "failed",
+                    "label": error.to_string().lines().next().unwrap_or("boot failed"),
+                    "line": 0,
+                    "message": error.to_string().lines().next().unwrap_or_default(),
+                })
+            });
+            let record = frame["run_id"].as_str().and_then(|run_id| {
+                LogStore::at(runtime.store_layout().store_root(), world.clone())
+                    .records()
+                    .ok()?
+                    .records
+                    .into_iter()
+                    .find(|record| record.run_id == run_id)
+            });
+            if frame.get("exit_code").is_none()
+                && let Some(code) = typed_exit.lock().ok().and_then(|slot| {
+                    (*slot).and_then(|(step, code)| {
+                        failed_step
+                            .is_none_or(|wanted| wanted == step)
+                            .then_some(code)
                     })
-                });
+                })
+            {
+                frame["exit_code"] = json!(code);
+            }
+            let plumbing = frame["command"].as_str().map(str::to_owned);
+            failure_facts(&mut frame, record.as_ref(), plumbing.as_deref(), None);
             if !runtime.has_live_world() {
                 // Zero resources or services entered the world (a cold image `RUN` or pre-pod
-                // setup/hook failed): reap `unshare`/`slipfork-world-init`/`slirp4netns` and drop
-                // `.slipfork/world.json` before announcing failure so no orphan world survives.
+                // setup/hook failed): reap `unshare`/`slipfork-world-init`/`slirp4netns` before
+                // announcing failure so no orphan world survives.
                 let stopped = runtime.stop_and_cleanup();
-                let _ = fs::remove_file(state_path(project));
                 if let Ok(mut emitter) = emitter.lock() {
                     emitter.send(frame);
                 }
@@ -191,17 +291,12 @@ fn supervisor_main(project: &Path, world: &str, env: &HostEnv) -> Result<(), Str
         }
     }
     // `down` reaches the init, which stops every pod and exits; this process follows.
-    let awaited = runtime.await_exit_and_cleanup();
-    let _ = fs::remove_file(state_path(project));
-    awaited
+    runtime.await_exit_and_cleanup()
 }
 
-/// The stamp store this boot may trust.
-///
-/// Only a checkpoint whose `world_epoch` still matches the planned DAG **and** whose PG siblings
-/// carry the same epoch is trusted; that single trusted value decides `for_fork` for every world,
-/// root or fork. A stale epoch (edited `Forkfile`, changed `PGDATA` pair) or a stale input digest
-/// (changed lockfile) therefore still re-runs `@<tool>`/`before-start`/`pre-deploy`.
+/// The stamp store this boot may trust: only a checkpoint whose `world_epoch` matches the planned
+/// DAG **and** whose PG siblings carry the same epoch decides `for_fork`, so a stale epoch or input
+/// digest still re-runs `@<tool>`/`before-start`/`pre-deploy`.
 fn stamps_for(project: &Path, store: &WorldStampStore, trusted: bool) -> StampStore {
     if trusted {
         StampStore::for_fork(project, true, store.load())
@@ -210,611 +305,5 @@ fn stamps_for(project: &Path, store: &WorldStampStore, trusted: bool) -> StampSt
     }
 }
 
-fn boot_event_json(event: &BootEvent) -> Value {
-    match event {
-        BootEvent::Plan { rows } => json!({
-            "event": "plan",
-            "rows": rows
-                .iter()
-                .map(|row| json!({ "kind": row.kind.as_str(), "name": row.name }))
-                .collect::<Vec<_>>(),
-            "total": rows.len(),
-        }),
-        BootEvent::Started {
-            step,
-            total,
-            kind,
-            name,
-            run_id,
-        } => json!({
-            "event": "started",
-            "step": step + 1,
-            "total": total,
-            "kind": kind.as_str(),
-            "name": name,
-            "state": "running",
-            "run_id": run_id,
-        }),
-        BootEvent::Finished {
-            kind,
-            name,
-            elapsed,
-            state,
-            detail,
-            run_id,
-            ..
-        } => json!({
-            "event": "finished",
-            "kind": kind.as_str(),
-            "name": name,
-            "state": state.as_str(),
-            "detail": detail,
-            "elapsed_ms": elapsed.as_millis(),
-            "duration_ms": elapsed.as_millis(),
-            "run_id": run_id,
-        }),
-        BootEvent::UpToDate {
-            kind,
-            name,
-            elapsed,
-            ..
-        } => json!({
-            "event": "up-to-date",
-            "kind": kind.as_str(),
-            "name": name,
-            "state": BootState::UpToDate.as_str(),
-            "detail": "up to date",
-            "elapsed_ms": elapsed.as_millis(),
-            "duration_ms": elapsed.as_millis(),
-        }),
-        BootEvent::Failed {
-            kind,
-            name,
-            line,
-            message,
-            remedy,
-            elapsed,
-            run_id,
-            command,
-            ..
-        } => {
-            let mut event = json!({
-                "event": "failed",
-                "kind": kind.as_str(),
-                "name": name,
-                "state": BootState::Failed.as_str(),
-                "line": line,
-                "message": message,
-                "elapsed_ms": elapsed.as_millis(),
-                "duration_ms": elapsed.as_millis(),
-                "run_id": run_id,
-                "command": command,
-            });
-            if let Some(remedy) = remedy {
-                event["remedy"] = json!(remedy);
-            }
-            event
-        }
-    }
-}
-
-fn write_state(project: &Path, world: &WorldName, socket: &Path) -> Result<(), String> {
-    let state = WorldState {
-        world: world.as_str().to_owned(),
-        socket: socket.to_path_buf(),
-        project: project.to_path_buf(),
-        pid: std::process::id(),
-    };
-    let path = state_path(project);
-    let temporary = path.with_extension("json.tmp");
-    let bytes = serde_json::to_vec_pretty(&state).map_err(|error| error.to_string())?;
-    fs::write(&temporary, bytes)
-        .map_err(|error| format!("write `{}`: {error}", temporary.display()))?;
-    fs::rename(&temporary, &path).map_err(|error| format!("rename `{}`: {error}", path.display()))
-}
-
-pub(super) struct Emitter {
-    open: bool,
-}
-
-impl Emitter {
-    /// A closed emitter, so unit tests never write NDJSON to a terminal.
-    #[cfg(test)]
-    pub(super) fn closed() -> Self {
-        Self { open: false }
-    }
-
-    fn send(&mut self, value: Value) {
-        if !self.open {
-            return;
-        }
-        let mut bytes = value.to_string().into_bytes();
-        bytes.push(b'\n');
-        let mut stdout = std::io::stdout().lock();
-        if stdout
-            .write_all(&bytes)
-            .and_then(|()| stdout.flush())
-            .is_err()
-        {
-            // `up` returned and closed the pipe; the world must keep serving.
-            self.open = false;
-        }
-    }
-}
-
-/// Step-scoped NDJSON writer: each concurrent DAG node owns its own line buffer and step identity,
-/// locking [`Emitter`] only to flush one complete `log` frame.
-pub(super) struct BootSink {
-    log: EventLog,
-    mirror: std::io::Stderr,
-}
-
-impl Clone for BootSink {
-    fn clone(&self) -> Self {
-        Self {
-            log: self.log.clone(),
-            mirror: std::io::stderr(),
-        }
-    }
-}
-
-impl BootSink {
-    pub(super) fn for_step(
-        emitter: Arc<Mutex<Emitter>>,
-        step: usize,
-        total: usize,
-        label: &str,
-        name: &str,
-    ) -> Self {
-        Self {
-            log: EventLog::for_step(emitter, step, total, label, name),
-            mirror: std::io::stderr(),
-        }
-    }
-
-    /// Opens this step's run capture **before** the step executes, so a step that errors before its
-    /// first printed line still leaves a capture and a catalog record behind.
-    pub(super) fn capture_run(
-        mut self,
-        store: &LogStore,
-        project: &Path,
-        kind: &str,
-        name: &str,
-        command: &str,
-    ) -> Result<Self, BootFailure> {
-        self.log.run = Some(Arc::new(Mutex::new(RunTarget::open(
-            store, project, kind, name, command,
-        )?)));
-        Ok(self)
-    }
-
-    /// Appends the catalog line and returns the minted id, or `None` when nothing ran.
-    pub(super) fn finish_run(&self, state: &str, duration_ms: u64) -> Option<String> {
-        self.log.run.as_ref().and_then(|run| {
-            run.lock()
-                .ok()
-                .and_then(|mut target| target.finish(state, duration_ms))
-        })
-    }
-
-    /// Drops a no-op capture: no id, no `.log`/`.idx`, no catalog line.
-    pub(super) fn discard_run(&self) {
-        if let Some(run) = &self.log.run
-            && let Ok(mut target) = run.lock()
-        {
-            target.discard();
-        }
-    }
-
-    /// Emits one readiness frame pinned to this step.
-    pub(super) fn progress(&mut self, message: &str) {
-        let _ = writeln!(self.log, "{message}");
-        let _ = self.log.flush();
-    }
-}
-
-impl Write for BootSink {
-    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        let _ = self.mirror.write_all(buffer);
-        self.log.write(buffer)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        let _ = self.mirror.flush();
-        self.log.flush()
-    }
-}
-
-#[derive(Clone)]
-struct EventLog {
-    emitter: Arc<Mutex<Emitter>>,
-    pending: Vec<u8>,
-    step: usize,
-    total: usize,
-    label: String,
-    name: String,
-    run: Option<Arc<Mutex<RunTarget>>>,
-}
-
-/// One step's run capture: opened before the step runs, finished with its final state.
-struct RunTarget {
-    capture: Option<RunCapture>,
-}
-
-impl RunTarget {
-    fn open(
-        store: &LogStore,
-        project: &Path,
-        kind: &str,
-        name: &str,
-        command: &str,
-    ) -> Result<Self, BootFailure> {
-        RunCapture::begin(store, project, kind, name, command)
-            .map(|capture| Self {
-                capture: Some(capture),
-            })
-            .map_err(|error| {
-                BootFailure::new(format!("cannot open a run capture for `{name}`: {error}"))
-            })
-    }
-
-    fn append(&mut self, text: &str) {
-        if let Some(capture) = &mut self.capture {
-            let _ = capture.append(text);
-        }
-    }
-
-    fn finish(&mut self, state: &str, duration_ms: u64) -> Option<String> {
-        let mut capture = self.capture.take()?;
-        let run_id = capture.run_id().to_owned();
-        let _ = capture.finish(state, duration_ms);
-        Some(run_id)
-    }
-
-    fn discard(&mut self) {
-        if let Some(capture) = self.capture.take() {
-            capture.discard();
-        }
-    }
-}
-
-impl EventLog {
-    fn for_step(
-        emitter: Arc<Mutex<Emitter>>,
-        step: usize,
-        total: usize,
-        label: &str,
-        name: &str,
-    ) -> Self {
-        Self {
-            emitter,
-            pending: Vec::new(),
-            step,
-            total,
-            label: label.to_owned(),
-            name: name.to_owned(),
-            run: None,
-        }
-    }
-
-    fn forward(&self, line: &[u8]) {
-        let text = String::from_utf8_lossy(line);
-        let text = strip_ansi(&text);
-        let text = text.trim_end_matches('\r');
-        if text.trim().is_empty() {
-            return;
-        }
-        if let Some(run) = &self.run
-            && let Ok(mut target) = run.lock()
-        {
-            target.append(text);
-        }
-        let frame = json!({
-            "event": "log",
-            "line": text,
-            "step": self.step,
-            "total": self.total,
-            "label": self.label,
-            "name": self.name,
-        });
-        if let Ok(mut emitter) = self.emitter.lock() {
-            emitter.send(frame);
-        }
-    }
-}
-
-/// Strips CSI escape sequences from a child's raw line, so a `log` frame never carries ANSI.
-pub(super) fn strip_ansi(text: &str) -> std::borrow::Cow<'_, str> {
-    if !text.contains('\u{1b}') {
-        return std::borrow::Cow::Borrowed(text);
-    }
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch != '\u{1b}' {
-            out.push(ch);
-            continue;
-        }
-        match chars.peek() {
-            Some('[') => {
-                chars.next();
-                for ch in chars.by_ref() {
-                    if ('@'..='~').contains(&ch) {
-                        break;
-                    }
-                }
-            }
-            Some(_) => {
-                chars.next();
-            }
-            None => {}
-        }
-    }
-    std::borrow::Cow::Owned(out)
-}
-
-impl Write for EventLog {
-    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        self.pending.extend_from_slice(buffer);
-        while let Some(position) = self.pending.iter().position(|byte| *byte == b'\n') {
-            let rest = self.pending.split_off(position + 1);
-            let line = std::mem::replace(&mut self.pending, rest);
-            self.forward(&line[..line.len() - 1]);
-        }
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        if !self.pending.is_empty() {
-            let line = std::mem::take(&mut self.pending);
-            self.forward(&line);
-        }
-        Ok(())
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-    use std::fs;
-    use std::path::{Path, PathBuf};
-
-    use slipfork_forkfile::{FeatureEdit, FeatureSet};
-    use slipfork_world::{
-        BootEvent, BootKind, BootStep, HookPhase, PlanRow, StepStamp, WorldPlan, WorldStamp,
-        WorldStampStore, plan_epoch, write_pg_checkpoint,
-    };
-
-    use super::{RunTarget, boot_event_json, stamps_for};
-
-    /// The conditional-stamp key a `pre-deploy when changed(uv.lock)` hook records.
-    const LOCK_STAMP: &str = "pre-deploy-lock";
-
-    fn temp(prefix: &str) -> tempfile::TempDir {
-        tempfile::Builder::new()
-            .prefix(prefix)
-            .tempdir_in("/var/tmp")
-            .expect("create a disk temp directory")
-    }
-
-    fn hook_plan(command: &str, lock: Option<&str>) -> WorldPlan {
-        WorldPlan {
-            steps: vec![BootStep {
-                kind: BootKind::Hook,
-                image: None,
-                subject: "api".to_owned(),
-                phase: Some(HookPhase::PreDeploy),
-                label: "hook api:pre-deploy".to_owned(),
-                command: Some(command.to_owned()),
-                stamp: lock.map(|digest| StepStamp {
-                    key: LOCK_STAMP.to_owned(),
-                    digest: digest.to_owned(),
-                }),
-                uses_env: false,
-                line: 7,
-                deps: Vec::new(),
-            }],
-            ..WorldPlan::default()
-        }
-    }
-
-    fn fixture_features() -> (FeatureSet, FeatureSet) {
-        let checked = slipfork_forkfile::compile("# forkfile: 0.1\n\nfeatures {\n  dev\n}\n")
-            .expect("compile minimal feature fixture");
-        let dev = checked.document.default_features();
-        let prod = checked
-            .document
-            .resolve_features(false, &[FeatureEdit::Disable("dev".to_owned())])
-            .expect("resolve `-F -dev`");
-        (dev, prod)
-    }
-
-    /// Writes a real world checkpoint plus the paired PG sibling `slipfork fork` also copies.
-    fn checkpoint(
-        root: &Path,
-        plan: &WorldPlan,
-        features: &FeatureSet,
-    ) -> (WorldStampStore, PathBuf) {
-        let world_dir = root.join("worlds/demo");
-        let pg_clone = root.join("worlds/demo.pg.pg");
-        fs::create_dir_all(&world_dir).expect("create the world dir");
-        fs::create_dir_all(&pg_clone).expect("create the PG clone");
-        let store = WorldStampStore::new(&world_dir);
-        let epoch = plan_epoch(plan, features);
-        store
-            .save(&WorldStamp::checkpoint(
-                plan,
-                epoch.clone(),
-                BTreeMap::new(),
-            ))
-            .expect("write the world stamp");
-        write_pg_checkpoint(&pg_clone, &epoch).expect("write the PG stamp");
-        (store, pg_clone)
-    }
-
-    /// A warm root world reuses its paired checkpoint; a changed `Forkfile`, feature set, or
-    /// lockfile re-runs it.
-    #[test]
-    fn a_paired_world_stamp_skips_pre_deploy_and_any_change_reruns_it() {
-        let root = temp("slipfork-warm-stamp");
-        let project = root.path().join("demo");
-        fs::create_dir_all(project.join(".slipfork")).expect("create .slipfork");
-        let (dev, prod) = fixture_features();
-
-        let warm = hook_plan("uv run seed", None);
-        let (store, pg_clone) = checkpoint(root.path(), &warm, &dev);
-        let trusted = |plan: &WorldPlan, features: &FeatureSet| {
-            store
-                .trusted_stamp(plan, features, [pg_clone.as_path()])
-                .is_some()
-        };
-        assert!(
-            trusted(&warm, &dev),
-            "an unchanged plan + feature set + paired PG stamp is trusted"
-        );
-        assert!(
-            !trusted(&warm, &prod),
-            "disabling `dev` must invalidate the checkpoint even when step commands match"
-        );
-        let stamps = stamps_for(&project, &store, trusted(&warm, &dev));
-        assert!(
-            stamps.is_step_current(&warm.steps, 0),
-            "a warm `up` must print `hook api:pre-deploy up to date`"
-        );
-        let prod_stamps = stamps_for(&project, &store, trusted(&warm, &prod));
-        assert!(
-            !prod_stamps.is_step_current(&warm.steps, 0),
-            "a `-F -dev` boot must re-run `pre-deploy` instead of trusting a `dev` stamp"
-        );
-
-        // An edited `Forkfile` changes `world_epoch`, so nothing is trusted and the hook runs.
-        let edited = hook_plan("uv run seed --fresh", None);
-        assert!(
-            !trusted(&edited, &dev),
-            "an edited Forkfile invalidates the checkpoint"
-        );
-        let stamps = stamps_for(&project, &store, trusted(&edited, &dev));
-        assert!(
-            !stamps.is_step_current(&edited.steps, 0),
-            "an edited Forkfile must re-run `pre-deploy`"
-        );
-
-        // A lockfile edit keeps the epoch but makes the recorded conditional digest stale.
-        let lock = project.join(".slipfork").join(LOCK_STAMP);
-        fs::write(&lock, "uv.lock@aaa\n").expect("write the lockfile stamp");
-        let pinned = hook_plan("uv run seed", Some("uv.lock@aaa"));
-        let (pinned_store, pinned_pg) = checkpoint(root.path(), &pinned, &dev);
-        let pinned_trusted = |plan: &WorldPlan| {
-            pinned_store
-                .trusted_stamp(plan, &dev, [pinned_pg.as_path()])
-                .is_some()
-        };
-        assert!(pinned_trusted(&pinned));
-        let stamps = stamps_for(&project, &pinned_store, pinned_trusted(&pinned));
-        assert!(
-            stamps.is_step_current(&pinned.steps, 0),
-            "an unchanged lockfile stays `up to date`"
-        );
-
-        let relocked = hook_plan("uv run seed", Some("uv.lock@bbb"));
-        assert_eq!(
-            plan_epoch(&relocked, &dev),
-            plan_epoch(&pinned, &dev),
-            "same plan shape, same epoch"
-        );
-        let stamps = stamps_for(&project, &pinned_store, pinned_trusted(&relocked));
-        assert!(
-            !stamps.is_step_current(&relocked.steps, 0),
-            "a changed lockfile must re-run `pre-deploy`"
-        );
-    }
-
-    /// A step that errors before printing still owns an eager capture and a catalog record.
-    #[test]
-    fn an_eagerly_opened_run_records_a_capture_before_the_step_prints_anything() {
-        let root = temp("supervise-run-target");
-        let store = slipfork_world::LogStore::at(
-            root.path().join("store"),
-            slipfork_world::WorldName::parse("demo").expect("valid world name"),
-        );
-        let project = root.path().join("apps/demo");
-        let mut target = RunTarget::open(&store, &project, "setup", "backend", "uv sync")
-            .expect("open the capture before the step runs");
-
-        let running = store.records().expect("read the catalog").records;
-        assert_eq!(
-            running.len(),
-            1,
-            "begin appends one `running` record: {running:?}"
-        );
-        let run_id = running[0].run_id.clone();
-        assert_eq!(running[0].state, "running");
-        assert!(
-            store.capture(&run_id).is_file(),
-            "the capture exists before the first printed line"
-        );
-
-        // The runtime writes this synthetic line precisely so the capture is never empty; the test
-        // replays whatever the production formatter produced.
-        let exit = crate::world::runtime::exit_line("uv sync", 2);
-        target.append(&exit);
-        assert_eq!(target.finish("failed", 7).as_deref(), Some(run_id.as_str()));
-
-        let mut reader = slipfork_world::pod_log::read_range(&store.run_dir(), &run_id, None, None)
-            .expect("replay the failed capture");
-        let mut lines = Vec::new();
-        let _ = reader.read_lines(&mut |line| lines.push(line.text.clone()));
-        reader.flush(&mut |line| lines.push(line.text.clone()));
-        assert!(
-            lines.iter().any(|line| line.contains(&exit)),
-            "the failed capture replays the produced text `{exit}`: {lines:?}"
-        );
-
-        let finished = store.records().expect("read the catalog").records;
-        assert_eq!(finished.len(), 1, "one record per run id: {finished:?}");
-        assert_eq!(finished[0].state, "failed");
-        assert_eq!(finished[0].duration_ms, 7);
-    }
-
-    /// The `plan` frame is the first NDJSON line, lists every row, and carries zero escapes.
-    #[test]
-    fn the_plan_frame_comes_first_and_stays_ansi_free() {
-        let frames = [
-            boot_event_json(&BootEvent::Plan {
-                rows: vec![
-                    PlanRow {
-                        kind: BootKind::Image,
-                        name: "base".to_owned(),
-                    },
-                    PlanRow {
-                        kind: BootKind::Service,
-                        name: "api".to_owned(),
-                    },
-                ],
-            }),
-            boot_event_json(&BootEvent::Started {
-                step: 0,
-                total: 2,
-                kind: BootKind::Image,
-                name: "base".to_owned(),
-                run_id: None,
-            }),
-        ];
-        let lines: Vec<String> = frames.iter().map(serde_json::Value::to_string).collect();
-        assert!(lines[0].starts_with("{\"event\":\"plan\""), "{}", lines[0]);
-        assert!(
-            lines[0].contains("\"kind\":\"image\",\"name\":\"base\"")
-                && lines[0].contains("\"kind\":\"service\",\"name\":\"api\""),
-            "{}",
-            lines[0]
-        );
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&lines[0]).expect("the plan parses")["total"],
-            2
-        );
-        assert!(lines[1].contains("\"event\":\"started\""));
-        for line in &lines {
-            assert!(!line.contains('\u{1b}'), "--json stays pure: {line:?}");
-        }
-    }
-}
+mod tests;

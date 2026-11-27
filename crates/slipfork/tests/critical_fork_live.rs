@@ -26,11 +26,13 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use hmac::{Hmac, Mac};
+use sea_orm::sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sea_orm::{ConnectionTrait, SqlxSqliteConnector};
 use sha2::{Digest, Sha256};
 use slipfork_ingress::IngressHandoff;
 use slipfork_world::{
-    BtrfsEngine, Dirtiness, ForkName, ResourceKind, STORE_DIR, StoreLayout, WorldEngine, WorldName,
-    is_subvolume_path,
+    BtrfsEngine, Dirtiness, ForkLedger, ForkName, ResourceKind, STORE_DIR, StoreLayout,
+    WorldEngine, WorldName, WorldState, is_subvolume_path,
 };
 
 const BTRFS_SUPER_MAGIC: u64 = 0x9123_683E;
@@ -219,41 +221,30 @@ fn processes_naming(scope: &Path) -> Vec<u32> {
     found
 }
 
-/// Makes one directory read-only and restores its original mode on drop, so a failed assertion
-/// cannot leave the isolated registry locked for the lab teardown.
-struct UnwritableDir {
-    path: PathBuf,
-    mode: u32,
+/// Refuses the fork's lease publish for real: `Lease::write_atomic` writes
+/// `<world>/.slipfork-lease.json.tmp-<daemon pid>` before renaming it, and the parent world's CoW
+/// snapshot inherits a directory planted at that exact temp name, so the publish `fs::write`
+/// fails with `EISDIR` after every pod booted. The parent's live lease is never touched.
+struct BlockedLeaseInstall {
+    tmp: PathBuf,
 }
 
-impl UnwritableDir {
-    fn new(path: &Path) -> Self {
-        let mode = fs::metadata(path)
-            .unwrap_or_else(|error| {
-                fail_closed(&format!(
-                    "stat the isolated registry `{}`: {error}",
-                    path.display()
-                ))
-            })
-            .permissions()
-            .mode()
-            & 0o7777;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o555)).unwrap_or_else(|error| {
+impl BlockedLeaseInstall {
+    fn new(world_dir: &Path, daemon_pid: u32) -> Self {
+        let tmp = world_dir.join(format!(".slipfork-lease.json.tmp-{daemon_pid}"));
+        fs::create_dir(&tmp).unwrap_or_else(|error| {
             fail_closed(&format!(
-                "lock the isolated registry `{}`: {error}",
-                path.display()
+                "plant the refused publish temp `{}`: {error}",
+                tmp.display()
             ))
         });
-        Self {
-            path: path.to_path_buf(),
-            mode,
-        }
+        Self { tmp }
     }
 }
 
-impl Drop for UnwritableDir {
+impl Drop for BlockedLeaseInstall {
     fn drop(&mut self) {
-        let _ = fs::set_permissions(&self.path, fs::Permissions::from_mode(self.mode));
+        let _ = fs::remove_dir(&self.tmp);
     }
 }
 
@@ -349,7 +340,7 @@ struct Lab {
     project: PathBuf,
     runtime: PathBuf,
     store_root: PathBuf,
-    /// Isolated `$XDG_STATE_HOME`: the daemon's `worlds.json`, lock, and log live under it.
+    /// Isolated `$XDG_STATE_HOME`: the daemon's SQLite ledger, lock, and log live under it.
     state_home: PathBuf,
 }
 
@@ -359,7 +350,7 @@ impl Lab {
         assert_ne!(
             unsafe { libc::geteuid() },
             0,
-            "the rollback journey must run as the unprivileged slipfork lab user; root bypasses 0o555"
+            "the rollback journey must run as the unprivileged slipfork lab user; root bypasses filesystem refusals"
         );
         let Some(test_root) =
             std::env::var_os("SLIPFORK_TEST_ROOT").filter(|root| !root.is_empty())
@@ -448,6 +439,20 @@ impl Lab {
 
     fn run(&self, args: &[&str]) -> Output {
         self.run_in(&self.project, args)
+    }
+
+    /// The one `__daemon` serving this lab runtime; its pid names the lease publish temp file.
+    fn daemon_pid(&self) -> u32 {
+        daemons_for(&self.runtime)
+            .into_iter()
+            .find(|pid| {
+                fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|cmdline| {
+                    cmdline
+                        .split(|byte| *byte == 0)
+                        .any(|arg| arg == b"__daemon")
+                })
+            })
+            .expect("the lab must have one `__daemon` for its runtime")
     }
 
     fn run_in(&self, directory: &Path, args: &[&str]) -> Output {
@@ -706,6 +711,66 @@ fn collect_subvolumes(directory: &Path, found: &mut Vec<PathBuf>) {
     }
 }
 
+/// M3.123: a fork's prep frames and its merged `plan` frame share one denominator.
+///
+/// The renderer derives `[i/N]` from the plan's row positions, so `--json` must never expose a
+/// narrower `total` on a prep frame: every planned row that echoes a counter uses the plan total.
+fn assert_one_fork_denominator(frames: &[serde_json::Value], label: &str) {
+    let plan = frames
+        .iter()
+        .find(|frame| frame["event"] == "plan")
+        .unwrap_or_else(|| panic!("{label} must announce one plan: {frames:?}"));
+    let rows = plan["rows"].as_array().expect("plan rows");
+    let total = plan["total"].as_u64().expect("plan total");
+    assert_eq!(
+        total,
+        u64::try_from(rows.len()).expect("plan rows fit u64"),
+        "{label}: one merged total: {plan}"
+    );
+    assert!(
+        total >= 5,
+        "{label}: the fork plan is prep + world rows: {plan}"
+    );
+    for kind in ["fork", "git"] {
+        assert!(
+            rows.iter().any(|row| row["kind"] == kind),
+            "{label}: `{kind}` prep row in the plan: {plan}"
+        );
+    }
+    let mut echoed = 0;
+    for frame in frames
+        .iter()
+        .filter(|frame| matches!(frame["event"].as_str(), Some("finished" | "up-to-date")))
+    {
+        let Some(step) = frame["step"].as_u64() else {
+            continue;
+        };
+        let kind = frame["kind"].as_str().unwrap_or_default();
+        let name = frame["name"].as_str().unwrap_or_default();
+        let Some(position) = rows
+            .iter()
+            .position(|row| row["kind"] == kind && row["name"] == name)
+        else {
+            continue;
+        };
+        assert_eq!(
+            step,
+            u64::try_from(position).expect("row fits u64") + 1,
+            "{label}: `{kind} {name}` must echo its merged plan position: {frame}"
+        );
+        assert_eq!(
+            frame["total"].as_u64(),
+            Some(total),
+            "{label}: `{kind} {name}` must share the plan denominator: {frame}"
+        );
+        echoed += 1;
+    }
+    assert!(
+        echoed >= 2,
+        "{label}: the prep frames must echo the merged plan: {frames:?}"
+    );
+}
+
 #[test]
 fn fork_and_drop_a_live_world_without_leaving_snapshots() {
     let _guard = LAB_LOCK.lock().unwrap_or_else(|error| error.into_inner());
@@ -866,6 +931,7 @@ fn fork_and_drop_a_live_world_without_leaving_snapshots() {
     let fork = lab.run(&["fork", "feat-auth", "--json"]);
     let fork_reply = lab.json(&fork, "fork feat-auth");
     let fork_frames = lab.frames(&fork, "fork feat-auth");
+    assert_one_fork_denominator(&fork_frames, "fork feat-auth");
     let checkpoints_after: u64 = lab
         .exec(
             &lab.project,
@@ -1300,8 +1366,10 @@ fn failed_fork_publish_rolls_back_without_leaking() {
     let rollback_project = canonical_parent.join(".forks/rollback");
     let rollback_world = lab.store_root.join("worlds/rollback--demo");
     let state_dir = lab.state_home.join("slipfork");
-    // An unwritable registry makes the fork's own `ready` publish fail for real: no mocks.
-    let locked = UnwritableDir::new(&state_dir);
+    // A directory planted at the daemon's lease publish temp name is inherited by the fork's own
+    // world snapshot, so `Lease::write_atomic`'s `fs::write` is refused with `EISDIR` after every
+    // pod booted; the parent's live lease is untouched: a real refusal, no mocks.
+    let blocked = BlockedLeaseInstall::new(&lab.store_root.join("worlds/demo"), lab.daemon_pid());
     let failed = lab.run(&["fork", "rollback", "--json"]);
     // `--json` reports the daemon failure as a final `{"error": …}` frame on stdout.
     let transcript = format!(
@@ -1311,11 +1379,22 @@ fn failed_fork_publish_rolls_back_without_leaking() {
     );
     assert!(
         !failed.status.success(),
-        "an unwritable registry must fail the fork: {transcript}"
+        "a refused lease publish must fail the fork: {transcript}"
     );
     assert!(
-        transcript.contains("worlds.json"),
-        "the fork must fail writing the registry, not during boot: {transcript}"
+        transcript.contains(".slipfork-lease.json"),
+        "the fork must fail publishing its lease, not during boot: {transcript}"
+    );
+    // `--json` carries its one remedy in `error.next` (never a literal `next:` line), so exactly
+    // one remedy key may appear and the message must not smuggle an embedded one.
+    assert_eq!(
+        transcript.matches("\"next\":").count(),
+        1,
+        "one refused publish surfaces exactly one remedy: {transcript}"
+    );
+    assert!(
+        !transcript.contains("next:"),
+        "a `--json` failure must not carry a second `next:` remedy: {transcript}"
     );
     assert!(
         !transcript.contains("exited with"),
@@ -1375,20 +1454,11 @@ fn failed_fork_publish_rolls_back_without_leaking() {
         "no supervisor or pod may survive a rolled-back fork: {:?}",
         processes_naming(&rollback_project)
     );
-    let registry: Vec<serde_json::Value> =
-        serde_json::from_slice(&fs::read(state_dir.join("worlds.json")).expect("worlds.json"))
-            .expect("worlds.json is JSON");
+    // The blocker is only needed for the refusal: remove it before the ledger view and the retry.
+    std::mem::drop(blocked);
     assert!(
-        !registry
-            .iter()
-            .any(|entry| entry["project"].as_str() == rollback_project.to_str()),
-        "worlds.json must not retain the failed fork: {registry:?}"
-    );
-    assert!(
-        registry
-            .iter()
-            .any(|entry| entry["project"].as_str() == canonical_parent.to_str()),
-        "rolling back a fork must not drop the live parent world: {registry:?}"
+        state_dir.join("state.db").is_file(),
+        "the daemon's SQLite ledger lives at `state.db`, not `worlds.json`"
     );
     // The daemon's live view must agree: parent present, no rolled-back fork row or nested fork.
     fn world_rows<'a>(rows: &'a [serde_json::Value], out: &mut Vec<&'a serde_json::Value>) {
@@ -1416,8 +1486,8 @@ fn failed_fork_publish_rolls_back_without_leaking() {
             .any(|row| row["world"] == "rollback--demo" || row["fork"] == "rollback"),
         "the daemon must not report a rolled-back fork: {status_reply}"
     );
-    std::mem::drop(locked);
-    // With the registry writable again the same name must pass preflight and boot to `ready`.
+    // The ledger is writable again and the parent lease is restored, so the same name must pass
+    // preflight and boot to `ready`.
     let retry = lab.run(&["fork", "rollback", "--json"]);
     let retry_stderr = String::from_utf8_lossy(&retry.stderr);
     assert!(
@@ -1434,18 +1504,64 @@ fn failed_fork_publish_rolls_back_without_leaking() {
     let _ = lab.json(&rollback_drop, "drop rollback");
 }
 
-/// The isolated scratch checkout behind `fork_copies_a_plain_checkout_without_touching_it`.
-struct PlainLab {
+/// One isolated real-Btrfs scratch world shared by both fork journeys: an owner-shaped checkout,
+/// a tmpfs daemon runtime, and an isolated `$XDG_STATE_HOME` (its own SQLite ledger and lock).
+/// `plain()` is a checkout without a `Dockerfile` (the `fork` copy path); `root_context()` holds
+/// `.git` at the context root, where a `fork` branch switch is a real build-input test.
+struct ForkLab {
     root: PathBuf,
     runtime: PathBuf,
     store_root: PathBuf,
     project: PathBuf,
+    world: String,
 }
 
 const PLAIN_FORKFILE: &str = "# forkfile: 0.1\nimage app from python:3.13-slim {\n  service web {\n    run: python3 -m http.server 8000\n  }\n}\n";
 
-impl PlainLab {
-    fn new() -> Self {
+/// The shipped demo builds `api/` and `front/`, so `.git` sits outside their contexts and can
+/// never expose this regression. This owner shape builds `image app .` with `COPY . .`.
+const ROOT_FORKFILE: &str = "# forkfile: 0.1\ndomain main\nimage app . {\n  service web {\n    port 8000\n    run: python3 -m http.server 8000\n  }\n}\n";
+const ROOT_DOCKERFILE: &str = "FROM python:3.13-slim\nWORKDIR /code\nCOPY . .\n";
+
+impl ForkLab {
+    fn plain() -> Self {
+        Self::with_fixture(
+            "plaindemo",
+            "plain-fork",
+            &[
+                ("Forkfile", PLAIN_FORKFILE, None),
+                ("marker.txt", "plain checkout\n", None),
+                ("run.sh", "#!/bin/sh\necho plain\n", Some(0o755)),
+            ],
+            "feat-plain",
+        )
+    }
+
+    fn root_context() -> Self {
+        // One per-run context byte keeps the cold boot a real build instead of a step-cache hit
+        // left by an earlier run of this journey.
+        let notes = format!("noise {}\n", unique_suffix());
+        Self::with_fixture(
+            "rootctx",
+            "root-context",
+            &[
+                ("Forkfile", ROOT_FORKFILE, None),
+                ("Dockerfile", ROOT_DOCKERFILE, None),
+                ("app/main.py", "print('parent')\n", None),
+                ("notes.txt", notes.as_str(), None),
+            ],
+            "feat",
+        )
+    }
+
+    /// Fails closed unless the host gives a real Btrfs scratch root and a tmpfs runtime, writes
+    /// `files` into a fresh checkout, and commits it with `fork_branch` ready to switch to.
+    fn with_fixture(
+        world: &str,
+        prefix: &str,
+        files: &[(&str, &str, Option<u32>)],
+        fork_branch: &str,
+    ) -> Self {
         let Some(test_root) =
             std::env::var_os("SLIPFORK_TEST_ROOT").filter(|root| !root.is_empty())
         else {
@@ -1481,17 +1597,23 @@ impl PlainLab {
         }
         require_registry_egress();
         let store_root = mount_store_for(&test_root);
-        let world = WorldName::parse("plaindemo").expect("valid world");
-        let _ = BtrfsEngine::new(StoreLayout::at(&store_root)).drop_world(&world);
-        let root = test_root.join(format!("plain-fork-{}", unique_suffix()));
-        let project = root.join("plaindemo");
-        fs::create_dir_all(&project).expect("create the plain checkout");
+        let name = WorldName::parse(world).expect("valid world");
+        let _ = BtrfsEngine::new(StoreLayout::at(&store_root)).drop_world(&name);
+        let root = test_root.join(format!("{prefix}-{}", unique_suffix()));
+        let project = root.join(world);
+        fs::create_dir_all(&project).expect("create the checkout");
         fs::create_dir_all(root.join("state/slipfork")).expect("create the isolated state dir");
-        fs::write(project.join("Forkfile"), PLAIN_FORKFILE).expect("write the plain Forkfile");
-        fs::write(project.join("marker.txt"), "plain checkout\n").expect("write marker.txt");
-        fs::write(project.join("run.sh"), "#!/bin/sh\necho plain\n").expect("write run.sh");
-        fs::set_permissions(project.join("run.sh"), fs::Permissions::from_mode(0o755))
-            .expect("pin run.sh executable");
+        for (relative, body, mode) in files {
+            let path = project.join(relative);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("create a fixture directory");
+            }
+            fs::write(&path, body).expect("write a fixture file");
+            if let Some(mode) = mode {
+                fs::set_permissions(&path, fs::Permissions::from_mode(*mode))
+                    .expect("pin a fixture file mode");
+            }
+        }
         let git = require_tool("git");
         for args in [
             &["init", "-q"][..],
@@ -1499,7 +1621,7 @@ impl PlainLab {
             &["config", "user.name", "Slipfork Test"][..],
             &["add", "-A"][..],
             &["commit", "-q", "-m", "seed"][..],
-            &["branch", "-f", "feat-plain"][..],
+            &["branch", "-f", fork_branch][..],
         ] {
             let status = Command::new(&git)
                 .arg("-C")
@@ -1514,13 +1636,18 @@ impl PlainLab {
             runtime,
             store_root,
             project,
+            world: world.to_owned(),
         }
     }
 
     fn run(&self, args: &[&str]) -> Output {
+        self.run_in(&self.project, args)
+    }
+
+    fn run_in(&self, directory: &Path, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_slipfork"))
             .args(args)
-            .current_dir(&self.project)
+            .current_dir(directory)
             .env("NO_COLOR", "1")
             .env("TERM", "dumb")
             .env("XDG_RUNTIME_DIR", &self.runtime)
@@ -1528,9 +1655,162 @@ impl PlainLab {
             .output()
             .expect("run slipfork")
     }
+
+    /// Runs one command inside a live pod through the real `slipfork exec` control path.
+    fn exec(&self, directory: &Path, target: &str, argv: &[&str]) -> String {
+        let mut args = vec!["exec", target, "--"];
+        args.extend_from_slice(argv);
+        let output = self.run_in(directory, &args);
+        assert!(
+            output.status.success(),
+            "exec {target} {argv:?} failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    /// Every NDJSON frame a `--json` verb streamed before its final summary line.
+    fn frames(&self, output: &Output, label: &str) -> Vec<serde_json::Value> {
+        assert!(
+            output.status.success(),
+            "{label} failed: stdout={}\nstderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                serde_json::from_str(line)
+                    .unwrap_or_else(|error| panic!("{label} must emit NDJSON: {error}"))
+            })
+            .collect()
+    }
+
+    fn json(&self, output: &Output, label: &str) -> serde_json::Value {
+        self.frames(output, label)
+            .pop()
+            .unwrap_or_else(|| panic!("{label} emitted no JSON"))
+    }
+
+    /// Creates `name` in `project`'s repository so a nested `fork` has a branch to switch to.
+    fn branch(&self, project: &Path, name: &str) {
+        let status = Command::new(require_tool("git"))
+            .arg("-C")
+            .arg(project)
+            .args(["branch", "-f", name])
+            .status()
+            .expect("create the fork branch");
+        assert!(status.success(), "git branch {name} failed");
+    }
+
+    /// Stops the lab daemon so the ledger writer is released for a raw mutation.
+    fn shutdown_daemon(&self) {
+        if let Ok(mut stream) = UnixStream::connect(self.runtime.join("daemon.sock")) {
+            let _ = stream.write_all(b"{\"v\":1,\"id\":\"bye\",\"method\":\"shutdown\"}\n");
+            let mut reply = [0_u8; 256];
+            let _ = stream.read(&mut reply);
+        }
+    }
+
+    /// Deletes one root row with a raw single-connection handle, leaving its fork edge dangling.
+    fn delete_root_row(&self, world_name: &str) {
+        let db = self.root.join("state/slipfork/state.db");
+        assert!(db.is_file(), "the daemon ledger lives at {}", db.display());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        runtime.block_on(async {
+            let options = SqliteConnectOptions::new()
+                .filename(&db)
+                .foreign_keys(false)
+                .busy_timeout(Duration::from_secs(5));
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(options)
+                .await
+                .expect("open the daemon ledger directly");
+            let conn = SqlxSqliteConnector::from_sqlx_sqlite_pool(pool);
+            let deleted = conn
+                .execute_unprepared(&format!(
+                    "DELETE FROM worlds WHERE world_name='{world_name}'"
+                ))
+                .await
+                .expect("delete the root row");
+            assert_eq!(
+                deleted.rows_affected(),
+                1,
+                "delete exactly the `{world_name}` root row"
+            );
+            conn.close().await.expect("close the raw ledger handle");
+        });
+    }
+
+    /// The daemon's rows through the ordinary offline ledger reader.
+    fn ledger_rows(&self) -> slipfork_world::LedgerRows {
+        ForkLedger::open_reader(self.root.join("state/slipfork"))
+            .expect("open the daemon ledger read-only")
+            .list()
+            .expect("read the daemon ledger rows")
+    }
+
+    fn node_state(&self, reply: &serde_json::Value, name: &str) -> Option<String> {
+        reply["nodes"].as_array()?.iter().find_map(|node| {
+            (node["kind"] == "image" && node["name"] == name)
+                .then(|| node["state"].as_str().unwrap_or_default().to_owned())
+        })
+    }
+
+    /// Every NDJSON frame on stdout, success or failure: a refused verb still streams its typed
+    /// error object as the final line, and its empty plan proves nothing booted.
+    fn raw_frames(output: &Output) -> Vec<serde_json::Value> {
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect()
+    }
+
+    fn stamp(&self, world: &str) -> serde_json::Value {
+        serde_json::from_slice(
+            &fs::read(
+                self.store_root
+                    .join(format!("worlds/{world}/.slipfork-world-stamp.json")),
+            )
+            .unwrap_or_else(|error| panic!("read the `{world}` world stamp: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("parse the `{world}` world stamp: {error}"))
+    }
+
+    /// The sealed read-only rootfs the daemon's `WorldHeads` recorded for the `app` image.
+    fn image_rootfs(&self, world: &str) -> PathBuf {
+        let path = self
+            .runtime
+            .join("slipfork/heads")
+            .join(format!("{world}.json"));
+        let heads: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap_or_else(|error| {
+                panic!(
+                    "read the `{world}` daemon heads `{}`: {error}",
+                    path.display()
+                )
+            }))
+            .unwrap_or_else(|error| panic!("parse the `{world}` daemon heads: {error}"));
+        PathBuf::from(
+            heads["images"]["app"]["rootfs"]
+                .as_str()
+                .unwrap_or_else(|| {
+                    panic!("the `{world}` heads must record the `app` image rootfs: {heads}")
+                }),
+        )
+    }
 }
 
-impl Drop for PlainLab {
+impl Drop for ForkLab {
     fn drop(&mut self) {
         let _ = self.run(&["down"]);
         if let Ok(mut stream) = UnixStream::connect(self.runtime.join("daemon.sock")) {
@@ -1543,7 +1823,7 @@ impl Drop for PlainLab {
             Duration::from_secs(10),
         );
         let engine = BtrfsEngine::new(StoreLayout::at(&self.store_root));
-        if let Ok(world) = WorldName::parse("plaindemo") {
+        if let Ok(world) = WorldName::parse(&self.world) {
             let _ = engine.drop_world(&world);
         }
         let _ = fs::remove_dir_all(&self.root);
@@ -1553,7 +1833,7 @@ impl Drop for PlainLab {
 #[test]
 fn fork_copies_a_plain_checkout_without_touching_it() {
     let _guard = LAB_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let lab = PlainLab::new();
+    let lab = ForkLab::plain();
 
     let up = lab.run(&["up"]);
     assert!(
@@ -1667,5 +1947,560 @@ fn fork_copies_a_plain_checkout_without_touching_it() {
     assert!(
         !fork_project.exists(),
         "teardown must remove the copied checkout directory"
+    );
+}
+
+#[test]
+fn up_in_a_fork_registers_its_ancestry_and_fork_from_a_fork_succeeds() {
+    let _guard = LAB_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let lab = ForkLab::plain();
+    let up = lab.run(&["up", "--json"]);
+    let _ = lab.json(&up, "up plaindemo");
+    let fork = lab.run(&["fork", "feat-plain", "--json"]);
+    let parent_fork = lab.json(&fork, "fork feat-plain");
+    assert_eq!(
+        parent_fork["world"], "feat-plain--plaindemo",
+        "{parent_fork}"
+    );
+    let fork_project = lab.project.join(".forks/feat-plain");
+    assert!(fork_project.is_dir(), "the fork checkout must exist");
+
+    // Idle `up` in a fork is registration-only: one row, zero restarts, no rebuild.
+    let idle = lab.run_in(&fork_project, &["up", "--json"]);
+    let idle_frames = lab.frames(&idle, "up in the fork");
+    assert_eq!(
+        idle_frames
+            .iter()
+            .filter(|frame| frame["event"] == "up-to-date")
+            .count(),
+        1,
+        "an Idle up emits exactly one up-to-date row: {idle_frames:?}"
+    );
+    assert!(
+        !idle_frames.iter().any(|frame| matches!(
+            frame["event"].as_str(),
+            Some("started" | "finished" | "step")
+        )),
+        "an Idle up emits no work rows: {idle_frames:?}"
+    );
+    let idle_reply = lab.json(&idle, "up in the fork");
+    assert_eq!(idle_reply["world"], "feat-plain--plaindemo", "{idle_reply}");
+
+    // Registration is not work: a vanished root row is repaired by the live daemon's Idle path.
+    lab.delete_root_row("plaindemo");
+    let repaired = lab.run_in(&fork_project, &["up", "--json"]);
+    let repaired_frames = lab.frames(&repaired, "up the fork after the root row vanished");
+    assert_eq!(
+        repaired_frames
+            .iter()
+            .filter(|frame| frame["event"] == "up-to-date")
+            .count(),
+        1,
+        "the Idle registration path emits exactly one up-to-date row: {repaired_frames:?}"
+    );
+    assert!(
+        !repaired_frames.iter().any(|frame| matches!(
+            frame["event"].as_str(),
+            Some("started" | "finished" | "step")
+        )),
+        "repairing the ancestry is not work and emits no step rows: {repaired_frames:?}"
+    );
+    let repaired_reply = lab.json(&repaired, "up the fork after the root row vanished");
+    assert_eq!(
+        repaired_reply["world"], "feat-plain--plaindemo",
+        "{repaired_reply}"
+    );
+    let rows = lab.ledger_rows();
+    let root = rows
+        .worlds
+        .iter()
+        .find(|row| row.world_name == "plaindemo")
+        .expect("the root is re-registered from disk");
+    assert_eq!(
+        root.checkout_path, lab.project,
+        "the root row names its on-disk checkout"
+    );
+    assert_eq!(
+        root.state,
+        WorldState::Stopped,
+        "an ancestor registered by a chain walk is stopped, never booted"
+    );
+    let fork_row = rows
+        .worlds
+        .iter()
+        .find(|row| row.world_name == "feat-plain--plaindemo")
+        .expect("the fork row survives");
+    let edge = rows
+        .forks
+        .iter()
+        .find(|edge| edge.world_id == fork_row.id)
+        .expect("the fork edge is repaired");
+    assert_eq!(
+        edge.root_id, root.id,
+        "the dangling edge points at the new root"
+    );
+    assert_eq!(edge.parent_id, root.id);
+    assert_eq!(edge.name, "feat-plain");
+
+    lab.branch(&fork_project, "feat-salut");
+    let salut = lab.run_in(&fork_project, &["fork", "feat-salut", "--json"]);
+    let salut_stderr = String::from_utf8_lossy(&salut.stderr);
+    assert!(salut.status.success(), "fork feat-salut: {salut_stderr}");
+    let salut_reply = lab.json(&salut, "fork feat-salut");
+    assert_eq!(
+        salut_reply["world"], "feat-salut--plaindemo",
+        "{salut_reply}"
+    );
+    let salut_project = lab.project.join(".forks/feat-salut");
+    assert!(salut_project.is_dir(), "the fork boots from its checkout");
+    // Live-gate the flattening regression: the child edge keeps its real parent and family root.
+    let rows = lab.ledger_rows();
+    let plaindemo = rows
+        .worlds
+        .iter()
+        .find(|row| row.world_name == "plaindemo")
+        .expect("the root row");
+    let feat_plain = rows
+        .worlds
+        .iter()
+        .find(|row| row.world_name == "feat-plain--plaindemo")
+        .expect("the parent fork row");
+    let salut_row = rows
+        .worlds
+        .iter()
+        .find(|row| row.world_name == "feat-salut--plaindemo")
+        .expect("the child fork row");
+    let salut_edge = rows
+        .forks
+        .iter()
+        .find(|edge| edge.world_id == salut_row.id)
+        .expect("the child fork edge");
+    assert_eq!(
+        salut_edge.root_id, plaindemo.id,
+        "a flat fork keeps its family root"
+    );
+    assert_eq!(
+        salut_edge.parent_id, feat_plain.id,
+        "a fork of a fork keeps its real parent instead of flattening to the root"
+    );
+    let drop = lab.run(&["drop", "feat-salut", "-f", "--json"]);
+    let _ = lab.json(&drop, "drop feat-salut");
+
+    let down = lab.run_in(&fork_project, &["down"]);
+    assert!(
+        down.status.success(),
+        "down the fork: {}",
+        String::from_utf8_lossy(&down.stderr)
+    );
+    let drop = lab.run(&["drop", "feat-plain", "-f", "--json"]);
+    assert!(
+        drop.status.success(),
+        "drop feat-plain: {}",
+        String::from_utf8_lossy(&drop.stderr)
+    );
+    assert!(!fork_project.exists(), "no fork checkout survives its drop");
+    assert!(
+        !salut_project.exists(),
+        "no child fork checkout survives either"
+    );
+    lab.shutdown_daemon();
+    assert!(
+        wait_until(
+            || daemons_for(&lab.runtime).is_empty(),
+            Duration::from_secs(10)
+        ),
+        "no daemon survives the journey: {:?}",
+        daemons_for(&lab.runtime)
+    );
+}
+
+#[test]
+fn fork_adopts_a_root_context_image_cached_across_a_branch_switch() {
+    let _guard = LAB_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let lab = ForkLab::root_context();
+
+    let up = lab.run(&["up", "--json"]);
+    let cold = lab.json(&up, "cold up");
+    assert_eq!(
+        lab.node_state(&cold, "app").as_deref(),
+        Some("built"),
+        "the cold `up` must build the root-context image: {cold}"
+    );
+    // The sealed image is what `COPY . .` wrote: the source is there, VCS and Slipfork state are
+    // not. (A default `dev` boot overlays the live checkout at `/code`, so `exec` sees the host
+    // `.git`; the image copy below proves the baked tree itself.)
+    let baked = lab.image_rootfs("rootctx");
+    assert!(
+        baked.join("code/app/main.py").is_file(),
+        "the built image must carry the copied source: {}",
+        baked.display()
+    );
+    assert!(
+        !baked.join("code/.git").exists(),
+        "`.git` must never be copied into the image: {}",
+        baked.display()
+    );
+    assert!(
+        !baked.join("code/.slipfork").exists(),
+        "`.slipfork` must never be copied into the image"
+    );
+    assert!(
+        !baked.join("code/Dockerfile").exists(),
+        "the Dockerfile is metadata, never image content"
+    );
+
+    // `feat` sits on the same commit as the parent, so only the branch switch rewrites `.git`.
+    let fork_started = Instant::now();
+    let fork = lab.run(&["fork", "feat", "--json"]);
+    let frames = lab.frames(&fork, "fork feat");
+    let reply = lab.json(&fork, "fork feat");
+    assert_eq!(reply["world"], "feat--rootctx", "{reply}");
+    assert!(
+        frames.iter().any(|frame| {
+            frame["kind"] == "image" && frame["name"] == "app" && frame["state"] == "cached"
+        }),
+        "a branch switch must adopt the parent's sealed image: {frames:?}"
+    );
+    for frame in &frames {
+        assert_ne!(
+            frame["state"], "built",
+            "a fork must never rebuild an image: {frame}"
+        );
+    }
+    assert!(
+        !frames
+            .iter()
+            .any(|frame| frame["event"] == "step" && frame["image"] == "app"),
+        "a fork must stream zero build steps: {frames:?}"
+    );
+    println!("measured root-context fork: {:?}", fork_started.elapsed());
+    assert_eq!(
+        lab.stamp("rootctx")["world_epoch"],
+        lab.stamp("feat--rootctx")["world_epoch"],
+        "a fork must inherit the parent's `world_epoch`"
+    );
+
+    // A duplicate `fork` of the same name must be refused before any progress row.
+    let duplicate = lab.run(&["fork", "feat", "--json"]);
+    assert_eq!(duplicate.status.code(), Some(1), "{duplicate:?}");
+    let duplicate_frames = ForkLab::raw_frames(&duplicate);
+    assert!(
+        !duplicate_frames
+            .iter()
+            .any(|frame| frame["event"] == "plan"),
+        "a refused fork must emit zero plan rows: {duplicate_frames:?}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&duplicate.stdout).contains("snapshot"),
+        "a refused fork must stream no snapshot row: {}",
+        String::from_utf8_lossy(&duplicate.stdout)
+    );
+    let error = duplicate_frames
+        .iter()
+        .find(|frame| frame["error"].is_object())
+        .unwrap_or_else(|| {
+            panic!("a refused fork must emit one error object: {duplicate_frames:?}")
+        });
+    assert_eq!(error["error"]["code"], "fork-exists", "{error}");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("already exists")),
+        "{error}"
+    );
+    assert_eq!(error["error"]["next"], "slipfork drop feat -f", "{error}");
+
+    let duplicate_plain = lab.run(&["fork", "feat"]);
+    assert_eq!(
+        duplicate_plain.status.code(),
+        Some(1),
+        "{duplicate_plain:?}"
+    );
+    let stderr = String::from_utf8_lossy(&duplicate_plain.stderr);
+    assert!(
+        stderr.contains("error: fork \"feat\" already exists"),
+        "{stderr}"
+    );
+    assert_eq!(
+        stderr.matches("next:").count(),
+        1,
+        "exactly one embedded remedy: {stderr}"
+    );
+    assert!(stderr.contains("next: slipfork drop feat -f"), "{stderr}");
+    assert!(
+        duplicate_plain.stdout.is_empty(),
+        "a refused fork must write no plan or spinner row: {:?}",
+        String::from_utf8_lossy(&duplicate_plain.stdout)
+    );
+
+    // The advertised remedy really frees the name, and an unchanged re-fork stays cached.
+    let drop = lab.run(&["drop", "feat", "-f", "--json"]);
+    let dropped = lab.json(&drop, "drop feat before re-fork");
+    assert_eq!(dropped["dropped"], "feat");
+    let refork = lab.run(&["fork", "feat", "--json"]);
+    let refork_frames = lab.frames(&refork, "re-fork feat");
+    let refork_reply = lab.json(&refork, "re-fork feat");
+    assert_eq!(refork_reply["world"], "feat--rootctx", "{refork_reply}");
+    assert!(
+        refork_frames.iter().any(|frame| {
+            frame["kind"] == "image" && frame["name"] == "app" && frame["state"] == "cached"
+        }),
+        "an unchanged re-fork must stay cached: {refork_frames:?}"
+    );
+
+    // A genuine copied-source edit on the fork branch still rebuilds.
+    let fork_project = lab.project.join(".forks/feat");
+    assert!(fork_project.is_dir(), "the fork checkout must exist");
+    fs::write(fork_project.join("app/main.py"), "print('feat')\n").expect("edit the fork source");
+    let git = require_tool("git");
+    for args in [
+        &["add", "app/main.py"][..],
+        &["commit", "-q", "-m", "fork source edit"][..],
+    ] {
+        let status = Command::new(&git)
+            .arg("-C")
+            .arg(&fork_project)
+            .args(args)
+            .status()
+            .expect("run git");
+        assert!(status.success(), "git {args:?} failed");
+    }
+    let down = lab.run_in(&fork_project, &["down"]);
+    assert!(
+        down.status.success(),
+        "{}",
+        String::from_utf8_lossy(&down.stderr)
+    );
+    let rebuilt = lab.run_in(&fork_project, &["up", "--json"]);
+    let rebuilt_reply = lab.json(&rebuilt, "fork up after the source edit");
+    assert_eq!(
+        lab.node_state(&rebuilt_reply, "app").as_deref(),
+        Some("built"),
+        "a real source edit on the fork branch must rebuild: {rebuilt_reply}"
+    );
+    let rebuilt_image = lab.image_rootfs("feat--rootctx");
+    assert!(
+        rebuilt_image.join("code/app/main.py").is_file()
+            && !rebuilt_image.join("code/.git").exists(),
+        "the rebuilt image must carry the edit and never `.git`: {}",
+        rebuilt_image.display()
+    );
+
+    // ... and the rebuilt image is cached on the next boot, with no repeated build.
+    let down = lab.run_in(&fork_project, &["down"]);
+    assert!(
+        down.status.success(),
+        "{}",
+        String::from_utf8_lossy(&down.stderr)
+    );
+    // One plain (not `--json`) boot reuses the warm path: `NO_COLOR` still renders the human
+    // `image … cached` row and must emit zero escape bytes.
+    let warm = lab.run_in(&fork_project, &["up"]);
+    assert!(
+        warm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&warm.stderr)
+    );
+    let human = String::from_utf8_lossy(&warm.stdout);
+    assert!(
+        human.contains("cached"),
+        "the rebuilt image must be cached on the next boot: {human}"
+    );
+    assert!(
+        !human.as_bytes().contains(&0x1b),
+        "`NO_COLOR` must emit zero escape bytes: {human:?}"
+    );
+
+    // The literal owner check: a non-dev (`-F -dev` equivalent) boot keeps the image copy, so
+    // `exec … ls -a /code` lists exactly the baked tree — no `.git`.
+    let down = lab.run_in(&fork_project, &["down"]);
+    assert!(
+        down.status.success(),
+        "{}",
+        String::from_utf8_lossy(&down.stderr)
+    );
+    let image_copy = lab.run_in(&fork_project, &["up", "--no-default-features", "--json"]);
+    let _ = lab.json(&image_copy, "image-copy fork up");
+    let code = lab.exec(&fork_project, "web", &["ls", "-a", "/code"]);
+    assert!(
+        !code.split_whitespace().any(|name| name == ".git"),
+        "the baked `/code` must never carry `.git`: {code}"
+    );
+    assert!(
+        code.split_whitespace().any(|name| name == "app"),
+        "the baked `/code` must carry the copied source: {code}"
+    );
+
+    let drop = lab.run(&["drop", "feat", "-f", "--json"]);
+    let dropped = lab.json(&drop, "drop feat");
+    assert_eq!(dropped["dropped"], "feat");
+    let down = lab.run(&["down"]);
+    assert!(
+        down.status.success(),
+        "{}",
+        String::from_utf8_lossy(&down.stderr)
+    );
+}
+
+/// M3.133: `drop` is one two-row plan (`[1/2]`..`[2/2]`, one row per step) plus one verdict under
+/// `NO_COLOR`, `--json` mirrors those steps, and an unreachable control plane surfaces one remedy.
+#[test]
+fn drop_prints_one_two_row_plan_and_json_mirrors_it() {
+    let _guard = LAB_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let lab = Lab::new();
+    // One tiny service keeps this drop-focused journey fast and independent of the eight-pod demo.
+    const FORKFILE: &str = concat!(
+        "# forkfile: 0.1\n",
+        "image app from python:3.13-slim {\n",
+        "  service web {\n",
+        "    run: python3 -m http.server 8000\n",
+        "  }\n",
+        "}\n",
+    );
+    fs::write(lab.project.join("Forkfile"), FORKFILE).expect("write the drop fixture");
+    let git = require_tool("git");
+    for args in [
+        vec!["add", "Forkfile"],
+        vec!["commit", "-q", "-m", "drop fixture"],
+    ] {
+        let status = Command::new(&git)
+            .arg("-C")
+            .arg(&lab.project)
+            .args(&args)
+            .status()
+            .expect("run git");
+        assert!(status.success(), "git {args:?} failed");
+    }
+    let up = lab.run(&["up", "--json"]);
+    let _ = lab.json(&up, "up");
+    lab.branch(&lab.project, "jello");
+
+    let fork = lab.run(&["fork", "jello", "--json"]);
+    let _ = lab.json(&fork, "fork jello");
+
+    let drop = lab.run(&["drop", "jello"]);
+    assert!(
+        drop.status.success(),
+        "{}",
+        String::from_utf8_lossy(&drop.stderr)
+    );
+    assert!(
+        !drop.stdout.contains(&0x1b),
+        "`NO_COLOR` drop must emit zero escape bytes: {:?}",
+        String::from_utf8_lossy(&drop.stdout)
+    );
+    let stdout = String::from_utf8_lossy(&drop.stdout);
+    let lines: Vec<&str> = stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    assert_eq!(lines.len(), 3, "two settled rows + one verdict: {stdout:?}");
+    /// Exactly one real `ui/elapsed` token: `<1ms`, `\d+ms`, or `\d+\.\ds`.
+    fn is_timing(token: &str) -> bool {
+        if token == "<1ms" {
+            return true;
+        }
+        if let Some(ms) = token.strip_suffix("ms") {
+            return !ms.is_empty() && ms.bytes().all(|byte| byte.is_ascii_digit());
+        }
+        let Some(seconds) = token.strip_suffix('s') else {
+            return false;
+        };
+        let Some((whole, fraction)) = seconds.split_once('.') else {
+            return false;
+        };
+        !whole.is_empty()
+            && whole.bytes().all(|byte| byte.is_ascii_digit())
+            && fraction.len() == 1
+            && fraction.bytes().all(|byte| byte.is_ascii_digit())
+    }
+    for (line, prefix) in [
+        (lines[0], "✓ [1/2] stop    jello  done  pods stopped  "),
+        (
+            lines[1],
+            "✓ [2/2] delete  jello  done  project + world data  ",
+        ),
+    ] {
+        let timing = line
+            .strip_prefix(prefix)
+            .unwrap_or_else(|| panic!("the settled row shape: {line:?}"));
+        let tokens: Vec<&str> = timing.split_whitespace().collect();
+        assert_eq!(tokens.len(), 1, "only the timing cell may follow: {line:?}");
+        assert!(is_timing(tokens[0]), "real elapsed grammar: {line:?}");
+    }
+    assert!(
+        lines[2].starts_with("✓ Dropped jello (") && lines[2].ends_with(')'),
+        "one verdict: {:?}",
+        lines[2]
+    );
+
+    // The same plan in the machine transcript: one `plan` frame, four stepped frames, summary last.
+    let fork = lab.run(&["fork", "jello", "--json"]);
+    let _ = lab.json(&fork, "fork jello again");
+    let drop = lab.run(&["drop", "jello", "--json"]);
+    let frames = lab.frames(&drop, "drop jello --json");
+    let summary = frames.last().expect("drop --json summary");
+    assert_eq!(summary["dropped"], "jello", "{summary}");
+    assert!(summary["elapsed_ms"].as_u64().is_some(), "{summary}");
+    let plan = frames
+        .iter()
+        .find(|frame| frame["event"] == "plan")
+        .expect("drop must announce one plan");
+    assert_eq!(plan["total"], 2, "{plan}");
+    assert_eq!(plan["rows"].as_array().map(Vec::len), Some(2), "{plan}");
+    let phases: Vec<&serde_json::Value> = frames
+        .iter()
+        .filter(|frame| matches!(frame["event"].as_str(), Some("started" | "finished")))
+        .collect();
+    assert_eq!(phases.len(), 4, "{frames:?}");
+    for (frame, (step, kind)) in
+        phases
+            .iter()
+            .zip([(1, "stop"), (1, "stop"), (2, "delete"), (2, "delete")])
+    {
+        assert_eq!(frame["step"], step, "{frame}");
+        assert_eq!(frame["total"], 2, "{frame}");
+        assert_eq!(frame["kind"], kind, "{frame}");
+        assert_eq!(frame["name"], "jello", "{frame}");
+    }
+
+    // An unreachable CLI control plane (the daemon socket path is not a directory) exits 1 with
+    // exactly one remedy and opens no rows; this proves the client framing, not a daemon stop.
+    let fork = lab.run(&["fork", "jello", "--json"]);
+    let _ = lab.json(&fork, "fork jello before the dead control plane");
+    let dead = lab.state_home.join("dead-runtime-dir");
+    fs::write(&dead, "a regular file, never a runtime directory\n")
+        .expect("write the dead runtime placeholder");
+    let unreachable_control_plane = Command::new(env!("CARGO_BIN_EXE_slipfork"))
+        .args(["drop", "jello"])
+        .current_dir(&lab.project)
+        .env("NO_COLOR", "1")
+        .env("XDG_RUNTIME_DIR", &dead)
+        .env("XDG_STATE_HOME", &lab.state_home)
+        .env("TERM", "dumb")
+        .output()
+        .expect("run slipfork drop without a control plane");
+    assert_eq!(
+        unreachable_control_plane.status.code(),
+        Some(1),
+        "{unreachable_control_plane:?}"
+    );
+    let stderr = String::from_utf8_lossy(&unreachable_control_plane.stderr);
+    assert_eq!(stderr.matches("next:").count(), 1, "{stderr}");
+    let stdout = String::from_utf8_lossy(&unreachable_control_plane.stdout);
+    assert!(
+        !stdout.contains("delete") && !stdout.contains("ms") && !stdout.contains("Dropped"),
+        "an unreachable control plane must open zero rows: {stdout:?}"
+    );
+    assert!(
+        !unreachable_control_plane.stdout.contains(&0x1b),
+        "{stdout:?}"
+    );
+
+    let drop = lab.run(&["drop", "jello"]);
+    assert!(
+        drop.status.success(),
+        "{}",
+        String::from_utf8_lossy(&drop.stderr)
     );
 }

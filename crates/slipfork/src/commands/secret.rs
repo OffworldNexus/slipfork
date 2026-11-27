@@ -1,14 +1,14 @@
 //! `slipfork secret`: list, store, and remove local offline secrets through the daemon vault.
 
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::process::ExitCode;
 
 use serde_json::{Value, json};
 
-use crate::commands::{Session, emit};
-use crate::daemon::DaemonClient;
-use crate::ui::Palette;
-use crate::ui::table::{Column, Table};
+use crate::commands::Session;
+use crate::ui::report::Palette;
+use crate::ui::report::{Column, Table};
+use crate::ui::report::{Report, ReportRenderer, StreamKind};
 
 /// The three columns of one `secret list`: key, separator, redacted value.
 const SECRET: [Column; 3] = [Column::left(), Column::left(), Column::left()];
@@ -61,7 +61,7 @@ impl Session {
     }
 
     fn secret_list(&self, args: &SecretArgs) -> ExitCode {
-        let mut client = match DaemonClient::connect(&self.host) {
+        let mut client = match self.connect() {
             Ok(client) => client,
             Err(error) => return self.daemon_failure(&error, args.json),
         };
@@ -86,12 +86,12 @@ impl Session {
                 }
                 out.insert(component, Value::Object(rows));
             }
-            return emit(&format!("{}\n", Value::Object(out)));
+            return self.renderer().json_exit(&Value::Object(out));
         }
         let palette = Palette::new(self.color());
         let multiple = components.len() > 1;
         let table = table();
-        let mut text = String::new();
+        let mut lines = Vec::new();
         for (component, keys) in components {
             let rows: Vec<&Value> = keys.as_array().into_iter().flatten().collect();
             let widths = table.widths(
@@ -108,7 +108,7 @@ impl Session {
                     .collect::<Vec<_>>(),
             );
             if multiple {
-                text.push_str(&format!("{}\n", palette.label(&component)));
+                lines.push(palette.label(&component));
             }
             for entry in rows {
                 let Some(key) = entry.get("key").and_then(Value::as_str) else {
@@ -117,16 +117,15 @@ impl Session {
                 let value = if entry["set"].as_bool() == Some(true) {
                     palette.redacted(shown(entry))
                 } else {
-                    palette.dim(shown(entry))
+                    palette.meta(shown(entry))
                 };
-                text.push_str(&table.line(&widths, &[palette.key(key), palette.dim("="), value]));
-                text.push('\n');
+                lines.push(table.line(&widths, &[palette.key(key), palette.meta("="), value]));
             }
         }
-        if text.is_empty() {
-            text.push_str("No secrets declared in this Forkfile\n");
+        if lines.is_empty() {
+            lines.push("No secrets declared in this Forkfile".to_owned());
         }
-        emit(&text)
+        self.renderer().emit_lines_exit(lines)
     }
 
     fn secret_set(&self, args: &SecretArgs) -> ExitCode {
@@ -138,17 +137,19 @@ impl Session {
                 args.json,
             );
         };
-        let value = match read_secret_value(self.interactive(), &format!("{component}.{key}")) {
-            Ok(value) => value,
-            Err(message) => {
-                return self.report(
-                    "secret-input",
-                    &message,
-                    "pipe the value or run interactively",
-                    args.json,
-                );
-            }
-        };
+        let renderer = self.renderer();
+        let value =
+            match read_secret_value(self.interactive(), &format!("{component}.{key}"), &renderer) {
+                Ok(value) => value,
+                Err(message) => {
+                    return self.report(
+                        "secret-input",
+                        &message,
+                        "pipe the value or run interactively",
+                        args.json,
+                    );
+                }
+            };
         if value.is_empty() {
             let next = format!(
                 "pipe a value: printf '%s' \"$VALUE\" | slipfork secret set {component}.{key}"
@@ -160,7 +161,7 @@ impl Session {
                 args.json,
             );
         }
-        let mut client = match DaemonClient::connect(&self.host) {
+        let mut client = match self.connect() {
             Ok(client) => client,
             Err(error) => return self.daemon_failure(&error, args.json),
         };
@@ -175,17 +176,16 @@ impl Session {
             Err(error) => return self.env_failure(&error, args.json),
         };
         if args.json {
-            return emit(&format!(
-                "{}\n",
-                json!({ "component": reply["component"], "key": reply["key"], "set": true })
-            ));
+            return self.renderer().json_exit(&json!({
+                "component": reply["component"], "key": reply["key"], "set": true
+            }));
         }
         let palette = Palette::new(self.color());
-        emit(&format!(
-            "{} Set {}\n",
+        self.renderer().emit_exit(&Report::notice(format!(
+            "{} Set {}",
             palette.icon_ok(),
             palette.path(&format!("{component}.{key}"))
-        ))
+        )))
     }
 
     fn secret_unset(&self, args: &SecretArgs) -> ExitCode {
@@ -197,7 +197,7 @@ impl Session {
                 args.json,
             );
         };
-        let mut client = match DaemonClient::connect(&self.host) {
+        let mut client = match self.connect() {
             Ok(client) => client,
             Err(error) => return self.daemon_failure(&error, args.json),
         };
@@ -207,17 +207,16 @@ impl Session {
             Err(error) => return self.env_failure(&error, args.json),
         };
         if args.json {
-            return emit(&format!(
-                "{}\n",
-                json!({ "component": reply["component"], "key": reply["key"], "unset": true })
-            ));
+            return self.renderer().json_exit(&json!({
+                "component": reply["component"], "key": reply["key"], "unset": true
+            }));
         }
         let palette = Palette::new(self.color());
-        emit(&format!(
-            "{} Unset {}\n",
+        self.renderer().emit_exit(&Report::notice(format!(
+            "{} Unset {}",
             palette.icon_ok(),
             palette.path(&format!("{component}.{key}"))
-        ))
+        )))
     }
 }
 
@@ -231,10 +230,9 @@ fn split_target(target: Option<&str>) -> Option<(&str, &str)> {
 }
 
 /// Reads one value from stdin; on a terminal the prompt is shown and echo is disabled.
-fn read_secret_value(tty: bool, label: &str) -> Result<String, String> {
+fn read_secret_value(tty: bool, label: &str, renderer: &ReportRenderer) -> Result<String, String> {
     if tty {
-        eprint!("value for {label}: ");
-        let _ = io::stderr().flush();
+        let _ = renderer.emit_text(StreamKind::Stderr, &format!("value for {label}: "));
     }
     let _echo = if tty { EchoGuard::disable() } else { None };
     let mut buffer = String::new();
@@ -242,18 +240,18 @@ fn read_secret_value(tty: bool, label: &str) -> Result<String, String> {
         .read_to_string(&mut buffer)
         .map_err(|error| format!("cannot read the secret value: {error}"))?;
     if tty {
-        eprintln!();
+        let _ = renderer.emit_text(StreamKind::Stderr, "\n");
     }
     Ok(buffer.trim_end_matches(['\n', '\r']).to_owned())
 }
 
 /// Restores the terminal echo flag on drop.
-struct EchoGuard {
+pub(crate) struct EchoGuard {
     saved: libc::termios,
 }
 
 impl EchoGuard {
-    fn disable() -> Option<Self> {
+    pub(crate) fn disable() -> Option<Self> {
         // SAFETY: both calls operate on a live `termios` for stdin and never share memory.
         unsafe {
             let mut saved: libc::termios = std::mem::zeroed();

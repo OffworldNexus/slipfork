@@ -6,10 +6,11 @@ use std::os::unix::fs::{chown, lchown, symlink};
 use std::path::{Path, PathBuf};
 
 use crate::context::{BuildContext, ContextEntry};
-use crate::dockerfile::Owner;
+use crate::dockerfile::CopyOptions;
 use crate::error::{Error, Result};
 use crate::fetch;
 use crate::ignore::SourcePattern;
+use crate::metadata::{Mtime, set_mode, set_mtime};
 use crate::runtime::rooted;
 
 /// Where a `COPY`/`ADD` destination lands: the writable step rootfs plus the stage's current
@@ -60,7 +61,7 @@ pub(crate) fn copy_context(
     sources: &[String],
     dest: &str,
     destination: Destination<'_>,
-    owner: Owner,
+    options: CopyOptions,
 ) -> Result<()> {
     for source in sources {
         if let Some(scheme) = fetch::scheme(source) {
@@ -77,6 +78,7 @@ pub(crate) fn copy_context(
         is_dir(context.entries(), single) || single == "."
     };
 
+    let mut directories: Vec<(PathBuf, Mtime)> = Vec::new();
     for source in &sources {
         let matches = select(context.entries(), source)?;
         if matches.is_empty() {
@@ -98,8 +100,16 @@ pub(crate) fn copy_context(
                     .unwrap_or(&entry.relative);
                 dest_abs.join(stripped)
             };
-            copy_entry(&entry.absolute, &target, entry.is_dir, owner)?;
+            copy_entry(&entry.absolute, &target, entry.is_dir, options)?;
+            if entry.is_dir {
+                directories.push((target, source_mtime(&entry.absolute)?));
+            }
         }
+    }
+    // A directory's mtime lands after every child: writing a child re-stamps its parent.
+    for (directory, mtime) in directories.iter().rev() {
+        apply_chmod(directory, options.mode)?;
+        set_mtime(directory, *mtime, true)?;
     }
     Ok(())
 }
@@ -110,7 +120,7 @@ pub(crate) fn copy_rootfs(
     sources: &[String],
     dest: &str,
     destination: Destination<'_>,
-    owner: Owner,
+    options: CopyOptions,
 ) -> Result<()> {
     let sources: Vec<String> = sources.iter().map(|source| normalize(source)).collect();
     let dest_abs = destination.resolve(dest)?;
@@ -118,6 +128,10 @@ pub(crate) fn copy_rootfs(
         let first = sources.first().map(String::as_str).unwrap_or("/");
         rooted(source_root, first).is_dir()
     };
+    let mut directories: Vec<(PathBuf, Mtime)> = Vec::new();
+    // An existing destination directory keeps its own mode; only directories this copy creates
+    // receive `--chmod`.
+    let dest_existed = dest_abs.exists();
     for source in &sources {
         let source_abs = rooted(source_root, source);
         let metadata = fs::symlink_metadata(&source_abs)
@@ -125,19 +139,30 @@ pub(crate) fn copy_rootfs(
         if metadata.is_dir() {
             let mut collected = Vec::new();
             walk(&source_abs, Path::new(""), &mut collected)?;
+            if !dest_existed {
+                directories.push((dest_abs.clone(), source_mtime(&source_abs)?));
+            }
             for (relative, absolute, is_dir) in collected {
-                copy_entry(&absolute, &dest_abs.join(relative), is_dir, owner)?;
+                let target = dest_abs.join(&relative);
+                copy_entry(&absolute, &target, is_dir, options)?;
+                if is_dir {
+                    directories.push((target, source_mtime(&absolute)?));
+                }
             }
         } else if dest_is_dir {
             copy_entry(
                 &source_abs,
                 &dest_abs.join(source_abs.file_name().unwrap_or_default()),
                 false,
-                owner,
+                options,
             )?;
         } else {
-            copy_entry(&source_abs, &dest_abs, false, owner)?;
+            copy_entry(&source_abs, &dest_abs, false, options)?;
         }
+    }
+    for (directory, mtime) in directories.iter().rev() {
+        apply_chmod(directory, options.mode)?;
+        set_mtime(directory, *mtime, true)?;
     }
     Ok(())
 }
@@ -152,7 +177,7 @@ pub(crate) fn add_context(
     sources: &[String],
     dest: &str,
     destination: Destination<'_>,
-    owner: Owner,
+    options: CopyOptions,
 ) -> Result<()> {
     let mut plain = Vec::new();
     let mut urls = Vec::new();
@@ -175,14 +200,20 @@ pub(crate) fn add_context(
             && let Some(archive) = open_archive(&path)?
         {
             let dest_abs = destination.resolve(dest)?;
+            let created = !dest_abs.exists();
             fs::create_dir_all(&dest_abs)
                 .map_err(|source| Error::io("create", &dest_abs, source))?;
             let mut archive = tar::Archive::new(archive);
+            // The `tar` crate restores header mtimes by default (`preserve_mtime: true`), so the
+            // `ADD` archive path needs no metadata pass of its own.
             archive
                 .unpack(&dest_abs)
                 .map_err(|source| Error::io("extract", &dest_abs, source))?;
-            chown(&dest_abs, Some(owner.uid), Some(owner.gid))
+            chown(&dest_abs, Some(options.owner.uid), Some(options.owner.gid))
                 .map_err(|source| Error::io("chown", &dest_abs, source))?;
+            // A destination directory that already existed keeps its mode; every entry the
+            // archive materialized still takes `--chmod`.
+            apply_chmod_tree(&dest_abs, options.mode, created)?;
         } else {
             plain.push(source.clone());
         }
@@ -196,7 +227,7 @@ pub(crate) fn add_context(
         } else {
             dest.to_owned()
         };
-        copy_context(context, &plain, &local_dest, destination, owner)?;
+        copy_context(context, &plain, &local_dest, destination, options)?;
     }
     if !urls.is_empty() {
         let dest_abs = destination.resolve(dest)?;
@@ -208,10 +239,28 @@ pub(crate) fn add_context(
             } else {
                 dest_abs.clone()
             };
-            fetch::fetch(url, &target, owner)?;
+            fetch::fetch(url, &target, options)?;
         }
     }
     Ok(())
+}
+
+/// The canonical source resolution shared by `COPY`/`ADD` and per-instruction source keys.
+///
+/// The same `normalize` + wildcard/prefix + `.dockerignore`-filtered entry walk as
+/// [`copy_context`], so a source Merkle can never disagree with what a copy actually writes.
+pub(crate) fn matched_entries<'a>(
+    context: &'a BuildContext,
+    source: &str,
+) -> Result<Vec<&'a ContextEntry>> {
+    let source = normalize(source);
+    let matches = select(context.entries(), &source)?;
+    if matches.is_empty() {
+        return Err(step(format!(
+            "`{source}` matched no file in the build context"
+        )));
+    }
+    Ok(matches)
 }
 
 fn select<'a>(entries: &'a [ContextEntry], source: &str) -> Result<Vec<&'a ContextEntry>> {
@@ -240,30 +289,81 @@ fn is_dir(entries: &[ContextEntry], source: &str) -> bool {
         .any(|entry| entry.relative == Path::new(source) && entry.is_dir)
 }
 
-fn copy_entry(source: &Path, dest: &Path, is_dir: bool, owner: Owner) -> Result<()> {
+fn copy_entry(source: &Path, dest: &Path, is_dir: bool, options: CopyOptions) -> Result<()> {
+    let owner = options.owner;
     if is_dir {
         fs::create_dir_all(dest).map_err(|source| Error::io("create", dest, source))?;
+        chown(dest, Some(owner.uid), Some(owner.gid))
+            .map_err(|source| Error::io("chown", dest, source))?;
+        // Directory mode and mtime are applied by the caller once their children are written, so a
+        // `--chmod=555` directory never blocks its own contents and a child never re-stamps it.
+        return Ok(());
+    }
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(|source| Error::io("create", parent, source))?;
+    }
+    let symlink_entry = fs::symlink_metadata(source)
+        .map_err(|source_err| Error::io("inspect", source, source_err))?
+        .file_type()
+        .is_symlink();
+    // Docker `COPY` preserves the source mtime; `fs::copy` and `symlink` stamp `now`, so the
+    // source timestamp is restored explicitly (on a symlink without following it).
+    let mtime = source_mtime(source)?;
+    if symlink_entry {
+        let target = fs::read_link(source)
+            .map_err(|source_err| Error::io("readlink", source, source_err))?;
+        let _ = fs::remove_file(dest);
+        symlink(&target, dest).map_err(|source_err| Error::io("symlink", dest, source_err))?;
     } else {
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent).map_err(|source| Error::io("create", parent, source))?;
-        }
-        let metadata = fs::symlink_metadata(source)
-            .map_err(|source_err| Error::io("inspect", source, source_err))?;
-        if metadata.file_type().is_symlink() {
-            let target = fs::read_link(source)
-                .map_err(|source_err| Error::io("readlink", source, source_err))?;
-            let _ = fs::remove_file(dest);
-            symlink(&target, dest).map_err(|source_err| Error::io("symlink", dest, source_err))?;
-        } else {
-            fs::copy(source, dest).map_err(|source_err| Error::io("copy", dest, source_err))?;
+        fs::copy(source, dest).map_err(|source_err| Error::io("copy", dest, source_err))?;
+    }
+    lchown(dest, Some(owner.uid), Some(owner.gid))
+        .map_err(|source| Error::io("chown", dest, source))?;
+    if !symlink_entry {
+        apply_chmod(dest, options.mode)?;
+    }
+    set_mtime(dest, mtime, !symlink_entry)
+}
+
+/// The mtime a `COPY` must carry from `source` onto its destination.
+fn source_mtime(source: &Path) -> Result<Mtime> {
+    let metadata = fs::symlink_metadata(source)
+        .map_err(|source_err| Error::io("inspect", source, source_err))?;
+    let modified = metadata
+        .modified()
+        .map_err(|source_err| Error::io("read the mtime of", source, source_err))?;
+    Mtime::from_system_time(modified, source)
+}
+
+/// Applies a `--chmod` mode to one written entry; `None` leaves the copied mode alone.
+fn apply_chmod(path: &Path, mode: Option<u32>) -> Result<()> {
+    if let Some(mode) = mode {
+        set_mode(path, mode)?;
+    }
+    Ok(())
+}
+
+/// Applies `--chmod` to every entry an archive extraction materialized, never through a symlink.
+///
+/// `root_is_new` is false when the destination directory predated the extraction, which keeps that
+/// directory's own mode; its extracted children still take `--chmod`.
+fn apply_chmod_tree(root: &Path, mode: Option<u32>, root_is_new: bool) -> Result<()> {
+    if mode.is_none() {
+        return Ok(());
+    }
+    if root_is_new {
+        apply_chmod(root, mode)?;
+    }
+    let mut collected = Vec::new();
+    walk(root, Path::new(""), &mut collected)?;
+    for (_, absolute, _) in collected {
+        let metadata = fs::symlink_metadata(&absolute)
+            .map_err(|source| Error::io("inspect", &absolute, source))?;
+        if !metadata.file_type().is_symlink() {
+            apply_chmod(&absolute, mode)?;
         }
     }
-    let result = if is_dir {
-        chown(dest, Some(owner.uid), Some(owner.gid))
-    } else {
-        lchown(dest, Some(owner.uid), Some(owner.gid))
-    };
-    result.map_err(|source| Error::io("chown", dest, source))
+    Ok(())
 }
 
 fn walk(root: &Path, relative: &Path, out: &mut Vec<(PathBuf, PathBuf, bool)>) -> Result<()> {
@@ -332,465 +432,14 @@ fn step(message: String) -> Error {
 fn step_next(message: String, next: impl Into<String>) -> Error {
     Error::StepFailed {
         line: 0,
-        instruction: "COPY/ADD".to_owned(),
+        phase: "copy",
+        instruction: String::new().into(),
         message,
+        exit_code: None,
+        runtime: None,
         next: next.into(),
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::os::unix::fs::MetadataExt;
-    use std::path::PathBuf;
-    use std::thread;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    use crate::dockerfile::ImageConfig;
-    use crate::error::Error;
-
-    use super::{BuildContext, Destination, Owner, add_context, copy_context, copy_rootfs, fs};
-
-    fn lab(prefix: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| since.as_nanos());
-        let root = PathBuf::from("/var/tmp").join(format!(
-            "slipfork-image-{prefix}-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).expect("the lab needs real disk under /var/tmp");
-        root
-    }
-
-    fn owner(root: &std::path::Path) -> Owner {
-        let metadata = fs::metadata(root).expect("stat the lab root");
-        Owner {
-            uid: metadata.uid(),
-            gid: metadata.gid(),
-        }
-    }
-
-    fn context(files: &[(&str, &str)]) -> (PathBuf, BuildContext) {
-        let root = lab("context");
-        for (relative, body) in files {
-            let path = root.join(relative);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).expect("create a context directory");
-            }
-            fs::write(&path, body).expect("write a context file");
-        }
-        let context = BuildContext::load(&root).expect("load the real build context");
-        (root, context)
-    }
-
-    /// `COPY package.json ./` and `COPY src ./src` land under `WORKDIR /app`, a later instruction
-    /// still resolves against `/app`, and `ADD` follows the same rule.
-    #[test]
-    fn a_relative_destination_lands_under_the_stage_workdir() {
-        let (context_root, context) = context(&[
-            ("package.json", "{}\n"),
-            ("src/app.py", "print('hi')\n"),
-            ("README.md", "docs\n"),
-        ]);
-        let rootfs = lab("rootfs-app");
-        let owner = owner(&rootfs);
-        let mut config = ImageConfig::default();
-        assert_eq!(config.set_workdir("/app"), "/app");
-
-        copy_context(
-            &context,
-            &["package.json".to_owned()],
-            "./",
-            Destination::new(&rootfs, &config.workdir),
-            owner,
-        )
-        .expect("COPY package.json ./");
-        copy_context(
-            &context,
-            &["src".to_owned()],
-            "./src",
-            Destination::new(&rootfs, &config.workdir),
-            owner,
-        )
-        .expect("COPY src ./src");
-        copy_context(
-            &context,
-            &["README.md".to_owned()],
-            "docs/",
-            Destination::new(&rootfs, &config.workdir),
-            owner,
-        )
-        .expect("a later COPY still uses /app");
-        add_context(
-            &context,
-            &["package.json".to_owned()],
-            "added/",
-            Destination::new(&rootfs, &config.workdir),
-            owner,
-        )
-        .expect("ADD follows WORKDIR too");
-
-        assert_eq!(
-            fs::read_to_string(rootfs.join("app/package.json")).expect("package.json under /app"),
-            "{}\n"
-        );
-        assert_eq!(
-            fs::read_to_string(rootfs.join("app/src/app.py")).expect("src under /app"),
-            "print('hi')\n"
-        );
-        assert_eq!(
-            fs::read_to_string(rootfs.join("app/docs/README.md"))
-                .expect("the later COPY still sees /app"),
-            "docs\n"
-        );
-        assert_eq!(
-            fs::read_to_string(rootfs.join("app/added/package.json")).expect("ADD under /app"),
-            "{}\n"
-        );
-        assert!(
-            !rootfs.join("package.json").exists(),
-            "a relative dest must never land at the rootfs top"
-        );
-        assert_eq!(
-            config.workdir, "/app",
-            "later instructions keep the WORKDIR"
-        );
-
-        let _ = fs::remove_dir_all(&context_root);
-        let _ = fs::remove_dir_all(&rootfs);
-    }
-
-    /// `COPY --from=<stage>` resolves a relative destination against the same `WORKDIR`.
-    #[test]
-    fn copy_from_another_stage_follows_the_same_workdir_rule() {
-        let source = lab("stage-src");
-        fs::write(source.join("pkg.txt"), "from stage\n").expect("write a stage file");
-        fs::create_dir_all(source.join("dir")).expect("create a stage directory");
-        fs::write(source.join("dir/x.txt"), "x\n").expect("write a nested stage file");
-        let rootfs = lab("rootfs-from");
-        let owner = owner(&rootfs);
-        let mut config = ImageConfig::default();
-        assert_eq!(config.set_workdir("/app"), "/app");
-
-        copy_rootfs(
-            &source,
-            &["pkg.txt".to_owned()],
-            "./",
-            Destination::new(&rootfs, &config.workdir),
-            owner,
-        )
-        .expect("COPY --from file");
-        copy_rootfs(
-            &source,
-            &["dir".to_owned()],
-            "./vendor",
-            Destination::new(&rootfs, &config.workdir),
-            owner,
-        )
-        .expect("COPY --from directory");
-
-        assert_eq!(
-            fs::read_to_string(rootfs.join("app/pkg.txt")).expect("stage file under /app"),
-            "from stage\n"
-        );
-        assert_eq!(
-            fs::read_to_string(rootfs.join("app/vendor/x.txt")).expect("stage dir under /app"),
-            "x\n"
-        );
-
-        let _ = fs::remove_dir_all(&source);
-        let _ = fs::remove_dir_all(&rootfs);
-    }
-
-    /// An absolute destination roots at `/` even with a `WORKDIR`, and repeated slashes collapse.
-    #[test]
-    fn an_absolute_destination_still_roots_at_the_image_root() {
-        let (context_root, context) = context(&[("app.conf", "k=v\n")]);
-        let rootfs = lab("rootfs-abs");
-        let owner = owner(&rootfs);
-        let mut config = ImageConfig::default();
-        assert_eq!(config.set_workdir("/app"), "/app");
-
-        copy_context(
-            &context,
-            &["app.conf".to_owned()],
-            "//etc//app/app.conf",
-            Destination::new(&rootfs, &config.workdir),
-            owner,
-        )
-        .expect("absolute COPY");
-
-        assert_eq!(
-            fs::read_to_string(rootfs.join("etc/app/app.conf")).expect("absolute dest at /etc"),
-            "k=v\n"
-        );
-        assert!(
-            !rootfs.join("app/etc").exists(),
-            "an absolute dest ignores WORKDIR"
-        );
-
-        let _ = fs::remove_dir_all(&context_root);
-        let _ = fs::remove_dir_all(&rootfs);
-    }
-
-    /// Any `..` segment is refused, relative or absolute, so a dest can never escape the rootfs.
-    #[test]
-    fn a_parent_segment_in_a_destination_is_refused() {
-        let (context_root, context) = context(&[("app.conf", "k=v\n")]);
-        let rootfs = lab("rootfs-escape");
-        let owner = owner(&rootfs);
-        let destination = Destination::new(&rootfs, "/app");
-
-        for dest in ["../escape", "/etc/../escape", "./../../escape"] {
-            let error = copy_context(&context, &["app.conf".to_owned()], dest, destination, owner)
-                .expect_err("a `..` segment must fail closed");
-            assert!(
-                error.to_string().contains("escapes the image root"),
-                "{dest}: {error}"
-            );
-        }
-        assert!(!rootfs.join("escape").exists());
-
-        let _ = fs::remove_dir_all(&context_root);
-        let _ = fs::remove_dir_all(&rootfs);
-    }
-
-    /// Serves exactly one HTTP/1.1 response on a loopback ephemeral port, then closes the socket.
-    fn serve_once(status: u16, body: &[u8]) -> (String, thread::JoinHandle<()>) {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the loopback URL server");
-        let port = listener
-            .local_addr()
-            .expect("read the loopback address")
-            .port();
-        let body = body.to_vec();
-        let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept the loopback request");
-            let mut request = Vec::new();
-            let mut buffer = [0u8; 1024];
-            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-                let read = stream.read(&mut buffer).expect("read the request head");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buffer[..read]);
-            }
-            let head = format!(
-                "HTTP/1.1 {status} slipfork\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            );
-            stream
-                .write_all(head.as_bytes())
-                .expect("write the response head");
-            stream.write_all(&body).expect("write the response body");
-            stream.flush().expect("flush the response");
-        });
-        (format!("127.0.0.1:{port}"), handle)
-    }
-
-    /// `ADD <url> /opt/data/` streams the served bytes into the directory as a 0644 file.
-    #[test]
-    fn an_add_url_streams_into_a_directory_destination() {
-        const BODY: &[u8] = b"#!/bin/sh\necho offworld\n";
-        let (addr, server) = serve_once(200, BODY);
-        let (context_root, context) = context(&[]);
-        let rootfs = lab("rootfs-url-dir");
-        let owner = owner(&rootfs);
-
-        add_context(
-            &context,
-            &[format!("http://{addr}/install.sh")],
-            "/opt/data/",
-            Destination::new(&rootfs, "/"),
-            owner,
-        )
-        .expect("ADD http://127.0.0.1/install.sh /opt/data/");
-        server.join().expect("the loopback server exits");
-
-        let written = rootfs.join("opt/data/install.sh");
-        assert_eq!(fs::read(&written).expect("read the served payload"), BODY);
-        assert_eq!(
-            fs::metadata(&written).expect("stat the payload").mode() & 0o777,
-            0o644,
-            "a URL payload lands 0644"
-        );
-
-        let _ = fs::remove_dir_all(&context_root);
-        let _ = fs::remove_dir_all(&rootfs);
-    }
-
-    /// An exact destination writes that path, ignoring the URL's query string.
-    #[test]
-    fn an_add_url_exact_destination_writes_the_named_file() {
-        const BODY: &[u8] = b"spool\n";
-        let (addr, server) = serve_once(200, BODY);
-        let (context_root, context) = context(&[]);
-        let rootfs = lab("rootfs-url-file");
-        let owner = owner(&rootfs);
-
-        add_context(
-            &context,
-            &[format!("http://{addr}/download?raw=1")],
-            "/usr/local/bin/install.sh",
-            Destination::new(&rootfs, "/"),
-            owner,
-        )
-        .expect("ADD url to an exact file path");
-        server.join().expect("the loopback server exits");
-
-        let written = rootfs.join("usr/local/bin/install.sh");
-        assert_eq!(fs::read(&written).expect("read the served payload"), BODY);
-        assert_eq!(
-            fs::metadata(&written).expect("stat the payload").mode() & 0o777,
-            0o644
-        );
-        assert!(
-            !rootfs.join("usr/local/bin/download").exists(),
-            "an exact destination never appends the URL file name"
-        );
-
-        let _ = fs::remove_dir_all(&context_root);
-        let _ = fs::remove_dir_all(&rootfs);
-    }
-
-    /// A non-2xx answer fails closed with the typed HTTP error and leaves no temp file behind.
-    #[test]
-    fn a_non_success_url_fails_closed_and_cleans_its_temp_file() {
-        let (addr, server) = serve_once(404, b"missing\n");
-        let (context_root, context) = context(&[]);
-        let rootfs = lab("rootfs-url-404");
-        let owner = owner(&rootfs);
-
-        let error = add_context(
-            &context,
-            &[format!("http://{addr}/install.sh")],
-            "/opt/data/",
-            Destination::new(&rootfs, "/"),
-            owner,
-        )
-        .expect_err("a 404 must fail closed");
-        server.join().expect("the loopback server exits");
-
-        assert!(
-            matches!(&error, Error::Http { status: 404, .. }),
-            "a non-2xx is the typed HTTP error: {error}"
-        );
-        let leftovers = fs::read_dir(rootfs.join("opt/data"))
-            .expect("the destination directory exists")
-            .count();
-        assert_eq!(leftovers, 0, "a failed fetch removes its temp file");
-
-        let _ = fs::remove_dir_all(&context_root);
-        let _ = fs::remove_dir_all(&rootfs);
-    }
-
-    /// Only `ADD` fetches, and only `http(s)://`; every other scheme fails closed with a remedy.
-    #[test]
-    fn only_add_fetches_http_urls() {
-        let (context_root, context) = context(&[("app.conf", "k=v\n")]);
-        let rootfs = lab("rootfs-url-refuse");
-        let owner = owner(&rootfs);
-        let destination = Destination::new(&rootfs, "/");
-
-        let copy_error = copy_context(
-            &context,
-            &["http://127.0.0.1:9/x".to_owned()],
-            "/opt/",
-            destination,
-            owner,
-        )
-        .expect_err("COPY must never fetch a URL");
-        assert!(
-            copy_error.to_string().contains("use `ADD`"),
-            "COPY points at ADD: {copy_error}"
-        );
-
-        let add_error = add_context(
-            &context,
-            &["ftp://127.0.0.1:9/x".to_owned()],
-            "/opt/",
-            destination,
-            owner,
-        )
-        .expect_err("only http(s) is fetchable");
-        let rendered = add_error.to_string();
-        assert!(
-            rendered.contains("`ftp:`"),
-            "the scheme is named: {rendered}"
-        );
-        assert!(rendered.contains("next:"), "one line plus next: {rendered}");
-
-        let _ = fs::remove_dir_all(&context_root);
-        let _ = fs::remove_dir_all(&rootfs);
-    }
-
-    /// One context file plus one URL into a slash-less `dest` still resolves as a directory, so
-    /// both sources keep their own names instead of the local copy claiming `dest` itself.
-    #[test]
-    fn a_mixed_add_puts_the_local_file_and_the_url_in_one_directory() {
-        const BODY: &[u8] = b"#!/bin/sh\necho served\n";
-        let (addr, server) = serve_once(200, BODY);
-        let (context_root, context) = context(&[("note.txt", "local note\n")]);
-        let rootfs = lab("rootfs-url-mixed");
-        let owner = owner(&rootfs);
-
-        add_context(
-            &context,
-            &["note.txt".to_owned(), format!("http://{addr}/install.sh")],
-            "/opt",
-            Destination::new(&rootfs, "/"),
-            owner,
-        )
-        .expect("ADD a context file and a URL into one directory");
-        server.join().expect("the loopback server exits");
-
-        assert_eq!(
-            fs::read_to_string(rootfs.join("opt/note.txt")).expect("read the local copy"),
-            "local note\n"
-        );
-        assert_eq!(
-            fs::read(rootfs.join("opt/install.sh")).expect("read the served payload"),
-            BODY
-        );
-
-        let _ = fs::remove_dir_all(&context_root);
-        let _ = fs::remove_dir_all(&rootfs);
-    }
-
-    /// A gzipped body is an opaque URL payload: it lands byte-for-byte and is never unpacked.
-    #[test]
-    fn a_gzipped_url_payload_is_written_verbatim_never_extracted() {
-        let raw = b"#!/bin/sh\necho gz\n";
-        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        encoder.write_all(raw).expect("write the gzip payload");
-        let gz = encoder.finish().expect("finish the gzip payload");
-        let (addr, server) = serve_once(200, &gz);
-        let (context_root, context) = context(&[]);
-        let rootfs = lab("rootfs-url-gzip");
-        let owner = owner(&rootfs);
-
-        add_context(
-            &context,
-            &[format!("http://{addr}/bundle.tar.gz")],
-            "/opt/data/",
-            Destination::new(&rootfs, "/"),
-            owner,
-        )
-        .expect("ADD a gzipped url payload");
-        server.join().expect("the loopback server exits");
-
-        assert_eq!(
-            fs::read(rootfs.join("opt/data/bundle.tar.gz")).expect("read the payload"),
-            gz,
-            "a URL payload is never tar-extracted"
-        );
-        assert!(
-            !rootfs.join("opt/data/bundle.tar").exists(),
-            "no archive is unpacked from a URL"
-        );
-
-        let _ = fs::remove_dir_all(&context_root);
-        let _ = fs::remove_dir_all(&rootfs);
-    }
-}
+mod tests;

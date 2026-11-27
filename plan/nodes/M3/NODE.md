@@ -1,6 +1,6 @@
 ---
 id: M3
-title: "Clean-Sheet Slipfork 0.1.0: Pure-Btrfs Native Engine, Enclosing Image Forkfile, High-Craft CLI, Visual Zensical Docs & All-Distro Linux Packaging"
+title: "Clean-Sheet Slipfork 0.1.x: Snapshot-Graph Btrfs Engine, ForkLedger, Image-Identity Pods, Report CLI, Docs & All-Distro Packaging"
 kind: milestone
 status: done
 priority: 3
@@ -8,25 +8,23 @@ depends_on: [M2]
 paths: []
 attempts: 0
 max_attempts: 3
-escalation: architect
+escalation: strategist
 created: "2026-11-14T22:03"
-updated: "2026-11-24T03:14"
+updated: "2026-11-27T14:19"
 ---
 
 # Goal
 
-Deliver Slipfork **`0.1.0`** on `release/0.1.0` over the unified Btrfs subvolume `WorldEngine` (`BtrfsEngine`, `ADR-0010`), `:80` `slipforkd` `.localhost` edge, high-craft CLI, and `OSPP v1` end-to-end encrypted secrets:
+Close Slipfork **`0.1.x`** (`0.1.0` published; **`0.1.1`** on `release/0.1.1`, draft PR #8) over the unified pure-Btrfs `SnapshotStore` + `ForkLedger` engine, `:80` `.localhost` ingress, single `Report` CLI, visual Zensical docs, and 18-artifact Linux/LSP distribution pipeline:
 
-1. **Unified Btrfs subvolume `BtrfsEngine` (`ADR-0010`):** one Btrfs subvolume per world holding the read-only `Dockerfile` `L0` rootfs + `/var/lib/slipfork/state/{pgdata,redis,s3}`, `BTRFS_IOC_*` RO snapshots and writable clones, fail-closed `BTRFS_SUPER_MAGIC` (`0x9123683e`) probe with `mount -o user_subvol_rm_allowed,noatime` remedy, `--ipc` SysV IPC isolation, `-pgid` process-group supervision, `crun` backing containers (`postgres:<v>`, `redis:<v>`, SeaweedFS), and AppArmor `userns` profile — sole `WorldEngine` with zero fallbacks.
-2. **`:80` systemd socket-activated `slipforkd` `.localhost` edge:** `sudo slipfork daemon install` writes `/etc/systemd/system/slipforkd.{socket,service}` plus `/etc/apparmor.d/slipfork`, performs version-agnostic socket handover, and serves port-less `http://<project>.localhost` origins (`ADR-0011`).
-3. **High-craft ANSI/spinner CLI & `@slipfork/opencode` V2 plugin:** `status` on bare `slipfork`, `up`, `restart`, `ps`, `open --remote`, no-arg `fork`, `logs`, `shell`, `exec`, `hook run`, `db`, `redis`, `forward`, `doctor`, `drop`, `down`, `list`, `prune`, `secret`, `auth`, `daemon unit`, `daemon install`, and `snow resolve`, paired with `Git` worktrees, `Jj` workspaces, `git-remote-slipfork`, and `@slipfork/opencode`.
-4. **`OSPP v1` (`docs/design/ospp.md`, `ADR-0008`):** `p256` challenge-response auth, ALTCHA+PoP `#handle=` browser-fragment pairing saved as public `{endpoint, account, machine}` metadata in `<state_dir>/ospp.json`, ID-only `claims`, `hpke-p256` base64 secret encryption decrypted strictly in `slipforkd` memory + out-of-band HPKE-encrypted PostgreSQL seed dump streaming (`zstd -d | pg_restore`), with zero remote secrets ever written to disk.
-5. **Visual Zensical docs & zero-mock lab E2E verification:** problem-first visual `docs/` (`make docs-check` + `tools/check_docs_honesty.py` strict clean), deterministic `make check` on dev hosts, and live Btrfs E2E + benchmark verification on Ubuntu 24.04 Btrfs (`165.232.86.174`).
+1. **Snapshot-graph Btrfs engine & `ForkLedger` (`specs/03` §1–§7):** `BuildGraph` + `SnapshotStore` (`reconcile`, `Lease`, `gc`, `--no-cache`), `StateDb` (`sea-orm` SQLite WAL `state.db`) + `ForkLedger` flat `<root>/.forks/<name>` with parent-splice `drop` and `ConvergeExecutor`, image-`USER` `crun` pods (default `0:0` mapped 1:1 to host uid, `0022` umask), native Rust S3 (`private` / `public-read` + cloud `cdn`), direct-exec PG18/Redis7, and `slipfork docker` (`login`/`logout`/`list`/`images`/`pull`/`build`).
+2. **Package-managed `:80` `.localhost` ingress & per-user daemon (`specs/06`):** `.deb`/`.rpm`/pacman install hooks and `docs/install.sh` enable user `slipfork.service`, `slipfork-ingress.socket` + `slipfork-ingress@.service`, and `/etc/apparmor.d/slipfork` (`OpenRC` `slipfork-ingress` on Alpine); `slipfork auth` stays deferred to `M4` (`0.2.0`) while `slipfork-ospp` and local `0600` `secret()`/`var()` ship tested.
+3. **Single `Report` CLI, `slipfork-lsp` & `@slipfork/opencode` (`specs/01`, `specs/02`, `specs/06`):** `# forkfile: 0.1` (`features`, `on`/`else`, `arg` with `service.port`, `dev` `WORKDIR` mounts, `fmt`, `migrate`), `Report`/`Row`/`Outcome`/`Failure` + `ReportRenderer` + `WallZone`, append-only live boot output, durable run catalog (`logs -r`, `--runs`, `--last N`), real-PTY `shell <target>` & `exec`, standalone 6-target `slipfork-lsp` + Zed/Vim, and `@slipfork/opencode`.
 
-> **Milestone boundary (`0.2.0` next):** the CBOR `STP v1` Testing Protocol over `SLIPFORK_PROTOCOL_FD` (`slipfork test`), live Kerfufoo `OSPP v1` provider integration, and ad-hoc `pytest`/`vitest`/`phpunit` `STP v1` plugins are scheduled for **`0.2.0`** (followed by `M4` `0.4.0` and `M5` `0.5.0` Editor & IDE Integration), and are never claimed as `0.1.0` surfaces.
+# Acceptance (`0.1.1` Release Gate Checklist)
 
-# Acceptance
-
-- [x] Plain `make check` (zero environment overrides) and `make docs-check` exit `0` on a non-Btrfs dev host; real `BtrfsEngine` + `crun` + `postgres:18` lab E2E suites, PTY color/spinner E2E, `.localhost` `:80` demo, and bounded `make bench --check` exit `0` on Ubuntu 24.04 Btrfs (`165.232.86.174`) with `kernel.apparmor_restrict_unprivileged_userns=1`.
-- [x] `0.2.0` (`STP v1` over `SLIPFORK_PROTOCOL_FD` + Kerfufoo `OSPP v1` provider + `pytest`/`vitest`/`phpunit` plugins), `M4` (`0.4.0`), and `M5` (`0.5.0`) are cleanly separated from `0.1.0` with zero vaporware (`tools/check_docs_honesty.py`).
-- [x] `uv run --no-project tools/plan.py validate` and `uv run --no-project tools/guard.py` exit `0`.
+- [x] Workspace `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `editors/zed/check.sh`, `tools/guard.py`, `tools/plan.py validate`, and 15-distro `packages.yml` build + install rehearsal pass.
+- [ ] **PR #8 CI green (`M3.180`):** cached `image` reconciles on `up` emit one `✓ [i/n] image <id> cached <dur>` row with zero inner rows (`critical_world_journey` 5/5 green on live Btrfs), and `.gitattributes` enforces LF so `slipfork-forkfile` tests pass on `windows/{x86_64,aarch64}`.
+- [ ] **All 16 live suites & isolated plugin gate (`M3.181`):** `Makefile` `LIVE_SUITES` includes `slipfork-world/critical_snapshot_graph` and `slipfork/logs_last_live`, `packages/opencode-slipfork/tests/e2e.test.ts` isolates `XDG_RUNTIME_DIR`/`XDG_STATE_HOME` + is guarded by `critical_guard.py`, and `Makefile`/spec version defaults match `0.1.1`.
+- [ ] **Five Engineering Laws intact (`M3.182`):** zero production `.rs` files `> 500` LOC, `Palette` raw SGR (`tint`) closed behind named role methods, `boot.rs` prints routed through `ui::report`, `pty.rs` `static RESIZED` removed, and dead `auth` residue deleted.
+- [ ] **Zero spec, `TESTING_PLAN`, `CHANGELOG`, or `docs/` drift (`M3.183` + owner `docs/` pass):** `specs/02`–`04`, `TESTING_PLAN.md`, `CHANGELOG.md` `[0.1.1]`, and `docs/` (`make docs-check`) match shipped append-only boot, image-`USER` pods, `ForkLedger`, `slipfork docker`, `up --no-cache`, and `logs --last`.

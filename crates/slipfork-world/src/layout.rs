@@ -1,9 +1,20 @@
 use std::ffi::{OsStr, OsString};
-use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::error::{Error, NameKind, Result};
+use crate::error::Result;
 use crate::resources::ResourceKind;
+
+mod family;
+mod names;
+
+// The family type is returned by `fork_family` and inferred at every call site.
+#[allow(unused_imports)]
+pub use family::{
+    ForkDir, ForkFamily, ProjectScope, checkout_chain, fork_checkout, fork_checkouts, fork_family,
+    fork_under, fork_world_id, project_root,
+};
+pub(crate) use names::validate_name;
+pub use names::{ForkName, WorldName};
 
 /// Name of the store directory Slipfork owns on the Btrfs mount.
 pub const STORE_DIR: &str = ".slipfork-store";
@@ -15,6 +26,8 @@ pub const WORLDS_DIR: &str = "worlds";
 pub const PODS_DIR: &str = "pods";
 /// Persistent per-pod capture files live here, so `logs` survives `down`.
 pub const LOGS_DIR: &str = "logs";
+/// Content-addressed sealed nodes live here (`specs/03` §6).
+pub const SNAPSHOTS_DIR: &str = "snapshots";
 /// Project-relative directory holding project snapshots.
 pub const FORKS_DIR: &str = ".forks";
 
@@ -87,6 +100,12 @@ impl StoreLayout {
         self.store_root.join(LOGS_DIR)
     }
 
+    /// `<mount>/.slipfork-store/snapshots`: every sealed content-addressed node plus `.lock`.
+    #[must_use]
+    pub fn snapshots_root(&self) -> PathBuf {
+        self.store_root.join(SNAPSHOTS_DIR)
+    }
+
     /// `<mount>/.slipfork-store/logs/<world>`: one world's capture directory.
     #[must_use]
     pub fn world_logs(&self, world: &WorldName) -> PathBuf {
@@ -138,16 +157,20 @@ impl StoreLayout {
             .join(Self::fork_world_name(world, fork).as_str())
     }
 
-    /// `<project>/.forks/<fork>`: the fork's own checkout snapshot.
+    /// The checkout of `<fork>` in the family containing `project`.
+    ///
+    /// A root stays itself; a fork checkout resolves to its family root, so forks of forks land
+    /// flat as siblings instead of nesting under their parent.
     #[must_use]
     pub fn project_fork(project: &Path, fork: &ForkName) -> PathBuf {
-        project_fork_path(project, fork)
+        let root = fork_checkout(project).map_or_else(|| project.to_path_buf(), |(root, _)| root);
+        project_fork_path(&root, fork)
     }
 
     /// `<fork>--<world>`: the world id a fork boots under.
     #[must_use]
     pub fn fork_world_name(world: &WorldName, fork: &ForkName) -> WorldName {
-        WorldName(format!("{}--{}", fork.as_str(), world.as_str()))
+        WorldName::new(format!("{}--{}", fork.as_str(), world.as_str()))
     }
 
     /// `<mount>/.slipfork-store/worlds/<world>.<kind>.<pod>`: a flat sibling of the world so a
@@ -187,82 +210,34 @@ impl StoreLayout {
         Some((
             WorldName::parse(world).ok()?,
             kind,
-            validate_name(NameKind::Pod, pod).ok()?,
+            validate_name(crate::error::NameKind::Pod, pod).ok()?,
         ))
     }
 
     /// Splits a `worlds/` entry name back into its `<fork>--<world>` pair.
     ///
     /// The separator and both name validators live here, so no caller re-scans entry names.
-    /// Splitting on the **last** `--` keeps fork names that themselves contain `-` intact.
+    /// Splitting on the **last** `--` keeps fork names that themselves contain `-` intact, and a
+    /// legacy nested `<fork>--<parent>--<root>` entry parses verbatim: store entries are adopted
+    /// as-is, while [`ForkName::parse`] keeps `--` reserved for new names.
     #[must_use]
     pub fn parse_fork_world(entry: &std::ffi::OsStr) -> Option<(ForkName, WorldName)> {
         let (fork, world) = entry.to_str()?.rsplit_once("--")?;
-        Some((ForkName::parse(fork).ok()?, WorldName::parse(world).ok()?))
+        Some((ForkName::from_entry(fork)?, WorldName::parse(world).ok()?))
     }
 }
 
-/// A validated `worlds/<world>` data subvolume name.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct WorldName(String);
+/// Top-level project entries that belong to Slipfork's bookkeeping, never to a checkout.
+///
+/// `.forks` holds the project's own fork tree (copying it in would recurse into the destination)
+/// and `.slipfork-store` holds the Btrfs store, which must never be copied into a checkout.
+pub(crate) const MANAGED_ENTRIES: [&str; 2] = [FORKS_DIR, STORE_DIR];
 
-impl WorldName {
-    /// Parses `raw` (`[a-z0-9][a-z0-9._-]*`) into a world name.
-    pub fn parse(raw: &str) -> Result<Self> {
-        validate_name(NameKind::World, raw).map(Self)
-    }
-
-    /// The validated name.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for WorldName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-/// A validated fork name shared by both snapshots of a fork.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ForkName(String);
-
-impl ForkName {
-    /// Parses `raw` (`[a-z0-9][a-z0-9._-]*`) into a fork name.
-    pub fn parse(raw: &str) -> Result<Self> {
-        validate_name(NameKind::Fork, raw).map(Self)
-    }
-
-    /// The validated name.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for ForkName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-pub(crate) fn validate_name(kind: NameKind, raw: &str) -> Result<String> {
-    let mut bytes = raw.bytes();
-    let starts_well = bytes
-        .next()
-        .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit());
-    let rest_well = bytes.all(|byte| {
-        byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
-    });
-    if !starts_well || !rest_well || matches!(raw, "." | "..") {
-        return Err(Error::InvalidName {
-            kind,
-            name: raw.to_owned(),
-        });
-    }
-    Ok(raw.to_owned())
+/// Whether a project-root entry is one of Slipfork's own [`MANAGED_ENTRIES`].
+pub(crate) fn is_managed_entry(name: &OsStr) -> bool {
+    MANAGED_ENTRIES
+        .iter()
+        .any(|managed| name == OsStr::new(managed))
 }
 
 /// `<project>/.forks`.
@@ -277,192 +252,18 @@ pub(crate) fn project_fork_path(project: &Path, fork: &ForkName) -> PathBuf {
     project_forks_dir(project).join(fork.as_str())
 }
 
-/// One `<project>/.forks/<name>` checkout on disk.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ForkDir {
-    /// Fork name, the `.forks/<name>` directory entry.
-    pub name: String,
-    /// Absolute checkout path.
-    pub path: PathBuf,
-}
-
-/// The `<parent>/.forks/<fork>` pair owning `project`, when `project` is a fork checkout.
-///
-/// This is the one structural predicate every caller shares: no caller re-inspects
-/// `path.parent()` names to decide whether a directory is a fork checkout.
-#[must_use]
-pub fn fork_checkout(project: &Path) -> Option<(PathBuf, ForkName)> {
-    let fork = ForkName::parse(project.file_name()?.to_str()?).ok()?;
-    let forks_dir = project.parent()?;
-    if forks_dir.file_name()? != OsStr::new(FORKS_DIR) {
-        return None;
-    }
-    Some((forks_dir.parent()?.to_path_buf(), fork))
-}
-
-/// The nearest ancestor of `cwd` holding a `Forkfile` or `.slipfork` record.
-///
-/// A `<parent>/.forks/<fork>` checkout is never itself a root: resolution climbs to the project
-/// that owns it.
-#[must_use]
-pub fn project_root(cwd: &Path) -> Option<PathBuf> {
-    let mut current = Some(cwd);
-    while let Some(dir) = current {
-        let project = dir.join("Forkfile").is_file() || dir.join(".slipfork").is_dir();
-        if project && fork_checkout(dir).is_none() {
-            return Some(dir.to_path_buf());
-        }
-        current = dir.parent();
-    }
-    None
-}
-
-/// The `<root>/.forks/<fork>` checkout containing `cwd`, when that checkout still exists on disk.
-#[must_use]
-pub fn fork_under(root: &Path, cwd: &Path) -> Option<(PathBuf, ForkName)> {
-    let mut components = cwd.strip_prefix(root).ok()?.components();
-    if components.next()?.as_os_str() != OsStr::new(FORKS_DIR) {
-        return None;
-    }
-    let fork = ForkName::parse(components.next()?.as_os_str().to_str()?).ok()?;
-    let path = project_fork_path(root, &fork);
-    path.is_dir().then_some((path, fork))
-}
-
-/// Every `<project>/.forks/<name>` checkout present on disk.
-///
-/// A fork checkout is either a Btrfs subvolume (a fork of a subvolume checkout) or a plain copied
-/// directory (a fork of a plain checkout), so any existing directory named like a fork is reported
-/// instead of posing as a phantom stopped fork. A missing `.forks` directory is a normal project
-/// with no forks; any other `read_dir` failure is surfaced to the caller.
-///
-/// # Errors
-///
-/// Returns the I/O failure from listing `<project>/.forks`, except a missing directory, which is
-/// `Ok(Vec::new())`.
-pub fn fork_checkouts(project: &Path) -> Result<Vec<ForkDir>> {
-    let forks_dir = project_forks_dir(project);
-    let entries = match std::fs::read_dir(&forks_dir) {
-        Ok(entries) => entries,
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(source) => return Err(Error::io("list", &forks_dir, source)),
-    };
-    let mut forks = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|source| Error::io("list", &forks_dir, source))?;
-        let Some(name) = entry
-            .file_name()
-            .to_str()
-            .and_then(|name| ForkName::parse(name).ok())
-        else {
-            continue;
-        };
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        forks.push(ForkDir {
-            name: name.as_str().to_owned(),
-            path,
-        });
-    }
-    forks.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(forks)
-}
-
-/// `<fork>--<parent>`: the canonical world id for a fork of `parent`, validating both halves.
-#[must_use]
-pub fn fork_world_id(parent: &str, fork: &str) -> Option<WorldName> {
-    let parent = WorldName::parse(parent).ok()?;
-    let fork = ForkName::parse(fork).ok()?;
-    Some(StoreLayout::fork_world_name(&parent, &fork))
-}
-
-/// The world id a stopped project displays: the canonical `<fork>--<parent>` for a fork
-/// checkout, else the directory's own name.
-#[must_use]
-pub fn world_id_for_project(project: &Path) -> String {
-    if let Some((parent, fork)) = fork_checkout(project)
-        && let Some(parent) = parent.file_name().and_then(|name| name.to_str())
-        && let Ok(parent) = WorldName::parse(parent)
-    {
-        return StoreLayout::fork_world_name(&parent, &fork)
-            .as_str()
-            .to_owned();
-    }
-    project
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("world")
-        .to_owned()
-}
-
-/// Which project world a `ps` invocation is scoped to, resolved once from the caller's cwd.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProjectScope {
-    /// No project root above the cwd.
-    None,
-    /// The cwd sits inside one `<root>/.forks/<fork>` checkout.
-    Fork {
-        /// Absolute checkout path.
-        path: PathBuf,
-        /// Fork name.
-        name: String,
-        /// Canonical `<fork>--<parent>` world id.
-        world: String,
-    },
-    /// The cwd sits in a project root: its own row plus every `.forks` checkout on disk.
-    Root {
-        /// Absolute project root.
-        root: PathBuf,
-        /// The root project's world id.
-        world: String,
-        /// Every fork checkout the host proves is a subvolume.
-        forks: Vec<ForkDir>,
-        /// Why `.forks` could not be listed, when it could not.
-        problem: Option<String>,
-    },
-}
-
-impl ProjectScope {
-    /// Resolves `cwd` against the on-disk `.forks` layout exactly once.
-    #[must_use]
-    pub fn resolve(cwd: &Path) -> Self {
-        let Some(root) = project_root(cwd) else {
-            return Self::None;
-        };
-        if let Some((path, fork)) = fork_under(&root, cwd) {
-            return Self::Fork {
-                world: world_id_for_project(&path),
-                path,
-                name: fork.as_str().to_owned(),
-            };
-        }
-        let (forks, problem) = match fork_checkouts(&root) {
-            Ok(forks) => (forks, None),
-            Err(error) => (Vec::new(), Some(error.to_string())),
-        };
-        Self::Root {
-            world: world_id_for_project(&root),
-            root,
-            forks,
-            problem,
-        }
-    }
-}
-
 /// Splits `path` into its parent directory and single-component file name.
 pub(crate) fn split_dir(path: &Path) -> Result<(PathBuf, OsString)> {
     let name = path
         .file_name()
-        .ok_or_else(|| Error::UnsupportedPath {
+        .ok_or_else(|| crate::error::Error::UnsupportedPath {
             path: path.to_path_buf(),
         })?
         .to_owned();
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
-        .ok_or_else(|| Error::UnsupportedPath {
+        .ok_or_else(|| crate::error::Error::UnsupportedPath {
             path: path.to_path_buf(),
         })?;
     Ok((parent.to_path_buf(), name))

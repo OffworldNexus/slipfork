@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use slipfork_forkfile::{FeatureEdit, FeatureSet};
 use slipfork_world::{
     BootEvent, BootFailure, BootGraph, BootKind, BootScheduler, BootState, BootStep, EpochState,
-    EventSink, ImageStamp, StampStore, StepExecutor, StepOutcome, StepStamp, WorldPlan, WorldStamp,
+    EventSink, StampStore, StepExecutor, StepOutcome, StepStamp, WorldPlan, WorldStamp,
     WorldStampStore, plan_epoch, write_pg_checkpoint,
 };
 
@@ -50,6 +50,11 @@ fn plan(steps: Vec<BootStep>) -> WorldPlan {
         steps,
         ..WorldPlan::default()
     }
+}
+
+/// The epoch for a `plan` with no build-image inputs (these DAG tests carry none).
+fn epoch(plan: &WorldPlan, features: &FeatureSet) -> String {
+    plan_epoch(plan, features, &std::collections::BTreeMap::new())
 }
 
 fn runtime() -> tokio::runtime::Runtime {
@@ -263,18 +268,18 @@ fn sample_features() -> (FeatureSet, FeatureSet, FeatureSet) {
 fn plan_epoch_is_stable_for_one_shape_and_changes_with_the_command() {
     let (dev, minus_dev, mail_only) = sample_features();
     let first = plan(vec![step("a", Vec::new()), step("b", vec![0])]);
-    assert_eq!(plan_epoch(&first, &dev), plan_epoch(&first.clone(), &dev));
+    assert_eq!(epoch(&first, &dev), epoch(&first.clone(), &dev));
     let mut changed = first.clone();
     changed.steps[0].command = Some("false".to_owned());
-    assert_ne!(plan_epoch(&first, &dev), plan_epoch(&changed, &dev));
+    assert_ne!(epoch(&first, &dev), epoch(&changed, &dev));
     assert_ne!(
-        plan_epoch(&first, &dev),
-        plan_epoch(&first, &minus_dev),
+        epoch(&first, &dev),
+        epoch(&first, &minus_dev),
         "`-F -dev` must derive a distinct epoch even when the step list is identical"
     );
     assert_ne!(
-        plan_epoch(&first, &minus_dev),
-        plan_epoch(&first, &mail_only),
+        epoch(&first, &minus_dev),
+        epoch(&first, &mail_only),
         "`--no-default-features -F mail` must derive its own epoch"
     );
 }
@@ -313,42 +318,43 @@ fn trusted_stamp_refuses_to_adopt_parent_dev_images_when_features_differ() {
         "this fixture intentionally keeps identical steps so only `features` distinguishes modes"
     );
 
-    let dev_epoch = plan_epoch(&dev_plan, &dev);
-    let mut images = std::collections::BTreeMap::new();
-    images.insert(
-        "backend".to_owned(),
-        ImageStamp {
-            rootfs: "/store/images/steps/dev-stage".to_owned(),
-            env: Vec::new(),
-            argv: Vec::new(),
-            workdir: "/project/api".to_owned(),
-        },
-    );
+    let dev_epoch = epoch(&dev_plan, &dev);
     let store = WorldStampStore::new(&world);
     store
-        .save(&WorldStamp::checkpoint(
-            &dev_plan,
-            dev_epoch.clone(),
-            images,
-        ))
+        .save(&WorldStamp::checkpoint(&dev_plan, dev_epoch.clone()))
         .expect("save parent dev stamp");
     write_pg_checkpoint(&pg, &dev_epoch).expect("save paired pg stamp");
 
     assert!(
         store
-            .trusted_stamp(&dev_plan, &dev, [pg.as_path()])
+            .trusted_stamp(
+                &dev_plan,
+                &dev,
+                &std::collections::BTreeMap::new(),
+                [pg.as_path()]
+            )
             .is_some(),
         "a same-mode `dev` fork still reuses the parent's checkpoint in 0ms"
     );
     assert!(
         store
-            .trusted_stamp(&prod_plan, &minus_dev, [pg.as_path()])
+            .trusted_stamp(
+                &prod_plan,
+                &minus_dev,
+                &std::collections::BTreeMap::new(),
+                [pg.as_path()]
+            )
             .is_none(),
         "`fork -F -dev` must reject the parent's `dev` checkpoint instead of adopting `/project/api`"
     );
     assert!(
         store
-            .trusted_stamp(&prod_plan, &no_default, [pg.as_path()])
+            .trusted_stamp(
+                &prod_plan,
+                &no_default,
+                &std::collections::BTreeMap::new(),
+                [pg.as_path()]
+            )
             .is_none(),
         "`fork --no-default-features` must also reject the parent's `dev` checkpoint"
     );
@@ -374,8 +380,8 @@ fn fork_world_stamp_persists_and_gates_before_start_and_pre_deploy_hooks() {
 
     let (dev, _, _) = sample_features();
     let world_plan = plan(vec![before, pre]);
-    let epoch = plan_epoch(&world_plan, &dev);
-    let checkpoint = WorldStamp::checkpoint(&world_plan, epoch, Default::default());
+    let stamp_epoch = epoch(&world_plan, &dev);
+    let checkpoint = WorldStamp::checkpoint(&world_plan, stamp_epoch);
     assert_eq!(checkpoint.before_start.len(), 1);
     assert_eq!(checkpoint.pre_deploy.len(), 1);
 
@@ -642,7 +648,7 @@ fn current_epoch_services_carry_no_resource_edges_and_skip_the_pre_deploy_barrie
 
     let (dev, _, _) = sample_features();
     let dir = lab("conditional-current");
-    let checkpoint = WorldStamp::checkpoint(&plan, plan_epoch(&plan, &dev), Default::default());
+    let checkpoint = WorldStamp::checkpoint(&plan, epoch(&plan, &dev));
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let release_rx = Arc::new(Mutex::new(release_rx));
     let up_to_date = Arc::new(Mutex::new(Vec::new()));

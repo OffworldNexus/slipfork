@@ -45,6 +45,7 @@ pub(super) fn services(doc: &Forkfile, features: &FeatureSet) -> Vec<PsService> 
                 .collect(),
             orphaned: false,
             image: service.image.map(str::to_owned),
+            command: service.command.clone(),
         })
         .collect();
     for resource in doc.resources_with(features) {
@@ -72,6 +73,7 @@ pub(super) fn services(doc: &Forkfile, features: &FeatureSet) -> Vec<PsService> 
             routes: Vec::new(),
             orphaned: false,
             image: None,
+            command: None,
         });
     }
     out
